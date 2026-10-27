@@ -1,0 +1,302 @@
+import type { AgentInstance, RuntimeSession } from "./kernel-types.js"
+import { sessionFocusedAgentId } from "./session-runtime-transition.js"
+
+export type SessionLifecycleLaunchSelection = {
+  provider: string
+  model: string
+  effort: string
+}
+
+export type SessionLifecycleListEntry = {
+  id: string
+  alias?: string | null
+  workspace_id?: string
+  worktree_id: string
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  host_machine_id?: string | null
+  host_daemon_id?: string | null
+  kernel_id?: string | null
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  status: string
+  created_at_ms?: number
+  last_used_at_ms?: number | null
+  last_activity_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
+  attachment_ids?: string[]
+}
+
+export type SessionLifecycleListSession = {
+  id: string
+  alias?: string | null
+  workspace_id?: string
+  worktree_id: string
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  host_machine_id?: string | null
+  host_daemon_id?: string | null
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  status: string
+  created_at_ms?: number
+  last_used_at_ms?: number | null
+  last_activity_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
+  attachment_ids?: string[]
+}
+
+export type SessionLifecycleLaunchAgent = Pick<AgentInstance, "id" | "provider" | "model" | "effort"> & {
+  readonly account_profile?: AgentInstance["account_profile"]
+  readonly remote_execution?: AgentInstance["remote_execution"]
+}
+
+export type SessionLifecycleLaunchSession<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> = {
+  id: string
+  agents: readonly TAgent[]
+  focused_agent_id?: string | null
+  agent_defaults?: RuntimeSession["agent_defaults"]
+}
+
+export type SessionLifecycleAttachLaunchSession<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  SessionLifecycleLaunchSession<TAgent> & {
+    active_provider_run_id?: string | null
+  }
+
+export type SessionLifecycleAttachProviderLaunchDecision<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  | {
+    readonly action: "load_provider_run"
+    readonly providerRunId: string
+  }
+  | {
+    readonly action: "launch_provider_run"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+    readonly targetAgentId: string | null
+  }
+  | {
+    readonly action: "skip_launch"
+    readonly reason: "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+  }
+
+export type SessionLifecyclePromptRecoveryLaunchDecision<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
+  | {
+    readonly action: "launch_provider_run"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent
+    readonly targetAgentId: string
+  }
+  | {
+    readonly action: "skip_launch"
+    readonly reason: "no_visible_agents" | "missing_target_agent" | "remote_backed_agent"
+    readonly launch: SessionLifecycleLaunchSelection
+    readonly targetAgent: TAgent | null
+  }
+
+export function upsertSessionListEntry<TEntry extends { id: string }>(
+  current: readonly TEntry[],
+  next: TEntry,
+): TEntry[] {
+  const index = current.findIndex((candidate) => candidate.id === next.id)
+  if (index === -1) {
+    return [next, ...current]
+  }
+  return current.map((candidate, candidateIndex) =>
+    candidateIndex === index ? { ...candidate, ...next } : candidate
+  )
+}
+
+export function sessionListEntryFromSession(
+  session: SessionLifecycleListSession,
+): SessionLifecycleListEntry {
+  const entry: SessionLifecycleListEntry = {
+    id: session.id,
+    worktree_id: session.worktree_id,
+    status: session.status,
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "alias")) entry.alias = session.alias ?? null
+  if (Object.prototype.hasOwnProperty.call(session, "workspace_id")) {
+    if (session.workspace_id !== undefined) entry.workspace_id = session.workspace_id
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "created_at_ms")) {
+    if (session.created_at_ms !== undefined) entry.created_at_ms = session.created_at_ms
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "attachment_ids")) {
+    if (session.attachment_ids !== undefined) entry.attachment_ids = session.attachment_ids
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "workspace_live_sync_mode")) {
+    entry.workspace_live_sync_mode = session.workspace_live_sync_mode ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "host_machine_id")) {
+    entry.host_machine_id = session.host_machine_id ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "host_daemon_id")) {
+    entry.host_daemon_id = session.host_daemon_id ?? null
+    entry.kernel_id = session.host_daemon_id ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "last_used_at_ms")) {
+    entry.last_used_at_ms = session.last_used_at_ms ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "last_activity_at_ms")) {
+    entry.last_activity_at_ms = session.last_activity_at_ms ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "last_prompt_sent_at_ms")) {
+    entry.last_prompt_sent_at_ms = session.last_prompt_sent_at_ms ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "workspace_label")) {
+    entry.workspace_label = session.workspace_label ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "directory")) {
+    entry.directory = session.directory ?? null
+  }
+  if (Object.prototype.hasOwnProperty.call(session, "worktree_label")) {
+    entry.worktree_label = session.worktree_label ?? null
+  }
+  return entry
+}
+
+export function isCompleteSessionSnapshot(
+  session: Pick<RuntimeSession, "id"> & Partial<RuntimeSession>,
+): session is RuntimeSession {
+  return typeof session.workspace_id === "string"
+    && typeof session.worktree_id === "string"
+    && typeof session.created_at_ms === "number"
+    && typeof session.status === "string"
+    && Array.isArray(session.attachment_ids)
+    && Array.isArray(session.agents)
+    && Array.isArray(session.workflows)
+    && Array.isArray(session.workflow_runs)
+    && (Array.isArray(session.workflow_schedules) || Array.isArray(session.workflow_watchdogs))
+    && Array.isArray(session.workflow_consoles)
+    && typeof session.max_agents === "number"
+    && typeof session.config_state === "object"
+    && session.config_state !== null
+}
+
+export function resolveLaunchTargetAgent(
+  session: SessionLifecycleLaunchSession<AgentInstance>,
+): AgentInstance | null
+export function resolveLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+): TAgent | null
+export function resolveLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+): TAgent | null {
+  const focusedAgentId = sessionFocusedAgentId(session)
+  return focusedAgentId ? session.agents.find((agent) => agent.id === focusedAgentId) ?? null : null
+}
+
+function resolvePromptLaunchTargetAgent<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  targetAgentId: string | null | undefined,
+): TAgent | null {
+  const normalizedTargetAgentId = targetAgentId?.trim()
+  if (normalizedTargetAgentId) {
+    return session.agents.find((agent) => agent.id === normalizedTargetAgentId) ?? null
+  }
+  return resolveLaunchTargetAgent(session)
+}
+
+function resolveAgentLaunchSelection<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  createdSession: boolean,
+  targetAgent: TAgent | null,
+): SessionLifecycleLaunchSelection {
+  const sessionDefaults = resolveSessionAgentDefaults(session, fallback)
+  if (createdSession || !targetAgent) {
+    return sessionDefaults
+  }
+
+  return {
+    provider: targetAgent.provider && targetAgent.provider !== "default"
+      ? targetAgent.provider
+      : sessionDefaults.provider,
+    model: targetAgent.model?.trim() || sessionDefaults.model,
+    effort: targetAgent.effort?.trim() || sessionDefaults.effort,
+  }
+}
+
+export function resolveStoredAgentLaunch(
+  session: SessionLifecycleLaunchSession,
+  fallback: SessionLifecycleLaunchSelection,
+  createdSession: boolean,
+): SessionLifecycleLaunchSelection {
+  return resolveAgentLaunchSelection(session, fallback, createdSession, resolveLaunchTargetAgent(session))
+}
+
+export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleAttachLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  createdSession: boolean,
+): SessionLifecycleAttachProviderLaunchDecision<TAgent> {
+  const targetAgent = resolveLaunchTargetAgent(session)
+  const launch = resolveStoredAgentLaunch(session, fallback, createdSession)
+  if (targetAgent?.remote_execution) {
+    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
+  }
+  const providerRunId = session.active_provider_run_id?.trim()
+  if (providerRunId) {
+    return { action: "load_provider_run", providerRunId }
+  }
+
+  if (session.agents.length === 0 && !createdSession) {
+    return { action: "skip_launch", reason: "no_visible_agents", launch, targetAgent }
+  }
+  if (!targetAgent && !createdSession) {
+    return { action: "skip_launch", reason: "missing_focused_agent", launch, targetAgent }
+  }
+
+  return {
+    action: "launch_provider_run",
+    launch,
+    targetAgent,
+    targetAgentId: targetAgent?.id ?? null,
+  }
+}
+
+export function resolvePromptRecoveryProviderLaunch<TAgent extends SessionLifecycleLaunchAgent>(
+  session: SessionLifecycleLaunchSession<TAgent>,
+  fallback: SessionLifecycleLaunchSelection,
+  targetAgentId: string | null | undefined,
+): SessionLifecyclePromptRecoveryLaunchDecision<TAgent> {
+  const targetAgent = resolvePromptLaunchTargetAgent(session, targetAgentId)
+  const launch = resolveAgentLaunchSelection(session, fallback, false, targetAgent)
+  if (session.agents.length === 0) {
+    return { action: "skip_launch", reason: "no_visible_agents", launch, targetAgent: null }
+  }
+  if (!targetAgent) {
+    return { action: "skip_launch", reason: "missing_target_agent", launch, targetAgent: null }
+  }
+  if (targetAgent.remote_execution) {
+    return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }
+  }
+  return {
+    action: "launch_provider_run",
+    launch,
+    targetAgent,
+    targetAgentId: targetAgent.id,
+  }
+}
+
+export function resolveSessionAgentDefaults(
+  session: { id: string; agent_defaults?: RuntimeSession["agent_defaults"] },
+  fallback: SessionLifecycleLaunchSelection,
+): SessionLifecycleLaunchSelection {
+  const defaults = session.agent_defaults
+  return {
+    provider: defaults?.provider?.trim() && defaults.provider !== "default" ? defaults.provider : fallback.provider,
+    model: defaults?.model?.trim() || fallback.model,
+    effort: defaults?.effort?.trim() || fallback.effort,
+  }
+}
+
+// MP-08 / MP-10 / MP-11: reconnect uses the authoritative agent selection.
+export function resolveAgentLaunchAccountProfile(
+  agent: SessionLifecycleLaunchAgent | null,
+  fallback: string,
+): string {
+  return agent?.account_profile?.trim() || fallback
+}

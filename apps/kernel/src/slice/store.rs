@@ -1,0 +1,1613 @@
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use crate::error::DaemonError;
+use crate::slice_provider_auth::SliceProviderAuthSummary;
+
+use super::model::{
+    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceBackupRestoreAcknowledgementRecord,
+    SliceBackupRestoreTransactionRecord, SliceDevelopmentPublication, SliceDisplayEndpoint,
+    SliceOperationStatus, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
+    SliceSavedStateStatus, SliceStatus,
+};
+use super::ports::{self, LocalDockerSlicePorts};
+
+mod environment;
+pub(crate) use environment::{ENVIRONMENT_USE_ADMISSION_EXPIRED, SHARED_DISPLAY_READ_OPERATION};
+mod execution_reference;
+mod invariants;
+
+pub(crate) const ENVIRONMENT_USE_ADMISSION_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// A shared use that drives the slice's browser controller. Queued Room input
+/// and reads wait for these before dispatch; other uses share with them.
+const CONTROLLER_ROUTE_OPERATION: &str = "browser_controller.route";
+
+use invariants::{
+    reconcile_slice_status_after_kernel_restart, redact_slice_operation_error, validate_slice_name,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SliceHostRuntimeState {
+    Running,
+    Stopped,
+    Missing,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SliceStore {
+    inner: Arc<Mutex<SliceStoreState>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SliceAgentAttachment {
+    pub slice_ref: String,
+    pub session_id: String,
+    pub agent_id: String,
+}
+
+/// An exclusive slice operation, or (`operation: None`) one shared use of the
+/// slice by a Room action or an agent admission. Uses run concurrently (the
+/// worker serializes browser actions per tab, and leased agents are
+/// independent); exclusive operations and Room binding wait for every use.
+#[derive(Debug)]
+pub struct SliceOperationGuard {
+    store: SliceStore,
+    slice_id: String,
+    operation: Option<String>,
+    controller_route: bool,
+}
+
+pub(crate) struct SliceEnvironmentUseGuard {
+    // Retain lifecycle/input ordering after releasing queue ownership for I/O.
+    _operation: SliceOperationGuard,
+    _queue: Option<SliceEnvironmentQueueGuard>,
+}
+
+impl SliceEnvironmentUseGuard {
+    /// Admission checks have completed. Keep the use/route marker until peer
+    /// I/O settles, without retaining a fair-queue write lock over that RTT.
+    pub(crate) fn release_queue(&mut self) {
+        drop(self._queue.take());
+    }
+}
+
+#[derive(Debug, Default)]
+struct SliceEnvironmentUseQueue {
+    admission: Arc<tokio::sync::RwLock<()>>,
+    changed: tokio::sync::Notify,
+}
+
+enum SliceEnvironmentQueueGuard {
+    Write {
+        _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    },
+}
+
+impl From<SliceOperationGuard> for SliceEnvironmentUseGuard {
+    fn from(operation: SliceOperationGuard) -> Self {
+        Self {
+            _operation: operation,
+            _queue: None,
+        }
+    }
+}
+
+impl Drop for SliceOperationGuard {
+    fn drop(&mut self) {
+        let mut state = self
+            .store
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &self.operation {
+            Some(operation) => {
+                if state.active_operations.get(&self.slice_id) == Some(operation) {
+                    state.active_operations.remove(&self.slice_id);
+                }
+            }
+            None => {
+                release_use(&mut state.environment_uses, &self.slice_id);
+                if self.controller_route {
+                    release_use(&mut state.environment_route_uses, &self.slice_id);
+                }
+            }
+        }
+        if let Some(queue) = state.environment_use_queues.get(&self.slice_id) {
+            queue.changed.notify_waiters();
+        }
+    }
+}
+
+fn release_use(uses: &mut BTreeMap<String, usize>, slice_id: &str) {
+    if let Some(count) = uses.get_mut(slice_id) {
+        *count -= 1;
+        if *count == 0 {
+            uses.remove(slice_id);
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct SliceStoreState {
+    next_slice_number: u64,
+    records: BTreeMap<String, SliceRecord>,
+    saved_states: BTreeMap<String, SliceSavedStateRecord>,
+    backups: BTreeMap<String, SliceBackupRecord>,
+    pending_backup_restores: BTreeMap<String, SliceBackupRestoreTransactionRecord>,
+    pending_restore_acknowledgements: BTreeMap<String, SliceBackupRestoreAcknowledgementRecord>,
+    active_operations: BTreeMap<String, String>,
+    environment_uses: BTreeMap<String, usize>,
+    environment_route_uses: BTreeMap<String, usize>,
+    environment_use_queues: BTreeMap<String, Arc<SliceEnvironmentUseQueue>>,
+}
+
+impl SliceStore {
+    pub fn create(
+        &self,
+        owner_kernel_id: &str,
+        owner_machine_id: &str,
+        input: CreateSliceInput,
+    ) -> Result<SliceRecord, DaemonError> {
+        validate_slice_name(&input.name)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .records
+            .values()
+            .any(|record| record.name == input.name || record.id == input.name)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.create",
+                message: format!("slice `{}` already exists", input.name),
+            });
+        }
+        state.next_slice_number = state.next_slice_number.saturating_add(1);
+        let id = format!("slice-{}", state.next_slice_number);
+        let worker_kernel_ref = input
+            .worker_kernel_ref
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| match input.backend {
+                SliceBackendKind::LocalDocker => {
+                    super::worker_identity::new_local_docker_worker_ref(
+                        owner_machine_id,
+                        owner_kernel_id,
+                        &input.name,
+                    )
+                }
+                SliceBackendKind::SshDocker => format!("slice:{}", input.name),
+            });
+        let local_docker_ports = if input.backend == SliceBackendKind::LocalDocker {
+            Some(ports::allocate_local_docker_ports_for_slice(
+                &state.records,
+            )?)
+        } else {
+            None
+        };
+        let display_port = local_docker_ports
+            .map(LocalDockerSlicePorts::from_assignment)
+            .unwrap_or_else(|| LocalDockerSlicePorts::for_slice_id(&id))
+            .novnc;
+        let display_endpoint = super::display::display_endpoint_for_slice(
+            &id,
+            &input.display_mode,
+            input.display_backend,
+            display_port,
+            input.display_url,
+        );
+        let from_saved_state = input.from_saved_state.clone();
+        let record = SliceRecord {
+            source_slice_ref: input.source_slice_ref,
+            id: id.clone(),
+            name: input.name,
+            owner_kernel_id: owner_kernel_id.to_string(),
+            owner_machine_id: owner_machine_id.to_string(),
+            environment_session_id: None,
+            session_id: None,
+            session_ids: Vec::new(),
+            agent_ids: Vec::new(),
+            backend: input.backend,
+            os: input.os,
+            display_mode: input.display_mode,
+            status: SliceStatus::Stopped,
+            last_operation: Some("create".to_string()),
+            last_operation_status: Some(SliceOperationStatus::Completed),
+            last_error: None,
+            last_operation_at_ms: Some(input.now_ms),
+            workspace_id: input.workspace_id,
+            worktree_id: input.worktree_id,
+            workspace_mount: input.workspace_mount,
+            development: input.development,
+            development_storage_root: None,
+            development_publication: None,
+            worker_kernel_ref,
+            worker_kernel_id: None,
+            worker_machine_id: None,
+            relay_endpoint: None,
+            local_docker_ports,
+            providers: Vec::new(),
+            provider_auth: input.provider_auth,
+            saved_state_ref: from_saved_state.as_ref().map(|state| state.id.clone()),
+            saved_state_status: from_saved_state
+                .as_ref()
+                .map(|_| SliceSavedStateStatus::Saved),
+            saved_state_updated_at_ms: from_saved_state.as_ref().map(|state| state.updated_at_ms),
+            display_endpoint,
+            created_at_ms: input.now_ms,
+            updated_at_ms: input.now_ms,
+        };
+        if let Some(saved_state) = from_saved_state {
+            state
+                .saved_states
+                .insert(saved_state.id.clone(), saved_state);
+        }
+        state.records.insert(id, record.clone());
+        Ok(record)
+    }
+
+    pub fn list(&self) -> Vec<SliceRecord> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.records.values().cloned().collect()
+    }
+
+    pub fn restore_records(&self, records: Vec<SliceRecord>) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.records.clear();
+        state.next_slice_number = 0;
+        for record in records {
+            if let Some(number) = record
+                .id
+                .strip_prefix("slice-")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                state.next_slice_number = state.next_slice_number.max(number);
+            }
+            state.records.insert(record.id.clone(), record);
+        }
+    }
+
+    pub fn saved_state(&self, state_ref: &str) -> Result<SliceSavedStateRecord, DaemonError> {
+        let state_ref = state_ref.trim();
+        if state_ref.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.state.get",
+                message: "saved state reference must not be empty".to_string(),
+            });
+        }
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .values()
+            .find(|record| record.id == state_ref || record.slice_name == state_ref)
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.state.get",
+                message: format!("unknown saved slice state `{state_ref}`"),
+            })
+    }
+
+    pub fn active_saved_state_for_slice(
+        &self,
+        slice_ref: &str,
+    ) -> Result<Option<SliceSavedStateRecord>, DaemonError> {
+        let slice = self.resolve(slice_ref)?;
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(slice
+            .saved_state_ref
+            .as_ref()
+            .and_then(|state_ref| state.saved_states.get(state_ref))
+            .cloned())
+    }
+
+    pub fn list_saved_states(&self) -> Vec<SliceSavedStateRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .saved_states
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn list_backups(&self) -> Vec<SliceBackupRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .backups
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn list_pending_backup_restores(&self) -> Vec<SliceBackupRestoreTransactionRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_backup_restores
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn list_pending_restore_acknowledgements(
+        &self,
+    ) -> Vec<SliceBackupRestoreAcknowledgementRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub fn resolve_backup_for_slice(
+        &self,
+        slice_ref: &str,
+        backup_ref: &str,
+    ) -> Result<SliceBackupRecord, DaemonError> {
+        let slice = self.resolve(slice_ref)?;
+        let backup_ref = backup_ref.trim();
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(backup) = state
+            .backups
+            .get(backup_ref)
+            .filter(|backup| backup.source_slice_id == slice.id)
+        {
+            return Ok(backup.clone());
+        }
+        let mut matching = state
+            .backups
+            .values()
+            .filter(|backup| backup.source_slice_id == slice.id && backup.name == backup_ref);
+        let Some(backup) = matching.next().cloned() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!(
+                    "slice backup `{backup_ref}` was not found for slice `{}`",
+                    slice.name
+                ),
+            });
+        };
+        if matching.next().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!(
+                    "slice backup name `{backup_ref}` is ambiguous for slice `{}`; use its backup id",
+                    slice.name
+                ),
+            });
+        }
+        Ok(backup)
+    }
+
+    pub fn restore_saved_state_records(
+        &self,
+        states: Vec<SliceSavedStateRecord>,
+        backups: Vec<SliceBackupRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.saved_states.clear();
+        state.backups.clear();
+        for saved in states {
+            state.saved_states.insert(saved.id.clone(), saved);
+        }
+        for backup in backups {
+            state.backups.insert(backup.id.clone(), backup);
+        }
+    }
+
+    pub(crate) fn restore_pending_backup_restore_records(
+        &self,
+        records: Vec<SliceBackupRestoreTransactionRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending_backup_restores.clear();
+        for record in records {
+            state
+                .pending_backup_restores
+                .insert(record.id.clone(), record);
+        }
+    }
+
+    pub(crate) fn restore_pending_restore_acknowledgement_records(
+        &self,
+        records: Vec<SliceBackupRestoreAcknowledgementRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending_restore_acknowledgements.clear();
+        for record in records {
+            state
+                .pending_restore_acknowledgements
+                .insert(record.transaction_id.clone(), record);
+        }
+    }
+
+    pub(crate) fn replay_backup_restore_started(
+        &self,
+        transaction: SliceBackupRestoreTransactionRecord,
+    ) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_backup_restores
+            .insert(transaction.id.clone(), transaction);
+    }
+
+    pub(crate) fn begin_backup_restore_transactionally(
+        &self,
+        transaction: SliceBackupRestoreTransactionRecord,
+        persist: impl FnOnce(&SliceBackupRestoreTransactionRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceBackupRestoreTransactionRecord, DaemonError> {
+        {
+            let state = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slice_name = state
+                .records
+                .get(&transaction.source_slice_id)
+                .map(|record| record.name.as_str())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: format!(
+                        "unknown slice `{}` for backup restore `{}`",
+                        transaction.source_slice_id, transaction.id
+                    ),
+                })?;
+            if let Some(existing) =
+                pending_backup_restore_for_slice(&state, &transaction.source_slice_id)
+            {
+                return Err(unresolved_backup_restore_error(
+                    "slice.backup.restore",
+                    slice_name,
+                    &existing.id,
+                ));
+            }
+            // The broker treats an unacknowledged publication as interrupted;
+            // starting another restore would roll back a committed one.
+            if let Some(pending) = state
+                .pending_restore_acknowledgements
+                .values()
+                .find(|pending| pending.source_slice_id == transaction.source_slice_id)
+            {
+                return Err(unacknowledged_backup_restore_error(
+                    slice_name,
+                    &pending.transaction_id,
+                ));
+            }
+            if state.pending_backup_restores.contains_key(&transaction.id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.backup.restore",
+                    message: format!(
+                        "pending slice backup restore `{}` already exists",
+                        transaction.id
+                    ),
+                });
+            }
+        }
+        persist(&transaction)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .pending_backup_restores
+            .insert(transaction.id.clone(), transaction.clone());
+        Ok(transaction)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing resolve_backup_restore_transactionally operation signature and explicit context arguments"
+    )]
+    pub(crate) fn resolve_backup_restore_transactionally(
+        &self,
+        transaction_id: &str,
+        slice_ref: &str,
+        saved_state: SliceSavedStateRecord,
+        now_ms: u64,
+        resolution: super::SliceBackupRestoreResolution,
+        last_error: Option<String>,
+        persist: impl FnOnce(
+            &SliceRecord,
+            &SliceSavedStateRecord,
+            &SliceBackupRestoreAcknowledgementRecord,
+        ) -> Result<(), DaemonError>,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let transaction = state
+            .pending_backup_restores
+            .get(transaction_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("unknown pending slice backup restore `{transaction_id}`"),
+            })?;
+        if transaction.source_slice_id != resolved.id {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("pending restore `{transaction_id}` belongs to another slice"),
+            });
+        }
+        // The resolution and its owed broker acknowledgement commit together.
+        let acknowledgement = SliceBackupRestoreAcknowledgementRecord {
+            transaction_id: transaction.id.clone(),
+            source_slice_id: transaction.source_slice_id.clone(),
+            home_archive_path: match resolution {
+                super::SliceBackupRestoreResolution::Restored => {
+                    transaction.target_backup.home_archive_path.clone()
+                }
+                super::SliceBackupRestoreResolution::RolledBack => {
+                    transaction.rollback_backup.home_archive_path.clone()
+                }
+            },
+            retained_rollback_backup: (resolution
+                == super::SliceBackupRestoreResolution::RolledBack)
+                .then(|| transaction.rollback_backup.clone()),
+        };
+        let operation_status = match resolution {
+            super::SliceBackupRestoreResolution::Restored => SliceOperationStatus::Completed,
+            super::SliceBackupRestoreResolution::RolledBack => SliceOperationStatus::Failed,
+        };
+        let mut record = state.records.get(&resolved.id).cloned().ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "slice.backup.restore",
+                message: format!("unknown slice `{slice_ref}`"),
+            }
+        })?;
+        drop(state);
+        // Restore and rollback both leave the replacement container stopped.
+        // Publish that status with the resolution, including retries from an
+        // earlier Unhealthy recovery diagnostic.
+        record.status = SliceStatus::Stopped;
+        record.worker_kernel_id = None;
+        record.worker_machine_id = None;
+        record.relay_endpoint = None;
+        record.providers.clear();
+        record.saved_state_ref = Some(saved_state.id.clone());
+        record.saved_state_status = Some(SliceSavedStateStatus::Saved);
+        record.saved_state_updated_at_ms = Some(now_ms);
+        record.last_operation = Some("backup.restore".to_string());
+        record.last_operation_status = Some(operation_status);
+        record.last_error = last_error;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        persist(&record, &saved_state, &acknowledgement)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(record.id.clone(), record.clone());
+        state.pending_backup_restores.remove(transaction_id);
+        state
+            .pending_restore_acknowledgements
+            .insert(acknowledgement.transaction_id.clone(), acknowledgement);
+        Ok(record)
+    }
+
+    pub(crate) fn replay_backup_restore_resolution(
+        &self,
+        transaction_id: &str,
+        slice: SliceRecord,
+        saved_state: SliceSavedStateRecord,
+        acknowledgement: Option<SliceBackupRestoreAcknowledgementRecord>,
+    ) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(slice.id.clone(), slice);
+        state.pending_backup_restores.remove(transaction_id);
+        if let Some(acknowledgement) = acknowledgement {
+            state
+                .pending_restore_acknowledgements
+                .insert(acknowledgement.transaction_id.clone(), acknowledgement);
+        }
+    }
+
+    /// Clears an owed broker acknowledgement after `persist` records it.
+    /// Unknown ids are already acknowledged.
+    pub(crate) fn acknowledge_backup_restore_transactionally(
+        &self,
+        transaction_id: &str,
+        persist: impl FnOnce(&SliceBackupRestoreAcknowledgementRecord) -> Result<(), DaemonError>,
+    ) -> Result<(), DaemonError> {
+        let Some(acknowledgement) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .get(transaction_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        persist(&acknowledgement)?;
+        self.replay_backup_restore_acknowledged(transaction_id);
+        Ok(())
+    }
+
+    pub(crate) fn replay_backup_restore_acknowledged(&self, transaction_id: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_restore_acknowledgements
+            .remove(transaction_id);
+    }
+
+    pub(crate) fn upsert_saved_state_transactionally(
+        &self,
+        slice_ref: &str,
+        saved_state: SliceSavedStateRecord,
+        now_ms: u64,
+        persist: impl FnOnce(&SliceRecord, &SliceSavedStateRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut record = state.records.get(&resolved.id).cloned().ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "slice.state.save",
+                message: format!("unknown slice `{slice_ref}`"),
+            }
+        })?;
+        drop(state);
+        record.saved_state_ref = Some(saved_state.id.clone());
+        record.saved_state_status = Some(SliceSavedStateStatus::Saved);
+        record.saved_state_updated_at_ms = Some(now_ms);
+        record.last_operation = Some("state.save".to_string());
+        record.last_operation_status = Some(SliceOperationStatus::Completed);
+        record.last_error = None;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        persist(&record, &saved_state)?;
+
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .saved_states
+            .insert(saved_state.id.clone(), saved_state);
+        state.records.insert(record.id.clone(), record.clone());
+        Ok(record)
+    }
+
+    pub fn mark_saved_state_failed(
+        &self,
+        slice_ref: &str,
+        error: &DaemonError,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.state.save",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.saved_state_status = Some(if record.saved_state_ref.is_some() {
+            SliceSavedStateStatus::Saved
+        } else {
+            SliceSavedStateStatus::Failed
+        });
+        record.last_operation = Some("state.save".to_string());
+        record.last_operation_status = Some(SliceOperationStatus::Failed);
+        record.last_error = Some(redact_slice_operation_error(&error.to_string()));
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn reset_saved_state(
+        &self,
+        slice_ref: &str,
+        now_ms: u64,
+    ) -> Result<(SliceRecord, Option<SliceSavedStateRecord>), DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (updated_record, removed_state_ref) =
+            {
+                let record = state.records.get_mut(&resolved.id).ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "slice.state.reset",
+                        message: format!("unknown slice `{slice_ref}`"),
+                    }
+                })?;
+                let removed_state_ref = record.saved_state_ref.take();
+                record.saved_state_status = None;
+                record.saved_state_updated_at_ms = None;
+                record.last_operation = Some("state.reset".to_string());
+                record.last_operation_status = Some(SliceOperationStatus::Completed);
+                record.last_error = None;
+                record.last_operation_at_ms = Some(now_ms);
+                record.updated_at_ms = now_ms;
+                (record.clone(), removed_state_ref)
+            };
+        let removed = removed_state_ref.and_then(|state_ref| state.saved_states.remove(&state_ref));
+        Ok((updated_record, removed))
+    }
+
+    pub(crate) fn upsert_backup_transactionally(
+        &self,
+        backup: SliceBackupRecord,
+        persist: impl FnOnce(&SliceBackupRecord) -> Result<(), DaemonError>,
+    ) -> Result<SliceBackupRecord, DaemonError> {
+        persist(&backup)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.backups.insert(backup.id.clone(), backup.clone());
+        Ok(backup)
+    }
+
+    pub fn reconcile_after_kernel_restart(&self, now_ms: u64) -> Vec<SliceRecord> {
+        self.reconcile_after_kernel_restart_with_host_state(now_ms, |_| {
+            SliceHostRuntimeState::Unknown
+        })
+    }
+
+    pub fn reconcile_after_kernel_restart_with_host_state(
+        &self,
+        now_ms: u64,
+        inspect_host_runtime: impl Fn(&SliceRecord) -> SliceHostRuntimeState,
+    ) -> Vec<SliceRecord> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut changed = Vec::new();
+        let quarantined: std::collections::BTreeSet<_> = state
+            .pending_backup_restores
+            .values()
+            .map(|transaction| transaction.source_slice_id.clone())
+            .collect();
+        for record in state.records.values_mut() {
+            // Host state cannot establish that a partially restored container
+            // is usable. Preserve the recovery failure until rollback succeeds.
+            if quarantined.contains(&record.id) {
+                continue;
+            }
+            let host_runtime = inspect_host_runtime(record);
+            let was_runtime_status = matches!(
+                record.status,
+                SliceStatus::Starting
+                    | SliceStatus::Stopping
+                    | SliceStatus::Running
+                    | SliceStatus::Unhealthy
+            );
+            let mut record_changed = false;
+            let reconciled_status =
+                reconcile_slice_status_after_kernel_restart(record.status.clone(), host_runtime);
+            if record.status != reconciled_status {
+                record.status = reconciled_status;
+                record_changed = true;
+            }
+            // A running container survives a home-kernel restart. Its worker
+            // identity, provider inventory, and relay endpoint remain valid;
+            // clearing them strands the live slice until it is restarted.
+            // Only discard runtime fields when the host confirms that the
+            // container stopped or disappeared. Unknown inspection cannot
+            // revoke otherwise durable routing information.
+            let runtime_fields_are_stale = matches!(
+                host_runtime,
+                SliceHostRuntimeState::Stopped | SliceHostRuntimeState::Missing
+            ) && (was_runtime_status
+                || matches!(record.status, SliceStatus::Stopped));
+            if runtime_fields_are_stale {
+                if record.worker_kernel_id.take().is_some() {
+                    record_changed = true;
+                }
+                if record.worker_machine_id.take().is_some() {
+                    record_changed = true;
+                }
+                if record.relay_endpoint.take().is_some() {
+                    record_changed = true;
+                }
+                if !record.providers.is_empty() {
+                    record.providers.clear();
+                    record_changed = true;
+                }
+            }
+            if record_changed {
+                record.last_operation = Some("restart_reconcile".to_string());
+                record.last_operation_status = Some(SliceOperationStatus::Reconciled);
+                record.last_error = match record.status {
+                    SliceStatus::Unhealthy => Some(format!(
+                        "slice `{}` needs restart or inspection after kernel restart",
+                        record.name
+                    )),
+                    _ => None,
+                };
+                record.last_operation_at_ms = Some(now_ms);
+                record.updated_at_ms = now_ms;
+                changed.push(record.clone());
+            }
+        }
+        changed
+    }
+
+    pub fn try_begin_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        self.begin_operation(slice_ref, operation, false)
+    }
+
+    pub(super) fn begin_operation(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        environment_use: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        self.begin_operation_with_route_admission(slice_ref, operation, environment_use, false)
+    }
+
+    fn begin_operation_with_route_admission(
+        &self,
+        slice_ref: &str,
+        operation: &'static str,
+        environment_use: bool,
+        require_route_idle: bool,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        let slice_ref = slice_ref.trim();
+        if slice_ref.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.operation",
+                message: "slice reference must not be empty".to_string(),
+            });
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut matches = state
+            .records
+            .values()
+            .filter(|record| record.id == slice_ref || record.name == slice_ref)
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let slice_id = match matches.len() {
+            0 => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    message: format!("unknown slice `{slice_ref}`"),
+                });
+            }
+            1 => matches.remove(0),
+            _ => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.operation",
+                    message: format!("slice reference `{slice_ref}` is ambiguous"),
+                });
+            }
+        };
+        if let Some(pending) = pending_backup_restore_for_slice(&state, &slice_id) {
+            let record_name = state
+                .records
+                .get(&slice_id)
+                .map(|record| record.name.as_str())
+                .unwrap_or(slice_ref);
+            return Err(unresolved_backup_restore_error(
+                operation,
+                record_name,
+                &pending.id,
+            ));
+        }
+        let record_name = state
+            .records
+            .get(&slice_id)
+            .map(|record| record.name.clone())
+            .unwrap_or_else(|| slice_ref.to_string());
+        let busy = match state.active_operations.get(&slice_id) {
+            Some(existing) => Some(format!("an active `{existing}` operation")),
+            None if !environment_use && state.environment_uses.contains_key(&slice_id) => {
+                Some("an active Room or agent use".to_string())
+            }
+            None if require_route_idle && state.environment_route_uses.contains_key(&slice_id) => {
+                Some("an active browser controller route".to_string())
+            }
+            None => None,
+        };
+        if let Some(busy) = busy {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.operation",
+                message: format!("slice `{record_name}` already has {busy}"),
+            });
+        }
+        let controller_route = environment_use && operation == CONTROLLER_ROUTE_OPERATION;
+        if environment_use {
+            *state.environment_uses.entry(slice_id.clone()).or_default() += 1;
+            if controller_route {
+                *state
+                    .environment_route_uses
+                    .entry(slice_id.clone())
+                    .or_default() += 1;
+            }
+        } else {
+            state
+                .active_operations
+                .insert(slice_id.clone(), operation.to_string());
+        }
+        Ok(SliceOperationGuard {
+            store: self.clone(),
+            slice_id,
+            operation: (!environment_use).then(|| operation.to_string()),
+            controller_route,
+        })
+    }
+
+    pub fn resolve(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
+        let slice_ref = slice_ref.trim();
+        if slice_ref.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.resolve",
+                message: "slice reference must not be empty".to_string(),
+            });
+        }
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut matches = state
+            .records
+            .values()
+            .filter(|record| record.id == slice_ref || record.name == slice_ref)
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => Err(DaemonError::LocalTransport {
+                operation: "slice.resolve",
+                message: format!("unknown slice `{slice_ref}`"),
+            }),
+            1 => Ok(matches.remove(0)),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "slice.resolve",
+                message: format!("slice reference `{slice_ref}` is ambiguous"),
+            }),
+        }
+    }
+
+    pub fn set_status(
+        &self,
+        slice_ref: &str,
+        status: SliceStatus,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.status",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.status = status;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_operation_diagnostics(
+        &self,
+        slice_ref: &str,
+        operation_name: &str,
+        operation_status: SliceOperationStatus,
+        error: Option<&str>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.operation_diagnostics",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.last_operation = Some(operation_name.to_string());
+        record.last_operation_status = Some(operation_status);
+        record.last_error = error.map(redact_slice_operation_error);
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_relay_endpoint(
+        &self,
+        slice_ref: &str,
+        endpoint: Option<SliceRelayEndpoint>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.relay_endpoint",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.relay_endpoint = endpoint;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_worker_presence(
+        &self,
+        slice_ref: &str,
+        worker_kernel_id: Option<String>,
+        worker_machine_id: Option<String>,
+        providers: Vec<String>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.worker_presence",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.worker_kernel_id = worker_kernel_id;
+        record.worker_machine_id = worker_machine_id;
+        record.providers = providers;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub(crate) fn reconcile_authenticated_worker_presence(
+        &self,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        providers: &[String],
+        now_ms: u64,
+        persist: impl FnOnce(&SliceRecord) -> Result<(), DaemonError>,
+    ) -> Result<Option<SliceRecord>, DaemonError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(slice_id) = state
+            .records
+            .values()
+            .find(|record| {
+                record.backend == SliceBackendKind::LocalDocker
+                    && record.status == SliceStatus::Unhealthy
+                    && record.last_operation.as_deref() == Some("restart_reconcile")
+                    && record.last_operation_status == Some(SliceOperationStatus::Reconciled)
+                    && record.worker_kernel_id.as_deref() == Some(worker_kernel_id)
+                    && record.worker_machine_id.as_deref() == Some(worker_machine_id)
+            })
+            .map(|record| record.id.clone())
+        else {
+            return Ok(None);
+        };
+        if pending_backup_restore_for_slice(&state, &slice_id).is_some() {
+            return Ok(None);
+        }
+        let mut record = state.records.get(&slice_id).cloned().ok_or_else(|| {
+            DaemonError::InternalInvariant {
+                operation: "slice.worker_presence.reconcile",
+                message: format!("matched slice `{slice_id}` disappeared during reconciliation"),
+            }
+        })?;
+        record.status = SliceStatus::Running;
+        record.providers = providers.to_vec();
+        record.last_error = None;
+        record.last_operation_at_ms = Some(now_ms);
+        record.updated_at_ms = now_ms;
+        persist(&record)?;
+        state.records.insert(slice_id, record.clone());
+        Ok(Some(record))
+    }
+
+    pub fn claim_starting_worker_identity(
+        &self,
+        slice_ref: &str,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.worker_identity",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if record.status != SliceStatus::Starting {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.worker_identity",
+                message: format!("slice `{slice_ref}` is not starting"),
+            });
+        }
+        if let Some(existing) = record.worker_kernel_id.as_deref() {
+            if existing != worker_kernel_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.worker_identity",
+                    message: format!("slice `{slice_ref}` is already bound to another worker"),
+                });
+            }
+            return Ok(record.clone());
+        }
+        let hosted_identity = super::machine_scoped_slice_worker_ref(
+            &record.worker_kernel_ref,
+            &record.owner_machine_id,
+        );
+        if hosted_identity && worker_kernel_id != record.worker_kernel_ref {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.worker_identity",
+                message: "slice worker kernel id does not match its canonical reference".into(),
+            });
+        }
+        record.worker_kernel_id = Some(worker_kernel_id.to_string());
+        record.worker_machine_id = Some(worker_machine_id.to_string());
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_provider_auth(
+        &self,
+        slice_ref: &str,
+        provider_auth: Vec<SliceProviderAuthSummary>,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.provider_auth",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.provider_auth = provider_auth;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_development_publication(
+        &self,
+        slice_ref: &str,
+        publication: SliceDevelopmentPublication,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.development.materialize",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.workspace_mount = Some(publication.primary_repository_path.clone());
+        record.development_publication = Some(publication);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_development_storage_root(
+        &self,
+        slice_ref: &str,
+        storage_root: String,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.development.storage",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.development_storage_root = Some(storage_root);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !resolved.agent_ids.is_empty() {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.delete",
+                message: format!(
+                    "slice `{}` still has {} active agent(s)",
+                    resolved.name,
+                    resolved.agent_ids.len()
+                ),
+            });
+        }
+        state
+            .records
+            .remove(&resolved.id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.delete",
+                message: format!("unknown slice `{slice_ref}`"),
+            })
+    }
+
+    pub fn attach_session(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.attach_session",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if !record.session_ids.iter().any(|value| value == session_id) {
+            record.session_ids.push(session_id.to_string());
+        }
+        record.session_id = Some(session_id.to_string());
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn detach_session(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.detach_session",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.session_ids.retain(|value| value != session_id);
+        if record.session_id.as_deref() == Some(session_id) {
+            record.session_id = record.session_ids.last().cloned();
+        }
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn attach_agent(
+        &self,
+        slice_ref: &str,
+        session_id: &str,
+        agent_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.attach_agent",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if !record.session_ids.iter().any(|value| value == session_id) {
+            record.session_ids.push(session_id.to_string());
+        }
+        record.session_id = Some(session_id.to_string());
+        if !record.agent_ids.iter().any(|value| value == agent_id) {
+            record.agent_ids.push(agent_id.to_string());
+        }
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn attach_agents(
+        &self,
+        attachments: Vec<SliceAgentAttachment>,
+        now_ms: u64,
+    ) -> Result<Vec<SliceRecord>, DaemonError> {
+        if attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+        let resolved = attachments
+            .iter()
+            .map(|attachment| {
+                self.resolve(&attachment.slice_ref)
+                    .map(|slice| (slice.id, attachment.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (slice_id, attachment) in &resolved {
+            if !state.records.contains_key(slice_id) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.attach_agents",
+                    message: format!("unknown slice `{}`", attachment.slice_ref),
+                });
+            }
+        }
+        let mut changed_slice_ids = Vec::new();
+        for (slice_id, attachment) in resolved {
+            let record = state
+                .records
+                .get_mut(&slice_id)
+                .expect("slice existence should be preflighted");
+            if !record
+                .session_ids
+                .iter()
+                .any(|value| value == &attachment.session_id)
+            {
+                record.session_ids.push(attachment.session_id.clone());
+            }
+            record.session_id = Some(attachment.session_id);
+            if !record
+                .agent_ids
+                .iter()
+                .any(|value| value == &attachment.agent_id)
+            {
+                record.agent_ids.push(attachment.agent_id);
+            }
+            record.updated_at_ms = now_ms;
+            if !changed_slice_ids.iter().any(|value| value == &slice_id) {
+                changed_slice_ids.push(slice_id);
+            }
+        }
+        Ok(changed_slice_ids
+            .into_iter()
+            .filter_map(|slice_id| state.records.get(&slice_id).cloned())
+            .collect())
+    }
+
+    pub fn detach_agent(
+        &self,
+        slice_ref: &str,
+        agent_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.detach_agent",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.agent_ids.retain(|value| value != agent_id);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn ensure_worktree_scope(
+        &self,
+        slice_ref: &str,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> Result<SliceRecord, DaemonError> {
+        let record = self.resolve(slice_ref)?;
+        if let (Some(expected), Some(actual)) = (workspace_id, record.workspace_id.as_deref()) {
+            if expected != actual {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.scope",
+                    message: format!(
+                        "slice `{}` belongs to workspace `{actual}`, not `{expected}`",
+                        record.name
+                    ),
+                });
+            }
+        }
+        if let (Some(expected), Some(actual)) = (worktree_id, record.worktree_id.as_deref()) {
+            if expected != actual {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.scope",
+                    message: format!(
+                        "slice `{}` belongs to worktree `{actual}`, not `{expected}`",
+                        record.name
+                    ),
+                });
+            }
+        }
+        Ok(record)
+    }
+
+    pub fn list_by_session(&self, session_id: &str) -> Vec<SliceRecord> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .records
+            .values()
+            .filter(|record| {
+                record.session_id.as_deref() == Some(session_id)
+                    || record.session_ids.iter().any(|value| value == session_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn resolve_worker_kernel_ref(&self, slice_ref: &str) -> Result<String, DaemonError> {
+        let record = self.resolve(slice_ref)?;
+        Ok(record
+            .worker_kernel_id
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(record.worker_kernel_ref))
+    }
+
+    pub fn resolve_by_worker_kernel_ref(&self, kernel_ref: &str) -> Option<SliceRecord> {
+        let kernel_ref = kernel_ref.trim();
+        if kernel_ref.is_empty() {
+            return None;
+        }
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .records
+            .values()
+            .find(|record| {
+                record.worker_kernel_ref == kernel_ref
+                    || record.worker_kernel_id.as_deref() == Some(kernel_ref)
+                    || (record.worker_machine_id.as_deref() == Some(kernel_ref)
+                        && record.worker_machine_id.as_deref()
+                            != Some(record.owner_machine_id.as_str()))
+            })
+            .cloned()
+    }
+
+    pub fn display_endpoint(&self, slice_ref: &str) -> Result<SliceDisplayEndpoint, DaemonError> {
+        let record = self.resolve(slice_ref)?;
+        record
+            .display_endpoint
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "slice.display_endpoint",
+                message: format!("slice `{}` has no display endpoint", record.name),
+            })
+    }
+}
+
+fn pending_backup_restore_for_slice<'a>(
+    state: &'a SliceStoreState,
+    slice_id: &str,
+) -> Option<&'a SliceBackupRestoreTransactionRecord> {
+    state
+        .pending_backup_restores
+        .values()
+        .find(|transaction| transaction.source_slice_id == slice_id)
+}
+
+pub(crate) fn unacknowledged_backup_restore_error(
+    slice_name: &str,
+    transaction_id: &str,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message: format!(
+            "slice `{slice_name}` has committed backup restore `{transaction_id}` awaiting managed broker acknowledgement; the kernel retries it at startup and before each restore, so repair the broker and retry"
+        ),
+    }
+}
+
+fn unresolved_backup_restore_error(
+    operation: &'static str,
+    slice_name: &str,
+    transaction_id: &str,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation,
+        message: format!(
+            "slice `{slice_name}` is quarantined by unresolved backup restore `{transaction_id}`; restart the kernel to recover it before retrying"
+        ),
+    }
+}

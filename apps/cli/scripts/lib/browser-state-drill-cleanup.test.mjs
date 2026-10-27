@@ -1,0 +1,214 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { browserStateCleanupFailure, cleanupBrowserStateImages } from "./browser-state-drill-cleanup.mjs"
+
+test("browser state cleanup accepts a fully released drill", () => {
+  assert.equal(browserStateCleanupFailure({
+    dockerAvailable: true,
+    containerGone: true,
+    fixtureSidecarGone: true,
+    volumeGone: true,
+    savedImageGone: true,
+    backupImagesGone: true,
+    fixtureWorkspaceRemoved: true,
+    tempRootRemoved: true,
+    listenersReleased: true,
+    occupiedPorts: [],
+  }), null)
+})
+
+test("browser state cleanup names every leaked resource", () => {
+  const failure = browserStateCleanupFailure({
+    dockerAvailable: false,
+    containerGone: false,
+    fixtureSidecarGone: false,
+    volumeGone: false,
+    savedImageGone: false,
+    backupImagesGone: false,
+    fixtureWorkspaceRemoved: false,
+    tempRootRemoved: false,
+    listenersReleased: false,
+    occupiedPorts: [55100, 55101],
+  })
+
+  assert.match(failure?.message ?? "", /container/)
+  assert.match(failure?.message ?? "", /fixture sidecar/)
+  assert.match(failure?.message ?? "", /Docker verification/)
+  assert.match(failure?.message ?? "", /volume/)
+  assert.match(failure?.message ?? "", /saved image/)
+  assert.match(failure?.message ?? "", /backup images/)
+  assert.match(failure?.message ?? "", /fixture workspace/)
+  assert.match(failure?.message ?? "", /runtime root/)
+  assert.match(failure?.message ?? "", /ports 55100, 55101/)
+})
+
+
+test("rollback cleanup removes only the exact drill owner using its inspected immutable image ID", async () => {
+  const slice = { id: "slice-1", owner_kernel_id: "kernel-drill", owner_machine_id: "machine-drill" }
+  const ownId = "sha256:" + "a".repeat(64)
+  const labels = {
+    "io.chariox.slice.id": slice.id,
+    "io.chariox.slice.owner-kernel-id": slice.owner_kernel_id,
+    "io.chariox.slice.owner-machine-id": slice.owner_machine_id,
+  }
+  const images = new Map([
+    ["own", { Id: ownId, Config: { Labels: labels } }],
+    ["foreign", { Id: "sha256:" + "b".repeat(64), Config: { Labels: { ...labels, "io.chariox.slice.owner-kernel-id": "other-kernel" } } }],
+    ["unlabelled", { Id: "sha256:" + "c".repeat(64), Config: { Labels: null } }],
+    ["incomplete", { Id: "sha256:" + "d".repeat(64), Config: { Labels: { "io.chariox.slice.id": slice.id } } }],
+  ])
+  const inspected = []
+  const removed = []
+  const result = await cleanupBrowserStateImages({
+    imageRefs: ["own", "foreign", "unlabelled", "incomplete", "preexisting"],
+    imagesBefore: new Set(["preexisting"]), slice,
+    inspectImage: async ref => { inspected.push(ref); return images.get(ref) ?? null },
+    removeImage: async ref => { removed.push(ref) },
+  })
+  assert.deepEqual(removed, [ownId])
+  assert.deepEqual(inspected, ["own", ownId, "foreign", "unlabelled", "incomplete"])
+  assert.deepEqual(result, {
+    removedImageRefs: ["own"],
+    preservedImageRefs: ["foreign", "unlabelled", "incomplete"],
+    unresolvedImageRefs: [],
+  })
+})
+
+
+const ownSlice = { id: "slice-1", owner_kernel_id: "kernel-drill", owner_machine_id: "machine-drill" }
+const ownImageId = "sha256:" + "e".repeat(64)
+const ownLabels = {
+  "io.chariox.slice.id": ownSlice.id,
+  "io.chariox.slice.owner-kernel-id": ownSlice.owner_kernel_id,
+  "io.chariox.slice.owner-machine-id": ownSlice.owner_machine_id,
+}
+const ownImage = { Id: ownImageId, Config: { Labels: ownLabels } }
+
+for (const [key, value] of [
+  ["io.chariox.slice.id", "slice-other"],
+  ["io.chariox.slice.owner-machine-id", "machine-other"],
+]) test(`fallback cleanup preserves a foreign ${key}`, async () => {
+  const removed = []
+  const result = await cleanupBrowserStateImages({
+    imageRefs: ["foreign"], imagesBefore: new Set(), slice: ownSlice,
+    inspectImage: async () => ({ ...ownImage, Config: { Labels: { ...ownLabels, [key]: value } } }),
+    removeImage: async ref => removed.push(ref),
+  })
+  assert.deepEqual(removed, [])
+  assert.deepEqual(result.preservedImageRefs, ["foreign"])
+  assert.deepEqual(result.unresolvedImageRefs, [])
+})
+
+test("fallback cleanup never deletes without a complete drill identity", async () => {
+  for (const slice of [null, { ...ownSlice, owner_kernel_id: "" }, { ...ownSlice, owner_machine_id: null }]) {
+    const result = await cleanupBrowserStateImages({
+      imageRefs: ["candidate"], imagesBefore: new Set(), slice,
+      inspectImage: async () => assert.fail("missing drill ownership must not inspect or delete candidates"),
+      removeImage: async () => assert.fail("missing drill ownership must not delete candidates"),
+    })
+    assert.deepEqual(result.unresolvedImageRefs, ["candidate"])
+    assert.deepEqual(result.removedImageRefs, [])
+  }
+})
+
+test("fallback cleanup preserves ambiguous label values", async () => {
+  const result = await cleanupBrowserStateImages({
+    imageRefs: ["ambiguous"], imagesBefore: new Set(), slice: ownSlice,
+    inspectImage: async () => ({ ...ownImage, Config: { Labels: { ...ownLabels, "io.chariox.slice.id": [ownSlice.id] } } }),
+    removeImage: async () => assert.fail("ambiguous ownership must not delete candidates"),
+  })
+  assert.deepEqual(result.preservedImageRefs, ["ambiguous"])
+  assert.deepEqual(result.unresolvedImageRefs, [])
+})
+
+for (const mode of ["remove-failure", "still-present", "verification-failure"]) {
+  test(`owned fallback cleanup reports ${mode}`, async () => {
+    const removed = []
+    const result = await cleanupBrowserStateImages({
+      imageRefs: ["owned"], imagesBefore: new Set(), slice: ownSlice,
+      inspectImage: async ref => {
+        if (ref === ownImageId && mode === "verification-failure") throw new Error("synthetic inspection failure")
+        return ownImage
+      },
+      removeImage: async ref => {
+        removed.push(ref)
+        if (mode === "remove-failure") throw new Error("synthetic removal failure")
+      },
+    })
+    assert.deepEqual(removed, [ownImageId])
+    assert.deepEqual(result.unresolvedImageRefs, ["owned"])
+    assert.deepEqual(result.removedImageRefs, [])
+    assert.match(browserStateCleanupFailure({
+      dockerAvailable: true, containerGone: true, volumeGone: true, savedImageGone: true,
+      backupImagesGone: false, tempRootRemoved: true, listenersReleased: true,
+      rollbackImagesUnresolved: result.unresolvedImageRefs,
+    }).message, /unresolved rollback images owned/)
+  })
+}
+
+test("owned fallback images require an immutable ID and inspected candidates cannot fail silently", async () => {
+  for (const image of [{ ...ownImage, Id: "movable-tag" }, new Error("synthetic inspect failure")]) {
+    const result = await cleanupBrowserStateImages({
+      imageRefs: ["owned"], imagesBefore: new Set(), slice: ownSlice,
+      inspectImage: async () => { if (image instanceof Error) throw image; return image },
+      removeImage: async () => assert.fail("unresolved image identity must not delete candidates"),
+    })
+    assert.deepEqual(result.unresolvedImageRefs, ["owned"])
+  }
+})
+
+test("foreign fallback images do not fail cleanup and failed inventories are explicit", () => {
+  const clean = {
+    dockerAvailable: true, containerGone: true, volumeGone: true, savedImageGone: true,
+    backupImagesGone: true, tempRootRemoved: true, listenersReleased: true,
+    rollbackImagesPreserved: ["foreign"],
+  }
+  assert.equal(browserStateCleanupFailure(clean), null)
+  assert.match(browserStateCleanupFailure({ ...clean, rollbackImageInventoryFailed: true }).message, /rollback image inventory unavailable/)
+  assert.match(browserStateCleanupFailure({ ...clean, stateImageInventoryFailed: true }).message, /state image inventory unavailable/)
+})
+
+test("MP11 early cleanup preserves pre-existing Docker objects without creation ownership", async () => {
+  const { cleanupBrowserStateDockerResources } = await import("./browser-state-drill-cleanup.mjs")
+  const removed = []
+  await cleanupBrowserStateDockerResources({ containerName: "pid-reused", homeVolume: "pid-reused-home", ownership: null, inspect: async () => ({ foreign: true }), remove: async (args) => removed.push(args) })
+  assert.deepEqual(removed, [])
+})
+
+test("MP11 cleanup revalidates replacement container and volume identities", async () => {
+  const { cleanupBrowserStateDockerResources } = await import("./browser-state-drill-cleanup.mjs")
+  const removed = []
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  const ownership = { runId: "unique-run", labels, containerId: "a".repeat(64), volume: { Name: "unique-run-home", CreatedAt: "before", Driver: "local", Mountpoint: "/owned", Labels: labels } }
+  await cleanupBrowserStateDockerResources({ containerName: "unique-run", homeVolume: "unique-run-home", ownership, inspect: async (kind) => kind === "container" ? { Id: "b".repeat(64), Config: { Labels: labels } } : { ...ownership.volume, CreatedAt: "replacement" }, remove: async (args) => removed.push(args) })
+  assert.deepEqual(removed, [])
+})
+
+test("MP11 owned Docker deletion uses immutable container ID and rechecks the volume", async () => {
+  const { cleanupBrowserStateDockerResources, captureBrowserStateDockerOwnership, assertBrowserStateDockerNamesAvailable } = await import("./browser-state-drill-cleanup.mjs")
+  const slice = { id: "slice", owner_kernel_id: "kernel", owner_machine_id: "machine" }
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine", "io.chariox.slice.runtime-name": "unique-run" }
+  const container = { Id: "a".repeat(64), Config: { Labels: labels } }
+  const volume = { Name: "unique-run-home", CreatedAt: "created", Driver: "local", Mountpoint: "/owned", Labels: labels }
+  const inspected = []
+  const inspect = async (kind, name) => { inspected.push([kind, name]); return kind === "container" ? container : volume }
+  await assert.rejects(assertBrowserStateDockerNamesAvailable({ containerName: "unique-run", homeVolume: volume.Name, inspect }), /pre-existing/)
+  const ownership = await captureBrowserStateDockerOwnership({ runId: "unique-run", containerName: "unique-run", homeVolume: volume.Name, slice, inspect })
+  const removed = []
+  await cleanupBrowserStateDockerResources({ containerName: "unique-run", homeVolume: volume.Name, ownership, inspect, remove: async (args) => removed.push(args) })
+  assert.deepEqual(removed, [["rm", "-f", container.Id], ["volume", "rm", "-f", volume.Name]])
+  assert.ok(inspected.some(([kind, name]) => kind === "container" && name === container.Id))
+  assert.equal(inspected.filter(([kind]) => kind === "volume").length, 3)
+})
+
+test("MP11 capture rejects Docker resources missing the unique run name label", async () => {
+  const { captureBrowserStateDockerOwnership } = await import("./browser-state-drill-cleanup.mjs")
+  const labels = { "io.chariox.slice.id": "slice", "io.chariox.slice.owner-kernel-id": "kernel", "io.chariox.slice.owner-machine-id": "machine" }
+  await assert.rejects(captureBrowserStateDockerOwnership({
+    runId: "unique-run", containerName: "unique-run", homeVolume: "unique-run-home",
+    slice: { id: "slice", owner_kernel_id: "kernel", owner_machine_id: "machine" },
+    inspect: async kind => kind === "container" ? { Id: "a".repeat(64), Config: { Labels: labels } }
+      : { Name: "unique-run-home", CreatedAt: "created", Driver: "local", Mountpoint: "/owned", Labels: labels },
+  }), /do not match/)
+})

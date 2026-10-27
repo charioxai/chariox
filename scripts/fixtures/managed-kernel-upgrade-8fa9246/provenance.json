@@ -1,0 +1,33 @@
+{
+  "sourceCommit": "8fa9246ea60b52a988da17a28652e61475ff52cd",
+  "files": {
+    "allocation-worker-receipt.mjs": {
+      "sourcePath": "deploy/managed-kernel/allocation-worker-receipt.mjs",
+      "sha256": "4e1162b14e9ea19d1719324a5d298561d316e229a663fcc883cb2744d40a3992"
+    },
+    "check-managed-kernel-health.mjs": {
+      "sourcePath": "deploy/managed-kernel/check-managed-kernel-health.mjs",
+      "sha256": "9e1dbe8815e9ebba9ee6171b381c4f542e027cf4c6171e7f539c5555d67a6f9c"
+    },
+    "managed-kernel-builder-pin-transaction.sh": {
+      "sourcePath": "deploy/managed-kernel/managed-kernel-builder-pin-transaction.sh",
+      "sha256": "73db935cca61dd5a38450ebecf6eec07ff7d5e95b48ef98f9ed11d4ee439d84c"
+    },
+    "managed-kernel-home-migration.mjs": {
+      "sourcePath": "deploy/managed-kernel/managed-kernel-home-migration.mjs",
+      "sha256": "be9abe7308a6fece9a489ce9f1726d8089ee13ee9885934dd9b3ca577c7f7c5b"
+    },
+    "managed-kernel-upgrade-state.mjs": {
+      "sourcePath": "deploy/managed-kernel/managed-kernel-upgrade-state.mjs",
+      "sha256": "d41e71a73d1ec2ae2e2cac003aed80165b7a4ab27c76c86e9c2a6c4e55eb4612"
+    },
+    "upgrade-image.sh": {
+      "sourcePath": "deploy/managed-kernel/upgrade-image.sh",
+      "sha256": "b1afece59eb1af3af6a5c553b62d75c3af091ec25eaeddfdbfdc24d5e5dd8725"
+    },
+    "verify-image-release.mjs": {
+      "sourcePath": "deploy/managed-kernel/verify-image-release.mjs",
+      "sha256": "4521d182c9d49abc73a2d075bba8d997553d07b2b9c49bfa1a04680ca813b3ce"
+    }
+  }
+}

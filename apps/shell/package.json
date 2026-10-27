@@ -1,0 +1,19 @@
+{
+  "name": "@chariox/shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json",
+    "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run lint && pnpm run build && node --test dist/*.test.js",
+    "start": "node dist/shell.js",
+    "dev": "pnpm run build && node dist/shell.js"
+  },
+  "dependencies": {
+    "@chariox/kernel-client": "workspace:*"
+  },
+  "bin": {
+    "chariox-shell": "dist/shell.js"
+  }
+}

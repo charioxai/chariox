@@ -1,0 +1,1989 @@
+# Browser and computer use end-to-end productization plan
+
+## Status and authority
+
+This is the canonical execution and validation plan for Linear map
+[CHA-16](https://linear.app/chariox/issue/CHA-16/productize-shared-browser-and-computer-use)
+and sub-issues CHA-17 through CHA-31.
+
+It consolidates and extends:
+
+- `docs/M18_SLICE_SAVED_STATE_PLAN.md`
+- `docs/M19_USER_OWNED_SLICE_SAVE_RESTART_PLAN.md`
+- `docs/M20_DOCKER_SLICE_BROWSER_STATE_VALIDATION_PLAN.md`
+- `docs/M21_VIEW_TAB_RUNTIME_MCP_DRILLS_PLAN.md`
+- `docs/M22_VIEW_FEATURE_A_PLUS_PLAN.md`
+- `docs/AGENT_SLICE_OFFICE_WORK_DRILLS.md`
+- `docs/M28_ENVIRONMENT_CONTEXT_MATERIALIZATION_PLAN.md`
+- the current architecture and protocol contracts in `docs/ARCHITECTURE.md`
+  and `docs/PROTOCOL.md`
+
+The plan covers product UI required to use Browser and Computer capabilities,
+including the Cloud View page and TUI projections. It does not cover the
+separate OS-shell redesign prototype except where that prototype reveals a
+product requirement that must exist in the production Web terminal.
+
+The two main repositories are:
+
+- `chariox`: kernel, relay, slice runtime, browser controller, computer tools,
+  local and remote TUI clients, provider adapters, protocol, CLI drills, and
+  self-hosted behavior.
+- `chariox-cloud`: hosted control plane, waiting room, managed-machine
+  provisioning, web terminal, View UI, hosted relay bootstrap, OpenShip-based
+  staging and deployment, and browser acceptance drills.
+
+If implementation introduces another maintained repository, such as a Chariox
+fork or packaging repository for Selkies, that repository must follow the same
+isolated-PR, review, evidence, resource, and cleanup rules in this plan.
+
+## Goal
+
+Ship one Chariox-owned shared browser and computer environment per Room that is
+usable by humans and every agent in that Room.
+
+Work proceeds in four ordered phases. A later phase cannot compensate for a
+failure in an earlier one.
+
+1. Implement and prove the complete functional contract locally. Run the
+   kernel, relay, headed slices, browser controller, viewer, Web terminal,
+   local TUI, remote TUI, providers, persistence, vault, concurrency,
+   resiliency, and cleanup paths on controlled local infrastructure first.
+   Local proof includes every functional matrix row that does not inherently
+   require a remote machine. Do not use a managed-machine run to discover basic
+   product defects that a local test should have caught.
+2. Upgrade the active Chariox-managed kernel to the reviewed signed release and
+   close the client/runtime defects exposed by real remote use. Before resuming
+   Browser and Computer feature work, implement Path 1 from
+   `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`: one disposable
+   Cloud VM per isolated worker behind the provider-neutral worker contract.
+   The disposable VM is the provider isolation boundary. After enrollment, its
+   provider processes use the ordinary kernel launch path and normal
+   developer-machine filesystem behavior, without a managed-only Bubblewrap
+   namespace or workspace allowlist. Prove ordinary-kernel behavior, all three
+   official provider harnesses, selected context and credential transfer,
+   remote Git, reconnect and recovery, resource bounds, cost controls, and
+   complete provider-resource deletion. Hetzner is the first live adapter. No
+   kernel, protocol, or client behavior may depend on it. Bare-metal or
+   nested-virtualization microVM hosting is Path 2 and remains deferred until
+   Path 1 is accepted.
+3. Deploy the locally proven Browser and Computer implementation to a fresh
+   Chariox-managed machine through the in-house OpenShip stack. Repeat the
+   applicable functional,
+   security, reconnect, persistence, resiliency, Web, and TUI drills through
+   the hosted Caddy-fronted `wss://` relay. This phase proves portability,
+   deployment, hosted transport, machine lifecycle, and production topology.
+4. Start benchmarking only after the complete local and managed-machine
+   functional gates pass. Build reproducible submissions for every relevant
+   public browser-use and computer-use benchmark, compare Chariox with the
+   published leaders under equivalent conditions, profile failures, and
+   optimize without weakening correctness. Under the owner decision of
+   2026-10-02 (MP-08 / MP-10, WP-12), round 1 requires one complete, valid,
+   passing run on every included public benchmark, regardless of ranking.
+   Round 2 pursues verified first place under comparable conditions. Neither
+   round blocks closure or merge of Browser, Computer, or Path-1 work
+   (MP-01 through MP-11). When a benchmark tests a claimed Chariox capability,
+   include it unless its rules make a fair submission impossible; record and
+   justify any exclusion.
+
+The complete local flow must prove that one Room agent launches through the
+normal kernel and provider adapter path, drives the exact browser shown in the
+Web View, and remains observable and controllable from local and remote TUI
+clients. Human takeover must not create a second browser session. Save and
+restart must preserve the browser profile, installed programs, desktop state,
+provider thread, and idle agents through a full container destroy and recreate.
+Vault-backed credentials stay out of tool arguments, logs, traces and terminal
+transcripts. MP-08/MP-11 visual protection follows Miguel's fill-target decision
+of 2026-10-09: record the exact field when the kernel fills from the Vault;
+mask its rendered box with small device-pixel padding only while it is a plain
+text field. Password fields already render dots and receive no mask. Recheck
+type on every capture, including show-password toggles. Browser identity is
+frame + backend node + document/generation; native identity is window + AT-SPI
+object path. Retire tracking when the document/generation changes, the element
+is removed, or its value is cleared/replaced by the user. No text-echo,
+container/order/bidi/budget, iframe or media masking remains.
+Client disconnect and reconnect must not duplicate provider runs or split Room
+state. Every drill must remove everything it created.
+
+## Project environment setup and readiness
+
+Status: the kernel-owned setup contract is being implemented. Local focused
+proof comes before the real worker and remote deployment gates.
+
+A selected Project becomes build-ready only through a kernel-owned setup
+operation on its target environment. The home kernel remains the authority for
+the Project, operation identity, progress, cancellation, retry, and readiness.
+The target worker performs the environment work. A local worker and a
+disposable Cloud VM are two placements of this same contract, not two setup
+implementations.
+
+The operation has these observable phases and terminal outcomes:
+
+| Phase | Kernel-owned meaning |
+| --- | --- |
+| `requested` | A durable setup attempt and target binding exist. |
+| `preparing` | The target is applying or generating the repeatable definition. |
+| `validating` | Required commands are executing inside the target worker. |
+| `ready` | Definition application and target validation both succeeded. |
+| `failed` | Setup or validation stopped with a bounded, actionable failure. |
+| `cancelled` | The caller cancelled the attempt and the target reached a settled state. |
+
+Every attempt exposes a stable operation and attempt identity, definition and
+target digests, bounded progress, timestamps, and safe failure details through
+the shared kernel contract. Web, TUI, and Cloud may project that state and
+request cancel or retry, but they do not infer it from connectivity or maintain
+a second setup authority. Reconnect must recover the same attempt. Retry must
+be idempotent and produce a new attempt without silently declaring the old one
+ready.
+
+An existing Project environment definition is a repeatable, target-platform
+bound recipe. The kernel reuses or recreates that recipe on the target and then
+validates it there. A user-authored Dockerfile, devcontainer, or setup script is
+an explicit Project input referenced by the definition. It is not the same as
+automatic setup, and its digest and execution result remain part of the
+kernel-owned record. With no definition, an ordinary utility agent on the
+official provider path may inspect the target, install packages, compilers,
+system tools, and native dependencies, and persist the resulting repeatable
+definition before validation. This path uses no provider SDK or credential
+store.
+
+Package caches and prebuilds are optional accelerators keyed by the target
+platform and definition or image identity. A cache hit never substitutes for
+validation in the actual target worker. Host-tool or Mac-binary copying is
+never a provisioning mechanism. The target installs or builds its own tools.
+`ready` requires successful bounded validation commands in that worker, such as
+the Rust, Cargo, and native-dependency checks and a bounded build of the
+transferred Chariox repository. Kernel, relay, or provider connectivity alone
+cannot set the flag.
+
+The local red-green contract tests must cover both definition branches, each
+observable phase, failure, cancellation, retry, reconnect, cache invalidation,
+and the negative case where the worker is connected but validation has not
+passed. The real-worker gate remains open until a pinned target image is
+deployed through the reviewed Cloud path, the same definition and utility-agent
+paths run inside a disposable VM, the transferred repository passes its bounded
+Rust, Cargo, and native-dependency build, and cleanup succeeds. Local tests do
+not close those deployment and live-validation steps.
+
+## Managed and ordinary kernel parity
+
+Status: open. Do not mark this work complete until every ledger item below has
+reviewed source proof and fresh-machine Path-1 evidence. For this plan, a
+provider-level destructive rebuild of the existing Hetzner allocation may
+serve as fresh-machine evidence only when the rebuild and residue checks in the
+locked reuse decision below pass.
+
+The decisions in this section are the user's locked product requirements and
+must survive handoffs, resumed turns, delegation, review, and deployment. They
+are not provisional research conclusions and cannot be deferred as follow-up
+work while Path 1 or the overall program is declared complete.
+
+A kernel on a Chariox-managed machine must expose the same user-visible runtime
+behavior as an ordinary kernel. The only intended differences are how Chariox
+deploys the kernel and its mandatory automatic shutdown policy, including every
+configured trigger and the idle delay measured from the last agent finishing.
+Parity work must preserve and test that managed-machine shutdown behavior.
+Managed placement must not create a second workspace, session, provider,
+terminal, file, Git, or reconnect model.
+
+### Managed-parity implementation ledger
+
+This ledger is part of the completion gate, not background context. Keep an
+item open until its exact reviewed head has focused tests and live evidence on
+a fresh Path-1 machine or the approved fresh-equivalent rebuilt Hetzner
+allocation. A source-only implementation or a manual observation does not
+close a box.
+
+This ledger is also the continuity source of truth. At the start of every
+resumed implementation cycle and in every plan-level progress report, reconcile
+current code, delegated work, reviews, and retained evidence against each open
+item below. Do not omit, weaken, or silently treat an item as complete because
+the active work moved to another milestone or because one reported symptom was
+fixed.
+
+Only an explicit user decision may change a locked requirement in this section.
+Record that decision as a dated plan amendment before implementation changes
+course. An implementation shortcut, reviewer suggestion, deployment limitation,
+or missing live reproduction cannot redefine the requirement or remove it from
+the completion gate.
+
+Every delegated prompt, implementation PR, exact-head review, progress report,
+and retained evidence record that touches Path 1 must name the applicable
+`MP-*` identifiers below. An item closes only when its implementation, focused
+tests, independent exact-head review, fresh-machine comparison, and cleanup
+evidence all agree. A passing source test, one successful manual session, or the
+absence of another user report cannot close an item.
+
+- [ ] `MP-01` Remove Bubblewrap and any equivalent inherited systemd filesystem
+  or process restriction from the Path-1 provider launch. Prove the provider
+  has no Bubblewrap ancestor or managed-isolation marker. Do not close this
+  item by bypassing Bubblewrap in one caller while another Path-1 launch,
+  retry, restore, reconnect, or provider branch can still select it.
+- [ ] `MP-02` Make directory discovery, exact-path entry, session creation, and
+  provider execution match an ordinary Linux kernel for every path allowed by
+  the worker user's Unix permissions. Cover `/home`, `/tmp`, nested paths,
+  newly created directories, and repositories created after enrollment.
+- [ ] `MP-03` Protect only the exact managed control files and dedicated
+  service-state directories that require protection. A protected file must not
+  make its parent or an unrelated sibling unavailable as a workspace.
+- [ ] `MP-04` Run the managed service account with `HOME=/home/chariox` and
+  `CHARIOX_HOME=/home/chariox/.chariox`. Keep repositories, user state, and
+  mutable kernel state out of root-owned release directories.
+- [ ] `MP-05` Materialize a copied repository at
+  `/home/chariox/<source-repository-basename>` by default, preserve the source
+  basename, and fail safely on a collision.
+- [ ] `MP-06` Let the user choose a different absolute trusted repository root
+  when creating the managed machine. Persist one authoritative value through
+  the Cloud API, provisioning, bootstrap, kernel receipt, child-worker
+  creation, and Web projections. A child worker inherits it and cannot accept
+  a second browser-supplied override.
+- [ ] `MP-07` Install and upgrade managed kernels as signed, immutable,
+  content-addressed native releases under
+  `/usr/lib/chariox/releases/<digest>`, activated through
+  `/usr/local/bin/chariox-kernel`. Prove atomic activation, rollback, and
+  crash-safe migration without moving or replacing `~/.chariox`. Treat this
+  as the production install contract for managed machines. Do not replace it
+  with a source checkout, `pnpm` installation, or mutable release directory.
+  On a Cloud-managed machine the release change is Cloud-coordinated; see
+  the locked decisions for 2026-09-30.
+- [ ] `MP-08` Keep the ordinary kernel protocol, provider adapters, state model,
+  history, reconnect behavior, Project setup behavior, and clients unchanged
+  by managed placement. Record and close every difference found by the parity
+  audit rather than waiting for users to find them one at a time.
+- [ ] `MP-09` Preserve and test every managed-machine automatic shutdown
+  trigger, including the delay measured from the last agent finishing.
+  Shutdown is the required managed lifecycle difference and must not be
+  removed in the name of parity.
+- [ ] `MP-10` Pass the executable ordinary-versus-managed comparison matrix and
+  the full fresh-machine Path-1 acceptance drill. Record exact commits,
+  commands, results, resource samples, cleanup, and retained evidence before
+  marking any ledger item complete.
+- [ ] `MP-11` Maintain a code-level inventory of every managed-only branch,
+  environment variable, service restriction, path filter, error mapping, and
+  client projection. Remove each behavior difference or prove that it belongs
+  to the two allowed exceptions: signed release deployment or mandatory
+  automatic shutdown. The audit must find inconsistencies proactively rather
+  than wait for users to report them.
+
+### MP-09 / MP-11 provisional outage decision for 2026-10-01
+
+The coordinator/user authorized a bounded quiescence-acknowledgement outage
+policy for release D. Once the idle/auto-stop deadline has passed, Cloud requests
+its ordinary non-destructive STOP after 60 minutes without a kernel quiescence
+acknowledgement when heartbeats are stale. The cutoff uses the durable reservation
+creation/deadline and latest busy acknowledgement; restarting Cloud does not renew
+it. The STOP transaction rechecks policy, minimum runtime, deadline, activity,
+account, machine, current generation/kernel binding, fresh heartbeats, and pending
+operations. Fresh activity or a keep-running decision cancels the obsolete
+reservation. Silence never establishes a kernel admission fence.
+
+The normal operation queue, idempotency, provider stop, and retry machinery remain
+the authority. The audit records the missing acknowledgement; after successful
+STOP the existing machine summary shows `stopped without kernel acknowledgement`.
+STOP preserves disk, context, and user state. This is the mandatory-shutdown
+exception, not a new runtime exception. The owner may amend this provisional
+policy. MP-09/MP-10/MP-11 remain open pending independent aggregate review and live
+provider-stop/user-state persistence evidence on the signed fresh-machine release.
+
+### Locked clarification record for 2026-09-20
+
+This record is a handoff checkpoint. Every resumed turn, delegated Path-1 task,
+progress report, and completion review must reconcile its work against these
+decisions and the `MP-*` ledger above:
+
+- The disposable VM is the Path-1 isolation boundary. Path-1 provider
+  processes must not run under Bubblewrap or inherit an equivalent managed-only
+  systemd sandbox. Bubblewrap may remain only for a different, explicitly
+  documented topology such as an inner slice or legacy shared host.
+- Managed machines run the ordinary kernel build. Chariox installs that build
+  as a signed native release under `/usr/lib/chariox/releases/<digest>` and
+  activates it through `/usr/local/bin/chariox-kernel`. This is the production
+  installation design, not a managed-kernel fork. `pnpm` is not the managed
+  production installer.
+- Release installation and mutable-state transfer are separate operations.
+  User-owned kernel state uses `HOME=/home/chariox` and
+  `CHARIOX_HOME=/home/chariox/.chariox`. No release activation may move, hide,
+  or replace that state.
+- A copied repository defaults to
+  `/home/chariox/<source-repository-basename>`. The source basename is
+  preserved. The user may choose another absolute trusted repository root when
+  creating the machine. That choice is one server-authoritative setting, not a
+  per-session client override.
+- Repository placement does not define the workspace boundary. A managed user
+  may create or select any working directory allowed by normal Unix
+  permissions, including `/home`, `/tmp`, nested paths, and repositories made
+  after enrollment. Protect exact control files without blocking their parents
+  or unrelated siblings.
+- Managed deployment and atomic release activation are allowed to differ from
+  an ordinary installation. Mandatory managed-machine shutdown is the other
+  allowed difference. Preserve every shutdown trigger, including the idle
+  delay measured from the last agent finishing.
+- Resource decisions use current measurements. Keep disk, memory, CPU, process
+  health, and build growth within recoverable bounds, but do not stop a healthy
+  bounded build because of an arbitrary fixed threshold. Fast critical-path
+  progress remains the default. A large Rust compile or linker output is not by
+  itself a reason to stop. Stop or redirect work only when current free space,
+  memory pressure, process health, or measured growth shows a concrete risk.
+- Path 1 and the overall goal remain open until `MP-01` through `MP-11` have
+  reviewed implementation, focused tests, fresh-machine comparison evidence,
+  and verified cleanup.
+
+### Locked follow-up record for 2026-09-21
+
+These clarifications answer questions raised during implementation and are
+part of the same completion gate:
+
+- Bubblewrap is not the Path-1 security boundary. The disposable VM is. It is
+  not enough to add an ordinary-launch option while leaving a managed flag,
+  restore path, provider retry, or service unit able to put a Path-1 provider
+  back inside Bubblewrap or an equivalent inherited sandbox. The source
+  inventory and fresh-machine process-ancestry evidence must cover every
+  Path-1 launch branch.
+- The signed native release under `/usr/lib/chariox/releases/<digest>`, with a
+  stable `/usr/local/bin/chariox-kernel` activation point, is the intended
+  production installation method for managed machines. The release must bind
+  the reviewed kernel artifact to a verified digest and support atomic switch
+  and rollback. Mutable user state remains in `/home/chariox/.chariox` and is
+  transferred independently. A package-manager install is not required on the
+  worker and must not become a second runtime or state model.
+- The default copied-repository path is exactly
+  `/home/chariox/<source-repository-basename>`; it does not contain an extra
+  `/repos` component and it must preserve the source repository's basename.
+  The optional machine-creation setting changes the trusted repository root,
+  not the repository name and not the set of directories that may be used as
+  workspaces.
+- Repository placement and workspace permission are separate contracts. After
+  enrollment, a managed kernel must accept every exact path, directory,
+  repository, tool installation, and filesystem operation that the same
+  ordinary Linux user could use under normal Unix permissions. In particular,
+  failure to enumerate `/home` children must not make `/home` itself invalid,
+  and no managed flag, service unit, retry, restore, or child-worker branch may
+  silently reintroduce an allowlist.
+- Development remains speed-first. Resource protection exists to prevent an
+  actual disk, memory, CPU, process, or stability failure, not to enforce an
+  arbitrary build-size budget. Prefer measured monitoring, reuse, bounded job
+  counts, and cleanup of disposable outputs while allowing healthy critical-
+  path builds and validations to finish.
+- The two allowed managed-versus-ordinary differences remain exactly signed
+  deployment and atomic activation, plus mandatory managed-machine automatic
+  shutdown. Every other managed-only branch is presumed to be a parity defect
+  until the `MP-11` inventory proves otherwise.
+- `MP-11` is a proactive source and configuration audit, not a list of bugs
+  already observed in the UI. It must inspect Rust, JavaScript/TypeScript,
+  Swift, shell, service units, container/image definitions, AppArmor or other
+  host policy, every managed-selector environment-variable family, and every
+  client projection. A managed-only branch that is not one of the two allowed
+  differences keeps the ledger and overall goal open even when no user has yet
+  reproduced it manually.
+
+### Locked Hetzner reuse decision for 2026-09-21
+
+The current paid Hetzner server allocation may be reused for the Path-1
+acceptance campaign instead of allocating another server. Reuse means a
+provider-supported destructive rebuild or reimage from the approved clean base
+image. Removing or replacing only `chariox-kernel`, its active release, or its
+service unit is not sufficient and cannot count as fresh-machine evidence.
+
+The cutover authority is the reviewed kernel running locally. After the exact
+aggregate release is ready, start that kernel locally with explicit state
+outside the repository. Use its normal Cloud/provider path to rebuild and
+provision the current Hetzner allocation. After the rebuilt host enrolls with
+the same reviewed release, continue work through the new remote kernel. Do not
+make the old remote kernel responsible for rebuilding or authorizing its own
+replacement.
+
+Before the rebuild, finish or intentionally stop every useful agent turn and
+retain the evidence needed from the old installation. The rebuild must retire
+the old kernel processes, releases, systemd units, Bubblewrap processes,
+`/var/lib/chariox` service state, `/home/chariox` contents, machine identity,
+enrollment, relay target, runtime-machine identity, and stale Cloud control
+rows. Do not restore those paths wholesale onto the rebuilt host. User-state
+transfer, persistence, and recreation are separate acceptance drills and must
+use their reviewed product paths.
+
+The old worker state is disposable for this cutover. Preserve source commits,
+PRs, retained validation evidence, and any credential/context material that the
+normal reviewed provisioning path already transfers. Preserve conversations or
+agent continuity only when the existing kernel and relay protocol does so
+without new compatibility or migration work. Do not delay the Path-1 rebuild
+to add backward compatibility, ad hoc state copying, or a special conversation
+restore path. Full persistence and recreation validation remains a later
+program gate, not a prerequisite for starting the rebuilt Path-1 campaign.
+
+The rebuilt server counts as fresh-equivalent only when retained evidence
+binds the provider rebuild request and completion, server resource identity,
+approved image identity, new boot and machine identity, new Cloud enrollment,
+new relay registration, exact signed release digest and source commit, absence
+of old services/processes/state/heartbeats, and residue-free retirement of the
+old runtime identity. The ordinary-versus-managed matrix, `MP-01` through
+`MP-11`, every shutdown trigger, cleanup, Browser/Computer, Web/TUI, and soak
+gates then run against that rebuilt installation exactly as they would on a
+newly allocated server.
+
+### Locked Path-1 decisions
+
+These decisions are requirements. Do not reopen them during implementation or
+replace them with a managed-only approximation:
+
+- The complete managed-versus-ordinary parity exemption list is exactly:
+  managed deployment and atomic release activation, plus the mandatory
+  managed-machine automatic-shutdown lifecycle. Provisioning provenance,
+  machine ownership, or a `managed` flag must not select different kernel,
+  provider, workspace, filesystem, session, reconnect, history, permission,
+  terminal, Git, Project setup, or client behavior after enrollment.
+- Path 1 uses the disposable VM as its isolation boundary. Provider processes
+  must not run inside Bubblewrap or inherit an equivalent managed systemd
+  filesystem or process sandbox.
+- The managed kernel is the ordinary kernel build. Chariox installs it as a
+  signed, target-native, content-addressed release with atomic activation and
+  rollback. This is the production installation design for managed machines,
+  not a development shortcut and not a separate managed runtime.
+- A package-manager command such as `pnpm` is not the production installation
+  contract for a managed machine. Binary installation and mutable state
+  materialization are separate transactions: the former activates the signed
+  root-owned release; the latter transfers only kernel-authorized context into
+  the ordinary user-owned `/home/chariox/.chariox` layout. Neither transaction
+  may create a second managed-only state model.
+- Mutable kernel state remains in `/home/chariox/.chariox`. Root-owned release
+  directories contain immutable binaries only.
+- Copied repositories default to `/home/chariox/<source-repository-basename>`.
+  A user may select another absolute trusted repository root when creating the
+  managed machine. Workers inherit that server-side setting and clients cannot
+  override it per worker or session.
+- A managed user can select every working directory allowed by normal Unix
+  permissions, including `/home`, `/tmp`, newly created directories, and
+  repositories created after enrollment. Exact managed control files remain
+  protected without blocking their parent directory or unrelated siblings.
+- Automatic shutdown remains mandatory for managed machines. This includes
+  minimum runtime, disabled and keep-running modes, restart reconciliation,
+  and the idle deadline measured from the last agent finishing.
+- Development is speed-first within measured resource safety. Monitor disk,
+  memory, CPU, process health, and build growth on local and managed machines.
+  Reclaim disposable artifacts and stop unhealthy or unbounded work, but do
+  not interrupt a bounded build or validation because it crosses an arbitrary
+  fixed threshold. Fast critical-path progress takes precedence over
+  conservative guardrails unless current measurements show a concrete
+  exhaustion, corruption, or stability risk. Record that measurement and risk
+  whenever resource pressure changes the implementation plan.
+
+For Path 1, the disposable worker VM is the provider security and filesystem
+isolation boundary. Once the signed kernel has enrolled, provider runs must use
+the same ordinary kernel launch path as a user-managed machine. Path-1 service
+units and bootstrap must not set `CHARIOX_MANAGED_PROVIDER_ISOLATION`, invoke
+`/usr/bin/bwrap`, require a Bubblewrap acceptance probe, or project a
+managed-only filesystem allowlist. A provider may use any working directory and
+filesystem operation permitted to the worker's ordinary user by normal Unix
+permissions. This includes repositories and user-created directories outside
+the initial transferred repository. This is the required product behavior for
+a disposable developer machine.
+
+The provider must not inherit a managed systemd sandbox that recreates the same
+restriction without Bubblewrap. Path-1 units must remove or isolate away
+`ProtectSystem`, `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`,
+`RestrictSUIDSGID`, `RestrictAddressFamilies`, `ReadWritePaths`, `UMask`, and
+equivalent controls whenever they would make the provider differ from an
+ordinary kernel launched as the same worker user. If the kernel supervisor
+still needs those controls, it must launch providers through a separate
+ordinary worker scope or service principal instead of passing the restrictions
+to provider descendants. Acceptance compares provider mount visibility,
+`/tmp`, writable paths, process privilege flags, network access, umask, and
+permitted tool or package installation against the ordinary-kernel control.
+
+Bubblewrap may remain only where it protects a genuinely different topology,
+such as an inner Docker-slice boundary or an explicitly documented legacy
+shared-host mode. That code must not be selected merely because Chariox
+provisioned the worker, and it cannot count as evidence that Path-1 parity has
+passed. Path-1 acceptance evidence must prove that the launched provider
+process has no Bubblewrap ancestor, no managed-isolation marker, and no path
+behavior that differs from an ordinary kernel running the same reviewed build.
+
+Removing Bubblewrap from Path 1 does not expose Chariox infrastructure secrets.
+Immutable signed releases remain root-owned under
+`/usr/lib/chariox/releases/<digest>`. Bootstrap envelopes, release verification,
+broker state, relay credentials, and other managed control data remain in
+root-owned service locations under `/var/lib/chariox` or another dedicated
+service root. Provider environment variables and arguments must not inherit
+that data. Provider-account credentials still use the normal kernel-owned
+selection and materialization path. These service boundaries, host resource
+limits, provider-resource deletion, and every managed automatic-shutdown
+trigger remain mandatory. None justify a fork in provider filesystem
+semantics.
+
+Parity work is an explicit audit, not a bug-by-bug reaction to manual reports.
+Before the managed-machine gate can pass, maintain one executable comparison
+matrix covering both an ordinary Linux kernel and the same reviewed build on a
+fresh managed Linux machine. Every row needs an automated test or drill and
+must compare result data, errors, persistence, and reconnect behavior:
+
+- directory discovery, exact-path entry, directory creation, and arbitrary
+  accessible working-directory selection, including `/home` and nested paths
+- empty workspace creation, copied repository materialization, worktree
+  placement, repository basename preservation, and basename collisions
+- session and agent creation, official provider launch, terminal, file, Git,
+  attachment, permission, capability, and Project environment setup behavior
+- local and relay reconnect, orphan recovery, kernel restart, provider restart,
+  durable history, queued prompts, and active-turn state
+- filesystem permissions, control-file protection, resource limits, error
+  shapes, protocol versions, and cleanup
+- provider process ancestry, environment, network, and arbitrary-path behavior,
+  proving that a Path-1 worker uses the ordinary launch path with no Bubblewrap
+  or managed filesystem allowlist
+- provider mount namespace and inherited process restrictions, proving that
+  systemd hardening on the supervisor does not alter the provider's
+  ordinary-user behavior
+
+Directory discovery must return an exact accessible directory even when the
+kernel cannot enumerate its children. A denied child listing may suppress
+completion candidates, but it must not reject the exact path or prevent the
+user from attempting a session there. Session launch then applies the same real
+filesystem access checks used by an ordinary kernel.
+
+Managed service state and user workspaces must use separate namespaces.
+Chariox may keep bootstrap files, receipts, credentials, logs, and other
+control state under `/var/lib/chariox`, but those paths must not become the
+user-facing repository or workspace root. The managed service account uses
+`HOME=/home/chariox` and `CHARIOX_HOME=/home/chariox/.chariox`, matching the
+ordinary kernel's `~/.chariox` layout. Copied repositories default to:
+
+```text
+/home/chariox/<source-repository-basename>
+```
+
+The final component must preserve the source repository basename after the
+minimum safety validation needed for one path component. Chariox must fail
+closed on a collision instead of overwriting or silently renaming an existing
+repository. The machine-creation UI and API must let the user select a different
+absolute trusted repository root. The default remains `/home/chariox`. The
+selected value must flow through managed provisioning and kernel bootstrap as
+one authoritative setting. Clients must not infer or invent it. If this setting
+changes a serialized contract, follow the protocol change rule in this plan.
+
+Managed installation may use the reviewed signed-image mechanism instead of a
+user package-manager command. Installation and upgrades must publish immutable,
+content-addressed kernel releases independently from mutable kernel state. A
+release activation must not move, rewrite, or hide `~/.chariox`, repositories,
+or other user files. A disposable worker receives only the kernel-authorized
+selected context, credentials, and lease state required by its role. It must
+not gain a second managed-only state model.
+
+This signed native-release layout is the production installation model for
+Chariox-managed machines, not a development shortcut or a managed-kernel fork.
+The image or bootstrap installs a target-native, signature-verified release in
+`/usr/lib/chariox/releases/<digest>` and activates it through the stable
+`/usr/local/bin/chariox-kernel` entry point. This is a normal production design
+for managed software because it provides verified, atomic activation and
+rollback while separating root-owned binaries from user-owned state. Release
+ownership, atomic activation, rollback, and managed deployment receipts may
+differ from a user install performed with a package manager. The running
+kernel, protocol, provider adapters, user home, and mutable `~/.chariox` state
+must remain the same reviewed product behavior as an ordinary kernel. State
+transfer copies only the selected kernel-authorized context into that normal
+state layout. It must never place user state inside a release directory.
+
+Protected managed state must be expressed as exact control files or dedicated
+state directories. A control file must never make its shared parent, such as
+`/var/lib/chariox`, unavailable when that parent also contains a legitimate
+user-selected directory. Add regressions for exact-file protection, sibling
+workspace access, `/home` discovery, custom repository roots, source-basename
+preservation, collision failure, and ordinary-versus-managed result parity.
+The managed-machine drill separately proves every automatic shutdown trigger,
+including the last-agent-finished idle timer, without treating shutdown as a
+parity defect.
+
+### Locked decisions for 2026-09-30
+
+These decisions were confirmed by the user and join the same completion gate:
+
+- The Path-1 worker user has full rights on its VM. `chariox` has passwordless
+  `sudo` through a root-owned sudoers drop-in that Path-1 image preparation
+  writes and the image verifier checks. Agents may install system packages,
+  run services, and change system configuration, as on Cursor Cloud Agents or
+  Ona environments. The disposable single-tenant VM remains the isolation
+  boundary. The shared-host topology is unchanged.
+- Because agents are effectively root, nothing on a Path-1 VM may grant
+  authority beyond its owner's own machine and account. Machine and relay
+  credentials are scoped to that machine. Bootstrap tokens are single-use and
+  consumed. No platform-wide secret, operator credential, or other user's
+  credential is present, and the instance metadata service exposes nothing
+  reusable. Automatic shutdown, billing, and deletion stay enforced from Cloud
+  through the provider API, outside the VM. `MP-11` audits this and `MP-10`
+  records it.
+- A kernel update on a Cloud-managed machine is Cloud-coordinated and in
+  place. Cloud accepts the new signed release for that environment and updates
+  its authoritative release record and the retained bootstrap binding. The
+  machine then activates the release with the signed upgrade transaction:
+  crash-safe recovery, automatic rollback, and no change to `~/.chariox`.
+  Reimage is not the update path, because it replaces the root disk that holds
+  user state. An in-place upgrade that Cloud did not authorize must keep
+  failing closed.
+- The `MP-10` comparison matrix includes `sudo -n true` and an agent-run system
+  package install (`apt-get install`) on a fresh machine, alongside
+  user-level installs.
+
+### MP-08/MP-11 slice-engine decision for 2026-10-01
+
+The coordinator selected one explicit slice-engine contract: ordinary and managed
+image/extension builds target the Docker engine that runs the slice. Ordinary
+placement uses its configured Docker endpoint (normally the caller's); managed
+placement uses the protected rootless socket consumed by the broker. Caller
+buildx builder/host and shell startup overrides cannot redirect image production.
+Ignored override names receive a diagnostic without their values. This decision
+does not weaken the managed socket boundary or close MP-08/MP-10/MP-11 acceptance.
+
+## Locked decisions for 2026-10-01: Project environment layer
+
+These owner-locked decisions extend M28 and the MP-08 parity contract. MP-10
+acceptance and MP-11 source inventory remain open until exact-head evidence and
+review establish the complete behavior, including local slices and managed machines.
+
+1. Source kernel = any kernel holding the Project (laptop, server, or
+   Chariox-managed). A managed kernel can seed another managed machine. There
+   is no "local kernel" concept.
+2. Once per Project, a utility agent on the official provider path inspects the
+   Project and produces a kernel-owned **Project environment manifest**: every
+   environment variable, secret and config file the Project needs (name, secret
+   classification defaulting to secret when unsure, usage evidence file/line,
+   value locator on the source such as git-ignored env file + key, direnv
+   `.envrc`, shell profile/login environment for that workspace, or Vault entry,
+   and status found/missing/problem), plus toolchain/package/service hints. The
+   manifest never contains secret values.
+3. The agent identifies names and locators; the kernel's deterministic resolver
+   reads values. Secret values go directly into the Vault (target-sealed on
+   transfer) and never pass through the model, Cloud or relay plaintext.
+   Non-secret values and allowed config files travel with the M28 development
+   layer and are materialized at the same relative paths (mode 0600) and
+   injected into provider launches, terminals and setup/validation for that
+   Project. Local slices and managed machines use the same layer (MP-08 parity).
+4. Missing or problematic entries are reported once as a kernel
+   RuntimeInteraction projected to TUI and Web, naming each variable and where
+   it is used; values the user supplies are stored in the Vault and reused for
+   every later export.
+5. The manifest is stored with the Project and bound to an evidence digest
+   (lockfiles, env examples, config schemas, code-reference index). Every export
+   first brings the source kernel's manifest up to date: with an unchanged
+   digest it is reused with no agent run; with a changed digest an incremental
+   agent pass covers only the differences and the user is asked only about new
+   missing entries. Values are re-resolved from their locators by the kernel
+   at every export, so the transferred values are current.
+6. There is no ongoing synchronization between kernels. After export, each
+   kernel's copy of the Project and its manifest evolve independently and may
+   drift; the user may evolve the Project differently on different machines.
+   A later export from any kernel (including a managed one to a new machine)
+   uses that kernel's own refreshed manifest.
+7. Values are captured only for names the Project references; never printed or
+   logged; removed from a machine when it is deleted; every transfer and sync
+   is auditable. This audit requirement does not authorize ongoing cross-kernel
+   synchronization.
+
+### MP-08 / MP-10 / MP-11 owner additions (2026-10-01)
+
+Private overlay selection is kernel-owned and determined by the official-provider
+utility, including ambiguous files. Each decision includes a one-line reason.
+Reproducible cache/build artifacts stay excluded; secret-looking files travel only
+through the sealed Vault layer; needed private project files can be included.
+Optional `.charioxignore` expert overrides and Conductor `.worktreeinclude` remain
+supported, but Chariox never creates `.charioxignore` for users. Workspace Live Sync
+uses the same selection. Selection refreshes at export time, with no synchronization
+between independent kernels.
+
+The first export presents one collapsed **Ready to move <project> to <machine>**
+review through the shared RuntimeInteraction contract. Rows cover Code, Environment,
+Needs you, Files and Setup. Actions are **Looks good, continue**, **Change something...**
+and **Details**. Details shows reasons and allows item flips. Free-text changes rerun
+the utility and highlight revised items. Secret values stay masked; missing values
+can be supplied to Vault or skipped, with missing names carried into setup context.
+Unchanged exports reuse saved setup without a review; changed exports review only
+new decisions. Unattended launches apply utility decisions and publish an adjustable
+post-launch summary. The target Environment panel explains imported decisions and
+allows later adjustments while the source is reachable.
+
+Provider-neutral personal instructions belong to the Chariox user kernel context,
+travel with that context, and use existing hidden provider context bridges. Provider
+home transfer carries credentials only, never provider configuration files.
+
+The reserved builder's slice-port flock is retired. A host-port collision recreates
+the lane-owned slice and retries at most three times.
+
+## Locked decision for 2026-10-02: provider credential copies and local login recovery
+
+MP-08 / MP-10 / MP-11: keep the existing credential-copy mechanisms for remote
+leases, managed contexts (including scoped Claude Keychain export), and slices.
+There is no cross-kernel or central refresh/login dependency and no ongoing
+credential synchronization. Prefer non-rotating credentials wherever Chariox
+already supports them; keep the Claude Vault setup-token remote path.
+
+When a renewable OAuth login is copied, Web and TUI show one short,
+non-blocking notice per account per receiving machine: `<Provider> credentials
+on <machine> were copied from <source machine>. The provider may invalidate one
+copy when another refreshes; you may need to log in on this machine later.`
+API keys and Claude setup tokens do not receive that notice.
+
+The execution kernel detects failed renewal and raises one shared
+`Log in to <Provider> on this machine` RuntimeInteraction. A human acceptance
+starts the official provider login on that same machine through the existing
+login paths. Login challenges and masked terminal responses are human-only;
+authentication success reloads the official harness and resumes the admitted
+turn. Credentials remain on that machine.
+
+MP-08 / MP-10 / MP-11 acceptance requires both:
+
+- [ ] A fake-OAuth drill returning `refresh_token_reused` proves the once-only
+  notice, detection, shared interaction, official login invoked by the correct
+  execution kernel, resume, and unchanged source credentials. Source tests
+  establish these seams only; they do not close the signed-release matrix.
+- [ ] An owner-gated REAL drill (Codex at least) on a remote or managed machine
+  prompts through Web/TUI and lets the owner perform the official login there.
+  Record exact release/source identities, successful resume, and absence of
+  credential synchronization. Agents must not perform the owner's real login.
+
+## Product and architecture decisions
+
+### One Room environment
+
+A Room owns one shared browser and computer environment unless the user
+explicitly creates another environment. Room membership implicitly grants its
+users and agents access to that shared browser and computer; there is no
+separate per-agent Browser or Computer capability grant. The home kernel still
+checks Room membership and authenticates a remote agent's active lease. Input
+ownership orders conflicting Actions, and vault-backed secrets keep their
+separate authorization rules.
+The home kernel is the kernel where the Room was created. It keeps Room and
+Environment authority regardless of where the browser or any agent executes.
+The physical Environment may run in a headed slice on the home machine or on
+another worker. Agents may run on the home kernel, in that slice, in a different
+slice, or on a remote worker kernel. Placement must not create another browser
+profile, Tab registry, or Room authority. A remote agent forwards its Browser
+and Computer requests to the home kernel, which admits and routes each Action
+to the Room's Environment host. A kernel that does not own the Room cannot
+access the Environment merely because it can reach the relay; the agent must
+belong to the Room through a valid home-owned lease.
+
+The environment contains:
+
+- a shared browser tab registry with stable tab IDs
+- a canonical browser viewport
+- the complete graphical desktop
+- installed programs and files
+- clipboard and input state
+- browser profile and authenticated sessions
+- actor presence, pointers, action attribution, and history
+
+### Browser and Computer are two modes, not two implementations
+
+Browser mode provides structured tabs, address bar, history, accessibility and
+DOM observations, lifecycle events, and first-party browser actions.
+
+Computer mode exposes the full graphical environment and provides screenshot,
+OCR, coordinate, mouse, keyboard, clipboard, and desktop-application control.
+
+Both modes must use the same kernel authority, display stream, input path,
+presence model, permissions, persisted state, and relay path. Structured
+browser control is preferred. Computer control is the fallback for browser
+chrome, graphical applications, unsupported page structures, and recovery.
+
+### Kernel authority
+
+The kernel owns Rooms, sessions, agents, provider runs, tab identity,
+interaction serialization, permissions, actor attribution, saved state, and
+history. The relay transports encrypted packets and display data but never
+becomes browser, session, prompt, or history authority. Cloud authenticates,
+provisions, issues scoped relay tokens, and renders control-plane state, but it
+does not proxy or inspect runtime terminal traffic.
+
+### Browser controller
+
+The Apps Phase 1 release depends on a production Chromium launch with renderer
+sandboxing enabled, including fallback launches and restored Environments. The
+current Linux slice launcher uses `--no-sandbox`; remove that production
+dependency only with a working sandbox configuration for the supported container
+topologies. A container enclosing the entire Environment does not replace
+isolation between Apps and browser services inside it.
+
+Investigate the reported connection between sandbox flags and lost Google login
+state after slice save/restore. Treat that cause as a hypothesis until reproduced.
+Check browser profile capture, cookie encryption, keyring/password-store state,
+shutdown ordering and restore generations. Keep both containment and session
+persistence as required outcomes. A production App view cannot use an unsafe
+launch fallback to pass a persistence drill. See the
+[Apps implementation and Phase 1 validation contract](/Users/miguel/arroba-cloud/docs/CHARIOX_APPS_IMPLEMENTATION_PLAN.html).
+
+Replace the one-process-per-action CDP helper with one long-running,
+kernel-managed Chariox Browser Controller. It may use Playwright Core or an
+equivalently complete CDP implementation internally. Agents receive stable
+first-party Chariox tools, not raw provider-native or third-party browser tools.
+
+The controller must own:
+
+- stable tab and target IDs
+- accessibility and DOM observations
+- stable, invalidatable element references
+- auto-waiting and navigation lifecycle
+- nested frames and shadow DOM
+- dialogs, popups, permissions, downloads, and uploads
+- console and network events
+- browser health, crash recovery, and graceful shutdown
+- bounded connection, command, and operation timeouts
+- one canonical viewport shared by all attached terminals
+
+### Display technology
+
+Selkies is the leading OSS replacement for noVNC. The first production path
+should use Selkies WebSocket transport through the existing Chariox relay. It
+avoids making STUN, TURN, UDP, and WebRTC prerequisites for the initial
+cutover. WebRTC remains an optional later optimization only if benchmarks show
+that its latency benefit justifies its operational complexity.
+
+noVNC remains behind an explicit development or rollback flag until Selkies
+passes the complete validation matrix. It must not remain the default after the
+cutover gate passes.
+
+### Actor and input model
+
+Every input action must identify:
+
+- human or agent actor ID
+- Room and environment ID
+- tab ID when applicable
+- action type and target
+- start, completion, cancellation, and outcome
+- pointer coordinates when applicable
+
+Reads may occur concurrently. Mutating actions serialize per tab or desktop
+input target. Mutations on different tabs may run concurrently. Human takeover
+must pause or cancel the active agent interaction on that target immediately.
+Pointers and presence render in a Chariox-owned overlay above the stream, not
+inside webpage DOM.
+
+## Mandatory development discipline
+
+### Agent delegation
+
+Do not spawn or coordinate Codex sub-agents for this program. Delegate
+independent implementation and validation through Chariox agents in the
+product frontend on Chariox-managed machines. Start each delegated prompt with
+the target `@agent-N` alias, assign explicit file ownership, and use an
+independent worktree. Use the product's steer action for current or urgent
+instructions instead of leaving them queued behind a long turn. Work directly
+when the critical path requires it, while keeping independent Chariox-agent
+lanes busy when useful work is available.
+
+Use Claude Opus 4.8 for Chariox-managed implementation agents until the
+selected account reports provider usage exhaustion. After that explicit usage
+failure, use Luna Max for new or resumed implementation turns instead of
+repeatedly retrying the exhausted provider. This implementation-agent fallback
+does not change the separate Claude-primary and Codex-Sol-backup reviewer
+policy below.
+
+### Frontend development loop
+
+Use the persistent local Chariox Cloud development server for frontend
+implementation and browser drills. Local development and staging must build
+the same application code. Authentication configuration may differ, but a
+product behavior or layout must not exist in only one environment. Use staging
+only for deployed acceptance of a reviewed candidate. Keep browser tabs in
+detached or handed-off mode when yielding so the local session and live
+evidence remain available.
+
+### Isolated PRs and worktrees
+
+Every independently reviewable subtask must use an isolated branch and
+worktree. Do not implement this plan directly in a dirty main checkout.
+
+Each impacted repository gets its own PR. A cross-repository feature therefore
+normally produces at least:
+
+- one OSS PR in `chariox`
+- one Cloud PR in `chariox-cloud`
+
+Do not combine unrelated milestones in one PR. Do not hide an OSS protocol
+change inside a Cloud UI PR. Do not leave a cross-repository PR dependent on an
+unpublished local commit. Record the exact paired PR and commit SHA in both PR
+descriptions.
+
+Work from `main` unless the user explicitly changes the branch policy. Rebase
+or merge the latest `main` before final validation, then rerun the relevant
+matrix at the exact reviewed head.
+
+Keep implementation worktrees source-only. Git worktrees must share the main
+repository object database and must not each acquire a Cargo `target`,
+`node_modules`, package cache, browser profile, container image, or slice state.
+Put the smallest necessary test binary or generated file in a task-specific
+disposable directory outside every repository, then remove it immediately
+after validation. Use final-head remote CI for full builds while the laptop is
+under disk pressure. Remove a worktree as soon as its PR merges, and keep only
+the worktrees needed for active or externally gated PRs.
+
+### Commit, push, and review after every completed subtask
+
+After every subtask that leaves the tree in a coherent state:
+
+1. Run the narrow unit and integration tests for that subtask.
+2. Inspect the diff for unrelated changes, secrets, generated artifacts, and
+   accidental protocol changes.
+3. Commit the completed subtask with a message that states the behavior and the
+   reason for the change.
+4. Push the commit immediately.
+5. Update the PR body and evidence index with the exact commit SHA and tests.
+6. Request or trigger the independent reviewer on that exact head.
+7. Read every reviewer comment. Fix valid findings in a new commit, push it,
+   and request review again.
+8. Continue until the reviewer has no remaining comments on the current exact
+   head.
+
+Do not claim a commit is reviewed when comments apply to an older SHA. Do not
+force-push away reviewed evidence unless recovery requires it. If the head
+changes, repeat review. A subtask is not complete while the reviewer has an
+unaddressed comment, a question without evidence, or a stale-head review.
+
+### Final-head CI only
+
+Do not run the repository-wide GitHub CI suite for intermediate implementation
+or reviewer-fix commits. Use the narrow local unit and integration checks above
+while the PR is still evolving. Keep the PR out of the ready-to-merge CI path
+until its exact head has passed focused validation and the independent reviewer
+has no remaining comments.
+
+Run GitHub CI once for that final, reviewer-clean head immediately before
+merge. If final CI finds a defect, fix it in a new coherent commit, repeat the
+exact-head reviewer loop, and then run the final CI gate again. Do not treat a
+successful run for an older SHA as evidence for a changed head.
+
+Repository workflow triggers must enforce this policy: ordinary PR
+`synchronize` events must not start the expensive CI jobs, while the explicit
+ready-for-review/final-gate transition may start them. Reviewer automation is
+independent of this CI gate and must continue to receive the commits it needs
+to review.
+
+### Reviewer independence and outages
+
+The implementation agent must not communicate or coordinate with the other
+agent performing review. Do not send it messages, ask it for status, direct its
+work, interrupt it, or use it as an implementation sub-agent. Review must remain
+independent and arrive through the established reviewer and PR-comment path.
+
+The independent reviewer services and state under `~/.chariox-reviewer` are
+shared infrastructure. For this program the implementation owner must monitor
+reviewer health, event delivery, provider substitution, workflow completion,
+and exact-head PR comments without weakening reviewer independence. Claude Opus
+4.8 is the primary reviewer. Codex Sol at xhigh effort is the backup. Diagnose
+and repair reviewer defects narrowly, preserve its state, and do not restart,
+stop, prune, or replace healthy reviewer infrastructure. Every posted review
+must identify the provider, model, account role, and effort that executed the
+turn. A fallback review must not reuse the primary provider's identity block.
+Treat missing, stale-head, duplicate, falsely attributed, or incomplete review
+comments as an unresolved gate.
+
+If the reviewer is delayed, unavailable, or temporarily stops posting comments,
+record the exact commit SHA awaiting review and continue useful independent work
+on another in-scope subtask or PR. Do not idle the whole program, do not weaken
+the review gate, and do not mark the waiting commit reviewed. When comments
+appear again, return to that exact-head review, address every finding in a new
+commit, push it, and repeat the normal review loop until the reviewer has no
+remaining comments on the current head.
+
+### Protocol change rule
+
+Any change to `LocalDaemonRequest`, `LocalDaemonResponse`, display events,
+relay terminal events, browser/kernel transport, or another serialized client
+contract must:
+
+1. increment the shared OSS protocol version
+2. update protocol snapshot or hash tests
+3. update minimum supported client versions only when the client depends on the
+   new contract
+4. add a focused drill that crosses the changed boundary
+5. prove backward rejection or compatibility behavior explicitly
+
+No protocol-shape PR may merge without those items.
+
+### Evidence
+
+Store screenshots, traces, benchmark output, logs, manifests, and comparison
+reports outside repositories under:
+
+```text
+/Users/miguel/.codex/evidence/browser-computer-use/<milestone>/<run-id>/
+```
+
+Store persistent local development state under:
+
+```text
+~/.chariox/dev/browser-computer-use/<task-or-kernel>/
+```
+
+Use `mktemp -d` for disposable state. Never point `CHARIOX_HOME`, kernel state,
+logs, drill scratch, browser profiles, or slice homes inside a repository.
+The idle authenticated-browser runner is stricter: its authoritative retained
+evidence belongs under
+`~/.codex/evidence/browser-computer-use/idle-authenticated-browser-soak/`;
+development state may hold only removable runtime scratch.
+
+Each evidence manifest must include:
+
+- exact OSS and Cloud commit SHAs
+- exact provider, browser, Selkies, Docker, kernel, relay, and OS versions
+- topology and machine identity without secrets
+- test or drill command
+- start and finish timestamps
+- result and failed assertion, if any
+- resource samples before, during, and after
+- cleanup result
+- links to screenshots, traces, logs, and benchmark data
+
+## PR and milestone sequence
+
+### Milestone 0: local functional harness and red-capable drills
+
+Linear: CHA-18, with inputs from CHA-23, CHA-25, CHA-26, and CHA-31.
+
+Create the local functional and failure-reproduction harness before replacing
+the pre-cutover implementation. It must run against the pre-cutover noVNC and one-shot
+CDP stack, fail for the missing product behavior, and run against each later
+implementation. This milestone establishes correctness tests, not benchmark
+rankings or optimization targets.
+
+Deliverables:
+
+- reproducible local Mac and local Linux or Docker test profiles
+- pre-cutover noVNC display behavior capture
+- current structured-browser, screenshot, OCR, mouse, and keyboard behavior
+  capture
+- per-slice memory, CPU, disk, and process measurements used only to keep the
+  development host safe
+- deterministic browser-use functional task subset
+- deterministic computer-use functional task subset
+- Chariox-specific shared-browser and takeover tasks
+- fault-injection controls for relay loss, controller crash, streamer crash,
+  browser crash, stale endpoint, queue saturation, and memory pressure
+- explicit pass/fail assertions for state, authority, user-visible behavior,
+  recovery, and cleanup
+
+This milestone must not change production behavior. It must not begin the
+public benchmark campaign or tune implementation choices for scores. Its only
+performance checks are safety timeouts and resource ceilings needed to prevent
+a hung test or exhausted development machine.
+
+### Milestone 1: shared Room browser contract
+
+Linear: CHA-20 and CHA-21.
+
+Define the kernel-owned environment, tab, actor, action, viewport, interaction,
+and recovery contracts. Update architecture, protocol, and context documents
+before clients implement divergent assumptions.
+
+Deliverables:
+
+- environment identity and lifecycle
+- shared tab registry
+- canonical viewport and resize ownership
+- read and mutation concurrency policy
+- human takeover and cancellation semantics
+- Browser and Computer mode projections
+- actor and action event model
+- history and reconnect semantics
+- backward-compatibility policy for old clients
+- protocol version and snapshot update if serialization changes
+
+Acceptance requires focused kernel tests and one same-host home/kernel/worker
+drill with two agents and two clients observing one environment.
+
+### Milestone 2: long-running Browser Controller
+
+Linear: CHA-19 and CHA-27.
+
+Implement the controller below client layers. Keep provider adapters unaware of
+browser implementation details.
+
+Subtasks:
+
+1. Controller process ownership, health, startup, shutdown, and restart.
+2. Stable tab registry and canonical viewport.
+3. Accessibility and DOM snapshots with invalidatable element references.
+4. Locator actions with auto-waiting and bounded timeouts.
+5. Frames, shadow DOM, dialogs, popups, downloads, uploads, and permissions.
+6. Console, network, page, and browser lifecycle events.
+7. Runtime MCP adapters preserving current public tool names where possible.
+8. Compatibility adapter for old one-shot calls during migration.
+9. Actor attribution and per-tab mutation serialization.
+10. Crash recovery without tab or authority duplication.
+
+Every subtask gets its own coherent commit and exact-head reviewer loop.
+
+### Milestone 3: Selkies slice runtime and viewer-agnostic transport
+
+Linear: CHA-17 and CHA-23.
+
+Implement Selkies in the Linux slice runtime with software encoding as the
+portable baseline. Hardware encoding is an optional optimization and must have
+an explicit capability probe and fallback.
+
+Subtasks:
+
+1. Pin and verify Selkies source or package version and licenses.
+2. Add container dependencies without unnecessary image growth.
+3. Launch, health-check, stop, and clean up Selkies with the slice lifecycle.
+4. Expose a viewer-agnostic display endpoint kind and capability set.
+5. Route WebSocket display transport through the existing relay boundary.
+6. Preserve strict hosted HTTPS and trusted-origin endpoint validation.
+7. Implement reconnect, expiry, retry, stale-response rejection, and bounded
+   backpressure.
+8. Keep noVNC behind an explicit fallback flag during rollout.
+9. Add streamer and browser graceful shutdown before state capture.
+10. Validate resize, clipboard, input, full desktop, and browser-content modes.
+
+The relay must not decode display content or become session authority.
+
+### Milestone 4: actor overlay and shared input
+
+Linear: CHA-22.
+
+Move pointers and action attribution out of page DOM. Implement a kernel-owned
+input arbitration path used by agents and humans.
+
+Acceptance:
+
+- pointer remains visible over browser chrome, iframes, navigation, and desktop
+  programs
+- stable color and actor name per human or agent
+- human takeover pauses or cancels an active agent interaction
+- same-tab mutations serialize without deadlock
+- different-tab actions can proceed concurrently
+- TUI shows actor, tab, action, and outcome events even when it cannot render
+  the graphical pointer
+- replay and traces identify the actor and target without recording secrets
+
+### Milestone 5: Web terminal View productization
+
+Linear: CHA-24.
+
+Implement the Cloud UI against the released OSS protocol. Cloud must not add a
+parallel browser authority.
+
+The View page must support:
+
+- selected managed machine, slice, Room, and agent identity
+- stable display while endpoint metadata refreshes
+- Browser and Computer mode switching
+- tab list, address, activity, actor presence, and focus
+- selected-agent prompt and shared transcript behavior
+- user pointer and input takeover
+- Save and restart agents
+- Save and shut down slice
+- Start slice
+- Open display and Retry
+- explicit loading, reconnecting, degraded, unavailable, local-only,
+  unsupported-client, unsafe-endpoint, and permission states
+- reconnect and background inventory refresh without a document reload, empty
+  route outlet, full-grey frame, lost scroll/focus, or terminal-root remount
+- keyboard access and accessible labels
+- no layout jump during refresh or retry
+
+Fixture-driven tests remain useful but cannot close this milestone. A real
+headed slice must pass through the hosted relay.
+
+### Milestone 6: TUI parity
+
+Linear: CHA-21, CHA-25, CHA-27, and CHA-28.
+
+Both local and remote Chariox TUIs must use the same kernel contracts as the
+Web terminal.
+
+The TUI does not need to reproduce a graphical desktop inside a text terminal.
+It must expose the same product state and actions in a form appropriate to a
+TUI:
+
+- environment and viewer status
+- current browser tab, URL, title, and activity
+- actor and input-lock status
+- browser and computer tool traces
+- screenshot capture and artifact path
+- open-viewer URL or OS-open action when graphical observation is required
+- start, stop, save/restart, save/shutdown, retry, and reconnect actions
+- permission and takeover interactions
+- actionable errors and protocol-version diagnostics
+
+Required terminal scenarios:
+
+- local TUI attached to a local headed slice
+- local TUI attached to a managed remote-machine slice through relay
+- remote or orphaned TUI attached through relay
+- Web and TUI attached simultaneously to the same Room
+- prompt from TUI drives the browser visible in Web
+- Web human takeover is visible in TUI activity and traces
+- TUI disconnect and reconnect preserves browser and provider state
+
+Provider-native TUIs remain clients of the normal kernel path. They must not
+gain a separate browser, prompt, permission, history, or relay authority path.
+
+### Milestone 7: persistence and user-owned lifecycle
+
+Linear: CHA-26 and CHA-28.
+
+Complete deterministic state capture and agent relaunch.
+
+Persist and validate:
+
+- Chromium profile
+- cookies, localStorage, IndexedDB, service-worker cache, and Cache Storage
+- downloads and application configuration
+- installed graphical programs
+- machine ID, hostname, user, UID/GID, home, and keyring behavior
+- Browser Controller and Selkies graceful shutdown
+- slice home archive and committed image
+- provider session IDs and relaunch manifests
+- idle agent identity and Room attachment
+- saved display mode and canonical viewport where appropriate
+
+Reject save deterministically when attached agents are busy. Reconcile stale
+attachments. Relaunch only through the kernel-managed provider path. Never
+silently create a blank provider thread when resume fails.
+
+### Milestone 8: vault and secret safety
+
+Linear: CHA-29.
+
+Validate secret insertion through both Browser and Computer paths without
+making secrets visible to agents or infrastructure.
+
+Required cases:
+
+- selector-based password field
+- opaque field ID returned by browser discovery
+- expected-host success
+- expected-host mismatch
+- navigation between discovery and paste
+- iframe and popup target
+- masked and unmasked field behavior
+- user-created and agent-generated credentials
+- locked-vault unlock interaction
+- wrong user, Room, slice, or managed machine
+- form-less password step with a separate JavaScript sign-in button
+- native form controls named `submit` or `requestSubmit`
+- log, history, trace, screenshot, clipboard, and helper-output leak scan
+- relay and Cloud proof that secret payloads are not inspected or stored
+
+MP-08/MP-10: browser secret paste defaults to `submit=false`. On a password
+step with a separate Next or Sign in button, fill the discovered password field,
+then click that observed button through the ordinary Browser action. `submit=true`
+requires a native containing form. A missing form must reject before inserting
+any secret and report `browser_submit_failed` with the fill-then-click guidance.
+The controller invokes native form prototype methods so named form controls
+cannot shadow submission. Neither rejection nor script exceptions may return
+secret values or page-provided exception text. Local structural fixtures prove
+these controller cases; they do not establish live third-party authentication.
+
+MP-08/MP-10: `request_popup` accepts a single fixed acknowledgement choice for a
+blocking notice and rejects an empty fixed-choice list. Notices use the existing
+kernel-owned RuntimeInteraction and the same answer, reconnect, and timeout
+paths as choice questions. A notice never acknowledges itself merely because
+only one choice exists; only an explicitly configured timeout default may do so.
+Browser-use credential registrations require `injection.kind=browser`; `basic`
+means HTTP Basic authentication. Reject incompatible new metadata before any
+registry or Vault write, while preserving reads of legacy metadata for repair.
+
+### Milestone 9: managed-machine deployment
+
+Linear: CHA-31, with CHA-17 through CHA-30 as prerequisites.
+
+Use the in-house OpenShip-based Chariox managed-machine stack. Scalingo is not
+part of this plan.
+
+Do not start this milestone until the implementation has passed the complete
+local functional, security, persistence, concurrency, Web, TUI, resiliency,
+regression, and cleanup gates. Managed infrastructure validates the same
+reviewed build in the production topology. It is not the primary development
+loop.
+
+Provision a fresh managed Linux installation through Chariox Cloud. This may
+use a new allocation or the locked provider-level destructive rebuild of the
+current Hetzner allocation. Do not accept an in-place kernel replacement or a
+manually cleaned snowflake host as fresh-machine evidence.
+
+The managed-machine drill must prove:
+
+1. Cloud provisions the machine and installs the current reviewed kernel,
+   Docker slice runtime, Browser Controller, and Selkies dependencies.
+2. The machine registers through the hosted Caddy-fronted `wss://` relay.
+3. Heartbeat freshness controls online selection and stale targets are
+   rejected.
+4. A headed slice starts with explicit CPU, memory, process, and disk limits.
+5. All three providers can launch through official provider harnesses when
+   credentials are configured.
+   Each launch must use the ordinary kernel provider path: no
+   `CHARIOX_MANAGED_PROVIDER_ISOLATION`, no Bubblewrap ancestor, and no
+   managed-only cwd or filesystem restriction. Exercise at least the copied
+   repository, `/home`, another user-created directory, `/tmp`, package or tool
+   installation permitted to the worker user, and a repository created after
+   enrollment. Compare mount information and process privilege flags with the
+   ordinary-kernel control so a systemd sandbox cannot masquerade as parity.
+6. Web View displays the environment through the hosted relay.
+7. Local and remote TUI clients attach to the same Room.
+8. A browser task and a non-browser desktop task complete.
+9. Vault-backed login and save/restart work.
+10. The machine survives client disconnect and reconnect.
+11. Multiple viewers and slices respect admission and resource budgets.
+12. The entire drill can tear down the slice and managed machine without
+    residue in Cloud, OpenShip, the relay registry, or the host.
+
+### Milestone 10: public benchmarks and score-driven optimization
+
+This milestone starts only after Milestone 9 and every local and remote
+functional gate pass. Freeze a functionally accepted reference build before
+collecting benchmark baselines. Performance work must preserve that build's
+correctness, security, recovery, compatibility, and cleanup behavior.
+Inventory and runner design may proceed as research before those gates; scored
+campaigns and optimization must wait.
+
+MP-08 / MP-10, WP-12 owner decision (2026-10-02): run this milestone in two
+rounds. Round 1 exits with one complete, valid, passing run on every included
+public benchmark, regardless of ranking. Round 2 optimizes toward verified
+first place. Neither round is a prerequisite for closing or merging Browser,
+Computer control, or Path-1 VMs (MP-01 through MP-11). Functional, security,
+review, resource, and cleanup acceptance requirements remain mandatory.
+
+Deliverables:
+
+1. Inventory every maintained and relevant public benchmark for browser use,
+   computer use, web agents, office work, and multimodal desktop control.
+   BrowserGym, WebArena, WorkArena, and OSWorld are initial candidates, not a
+   closed list. Refresh the inventory against the benchmark maintainers before
+   the campaign starts.
+2. Record each benchmark's version, task set, rules, environment, model policy,
+   allowed tools, time and token limits, scoring method, public leaderboard,
+   current leading score, and reproducibility requirements.
+3. Publish a reason for excluding any benchmark that tests a claimed Chariox
+   capability. "The score is difficult to improve" is not a valid reason.
+4. Build reproducible Chariox runners that use the production kernel,
+   Browser Controller, Computer path, and official provider harnesses. Do not
+   add benchmark-only authority or tool behavior.
+5. Round 1: run the frozen functionally accepted build once across the complete
+   official evaluation set and required seeds/repetitions for every included
+   benchmark. Require valid harness execution, scoring, evidence, and cleanup;
+   retain unsuccessful task outcomes rather than omit them. Retain raw task
+   results, traces, failures, costs, latency, and machine resource data. A smoke
+   test, subset, or invalid run does not satisfy this exit. Ranking is not a
+   round-1 gate.
+6. Classify every failure as perception, element grounding, planning, action,
+   navigation, browser state, desktop input, concurrency, recovery, provider,
+   environment, or benchmark infrastructure.
+7. Round 2: optimize the shared product implementation. After every optimization,
+   rerun the affected functional and regression gates before accepting its
+   score.
+8. Submit under the public benchmark rules and verify the published result.
+9. Round 2: pursue verified first place on every included public benchmark.
+   Track leaderboard changes and comparable conditions at the campaign cutoff.
+   This optimization objective cannot reopen or block an accepted MP-01 through
+   MP-11 functional milestone solely because of ranking.
+
+Benchmark evidence must distinguish official public scores from local
+reproductions. Never claim first place from an incomparable model, environment,
+task subset, private fork, or locally modified scoring rule.
+
+### Milestone 11: rollout and noVNC removal
+
+After the applicable functional, security, resource, and cleanup gates pass:
+
+MP-08 / MP-10: benchmark rounds run separately and do not block this functional
+rollout, its merge, or MP-01 through MP-11 closure (owner decision 2026-10-02).
+
+1. Enable Selkies for internal and staging users behind a server-controlled
+   capability flag.
+2. Run a soak period with noVNC fallback available.
+3. Compare error rate, reconnect rate, task success, latency, CPU, memory,
+   bandwidth, and support incidents against the baseline.
+4. Validate the Selkies product default on signed images across Web, local TUI,
+   and remote TUI before rollout acceptance.
+5. Retain explicit noVNC fallback for one rollback window.
+6. Remove noVNC packages, code, fixtures, capability names, and documentation
+   in a dedicated cleanup PR after the rollback window.
+
+## Resource safety gates during functional implementation
+
+Do not benchmark or optimize before functional acceptance. Resource checks run
+from the first local drill for a different reason: they stop slices, browsers,
+encoders, and providers from exhausting a development or managed machine.
+These checks enforce safety and detect leaks. They do not rank implementations.
+
+### Resource behavior
+
+Measure idle, browser-active, video-active, OCR-active, save, restore, and
+multi-viewer states separately.
+
+Record:
+
+- resident memory per kernel, worker, browser, streamer, and slice
+- peak and sustained CPU
+- GPU encoder use when available
+- disk image and home-volume growth
+- network bandwidth by frame rate and resolution
+- file descriptors, processes, threads, and WebSocket connections
+- swap use and major page faults
+- time and temporary disk required for save, backup, restore, and image commit
+
+Before concurrent functional drills, set conservative admission limits for the
+local Mac and each managed-machine size. Chariox must reject or queue a new
+headed slice before the host becomes unsafe. It must not rely on the operating
+system OOM killer as normal admission control. Ratify final production limits
+during the post-functional benchmark and soak campaign.
+
+## Resource monitoring during every live drill
+
+Slices, Chromium, video encoders, and provider processes use substantial
+memory. Resource monitoring is part of correctness, not optional diagnostics.
+
+Before a drill:
+
+- record total and available memory, swap, load, CPU count, and disk space
+- on macOS, include total process footprint and compressed memory (`top` MEM
+  and CMPRS), OS memory-pressure state, and swap growth; RSS and the reported
+  free-memory percentage alone are not sufficient. Include the desktop agent
+  application itself, not just build and drill children
+- list Chariox kernels, relays, workers, provider processes, containers,
+  volumes, and listeners
+- record existing managed-machine and slice inventory
+- calculate the maximum safe concurrent slices for that host
+- estimate the peak memory and temporary disk required by the next operation
+  from prior measurements or a conservative first-run estimate, and confirm
+  that the host has that capacity plus a recovery reserve
+- reduce concurrency if another Chariox validation or reviewer workload is
+  active
+- do not impose a fixed free-space percentage as a global implementation or
+  test gate; keep source work and tests moving when their measured resource
+  cost fits safely
+
+During a drill:
+
+- sample host and per-container CPU and memory at a fixed interval
+- sample disk, swap, network, open files, and process count
+- use an automatic watchdog for heavy local builds as well as live drills;
+  sample every five seconds and terminate only that job's owned process group
+  when its evidence-based memory budget or OS-pressure safety limits are
+  exceeded. Validate the watchdog's stop path before relying on it. Reassess
+  budgets from measured footprint and host headroom, not repeated blind retries
+- watch kernel, relay, Browser Controller, streamer, Chromium, and provider
+  liveness
+- stop adding concurrent slices when the forecast peak would consume the
+  measured recovery reserve; continue the drill serially when possible
+- abort gracefully if sustained swap, OOM risk, disk pressure, or runaway
+  encoding threatens the machine
+- never hide a resource failure by retrying until the host recovers
+
+After a drill:
+
+- prove all drill-owned processes, containers, networks, volumes, ports,
+  tunnels, and machines are gone
+- record recovered memory and disk
+- investigate unexplained residual growth before running another drill
+
+On a developer laptop, use one headed slice at a time unless the explicit test
+requires concurrency. Run provider matrices sequentially when parallelism does
+not test product behavior. A low free-space percentage alone must not pause
+implementation. Prefer source-only worktrees, shared dependency caches,
+targeted builds, serial drills, and immediate cleanup of drill-owned artifacts.
+Pause only the specific operation whose forecast peak presents a credible
+crash, OOM, or disk-exhaustion risk, and resume it after making room or moving
+it to a suitably sized managed machine. On managed machines, use cgroup limits
+and the planned admission controller even when the host appears to have spare
+memory.
+
+Fast critical-path progress is the default. Do not stop a healthy build or
+validation run merely because it crosses an arbitrary per-job growth estimate,
+a fixed free-space percentage, or an old conservative threshold. Stop only on
+measured evidence of a credible host-safety risk, such as sustained memory
+pressure, runaway growth that would exhaust the recovery reserve, or an
+approaching hard disk floor. Reclaim known disposable artifacts promptly, move
+heavy work to the managed machine when that is faster, and keep independent
+source, review, and lightweight validation work running in parallel.
+
+## Validation matrix
+
+Every cell must have an automated test, executable drill, or documented reason
+that it cannot apply. A single happy-path screenshot does not close a row.
+
+Execute the matrix in tiers. Tier 1 uses a local kernel and local Docker slices.
+Tier 2 adds a same-host relay so Web, local TUI, and remote TUI paths can be
+tested without a remote machine. Tier 3 starts only after Tiers 1 and 2 pass and
+repeats the applicable rows on OpenShip-provisioned managed infrastructure.
+Tier 4 covers self-hosted remote compatibility. Benchmark work is outside these
+functional tiers and starts only after all four pass.
+
+### Providers
+
+| Provider | Structured browser | Computer fallback | Save/restart thread | Permissions | Attachments | TUI + Web |
+| --- | --- | --- | --- | --- | --- | --- |
+| Codex official harness | required | required | required | required | required | required |
+| OpenCode official harness | required | required | required | required | required | required |
+| Claude Code official harness | required | required | required | required | required | required |
+
+Provider runs must use official provider CLIs, local servers, and documented
+hooks or protocols. Do not substitute provider SDKs, hosted agent services, or
+third-party agent runtimes.
+
+### Topologies and terminals
+
+| Topology | Web terminal | Local TUI | Remote TUI | Web + TUI together | Client reconnect |
+| --- | --- | --- | --- | --- | --- |
+| Local kernel + local Docker slice | required | required | n/a | required | required |
+| Same-host home/worker through relay | required | required | required | required | required |
+| Chariox-managed remote machine | required | required | required | required | required |
+| Self-hosted remote worker | required | required | required | required | required |
+| Headless slice | explicit unavailable state | status/control | status/control | required | required |
+| Stale or offline target | explicit error | explicit error | explicit error | required | required |
+
+### Browser behavior
+
+| Case | Required proof |
+| --- | --- |
+| Fresh profile | tab registry, navigation, storage, download, and history initialize correctly |
+| Multiple tabs | stable IDs and correct targeting through focus changes |
+| Popup and new window | registered, attributable, controllable, and closable |
+| Iframe and nested iframe | structured discovery and action work or deterministic fallback occurs |
+| Shadow DOM | discovery, action, and stale-reference behavior |
+| Dialog | accept, dismiss, prompt value, timeout, and trace |
+| Download | progress, path, cancellation, persistence, and safe filename |
+| Upload | local, transferred, remote, missing, and denied file |
+| Permissions | allow, deny, timeout, multi-client projection, and provider-native reply |
+| Browser crash | controller notices, restarts, and avoids duplicate tabs or actions |
+| Page navigation during action | cancellation or retargeting is deterministic |
+| Stale reference | actionable error followed by rediscovery |
+| Console and network | bounded capture, redaction, and no secret leakage |
+| Service worker | registration, cache, offline state, and save/restore |
+| OAuth or external login | redirects, popups, callback, and service-side reauth distinction |
+
+### Computer behavior
+
+| Case | Required proof |
+| --- | --- |
+| Screenshot | exact active display and bounded result size |
+| OCR and find text | success, no-match, multiple match, scaling, and non-English sample |
+| Mouse | move, click, double-click, right-click, drag, and scroll |
+| Keyboard | text, shortcut, key chord, repeat, cancel, and non-US character sample |
+| Text selection | drag selects text without moving the containing pane or window |
+| Browser chrome | tabs, address bar, download shelf, and permission bubble |
+| Non-browser app | application remains focused and fully controllable |
+| Clipboard | human-to-slice, agent-to-slice, slice-to-human, and secret restrictions |
+| Resize | canonical viewport, desktop resolution, aspect ratio, and all viewers |
+| Stream loss during input | action cancels or completes exactly once |
+| Controller/streamer restart | desktop survives and input authority is not duplicated |
+
+### Persistence and lifecycle
+
+| Case | Required proof |
+| --- | --- |
+| Save with no agents | image and home state restore |
+| Save with idle agents, restart mode | same agent and provider thread relaunch |
+| Save with idle agents, shutdown mode | agents remain stopped until explicit start |
+| Save with busy agent | deterministic rejection and no partial state |
+| Stale attachment | reconciliation before save |
+| Browser graceful close | no profile corruption or stale lock |
+| Full container removal | restored state uses committed image and home archive |
+| Home volume removal | recreated volume has expected persisted content |
+| Installed application | binary, config, launcher, and user data survive |
+| Cookie and web storage | cookie, localStorage, IndexedDB, Cache Storage, service worker |
+| External service reauth | recorded as service invalidation, not silent state loss |
+| Repeated save cycles | no unbounded image, archive, or profile growth |
+| Reset | returns to clean base without deleting unrelated backups |
+| Backup and restore | named backup, integrity check, and rollback |
+| Save failure | active slice remains usable and prior saved state remains valid |
+
+### Multi-actor and multi-client behavior
+
+| Case | Required proof |
+| --- | --- |
+| Human observes agent | pointer, action, target, and result visible |
+| Human takeover | active agent input pauses or cancels immediately |
+| Two agents inspect one tab | concurrent reads do not block |
+| Two agents mutate one tab | deterministic serialization and visible queue |
+| Two agents use different tabs | actions proceed concurrently |
+| Web and TUI prompt same agent | kernel ordering and transcript remain coherent |
+| Two Web viewers | same stream and viewport without duplicate browser |
+| Web plus remote TUI reconnect | one Room, one provider run, one browser state |
+| Client resizes | canonical viewport ownership prevents resize fights |
+| Permission prompt | one kernel interaction projected to every Chariox terminal |
+
+### Agent and Environment placement
+
+Exercise the public kernel-owned Browser and Computer tool path from an agent
+in the Room, then confirm in Web View that the Action changed the same
+Environment and stable Tab identity. Run the local rows with isolated local
+kernels and slices before the hosted rows. A same-worker pass does not stand in
+for a cross-worker pass. The browser remains in its Room-owned headed
+Environment even when an agent executes in another slice.
+
+| Environment placement | Agent placement | Required proof |
+| --- | --- | --- |
+| Home-machine headed slice | Home kernel | One browser and Computer view, no agent-owned duplicate |
+| Home-machine headed slice | Different slice | Agent tools reach the home Room's Environment without entering the browser slice's files or processes |
+| Home-machine headed slice | Remote worker kernel | Leased agent tools reach the same Tab and display through home admission and relay routing |
+| Remote headed slice | Home kernel | Home agent reaches the remote browser and Web View observes the same Tab |
+| Remote headed slice | Environment's worker | Same-worker agent still passes through home admission and has no parallel Room authority |
+| Remote headed slice | Different slice or remote worker | Cross-worker agent reaches the bound Environment and cannot substitute its own browser |
+
+For every row, verify Action attribution, input ownership and takeover,
+read/write ordering, reconnect without a second provider run, and denial of a
+foreign Room or forged lease. An agent in the Room must not need a separate
+Browser or Computer grant. A browser-only tool pass does not prove Computer
+display/input or Web View parity. Repeat the remote rows against a fresh
+managed Path-1 machine during hosted acceptance; local simulated relays are
+source/local evidence only.
+
+### Security and isolation
+
+| Case | Required proof |
+| --- | --- |
+| Wrong user | cannot discover or attach to environment |
+| Wrong Room or slice | scoped token rejected |
+| Expired token | viewer and input rejected, refresh path works |
+| Stale machine heartbeat | target not selected |
+| Unsafe endpoint origin | Cloud refuses embed |
+| Host mismatch on secret paste | kernel rejects before resolving credential |
+| Trace and log scan | no secret, passphrase, vault key, auth header, or clipboard residue |
+| Relay inspection | relay routes opaque packets only |
+| Cloud inspection | Cloud remains bootstrap/control plane, not runtime proxy |
+| Cross-tenant concurrent use | no tab, stream, event, screenshot, or secret leakage |
+| Malicious page | pointer overlay, tool references, downloads, and clipboard remain bounded |
+| Room access and capability grants | Room agents receive Browser and Computer tools by membership; a foreign Room is denied; vault and file tools retain their separate grants |
+
+### Resiliency and failure injection
+
+Resiliency is a release gate, not an incidental result of happy-path tests.
+Each case must record the fault trigger, detection signal, user-visible state,
+automatic recovery behavior, manual recovery path, recovery time, data loss or
+duplication, resource delta, and cleanup result. Establish recovery time and
+recovery point objectives from the first functionally correct local run. Ratify
+them before rollout, and fail the release if a later implementation regresses
+them without an explicitly approved tradeoff.
+
+| Failure | Expected behavior |
+| --- | --- |
+| Relay disconnect | bounded reconnect, no duplicate action or provider run |
+| Kernel restart or SIGKILL | durable Room and provider reconciliation |
+| Worker restart | target becomes stale, then recovers through normal registration |
+| Browser Controller crash | browser health changes, actions fail clearly, recovery is bounded |
+| Chromium crash | controller detects loss and does not reuse stale references |
+| Selkies crash | View degrades and retries without blocking kernel work |
+| Viewer closes mid-action | agent action ownership remains deterministic |
+| Queue saturation | fail-fast or bounded backpressure, relay readers stay live |
+| Provider run terminates with queued prompts | the kernel records one authoritative bounded termination reason, closes the active run once, promotes the queued backlog exactly once, preserves provider-thread/history continuity, and projects the same card, tooltip, timer, transcript, and next-prompt state before and after reconnect |
+| Slow viewer | other viewers and agents remain unaffected |
+| Network latency and loss | measured degradation and no protocol corruption |
+| Low memory | admission rejection or graceful stop before OOM |
+| Low disk | save and download fail before corrupting state |
+| Save interrupted | previous saved state remains valid |
+| External service forces reauth | exact prompt captured and product remains usable |
+| Managed-machine hard reboot | reconnects through fresh heartbeat without a duplicate kernel, Room, or provider run |
+| Managed machine becomes permanently unavailable | target is declared stale, user receives an actionable state, and another healthy machine remains selectable |
+| Two managed machines partition | neither relay nor Cloud invents split-brain Room authority |
+| Browser profile or saved-state corruption | restore fails safely, prior known-good generation remains recoverable, and corrupt state is quarantined |
+| Save succeeds but acknowledgement is lost | retry is idempotent and does not create divergent generations |
+| Restore interrupted after container creation | partial runtime is removed or reconciled before the next attempt |
+| Controller restarts during queued mutations | completed actions are not repeated and incomplete actions fail or resume deterministically |
+| Human takeover during reconnect | ownership does not revert silently to the agent |
+| Web disconnect while TUI remains | TUI and kernel continue; Web reconnects to the same authoritative state |
+| Web relay or inventory reconnect | terminal shell stays mounted and visible; no document reload, full-grey frame, empty route outlet, lost focus, or stale status timer |
+| Stale `WORKING` agent | every `WORKING` card is backed by a fresh kernel-owned provider/tool heartbeat and a visible bounded active-operation projection; retained provider/transcript history is never treated as liveness; the waiting-room cache keys external-working generations atomically with the session revision; missing progress reconciles through the shared provider-liveness path to recovery or an actionable terminal state, stops the timer, and cannot indefinitely block queued prompts |
+| TUI disconnect while Web remains | Web and kernel continue; TUI replay does not duplicate interactions |
+| DNS, TLS, or relay endpoint failure | connection fails loudly, uses no unsafe fallback, and recovers after the endpoint is healthy |
+| Clock skew and expired tokens | refresh or rejection is deterministic and does not bypass authorization |
+| Memory pressure with active slices | admission closes first; selected work is stopped gracefully before host OOM |
+| Disk pressure during download and save | reserved headroom protects kernel state and last known-good save |
+| Process and file-descriptor exhaustion | bounded failure preserves terminal traffic and emits an actionable diagnostic |
+| Corrupt or unsupported protocol event | compatible clients continue where safe; incompatible clients fail with the minimum-version message |
+
+Run faults at the beginning, middle, and commit boundary of state-changing
+operations. Repeat the recovery path from Web, local TUI, and remote TUI, and
+with each provider where provider-run reconciliation is involved. A recovery is
+not successful merely because the UI reconnects: the test must verify the Room,
+tab registry, provider thread, action ledger, permissions, files, browser
+profile, and saved-state generation against pre-fault invariants.
+
+### Scale and soak
+
+Run the local cases first. Repeat the applicable cases on managed machines only
+after the local scale and leak checks pass. Run at least:
+
+- one Room, one browser, one user, one agent
+- one Room, one browser, one user, three agents
+- one Room, one browser, two Web viewers, one local TUI, one remote TUI
+- one managed machine with the maximum safely admitted headed slices
+- two managed machines with relay target selection and failure of one machine
+- eight-hour active browser/controller/stream soak
+- twenty-four-hour idle authenticated browser soak
+- repeated disconnect/reconnect loop
+- repeated save/restart loop
+- repeated create/delete loop with leak comparison after every cycle
+
+Scale is a resource-bound admission problem. The test must prove graceful
+rejection at the limit, not merely find the point where the machine crashes.
+
+The idle authenticated-browser soak must use monotonic duration accounting,
+meet its checkpoint cadence minimum, and finish with a fresh authenticated
+browser request plus exact ready Controller PID. It must restart Chromium once
+against the same profile and observe both the session cookie and a
+browser-storage marker after restart, without turning the idle interval into a
+navigation loop. A pass is valid only after terminal status/result/log scanning
+and exact owned-process/listener cleanup. Its credential-free loopback fixture
+does not substitute for Google authentication or full managed-machine
+recreation evidence.
+
+The repository-supported entry point for the active browser/controller/stream
+gate is:
+
+```bash
+pnpm --filter @chariox/cli run browser-computer:soak -- --preflight
+pnpm --filter @chariox/cli run browser-computer:soak -- --smoke
+pnpm --filter @chariox/cli run browser-computer:soak -- --detach
+```
+
+The detached command defaults to eight hours and refuses a shorter duration,
+source protocol below 322, or a backend other than Selkies. Do not start it
+unless preflight and the short smoke pass from the same clean source tree,
+engine-resolved immutable image digest with a verified Cosign signature and
+signed SLSA provenance attestation, viewer backend, resource limits, and
+external evidence root. The receipts expire after one hour and detach fails
+closed when either is missing, stale, or mismatched. The runner also fails
+preflight unless its Linux network namespace is exclusively attributable to
+the owned process tree. Retain its external evidence directory, including
+PID/status/result files, resource samples, failure marker, process logs, latest
+screen capture, and cleanup ledger.
+
+## Regression matrix for adjacent Chariox features
+
+Browser/computer work touches kernel, relay, slice, Cloud, provider, security,
+and persistence paths. Every milestone must select and run the relevant rows.
+
+| Chariox feature | Regression risk | Required validation |
+| --- | --- | --- |
+| Local and remote sessions | new environment events disturb attachment or focus | attach, detach, focus, reconnect, end, and delete |
+| Provider runs | controller or save lifecycle duplicates or loses runs | launch, prompt, cancel, resume, crash, and cleanup for all providers |
+| Provider-native TUI | parallel authority or missing interaction projection | local, remote, and slice native-TUI drills |
+| Permissions | browser action creates a second approval path | one `RuntimeInteraction` across every terminal |
+| Prompt attachments | uploads and downloads conflict with attachment transport | local, remote, and slice byte-transfer drills |
+| MCP and skills | controller changes capability rendering | agent-scoped grants, revoke, collision, and isolation drills |
+| Vault | browser controller or traces reveal secrets | full M26 and CHA-29 leak matrix |
+| History and Recall | browser/action events corrupt or overwhelm history | persistence, filtering, replay, and bounded event volume |
+| Workflows | browser tools block scheduler or relay readers | concurrent workflow and browser task with cancel/retry |
+| Agent-to-agent coordination | kernel-originated messages enter the user prompt backlog or stall behind an active turn | deliver into the active provider turn at the next safe message boundary, deliver immediately when idle, and verify reconnect deduplication, ordering, cancellation, and a queue-free Web/TUI projection |
+| Workflow endpoints | managed-machine work changes routing | connected ingress and deployment invocation drill |
+| Workspace Live Sync | downloads/uploads and slice files collide with sync | managed, tracked, cross-branch, conflict, and permission drills |
+| Managed remote kernels | headed slices affect heartbeat and admission | provision, restart, stale heartbeat, resource cap, teardown |
+| Slice lifecycle | streamer/controller leave orphan state | create, start, stop, save, restart, reset, backup, delete |
+| Multi-user collaboration | shared browser leaks across tenants | two-user same Room and cross-Room isolation |
+| Relay identity and transport | display load starves terminal traffic | terminal prompt under full display load and stalled viewer |
+| Cloud waiting room | new display states break machine selection | local, hosted, stale, headless, and protocol-incompatible targets |
+| Notifications | browser and lifecycle events produce duplicates or secrets | reconnect deduplication, redaction, and actor attribution |
+| Agent apps and deployments | controller packages alter deployment images | build, deploy, rollback, and image-size comparison |
+| CLI and TUI rendering | new events break old terminals | minimum protocol, unknown event, resize, trace, and reconnect |
+| iOS and planned Android clients | protocol changes break native projections | protocol snapshots, minimum version, client build/tests |
+| Self-hosted mode | hosted endpoint assumptions break local users | local `ws://`, local-only viewer, and explicit open behavior |
+| Reviewer infrastructure | resource drills disturb shared reviewer services | inventory before/after; never stop shared reviewers |
+
+## Acceptance drills
+
+### Drill A: deterministic local browser state
+
+Run a local authenticated fixture through first-party browser tools. Set cookie,
+localStorage, IndexedDB, Cache Storage, and service-worker state. Install a
+small graphical program. Save, remove the container and home volume, restore,
+and verify every marker through the same agent.
+
+### Drill B: real service and vault
+
+For the Apps Phase 1 dependency, run this authenticated-session regression with
+renderer sandboxing active before and after save, complete container/home-volume
+removal, restore, browser restart and fallback launch. Run Drill A under the same
+configuration first. Retain redacted browser launch/sandbox evidence and profile
+generation markers, never cookie values or key material. Distinguish Chariox state
+loss from provider-driven session invalidation; reproduce and fix any
+Chariox-caused loss before the Apps release. The reported Google persistence issue
+is not resolved merely by removing `--no-sandbox` or by passing a page-load check.
+
+From Web View, ask a slice agent to sign into Gmail or a comparable public
+service using a vault-backed credential. Send a first message, save and restart
+agents, verify the same provider thread and authenticated browser, then send a
+second message. If the service forces reauth, capture the exact prompt and
+compare it with the deterministic fixture.
+
+### Drill C: TUI-to-Web shared browser
+
+Using a local kernel, a local Docker slice, and a same-host relay, attach local
+TUI, remote TUI, and Web to one Room. Prompt from the TUI to open and edit a
+page. Observe the same action in Web. Take over in Web, then verify TUI activity
+and traces reflect the human actor and final browser state. Milestone 9 repeats
+this unchanged drill against the OpenShip-provisioned machine and hosted relay.
+
+### Drill D: non-browser office work
+
+Ask the agent to open a graphical editor or another installed desktop
+application, manipulate a document with screen and input tools, save it, then
+attach it to an email. Verify browser focus is not forced during desktop work.
+
+### Drill E: concurrency and arbitration
+
+Use three agents. Two inspect one tab while the third works in another tab.
+Queue two mutations on the same tab, then perform human takeover. Prove reads,
+serialization, cancellation, attribution, and independent-tab concurrency.
+
+MP-08/MP-10 timing-exact local acceptance uses
+`node apps/cli/scripts/live-browser-controller-concurrency-drill.mjs --test-binary /absolute/path/to/chariox-kernel-tests --image sha256:<image-id> --output /absolute/external/evidence`.
+Build the test artifact from the same clean checkout with
+`cargo test -p chariox-kernel --lib --no-run`. The runner owns a credential-free
+headed slice and uses three synthetic Room actors, actual controller/CDP reads,
+page-acknowledged gates, native clicks and fills, and the shared kernel takeover
+path. It checks physical read overlap, independent status during held input,
+same-tab ordering, independent typing, exact cancellation and effect counts,
+and selected-tab preservation within the existing controller bounds. Retain
+artifact/source/image identities and cleanup. Run the mixed official-provider
+Drill E separately as a realism smoke; provider dispatch timing is not a clock
+for these deterministic checks. Neither run alone closes an MP item.
+
+### Drill F: managed-machine recovery
+
+Provision a fresh OpenShip-backed managed machine, complete a browser task,
+disconnect clients, restart the worker or machine, reconnect, and continue the
+same Room and provider thread. Repeat with relay interruption and stale target
+selection.
+
+### Drill G: office-work suite
+
+Complete the five scenarios from `docs/AGENT_SLICE_OFFICE_WORK_DRILLS.md`:
+
+- email-gated SaaS onboarding
+- vendor research and CRM-like entry
+- document intake and follow-up email
+- public API workflow with an agent-created extension
+- support ticket lifecycle
+
+### Drill H: load, soak, and cleanup
+
+Run the approved maximum slice count, multiple viewers, Web and TUI traffic,
+and a normal workflow concurrently. Sample resources and latency, inject one
+slow viewer, stop every task, and compare the final process/container/volume/
+port/resource inventory with the initial inventory.
+
+### Drill I: resiliency campaign
+
+Execute every locally reproducible resiliency case on local Docker first while
+Web, local TUI, and remote TUI are attached through the same-host relay. Do not
+provision remote infrastructure until that campaign passes and cleans up.
+Then repeat the applicable matrix on a fresh OpenShip-provisioned managed
+machine. Inject relay, kernel, worker, controller, Chromium, Selkies, network,
+host, memory, disk, token, and persistence faults at deterministic operation
+boundaries. The remote pass also includes a managed-machine hard reboot and a
+two-machine partition scenario. For every fault, prove bounded detection and
+recovery, single Room and provider authority, no duplicated or silently lost
+completed action, preservation of the last known-good saved state, accurate
+user-facing status in every client, and full resource cleanup. Retain recovery
+time, recovery point, memory, CPU, disk, connection metrics, and the event
+timeline as functional evidence. Performance comparison waits for Milestone 10.
+
+## Cleanup contract
+
+Every test and drill must own an explicit cleanup ledger. Cleanup runs on
+success, assertion failure, timeout, interruption, and provider failure.
+
+Provider profiles, refreshed child homes, and their saved states are durable
+assets under the credential-retention protocol, not temporary drill artifacts.
+Official-provider Room drills retain their private kernel runtime under
+`~/.chariox/dev/provider-runtimes/browser-computer/`, its named home volume,
+and saved-state images and archives. Stop these slices; do not delete or reset
+them during final cleanup. `RETENTION.json` and the public cleanup projection
+record the owner, run, and retained locations. Keep execution records private
+and publish only allowlisted evidence. A persistence drill may remove the
+original home volume only after checking its saved archive and manifest; the
+saved copy and restored home remain protected. Never dispose of a machine
+holding the only current credential profile or backup.
+
+The removal list below applies to disposable fixtures and temporary transfers;
+exclude these durable assets and all other protected credential stores.
+
+Clean up all drill-owned:
+
+- Docker containers, images created only for the drill, volumes, and networks
+- slice records, state archives, backups, and temporary homes
+- Browser Controller, Selkies, Chromium, Xvfb, noVNC fallback, and provider
+  processes
+- kernels, workers, relays, sessions, agents, workflows, and temporary grants
+- SSH processes, port forwards, tunnels, listeners, and temporary firewall
+  rules
+- managed machines, OpenShip deployments, temporary DNS, and Cloud records
+- downloaded files, upload fixtures, screenshots not retained as evidence, and
+  temporary credentials
+- environment variables, shell profiles, browser profiles, and Keychain export
+  files created for Linux provider authentication
+
+Never print credential payloads. Temporary credential files must have mode 600
+and must be deleted after verification. Do not prune unrelated Docker state,
+shared kernels, active development slices, or reviewer infrastructure.
+
+The final cleanup assertion must prove:
+
+- no drill-owned container or managed machine remains
+- no drill-owned process or listener remains
+- no drill-owned active kernel target or heartbeat remains
+- no temporary credential or secret-bearing file remains
+- memory, swap, and disk return to the expected post-run range
+- retained evidence contains no secret
+
+If cleanup is incomplete, the drill is failed even when its functional
+assertions passed.
+
+## PR completion gate
+
+No PR in this program is ready to merge until:
+
+- scope is limited to one coherent milestone and one repository
+- every completed subtask has its own committed and pushed checkpoint
+- the exact head has no remaining reviewer comments
+- required protocol version and snapshots are updated
+- unit, integration, compatibility, and selected live drills pass
+- Web and TUI implications are tested or explicitly not applicable
+- managed-machine implications are tested when the milestone reaches that path
+- resource safety and cleanup evidence is attached
+- performance comparison is attached only for Milestone 10 and later; earlier
+  functional PRs must not be held open for benchmark tuning
+- security and secret scans pass
+- cleanup assertions pass
+- documentation, Linear issue, PR body, and evidence manifest agree
+- rollback behavior is documented and tested
+
+## Program completion gate
+
+CHA-16 is complete only when:
+
+- Selkies is the reviewed default and noVNC is removed after its rollback
+  window
+- the long-running Browser Controller owns the shared tab registry
+- Browser and Computer modes use one Room environment and authority path
+- Web and local/remote TUI clients prove parity against one live environment
+- all three providers pass structured browser and computer fallback drills
+- user takeover, multi-agent concurrency, permissions, and actor traces pass
+- kernel-routed agent-to-agent messages never appear as queued user prompts and pass active, idle, reconnect, deduplication, ordering, cancellation, and Web/TUI projection drills
+- provider termination and queued-prompt advancement use one kernel-owned lifecycle across local, registered managed, relay-attached, and leased agents; progress-without-final, provider closure, reconnect/reload, stale event ordering, preserved conversation context, exactly-once backlog promotion, and the next accepted prompt leave card, tooltip, timer, transcript, and durable history consistent
+- focused-agent navigation, history refresh, relay reconnect, and inventory refresh preserve the rendered Web terminal grid, expose bounded target-pane loading and failure states, and never flash an unlabelled whole-workspace placeholder
+- `WORKING` status, elapsed timer, provider/tool trace, and queued-prompt admission share one freshness contract; retained external/provider history cannot manufacture live work, external-working state and the session revision are read and cached atomically, a stale provider/tool heartbeat cannot leave a silent multi-hour turn or hide the active operation, and reconciliation is identical before and after Web reconnect/reload
+- a mixed same-kernel drill keeps a healthy agent live while two deliberately stale provider records reproduce the observed multi-hour silent-turn case; only the stale agents settle, their timers stop, their pending inter-agent messages enter through the kernel prompt path, and the healthy agent remains unaffected
+- state, installed programs, browser authentication, and provider threads
+  survive save/restart and full recreation
+- vault-backed public-service work passes leak scans
+- the OpenShip-backed Chariox managed-machine drill passes from provisioning
+  through teardown
+- every managed-parity ledger item from `MP-01` through `MP-11` is closed with
+  exact-head review, focused tests, fresh-machine evidence, and cleanup proof
+- disposable Cloud-VM workers pass provider-neutral Path-1 allocation,
+  enrollment, no-Bubblewrap ordinary-kernel provider launch, arbitrary
+  accessible cwd and filesystem parity, Codex, Claude, and OpenCode execution,
+  selected context and credential transfer, remote Git, reconnect and recovery,
+  automatic Project environment setup, default and user-selected repository
+  roots, bounded lifetime, cost, every mandatory managed shutdown trigger, and
+  residue-free deletion before Browser and Computer feature work resumes
+- MP-08 / MP-10, WP-12 benchmark round 1 separately requires one complete,
+  valid, passing run on every included public benchmark, regardless of ranking;
+  round 2 pursues verified first place under comparable rules. Inclusions and
+  exclusions are recorded. Neither benchmark round blocks Browser, Computer,
+  or Path-1 closure or merge (MP-01 through MP-11; owner decision 2026-10-02).
+- any benchmark-driven optimization preserves every local and remote functional,
+  security, resiliency, compatibility, and cleanup gate
+- resource, scale, and soak gates pass on local and managed infrastructure
+- adjacent Chariox regression matrix passes
+- exact-head reviewers have no comments on every merged PR
+- all temporary infrastructure and local artifacts are cleaned up

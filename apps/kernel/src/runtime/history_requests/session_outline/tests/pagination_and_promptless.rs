@@ -1,0 +1,1038 @@
+use super::*;
+
+#[test]
+fn agent_outline_makes_legacy_duplicate_turn_ids_unique() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-duplicate-turn-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-2".to_string()),
+        prompt_id: Some("prompt-2".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let first_prompt = HistoryEvent::transcript(
+        10,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "first prompt"),
+        context.clone(),
+    );
+    let second_prompt = HistoryEvent::transcript(
+        20,
+        &SessionHistoryEntry::user_prompt("session-1", "attachment-2", "agent-1", "second prompt"),
+        context,
+    );
+    store
+        .append(&first_prompt)
+        .expect("first prompt should append");
+    store
+        .append(&second_prompt)
+        .expect("second prompt should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 2, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 2);
+    assert_eq!(outline.turns[0].turn_id, "prompt-2");
+    assert_eq!(outline.turns[0].prompt_id.as_deref(), Some("prompt-2"));
+    assert_eq!(outline.turns[0].user_prompt.entry.text, "first prompt");
+    assert_eq!(outline.turns[1].turn_id, "prompt-2:seq-20");
+    assert_eq!(outline.turns[1].prompt_id.as_deref(), Some("prompt-2"));
+    assert_eq!(outline.turns[1].user_prompt.entry.text, "second prompt");
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_keeps_steering_prompts_inside_turns() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-steering-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let first_context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let second_context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-2".to_string()),
+        prompt_id: Some("prompt-2".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "first prompt",
+            ),
+            first_context.clone(),
+        ))
+        .expect("first prompt should append");
+    store
+        .append(&HistoryEvent::operational(
+            20,
+            HistoryEventKind::UserPrompt,
+            Some(crate::history::HistoryEventRole::User),
+            Some("steer this turn".to_string()),
+            std::collections::BTreeMap::from([
+                (
+                    "merge_key".to_string(),
+                    serde_json::Value::String(crate::history::steering_prompt_merge_key(
+                        "queued-1",
+                    )),
+                ),
+                (
+                    "source_attachment_id".to_string(),
+                    serde_json::Value::String("attachment-1".to_string()),
+                ),
+            ]),
+            first_context,
+        ))
+        .expect("steering prompt should append");
+    store
+        .append(&HistoryEvent::transcript(
+            30,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "second prompt",
+            ),
+            second_context,
+        ))
+        .expect("second prompt should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 2, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 2);
+    assert_eq!(outline.turns[0].user_prompt.entry.text, "first prompt");
+    assert_eq!(outline.turns[0].entries.len(), 1);
+    assert_eq!(outline.turns[0].entries[0].entry.text, "steer this turn");
+    assert_eq!(
+        outline.turns[0].entries[0].entry.merge_key.as_deref(),
+        Some("steering-prompt:queued-1")
+    );
+    assert_eq!(outline.turns[1].user_prompt.entry.text, "second prompt");
+    assert_eq!(outline.turns[1].entries.len(), 0);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_pages_older_turns_with_cursor() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-cursor-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    for index in 1..=5 {
+        let sequence = index * 10;
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some(format!("turn-{index}")),
+            prompt_id: Some(format!("prompt-{index}")),
+            ..HistoryEventTurnContext::default()
+        };
+        let prompt = HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                &format!("attachment-{index}"),
+                "agent-1",
+                format!("prompt {index}"),
+            ),
+            context,
+        );
+        store.append(&prompt).expect("prompt should append");
+    }
+
+    let newest = load_agent_outline(&store, "session-1", "agent-1", 2, None)
+        .expect("newest page should load");
+    assert_eq!(newest.turns.len(), 2);
+    assert_eq!(newest.turns[0].user_prompt.entry.text, "prompt 4");
+    assert_eq!(newest.turns[1].user_prompt.entry.text, "prompt 5");
+    assert_eq!(
+        newest
+            .next_cursor
+            .as_ref()
+            .map(|cursor| cursor.before_sequence),
+        Some(40)
+    );
+
+    let older = load_agent_outline(
+        &store,
+        "session-1",
+        "agent-1",
+        2,
+        newest
+            .next_cursor
+            .as_ref()
+            .map(|cursor| cursor.before_sequence),
+    )
+    .expect("older page should load");
+    assert_eq!(older.turns.len(), 2);
+    assert_eq!(older.turns[0].user_prompt.entry.text, "prompt 2");
+    assert_eq!(older.turns[1].user_prompt.entry.text, "prompt 3");
+    assert_eq!(
+        older
+            .next_cursor
+            .as_ref()
+            .map(|cursor| cursor.before_sequence),
+        Some(20)
+    );
+
+    let oldest = load_agent_outline(
+        &store,
+        "session-1",
+        "agent-1",
+        2,
+        older
+            .next_cursor
+            .as_ref()
+            .map(|cursor| cursor.before_sequence),
+    )
+    .expect("oldest page should load");
+    assert_eq!(oldest.turns.len(), 1);
+    assert_eq!(oldest.turns[0].user_prompt.entry.text, "prompt 1");
+    assert_eq!(oldest.next_cursor, None);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_rehydrates_file_image_attachment_previews() {
+    let image_path = std::env::temp_dir().join(format!(
+        "chariox-outline-preview-{}-{}.png",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::write(&image_path, b"file-image").expect("fixture image should write");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut entry =
+        SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "inspect image");
+    entry.attachments = vec![SessionHistoryPromptAttachment {
+        url: format!("file://{}", image_path.display()),
+        mime: "image/png".to_string(),
+        filename: Some("file-screenshot.png".to_string()),
+        preview_url: None,
+        size_bytes: None,
+        contents_base64: None,
+    }];
+    let event = HistoryEvent::transcript(10, &entry, context);
+
+    let page_entry = page_entry_from_event(event).expect("page entry should project");
+
+    assert_eq!(
+        page_entry
+            .entry
+            .attachments
+            .first()
+            .and_then(|attachment| attachment.preview_url.as_deref()),
+        Some("data:image/png;base64,ZmlsZS1pbWFnZQ==")
+    );
+
+    let _ = std::fs::remove_file(image_path);
+}
+
+#[test]
+fn agent_outline_leaves_promptless_local_provider_activity_empty() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-promptless-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let mut tool_entry = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
+    );
+    tool_entry.timestamp_ms = 1_234;
+    let tool = HistoryEvent::transcript(1, &tool_entry, context);
+    store
+        .append(&tool)
+        .expect("promptless provider activity should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+
+    assert!(outline.turns.is_empty());
+    assert_eq!(outline.next_cursor, None);
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_omits_persisted_external_recovery_envelopes() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-recovery-envelope-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("recovery-turn".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let recovery_prompt = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "[Chariox recovery operation chariox-recovery:prompt-1:1] Continue the active task.",
+        "codex",
+        "thread-1",
+        Some("observed-recovery".to_string()),
+        Some(1),
+    );
+    let recovery_tool = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderTool,
+        r#"{"tool":"bash","input":{"command":"internal"}}"#,
+        "codex",
+        "thread-1",
+        Some("observed-tool".to_string()),
+        Some(2),
+    );
+    store
+        .append(&HistoryEvent::transcript(
+            1,
+            &recovery_prompt,
+            context.clone(),
+        ))
+        .expect("recovery prompt should persist");
+    store
+        .append(&HistoryEvent::transcript(2, &recovery_tool, context))
+        .expect("recovery tool should persist");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 4, None).expect("outline should load");
+
+    assert!(outline.turns.is_empty());
+    assert_eq!(outline.next_cursor, None);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_keeps_cancelled_chariox_turn_without_codex_abort_echo() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-codex-abort-envelope-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let chariox_context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("prompt-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let observed_context = HistoryEventTurnContext {
+        turn_id: Some("observed-abort".to_string()),
+        prompt_id: None,
+        ..chariox_context.clone()
+    };
+    let prompt = SessionHistoryEntry::user_prompt(
+        "session-1",
+        "attachment-1",
+        "agent-1",
+        "wait for thirty seconds",
+    );
+    let running_tool = SessionHistoryEntry::provider_output(
+        "session-1",
+        "run-1",
+        Some("agent-1"),
+        TerminalOutputKind::ProviderTool,
+        Some("tool-1".to_string()),
+        r#"{"tool":"bash","status":"running","input":{"command":"sleep 30"}}"#,
+    );
+    let abort_echo = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::UserPrompt,
+        "<turn_aborted> The user interrupted the previous turn on purpose. </turn_aborted>",
+        "codex",
+        "thread-1",
+        Some("observed-abort".to_string()),
+        Some(3),
+    );
+    let completed_tool_echo = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderTool,
+        r#"{"tool":"bash","status":"completed","input":{"command":"sleep 30"}}"#,
+        "codex",
+        "thread-1",
+        Some("observed-tool".to_string()),
+        Some(4),
+    );
+    store
+        .append_many(&[
+            HistoryEvent::transcript(1, &prompt, chariox_context.clone()),
+            HistoryEvent::transcript(2, &running_tool, chariox_context),
+            HistoryEvent::transcript(3, &abort_echo, observed_context.clone()),
+            HistoryEvent::transcript(4, &completed_tool_echo, observed_context),
+        ])
+        .expect("cancelled turn history should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 4, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    assert_eq!(
+        outline.turns[0].user_prompt.entry.text,
+        "wait for thirty seconds"
+    );
+    assert!(outline.turns[0]
+        .entries
+        .iter()
+        .chain(outline.turns[0].summary.iter())
+        .all(|entry| !entry.entry.text.contains("turn_aborted")));
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn session_history_outline_recovers_multiple_agents_and_image_attachment_after_store_restart() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-history-restart-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    {
+        let store = OperationalHistoryStore::open(path.clone())
+            .expect("operational history store should open before restart");
+        let promptless_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-primary".to_string()),
+            turn_id: Some("turn-primary".to_string()),
+            provider_run_id: Some("run-primary".to_string()),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        store
+            .append(&HistoryEvent::transcript(
+                10,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-primary",
+                    Some("agent-primary"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some("assistant-primary".to_string()),
+                    "recovered promptless output",
+                ),
+                promptless_context,
+            ))
+            .expect("promptless output should persist");
+
+        let image_context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-image".to_string()),
+            turn_id: Some("turn-image".to_string()),
+            prompt_id: Some("prompt-image".to_string()),
+            provider_run_id: Some("run-image".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut image_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-image",
+            "agent-image",
+            "inspect this image",
+        );
+        image_prompt.attachments = vec![SessionHistoryPromptAttachment {
+            url: "data:image/png;base64,aW1hZ2U=".to_string(),
+            mime: "image/png".to_string(),
+            filename: Some("screen.png".to_string()),
+            preview_url: Some("data:image/png;base64,aW1hZ2U=".to_string()),
+            size_bytes: None,
+            contents_base64: None,
+        }];
+        store
+            .append(&HistoryEvent::transcript(
+                20,
+                &image_prompt,
+                image_context.clone(),
+            ))
+            .expect("image prompt should persist");
+        store
+            .append(&HistoryEvent::transcript(
+                21,
+                &SessionHistoryEntry::provider_output(
+                    "session-1",
+                    "run-image",
+                    Some("agent-image"),
+                    TerminalOutputKind::ProviderOutput,
+                    Some("assistant-image".to_string()),
+                    "image response",
+                ),
+                image_context,
+            ))
+            .expect("image response should persist");
+    }
+
+    let restored = OperationalHistoryStore::open(path.clone())
+        .expect("operational history store should reopen after restart");
+    let promptless = load_agent_outline(&restored, "session-1", "agent-primary", 4, None)
+        .expect("promptless provider activity should reload after restart");
+    let image = load_agent_outline(&restored, "session-1", "agent-image", 4, None)
+        .expect("image history should reload after restart");
+
+    assert!(promptless.turns.is_empty());
+    assert_eq!(image.turns.len(), 1);
+    assert_eq!(image.turns[0].user_prompt.entry.text, "inspect this image");
+    assert_eq!(
+        image.turns[0].user_prompt.entry.attachments[0]
+            .filename
+            .as_deref(),
+        Some("screen.png")
+    );
+    assert_eq!(
+        image.turns[0]
+            .summary
+            .as_ref()
+            .map(|entry| entry.entry.text.as_str()),
+        Some("image response")
+    );
+
+    drop(restored);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_leaves_promptless_imported_provider_activity_empty() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-promptless-outline-pages-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    for index in 1..=3 {
+        let context = HistoryEventTurnContext {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("agent-1".to_string()),
+            turn_id: Some(format!("turn-{index}")),
+            provider_run_id: Some(format!("run-{index}")),
+            provider: Some("codex".to_string()),
+            model: Some("gpt-5".to_string()),
+            ..HistoryEventTurnContext::default()
+        };
+        let output = HistoryEvent::transcript(
+            index * 10,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                &format!("run-{index}"),
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some(format!("merge-{index}")),
+                format!("promptless output {index}"),
+            ),
+            context,
+        );
+        store
+            .append(&output)
+            .expect("promptless provider activity should append");
+    }
+
+    let import =
+        ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+    let latest = load_scoped_agent_outline(&store, "session-1", "agent-1", 2, None, Some(&import))
+        .expect("latest outline should load");
+
+    assert!(latest.turns.is_empty());
+    assert_eq!(latest.next_cursor, None);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_leaves_promptless_observed_activity_empty() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-promptless-external-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-5".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    let tool_entry = SessionHistoryEntry::external_provider_observed(
+        "session-1",
+        Some("run-1"),
+        "agent-1",
+        SessionHistoryEntryKind::ProviderTool,
+        r#"{"tool":"bash","status":"completed","input":{"command":"cargo test"}}"#,
+        "codex",
+        "thread-1",
+        Some("tool-1".to_string()),
+        Some(42),
+    );
+    let tool = HistoryEvent::transcript(1, &tool_entry, context);
+    store
+        .append(&tool)
+        .expect("promptless external activity should append");
+
+    let import =
+        ExternalProviderImportMetadata::observed_history("codex:thread-1", "codex", "thread-1");
+    let outline = load_scoped_agent_outline(&store, "session-1", "agent-1", 1, None, Some(&import))
+        .expect("outline should load");
+
+    assert!(outline.turns.is_empty());
+    assert_eq!(outline.next_cursor, None);
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_caps_large_provider_output_inline_payloads() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-large-output-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "prompt"),
+            context.clone(),
+        ))
+        .expect("prompt should append");
+    let large_output = "x".repeat(MAX_OUTLINE_INLINE_CHARS + 1024);
+    store
+        .append(&HistoryEvent::transcript(
+            20,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                TerminalOutputKind::ProviderOutput,
+                Some("merge-1".to_string()),
+                large_output.clone(),
+            ),
+            context,
+        ))
+        .expect("large provider output should append");
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    let turn = &outline.turns[0];
+    let summary = turn.summary.as_ref().expect("summary should be present");
+    assert_eq!(summary.total_chars, large_output.chars().count());
+    assert_eq!(summary.fragment_end, MAX_OUTLINE_INLINE_CHARS);
+    assert_eq!(summary.entry.text.chars().count(), MAX_OUTLINE_INLINE_CHARS);
+    assert!(turn.entries.is_empty());
+    assert_eq!(turn.blobs.len(), 1);
+    assert_eq!(turn.blobs[0].kind, SessionHistoryEntryKind::ProviderOutput);
+    assert_eq!(turn.blobs[0].total_chars, large_output.chars().count());
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn agent_outline_groups_large_blob_metadata_sets() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-large-blob-metadata-outline-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    let store =
+        OperationalHistoryStore::open(path.clone()).expect("operational history store should open");
+    let context = HistoryEventTurnContext {
+        session_id: Some("session-1".to_string()),
+        agent_id: Some("agent-1".to_string()),
+        turn_id: Some("turn-1".to_string()),
+        prompt_id: Some("prompt-1".to_string()),
+        provider_run_id: Some("run-1".to_string()),
+        ..HistoryEventTurnContext::default()
+    };
+    store
+        .append(&HistoryEvent::transcript(
+            10,
+            &SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "prompt"),
+            context.clone(),
+        ))
+        .expect("prompt should append");
+    for index in 0..(MAX_OUTLINE_EVENTS_PER_BLOB + 17) {
+        let event = HistoryEvent::transcript(
+            20 + index as u64,
+            &SessionHistoryEntry::provider_output(
+                "session-1",
+                "run-1",
+                Some("agent-1"),
+                // One long thought: a blob covers at most
+                // MAX_OUTLINE_EVENTS_PER_BLOB of its rows (MP-08 / MP-10 panes R7
+                // gives each tool call its own blob).
+                TerminalOutputKind::ProviderReasoning,
+                Some("thought-1".to_string()),
+                format!("step {index} "),
+            ),
+            context.clone(),
+        );
+        store
+            .append(&event)
+            .expect("reasoning output should append");
+    }
+
+    let outline =
+        load_agent_outline(&store, "session-1", "agent-1", 1, None).expect("outline should load");
+
+    assert_eq!(outline.turns.len(), 1);
+    let turn = &outline.turns[0];
+    assert_eq!(turn.blobs.len(), 2);
+    assert_eq!(turn.blobs[0].entry_count, MAX_OUTLINE_EVENTS_PER_BLOB);
+    assert_eq!(turn.blobs[1].entry_count, 17);
+
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
+}
+
+// MP-08/MP-10/MP-11: legacy diagnostic blobs never become agent speech on expansion.
+#[test]
+fn amfix_r19_internal_dispatch_history_diagnostics_are_not_agent_output() {
+    let text = "Provider prompt dispatch failed: provider protocol `session_permissions` failed for run `private-run`: read failed";
+    let error = SessionHistoryEntry::provider_output(
+        "s",
+        "r",
+        Some("a"),
+        crate::terminal::TerminalOutputKind::ProviderError,
+        None,
+        text,
+    );
+    let context = HistoryEventTurnContext {
+        session_id: Some("s".into()),
+        agent_id: Some("a".into()),
+        provider_run_id: Some("r".into()),
+        ..Default::default()
+    };
+    let event = HistoryEvent::transcript(1, &error, context.clone());
+    assert!(page_entry_from_event(event.clone()).is_none());
+    let mut notice = event.clone();
+    notice.kind = HistoryEventKind::Notice;
+    assert!(page_entry_from_event(notice).is_none());
+    let mut agent = event.clone();
+    agent.kind = HistoryEventKind::ProviderOutput;
+    assert!(
+        page_entry_from_event(agent).is_some(),
+        "actual agent text remains visible"
+    );
+    let user = HistoryEvent::transcript(
+        2,
+        &SessionHistoryEntry::user_prompt("s", "t", "a", text),
+        context,
+    );
+    assert!(
+        page_entry_from_event(user).is_some(),
+        "quoting a diagnostic does not hide a user prompt"
+    );
+}
+// MP-08 / MP-10 / MP-11: hidden continuations cannot exhaust a visible history page.
+#[tokio::test]
+async fn outline_pages_past_internal_prompt_windows() {
+    for newer_visible in [0, 2] {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-hidden-window-outline-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let store = OperationalHistoryStore::open(path.clone()).expect("open history");
+        let context = |prompt: &str| HistoryEventTurnContext {
+            session_id: Some("session-1".into()),
+            agent_id: Some("agent-1".into()),
+            turn_id: Some(prompt.into()),
+            prompt_id: Some(prompt.into()),
+            provider_run_id: Some("run-1".into()),
+            ..HistoryEventTurnContext::default()
+        };
+        let mut sequence = 0;
+        let mut events = Vec::new();
+        {
+            let mut push_turn = |id: &str, prompt: String, output: String| {
+                sequence += 1;
+                events.push(HistoryEvent::transcript(
+                    sequence,
+                    &SessionHistoryEntry::user_prompt(
+                        "session-1",
+                        "attachment-1",
+                        "agent-1",
+                        prompt,
+                    ),
+                    context(id),
+                ));
+                sequence += 1;
+                events.push(HistoryEvent::transcript(
+                    sequence,
+                    &SessionHistoryEntry::provider_output(
+                        "session-1",
+                        "run-1",
+                        Some("agent-1"),
+                        TerminalOutputKind::ProviderOutput,
+                        None,
+                        output,
+                    ),
+                    context(id),
+                ));
+            };
+            for i in 1..=6 {
+                push_turn(
+                    &format!("prompt-{i}"),
+                    format!("owner request {i}"),
+                    format!("public answer {i}"),
+                );
+            }
+            // More than two default candidate windows, followed optionally by a
+            // partially filled visible page. Neither case may lose older anchors.
+            for i in 0..85 {
+                let (id, output) = match i % 4 {
+                    0 => (
+                        format!("goal-check-prompt-6-{i}"),
+                        "private assessment".to_string(),
+                    ),
+                    1 => (
+                        format!("task-correction-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                    2 => (
+                        format!("goal-continue-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                    _ => (
+                        format!("task-resume-prompt-6-{i}"),
+                        format!("continued public answer {i}"),
+                    ),
+                };
+                push_turn(&id, "hidden instruction".into(), output);
+            }
+            for i in 7..7 + newer_visible {
+                push_turn(
+                    &format!("prompt-{i}"),
+                    format!("owner request {i}"),
+                    format!("public answer {i}"),
+                );
+            }
+        }
+        store.append_many(&events).expect("persist history");
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        let mut pages = 0;
+        loop {
+            let response = execute_session_history_outline_request(
+                store.clone(),
+                GetSessionHistoryOutlineRequest {
+                    session_id: "session-1".into(),
+                    agent_ids: Some(vec!["agent-1".into()]),
+                    latest_prompt_count: None,
+                    include_prefetched_content: false,
+                    cursor,
+                },
+            )
+            .await
+            .expect("outline entry point");
+            let LocalDaemonResponse::SessionHistoryOutline { agents } = response else {
+                panic!("expected outline");
+            };
+            let agent = &agents[0];
+            assert!(
+                !agent.turns.is_empty(),
+                "hidden prompts cannot hide visible anchors"
+            );
+            assert!(agent.turns.len() <= 4);
+            if pages == 0 {
+                assert_eq!(
+                    agent.turns.len(),
+                    4,
+                    "fill the requested page across hidden windows"
+                );
+                assert!(
+                    agent.next_cursor.is_some(),
+                    "older visible anchors still exist"
+                );
+            }
+            for turn in &agent.turns {
+                let text = serde_json::to_string(turn).unwrap();
+                assert!(
+                    !text.contains("hidden instruction") && !text.contains("private assessment")
+                );
+                let id = turn.prompt_id.as_deref().unwrap();
+                assert!(
+                    !seen.contains(&id.to_string()),
+                    "cursor repeated a visible turn"
+                );
+                seen.push(id.to_string());
+                if id == "prompt-6" {
+                    let mut public_text = text;
+                    for blob in &turn.blobs {
+                        let response = execute_session_history_blob_content_request(
+                            store.clone(),
+                            GetSessionHistoryBlobContentRequest {
+                                session_id: "session-1".into(),
+                                agent_id: "agent-1".into(),
+                                blob_id: blob.blob_id.clone(),
+                            },
+                        )
+                        .await
+                        .expect("public blob entry point");
+                        public_text.push_str(&serde_json::to_string(&response).unwrap());
+                    }
+                    assert!(public_text.contains("public answer 6"));
+                    assert!(
+                        public_text.contains("continued public answer"),
+                        "retain work performed by hidden continuations"
+                    );
+                    assert!(
+                        !public_text.contains("hidden instruction")
+                            && !public_text.contains("private assessment")
+                    );
+                }
+            }
+            pages += 1;
+            assert!(pages <= 3, "history cursor must advance");
+            cursor = agent.next_cursor.clone();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            (1..7 + newer_visible)
+                .map(|i| format!("prompt-{i}"))
+                .collect::<Vec<_>>()
+        );
+        drop(store);
+        for suffix in ["db", "db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(suffix));
+        }
+    }
+}

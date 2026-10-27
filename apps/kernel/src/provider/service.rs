@@ -1,0 +1,79 @@
+use std::collections::BTreeMap;
+
+mod outcomes;
+mod run_lifecycle;
+mod runtime_io;
+mod store;
+pub(crate) use outcomes::{
+    ProviderRunEndedOutcome, ProviderRunLivenessReconciliation, ProviderRunParkedOutcome,
+    ProviderRunResumedOutcome, ProviderRunStartedOutcome, ProviderSessionRunsTerminatedOutcome,
+};
+pub(crate) use runtime_io::ProviderRuntimeBinding;
+pub use store::ProviderProcessServiceStore;
+
+use super::{
+    LaunchProviderRequest, ProviderNativeInteractionBridge, ProviderRegistry,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunState,
+    RuntimeProviderRun,
+};
+
+pub struct ProviderProcessService {
+    registry: ProviderRegistry,
+    run_actor_mailbox: ProviderRunActorMailbox,
+    runs: BTreeMap<String, RuntimeProviderRun>,
+    next_run_number: u64,
+}
+
+impl ProviderProcessService {
+    pub fn new() -> Self {
+        Self {
+            registry: ProviderRegistry::new(),
+            run_actor_mailbox: ProviderRunActorMailbox::default(),
+            runs: BTreeMap::new(),
+            next_run_number: 0,
+        }
+    }
+
+    pub(crate) fn launched_process_identities(
+        &self,
+    ) -> Vec<(
+        String,
+        crate::runtime::kernel_access::process::ProcessIdentity,
+    )> {
+        self.run_actor_mailbox.claude_process_identities()
+    }
+
+    pub fn registry(&self) -> &ProviderRegistry {
+        &self.registry
+    }
+
+    pub(crate) fn set_native_interaction_bridge(
+        &self,
+        bridge: std::sync::Arc<dyn ProviderNativeInteractionBridge>,
+    ) {
+        self.run_actor_mailbox.set_native_interaction_bridge(bridge);
+    }
+
+    pub(crate) fn native_interaction_bridge(
+        &self,
+    ) -> Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>> {
+        self.run_actor_mailbox.native_interaction_bridge()
+    }
+
+    pub(crate) fn output_ready_signal(&self) -> super::output_ready::ProviderOutputReadySignal {
+        self.run_actor_mailbox.output_ready_signal()
+    }
+
+    pub(crate) fn run_actor_completion_signal(&self) -> ProviderRunActorCompletionSignal {
+        self.run_actor_mailbox.completion_signal()
+    }
+}
+
+impl Default for ProviderProcessService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests;

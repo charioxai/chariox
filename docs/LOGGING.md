@@ -1,0 +1,311 @@
+# Chariox Logging Guide
+
+## Status
+
+Current local logging guide for the daemon and CLI runtime.
+
+## 1. Purpose
+
+This document explains how Chariox logging works today:
+
+- where logs are written
+- how to enable or quiet them
+- how to configure them
+- how to inspect them
+- what is and is not logged by default
+
+## 2. Current Coverage
+
+The shared logging system currently covers:
+
+- `chariox-kernel`
+- the Rust `chariox-cli` launcher
+- the primary TypeScript CLI process in `apps/cli`
+- the Fastify server process in `apps/server`
+
+Future work will extend the same logging model to provider-side helper processes.
+
+## 3. Log Format
+
+Chariox uses `NDJSON`:
+
+- one JSON object per line
+- one file per process
+- one shared machine-local log root
+
+This makes it easy to:
+
+- follow logs with `tail -f`
+- filter logs with `jq`
+- merge logs across daemon and client processes
+- build future log-collection/debug-bundle tooling
+
+## 4. Default Log Root
+
+Chariox resolves the log root in this order:
+
+1. `CHARIOX_LOG_DIR`
+2. `CHARIOX_HOME/logs`
+3. `XDG_STATE_HOME/chariox/logs`
+4. `~/.local/state/chariox/logs`
+5. the operating-system temporary directory
+
+Each process writes its own `.ndjson` file under that root.
+Automatic logging never creates a project-local `.chariox` directory.
+
+## 5. Default Logging Behavior
+
+By default:
+
+- logging is enabled
+- level defaults to `info`
+- metadata, lifecycle, warnings, and errors are logged
+- prompt text and provider output content are not logged by default
+
+Current retention defaults:
+
+- about 7 days
+- about 200 MB total per log root
+
+## 6. Configuration
+
+### 6.1 Log Root
+
+Set a custom log directory:
+
+```bash
+export CHARIOX_LOG_DIR=/absolute/path/to/chariox-logs
+```
+
+### 6.2 Log Level
+
+Supported values:
+
+- `debug`
+- `info`
+- `warn`
+- `error`
+- `off`
+
+Examples:
+
+```bash
+export CHARIOX_LOG_LEVEL=debug
+```
+
+```bash
+export CHARIOX_LOG_LEVEL=warn
+```
+
+```bash
+export CHARIOX_LOG_LEVEL=off
+```
+
+Notes:
+
+- `debug` is the most verbose supported mode today.
+- `off` disables record emission for the covered processes.
+
+## 7. Activating And Deactivating Logs
+
+### Enable normal logs
+
+Normal logging is already on by default.
+
+If you want to be explicit:
+
+```bash
+export CHARIOX_LOG_LEVEL=info
+```
+
+### Enable verbose debugging
+
+```bash
+export CHARIOX_LOG_LEVEL=debug
+```
+
+### Reduce noise
+
+```bash
+export CHARIOX_LOG_LEVEL=warn
+```
+
+or:
+
+```bash
+export CHARIOX_LOG_LEVEL=error
+```
+
+### Disable log emission
+
+```bash
+export CHARIOX_LOG_LEVEL=off
+```
+
+If you want disabled logging plus an isolated runtime directory during debugging experiments:
+
+```bash
+export CHARIOX_LOG_LEVEL=off
+export CHARIOX_HOME="$HOME/.chariox/dev/logging-experiment"
+```
+
+## 8. Inspecting Logs
+
+### 8.1 Built-In Viewer
+
+The primary inspection command is:
+
+```bash
+chariox-cli logs
+```
+
+Common examples:
+
+```bash
+chariox-cli logs --follow
+```
+
+```bash
+pnpm run start:cli -- logs
+```
+
+```bash
+pnpm run start:cli -- logs --follow
+```
+
+```bash
+pnpm run start:cli -- logs --process-kind daemon
+```
+
+```bash
+pnpm run start:cli -- logs --level error
+```
+
+```bash
+pnpm run start:cli -- logs --session session-1
+```
+
+```bash
+chariox-cli logs --process-kind daemon --level error
+```
+
+```bash
+chariox-cli logs --provider-run provider-run-3 --follow
+```
+
+Export a local debug bundle for one session or provider run:
+
+```bash
+chariox-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/chariox-session-1-logs
+```
+
+From an attached TUI/web session, ask the kernel to export the current session logs without leaving the terminal:
+
+```text
+/kernel debug-bundle
+```
+
+Or add a label for the kernel-owned bundle directory:
+
+```text
+/kernel debug-bundle support-case-42
+```
+
+The interactive `/kernel debug-bundle` command does not accept an output path. It filters by the active session, sanitizes the optional label, writes under the kernel machine's debug-bundles root, and prints the returned kernel-local path.
+
+The bundle directory contains:
+
+- `manifest.json`: filters, source log root, record count, and bundle schema.
+- `logs.ndjson`: matching raw structured log records in timestamp order.
+
+Supported filters today:
+
+- `--follow`
+- `--process-kind`
+- `--component`
+- `--session`
+- `--provider-run`
+- `--client-id`
+- `--level`
+- `--limit`
+- `--bundle`
+
+If you are launching through Cargo:
+
+```bash
+cargo run --manifest-path apps/kernel/Cargo.toml --bin chariox-cli -- logs --follow
+```
+
+If you are running the TypeScript CLI directly:
+
+```bash
+pnpm --filter @chariox/cli run dev -- logs --follow
+```
+
+### 8.2 Standard Shell Tools
+
+Follow all local Chariox logs:
+
+```bash
+tail -f ~/.local/state/chariox/logs/*.ndjson
+```
+
+Pretty-print records:
+
+```bash
+jq . ~/.local/state/chariox/logs/*.ndjson
+```
+
+Filter one session:
+
+```bash
+jq 'select(.session_id=="session-1")' ~/.local/state/chariox/logs/*.ndjson
+```
+
+Show only errors:
+
+```bash
+jq 'select(.level=="error")' ~/.local/state/chariox/logs/*.ndjson
+```
+
+Render a compact table:
+
+```bash
+jq -r '[.timestamp_ms, .process_kind, .component, .level, .message] | @tsv' ~/.local/state/chariox/logs/*.ndjson
+```
+
+## 9. Record Shape
+
+Current records include fields such as:
+
+- `timestamp_ms`
+- `level`
+- `process_kind`
+- `pid`
+- `component`
+- `message`
+- `log_path`
+- `session_id` when known
+- `provider_run_id` when known
+- `attachment_id` or `client_id` when known
+- request/trace fields when present
+
+Not every record will include every correlation field.
+
+## 10. Logging Policy
+
+The shared logger is the only supported committed logging mechanism for Chariox runtime diagnostics.
+
+Do not add:
+
+- one-off debug env vars for separate log files
+- temporary `appendFileSync` loggers
+- committed `eprintln!` or `console.log` debug paths as a parallel mechanism
+
+If more visibility is needed, extend the shared logger and document the new fields or commands.
+
+## 11. Current Limitations
+
+- The built-in log viewer and bundle export are intentionally simple and local-first.
+- Server and future provider-helper processes are not yet on the shared logger.
+- Prompt/provider content capture is intentionally conservative and not yet exposed as a separate opt-in mode.

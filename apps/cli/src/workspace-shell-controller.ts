@@ -1,0 +1,129 @@
+import type { ShellContext } from "@chariox/kernel-client/shell-core"
+import { executeShellLine } from "@chariox/kernel-client/shell-script"
+import type { ShellExecutorDeps } from "@chariox/kernel-client/shell-executor"
+
+import type {
+  RuntimeSession,
+} from "./cli-types.js"
+import type { LocalIpcClient } from "./ipc.js"
+import { sessionFocusedAgentId } from "@chariox/kernel-client/session-runtime-transition"
+import {
+  appendWorkspaceShellEntry,
+  workspaceShellCommandText,
+  type WorkspaceShellEntry,
+} from "./workspace-shell.js"
+
+export type WorkspaceShellSubmitResult = {
+  ok: boolean
+  output: string
+  context: ShellContext
+}
+
+export function deriveWorkspaceShellContextForSession(
+  previous: ShellContext,
+  session: RuntimeSession,
+  attachmentId: string | null | undefined,
+): ShellContext {
+  return {
+    ...previous,
+    workspace: session.workspace_id || previous.workspace,
+    worktree: session.worktree_id || previous.worktree,
+    sessionId: session.id,
+    attachmentId: attachmentId ?? previous.attachmentId,
+    // The shell's current agent is the session's focus agent, or none.
+    agentId: sessionFocusedAgentId(session) ?? undefined,
+  }
+}
+
+type WorkspaceShellSubmitDeps = {
+  client: LocalIpcClient
+  clientId?: string | undefined
+  cloudAccountClient?: ShellExecutorDeps["cloudAccountClient"]
+  executeShellLine?: typeof executeShellLine
+  openRoomViewer?: ShellExecutorDeps["openRoomViewer"]
+  readSecret?: ShellExecutorDeps["readSecret"]
+  workspaceShellContext: () => ShellContext
+  attachmentId?: () => string | null
+  setWorkspaceShellContext: (context: ShellContext) => void
+  nextEntryId: () => number
+  setWorkspaceShellEntries: (updater: (entries: WorkspaceShellEntry[]) => WorkspaceShellEntry[]) => void
+  sessionState: () => RuntimeSession
+  refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
+  applySessionState: (session: RuntimeSession) => void
+  selectedWorkflowId: () => string | null
+  setSelectedWorkflowId: (workflowId: string) => void
+  setSelectedWorkflowNodeId: (nodeId: string | null) => void
+  rebuildTranscript: () => void
+  flashFooter: (message: string, tone: "info" | "error") => void
+  onSessionRefreshError?: (sessionId: string, error: unknown) => void
+}
+
+export function createWorkspaceShellSubmitController(
+  deps: WorkspaceShellSubmitDeps,
+): {
+  submit: (rawPrompt: string) => Promise<WorkspaceShellSubmitResult>
+} {
+  return {
+    submit(rawPrompt) {
+      return submitWorkspaceShellCommand(rawPrompt, deps)
+    },
+  }
+}
+
+export async function submitWorkspaceShellCommand(
+  rawPrompt: string,
+  deps: WorkspaceShellSubmitDeps,
+): Promise<WorkspaceShellSubmitResult> {
+  const command = workspaceShellCommandText(rawPrompt)
+  if (!command) {
+    deps.flashFooter("usage: @ <chariox-shell command>", "error")
+    return { ok: false, output: "usage: @ <chariox-shell command>", context: deps.workspaceShellContext() }
+  }
+  // MP-08 / MP-09 / MP-10 / MP-11 G03: bind at dispatch, after recovery.
+  const savedContext = deps.workspaceShellContext()
+  const context = deps.attachmentId
+    ? deriveWorkspaceShellContextForSession(savedContext, deps.sessionState(), deps.attachmentId())
+    : savedContext
+  const output: string[] = []
+  const runShellLine = deps.executeShellLine ?? executeShellLine
+  const result = await runShellLine(command, context, {
+    client: deps.client,
+    clientId: deps.clientId,
+    cloudAccountClient: deps.cloudAccountClient,
+    ...(deps.openRoomViewer ? { openRoomViewer: deps.openRoomViewer } : {}),
+    ...(deps.readSecret ? { readSecret: deps.readSecret } : {}),
+  }, (text) => output.push(text))
+  const rendered = output.join("").trimEnd()
+  const nextContext = deps.attachmentId && result.context.sessionId === deps.sessionState().id
+    ? deriveWorkspaceShellContextForSession(result.context, deps.sessionState(), deps.attachmentId())
+    : result.context
+  deps.setWorkspaceShellContext(nextContext)
+  deps.setWorkspaceShellEntries((entries) => appendWorkspaceShellEntry(entries, {
+    id: deps.nextEntryId(),
+    command,
+    output: rendered,
+    ok: result.ok,
+  }))
+
+  const nextSessionId = nextContext.sessionId
+  if (nextSessionId && nextSessionId === deps.sessionState().id) {
+    try {
+      deps.applySessionState(await deps.refreshSessionState(nextSessionId))
+    } catch (error) {
+      deps.onSessionRefreshError?.(nextSessionId, error)
+    }
+  }
+
+  const nextWorkflowId = nextContext.workflowId ?? null
+  if (result.ok && nextWorkflowId) {
+    const workflowExists = (deps.sessionState().workflows ?? []).some((workflow) => workflow.id === nextWorkflowId)
+    if (workflowExists && deps.selectedWorkflowId() !== nextWorkflowId) {
+      deps.setSelectedWorkflowId(nextWorkflowId)
+      deps.setSelectedWorkflowNodeId(null)
+    }
+  }
+
+  deps.rebuildTranscript()
+  deps.flashFooter(result.ok ? "shell command completed" : (rendered || "shell command failed"), result.ok ? "info" : "error")
+  return { ok: result.ok, output: rendered, context: nextContext }
+}

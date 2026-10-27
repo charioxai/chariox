@@ -1,0 +1,6 @@
+{"tools":[
+ {"name":"echo","description":"Return the text it was given.","inputSchema":{"type":"object","properties":{"text":{"type":"string","maxLength":100}},"required":["text"],"additionalProperties":false},"outputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}},
+ {"name":"bad_output","description":"Return output that does not match its declared schema.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"outputSchema":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}},
+ {"name":"refuse","description":"Fail with a typed App error.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+ {"name":"slow","description":"Take longer than the call deadline.","inputSchema":{"type":"object","properties":{"ms":{"type":"integer","minimum":0,"maximum":120000}},"required":["ms"],"additionalProperties":false}}
+]}

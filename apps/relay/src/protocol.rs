@@ -1,0 +1,612 @@
+use serde::{Deserialize, Serialize};
+
+use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
+
+const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
+
+/// Returns the stable kernel daemon id for either a kernel registration or a
+/// production-shaped temporary peer registration. Temporary ids are generated
+/// as `<kernel>:peer-tmp:daemon-peer-tmp-<pid>-<unix_ms>-<counter>`.
+pub fn canonical_peer_daemon_id(daemon_id: &str) -> Option<&str> {
+    let (kernel_id, temporary_suffix) = match daemon_id.split_once(TEMPORARY_PEER_DAEMON_MARKER) {
+        Some((kernel_id, suffix)) => (kernel_id, Some(suffix)),
+        None => (daemon_id, None),
+    };
+    if kernel_id.trim().is_empty() || kernel_id.contains(":peer-tmp:") {
+        return None;
+    }
+    let Some(suffix) = temporary_suffix else {
+        return Some(kernel_id);
+    };
+    let mut parts = suffix.split('-');
+    let pid = parts.next()?;
+    let unix_ms = parts.next()?;
+    let counter = parts.next()?;
+    if parts.next().is_some()
+        || !is_canonical_positive_decimal::<u32>(pid)
+        || !is_canonical_positive_decimal::<u64>(unix_ms)
+        || !is_canonical_positive_decimal::<u64>(counter)
+    {
+        return None;
+    }
+    Some(kernel_id)
+}
+
+fn is_canonical_positive_decimal<T>(value: &str) -> bool
+where
+    T: std::str::FromStr + ToString + PartialEq + From<u8>,
+{
+    value
+        .parse::<T>()
+        .ok()
+        .is_some_and(|parsed| parsed != T::from(0) && parsed.to_string() == value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayConnectionRole {
+    Daemon,
+    Client,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EncryptedRelayPayload {
+    pub sender_public_key: String,
+    pub nonce: String,
+    pub ciphertext: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayCallerIdentity {
+    pub realm_id: String,
+    pub subject: String,
+    pub subject_kind: RelaySubjectKind,
+    #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default)]
+    pub token_id: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub public_key_thumbprint: Option<String>,
+}
+
+impl From<VerifiedRelayIdentity> for RelayCallerIdentity {
+    fn from(identity: VerifiedRelayIdentity) -> Self {
+        Self {
+            realm_id: identity.realm_id,
+            subject: identity.subject,
+            subject_kind: identity.subject_kind,
+            expires_at_ms: identity.expires_at_ms,
+            token_id: identity.token_id,
+            user_id: identity.user_id,
+            public_key_thumbprint: identity.public_key_thumbprint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonRegistration {
+    pub auth_token: String,
+    pub daemon_id: String,
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub os_name: Option<String>,
+    #[serde(default)]
+    pub kernel_started_at_ms: u64,
+    #[serde(default)]
+    pub daemon_alias: Option<String>,
+    #[serde(default)]
+    pub kernel_alias: Option<String>,
+    pub public_key: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    #[serde(default)]
+    pub accepting_remote_leases: bool,
+    #[serde(default)]
+    pub leased_agent_count: u32,
+    #[serde(default)]
+    pub local_session_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayMachinePresence {
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    pub kernel_count: usize,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayKernelPresence {
+    pub kernel_id: String,
+    pub machine_id: String,
+    #[serde(default)]
+    pub machine_alias: Option<String>,
+    #[serde(default)]
+    pub relay_alias: Option<String>,
+    #[serde(default)]
+    pub kernel_alias: Option<String>,
+    #[serde(default)]
+    pub available_providers: Vec<String>,
+    #[serde(default)]
+    pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub accepting_remote_leases: bool,
+    #[serde(default)]
+    pub leased_agent_count: u32,
+    #[serde(default)]
+    pub local_session_count: u32,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayProviderAccountSummary {
+    pub provider: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organization_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscription_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayMetadataQuery {
+    ListLiveMachines,
+    ListLiveKernelsForMachine { machine_ref: String },
+    GetLiveKernel { kernel_ref: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientTarget {
+    #[serde(default)]
+    pub daemon_id: Option<String>,
+    #[serde(default)]
+    pub daemon_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelRegistration {
+    pub tunnel_id: String,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelOpenRequest {
+    pub stream_id: String,
+    pub tunnel_id: String,
+    pub method: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RelayDisplayTunnelHeader>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelResponseStart {
+    pub stream_id: String,
+    pub status: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<RelayDisplayTunnelHeader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayDisplayTunnelStreamChunk {
+    pub stream_id: String,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+/// MP-08/MP-10/MP-11: one initial535 registration, never a target/scope choice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialDisplayResumeRegistration {
+    pub request_id: String,
+    pub subscription_id: String,
+    pub session_id: String,
+    pub attachment_id: String,
+    pub client_public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayEnvelope {
+    DaemonRegister {
+        registration: DaemonRegistration,
+    },
+    DaemonHeartbeat {
+        daemon_id: String,
+        #[serde(default)]
+        registration: Option<DaemonRegistration>,
+    },
+    ClientConnect {
+        auth_token: String,
+        target: ClientTarget,
+    },
+    ClientConnectDisplayResume {
+        auth_token: String,
+        target: ClientTarget,
+        expected_daemon_public_key: String,
+        registration: InitialDisplayResumeRegistration,
+    },
+    ClientConnected {
+        target: ClientTarget,
+        daemon_public_key: String,
+    },
+    ClientMetadataRequest {
+        request_id: String,
+        auth_token: String,
+        query: RelayMetadataQuery,
+    },
+    ClientMetadataResponse {
+        request_id: String,
+        machines: Option<Vec<RelayMachinePresence>>,
+        kernels: Option<Vec<RelayKernelPresence>>,
+        kernel: Option<RelayKernelPresence>,
+        error: Option<RelayError>,
+    },
+    DaemonPeerRequest {
+        request_id: String,
+        target: ClientTarget,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerRequest {
+        relay_request_id: String,
+        from_daemon_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerResponse {
+        relay_request_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
+        error: Option<RelayError>,
+    },
+    DaemonPeerResponse {
+        request_id: String,
+        from_daemon_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
+        error: Option<RelayError>,
+    },
+    DaemonPeerEvent {
+        target: ClientTarget,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    DaemonIncomingPeerEvent {
+        from_daemon_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    DaemonDisplayTunnelRegister {
+        registration: RelayDisplayTunnelRegistration,
+    },
+    DaemonDisplayTunnelRegistered {
+        tunnel_id: String,
+        expires_at_ms: u64,
+        error: Option<RelayError>,
+    },
+    DaemonDisplayTunnelRevoke {
+        tunnel_id: String,
+    },
+    DaemonDisplayTunnelOpen {
+        request: RelayDisplayTunnelOpenRequest,
+    },
+    DaemonDisplayTunnelResponseStart {
+        response: RelayDisplayTunnelResponseStart,
+    },
+    DaemonDisplayTunnelChunk {
+        chunk: RelayDisplayTunnelStreamChunk,
+    },
+    DaemonDisplayTunnelClientChunk {
+        chunk: RelayDisplayTunnelStreamChunk,
+    },
+    DaemonDisplayTunnelClientClose {
+        stream_id: String,
+        error: Option<RelayError>,
+    },
+    DaemonDisplayTunnelClose {
+        stream_id: String,
+        error: Option<RelayError>,
+    },
+    ClientRequest {
+        request_id: String,
+        target: ClientTarget,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonRequest {
+        relay_request_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
+        encrypted_request: EncryptedRelayPayload,
+    },
+    DaemonResponse {
+        relay_request_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
+        error: Option<RelayError>,
+    },
+    ClientResponse {
+        request_id: String,
+        encrypted_response: Option<EncryptedRelayPayload>,
+        error: Option<RelayError>,
+    },
+    ClientSubscribe {
+        request_id: String,
+        subscription_id: String,
+        target: ClientTarget,
+        session_id: String,
+        attachment_id: String,
+        client_public_key: String,
+        #[serde(default)]
+        subscription_scope: Option<String>,
+        #[serde(default)]
+        resume_from_event_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heartbeat_interval_ms: Option<u64>,
+    },
+    ClientUnsubscribe {
+        request_id: String,
+        subscription_id: String,
+        client_public_key: String,
+    },
+    DaemonSubscribe {
+        relay_request_id: String,
+        relay_subscription_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
+        session_id: String,
+        attachment_id: String,
+        client_public_key: String,
+        #[serde(default)]
+        subscription_scope: Option<String>,
+        #[serde(default)]
+        resume_from_event_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heartbeat_interval_ms: Option<u64>,
+    },
+    DaemonUnsubscribe {
+        relay_request_id: String,
+        relay_subscription_id: String,
+        #[serde(default)]
+        caller_identity: Option<RelayCallerIdentity>,
+        client_public_key: String,
+    },
+    DaemonEvent {
+        subscription_id: String,
+        event_id: u64,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    ClientEvent {
+        subscription_id: String,
+        event_id: u64,
+        encrypted_event: EncryptedRelayPayload,
+    },
+    Close {
+        reason: String,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_peer_daemon_id_accepts_only_production_temporary_ids() {
+        assert_eq!(canonical_peer_daemon_id("home-kernel"), Some("home-kernel"));
+        assert_eq!(
+            canonical_peer_daemon_id("home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7"),
+            Some("home-kernel")
+        );
+        for invalid in [
+            "",
+            ":peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123",
+            "home-kernel:peer-tmp:daemon-peer-tmp-0-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-0-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-0",
+            "home-kernel:peer-tmp:daemon-peer-tmp-04242-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-seven",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7-extra",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4294967296-1767225600123-7",
+            "home-kernel:peer-tmp:daemon-peer-tmp-4242-18446744073709551616-7",
+        ] {
+            assert_eq!(
+                canonical_peer_daemon_id(invalid),
+                None,
+                "accepted {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn serializes_daemon_registration_envelope() {
+        let envelope = RelayEnvelope::DaemonRegister {
+            registration: DaemonRegistration {
+                auth_token: "secret".to_string(),
+                daemon_id: "daemon-1".to_string(),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("workstation".to_string()),
+                os_name: Some("macOS".to_string()),
+                kernel_started_at_ms: 10,
+                daemon_alias: Some("mbp".to_string()),
+                kernel_alias: Some("default".to_string()),
+                public_key: "public-key".to_string(),
+                capabilities: vec!["kernel_ws".to_string()],
+                available_providers: vec!["opencode".to_string()],
+                provider_accounts: Vec::new(),
+                accepting_remote_leases: false,
+                leased_agent_count: 0,
+                local_session_count: 1,
+            },
+        };
+        let json = serde_json::to_string(&envelope).expect("envelope should serialize");
+        assert!(json.contains("\"kind\":\"daemon_register\""));
+        assert!(json.contains("\"daemon_id\":\"daemon-1\""));
+        assert!(json.contains("\"public_key\":\"public-key\""));
+    }
+
+    #[test]
+    fn serializes_display_tunnel_envelopes() {
+        let register = RelayEnvelope::DaemonDisplayTunnelRegister {
+            registration: RelayDisplayTunnelRegistration {
+                tunnel_id: "display-opaque-1".to_string(),
+                expires_at_ms: 42,
+                capabilities: vec!["view".to_string(), "keyboard".to_string()],
+            },
+        };
+        let open = RelayEnvelope::DaemonDisplayTunnelOpen {
+            request: RelayDisplayTunnelOpenRequest {
+                stream_id: "stream-1".to_string(),
+                tunnel_id: "display-opaque-1".to_string(),
+                method: "GET".to_string(),
+                path: "/vnc.html?autoconnect=true".to_string(),
+                headers: vec![RelayDisplayTunnelHeader {
+                    name: "accept".to_string(),
+                    value: "text/html".to_string(),
+                }],
+                body_base64: Some("eyJwcm9tcHQiOiJoaSJ9".to_string()),
+            },
+        };
+        let start = RelayEnvelope::DaemonDisplayTunnelResponseStart {
+            response: RelayDisplayTunnelResponseStart {
+                stream_id: "stream-1".to_string(),
+                status: 200,
+                headers: vec![RelayDisplayTunnelHeader {
+                    name: "content-type".to_string(),
+                    value: "text/plain".to_string(),
+                }],
+            },
+        };
+        let chunk = RelayEnvelope::DaemonDisplayTunnelChunk {
+            chunk: RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: "aGVsbG8".to_string(),
+                message_kind: None,
+            },
+        };
+        let client_chunk = RelayEnvelope::DaemonDisplayTunnelClientChunk {
+            chunk: RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: "d29ybGQ".to_string(),
+                message_kind: Some("binary".to_string()),
+            },
+        };
+        let client_close = RelayEnvelope::DaemonDisplayTunnelClientClose {
+            stream_id: "stream-1".to_string(),
+            error: None,
+        };
+        let close = RelayEnvelope::DaemonDisplayTunnelClose {
+            stream_id: "stream-1".to_string(),
+            error: None,
+        };
+
+        let json = serde_json::to_value([
+            register,
+            open,
+            start,
+            chunk,
+            client_chunk,
+            client_close,
+            close,
+        ])
+        .expect("display tunnel envelopes should serialize");
+        assert_eq!(
+            json.pointer("/0/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_register"))
+        );
+        assert_eq!(
+            json.pointer("/0/registration/tunnel_id"),
+            Some(&serde_json::json!("display-opaque-1"))
+        );
+        assert_eq!(
+            json.pointer("/1/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_open"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/path"),
+            Some(&serde_json::json!("/vnc.html?autoconnect=true"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/headers/0/name"),
+            Some(&serde_json::json!("accept"))
+        );
+        assert_eq!(
+            json.pointer("/1/request/body_base64"),
+            Some(&serde_json::json!("eyJwcm9tcHQiOiJoaSJ9"))
+        );
+        assert_eq!(
+            json.pointer("/2/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_response_start"))
+        );
+        assert_eq!(
+            json.pointer("/2/response/status"),
+            Some(&serde_json::json!(200))
+        );
+        assert_eq!(
+            json.pointer("/2/response/headers/0/value"),
+            Some(&serde_json::json!("text/plain"))
+        );
+        assert_eq!(
+            json.pointer("/3/chunk/data"),
+            Some(&serde_json::json!("aGVsbG8"))
+        );
+        assert_eq!(
+            json.pointer("/4/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_client_chunk"))
+        );
+        assert_eq!(
+            json.pointer("/4/chunk/message_kind"),
+            Some(&serde_json::json!("binary"))
+        );
+        assert_eq!(
+            json.pointer("/5/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_client_close"))
+        );
+        assert_eq!(
+            json.pointer("/6/kind"),
+            Some(&serde_json::json!("daemon_display_tunnel_close"))
+        );
+    }
+}

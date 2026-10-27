@@ -1,0 +1,1 @@
+The provider conversation has reloaded after capability `{{MCP_NAME}}` changed. Continue the visible user request exactly. Use the currently available provider-native MCP tools if requested, then complete any required Chariox workspace live sync file write before replying.

@@ -1,0 +1,837 @@
+import { validateDrillArtifactKind } from "./drill-artifact-kinds.mjs"
+import {
+  DRILL_ARTIFACT_VALIDATION_PRESETS,
+  DRILL_VALIDATION_GATE_PRESETS,
+} from "./drill-validation-gate-preset-data.mjs"
+export {
+  DRILL_ARTIFACT_VALIDATION_PRESETS,
+  DRILL_VALIDATION_GATE_PRESETS,
+} from "./drill-validation-gate-preset-data.mjs"
+import { validateDrillDeploymentPreset } from "./drill-environment-presets.mjs"
+import { validateDrillArtifactEvidenceRepo } from "./drill-evidence-repos.mjs"
+import { validateDrillExitCriterionStatus } from "./drill-exit-criterion-statuses.mjs"
+import { validateDrillFailureClassification } from "./drill-failure-taxonomy.mjs"
+import {
+  validateDrillGeneratedEvidenceKind,
+  validateDrillGeneratedEvidencePath,
+} from "./drill-generated-evidence-metadata.mjs"
+import { validateDrillGeneratedMatrixName } from "./drill-generated-matrix-metadata.mjs"
+import { validateDrillGeneratedMatrixLimitation } from "./drill-generated-matrix-limitations.mjs"
+import {
+  parseProviderAccountAlias,
+  validateDrillProvider,
+} from "./drill-provider-profiles.mjs"
+import {
+  validateDrillRuntimeAuthorityInvariant,
+} from "./drill-runtime-authority-invariants.mjs"
+import {
+  drillRuntimeSignalOwnersFor,
+  validateDrillRuntimeSignal,
+  validateDrillRuntimeSignalOwner,
+} from "./drill-runtime-signals.mjs"
+import { redactDrillSecretText } from "./drill-secrets.mjs"
+
+
+export function describeDrillValidationGatePresets({ names = null } = {}) {
+  const presetNames = names == null
+    ? Object.keys(DRILL_VALIDATION_GATE_PRESETS).sort()
+    : normalizeRequiredPresets(Array.isArray(names) ? names : [names])
+  return presetNames.map((name) => {
+    const preset = DRILL_VALIDATION_GATE_PRESETS[name]
+    return {
+      name,
+      description: preset.description,
+      requiredPlatformCoverageAreas: [...(preset.requiredPlatformCoverageAreas ?? [])],
+      requiredArtifactCoverageAreas: [...(preset.requiredArtifactCoverageAreas ?? [])],
+      requiredArtifactSchemas: [...(preset.requiredArtifactSchemas ?? [])],
+      requiredArtifactKinds: [...(preset.requiredArtifactKinds ?? [])],
+      requiredArtifactGeneratedEvidenceKinds: [...(preset.requiredArtifactGeneratedEvidenceKinds ?? [])],
+      requiredArtifactGeneratedEvidenceRepos: [...(preset.requiredArtifactGeneratedEvidenceRepos ?? [])],
+      requiredArtifactGeneratedMatrixArtifactIndexes: [...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? [])],
+      requiredArtifactGeneratedMatrixLimitations: [...(preset.requiredArtifactGeneratedMatrixLimitations ?? [])],
+      requiredArtifactGeneratedMatrixNames: [...(preset.requiredArtifactGeneratedMatrixNames ?? [])],
+      requiredArtifactGeneratedMatrixRepos: [...(preset.requiredArtifactGeneratedMatrixRepos ?? [])],
+      requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...(preset.requiredArtifactGeneratedValidationSuiteArtifactIndexes ?? [])],
+      requiredArtifactGeneratedValidationSuiteFailureRoots: [...(preset.requiredArtifactGeneratedValidationSuiteFailureRoots ?? [])],
+      requiredArtifactEvidenceRepos: [...(preset.requiredArtifactEvidenceRepos ?? [])],
+      requiredArtifactProviderAccountAliases: [...(preset.requiredArtifactProviderAccountAliases ?? [])],
+      requiredArtifactValidationPresets: [...(preset.requiredArtifactValidationPresets ?? [])],
+      requiredArtifactRuntimeAuthorityInvariants: [...(preset.requiredArtifactRuntimeAuthorityInvariants ?? [])],
+      requiredRuntimeAuthorityInvariants: [...(preset.requiredRuntimeAuthorityInvariants ?? [])],
+      requiredArtifactRuntimeSignals: [...(preset.requiredArtifactRuntimeSignals ?? [])],
+      requiredArtifactRuntimeSignalOwners: [...(preset.requiredArtifactRuntimeSignalOwners ?? [])],
+      requiredArtifactOwners: [...(preset.requiredArtifactOwners ?? [])],
+      requiredArtifactClassifications: [...(preset.requiredArtifactClassifications ?? [])],
+      requiredArtifactFailureClassifications: [...(preset.requiredArtifactFailureClassifications ?? [])],
+      requiredArtifactPlannedOwners: [...(preset.requiredArtifactPlannedOwners ?? [])],
+      requiredArtifactPlannedClassifications: [...(preset.requiredArtifactPlannedClassifications ?? [])],
+      requiredArtifactExitCriterionStatuses: [...(preset.requiredArtifactExitCriterionStatuses ?? [])],
+      requiredArtifactIncompleteExitCriterionStatuses: [...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? [])],
+      requiredRuntimeSignals: [...(preset.requiredRuntimeSignals ?? [])],
+      requiredRuntimeSignalOwners: presetRuntimeSignalOwners(preset),
+      requiredFailureClassifications: [...(preset.requiredFailureClassifications ?? [])],
+      requiredMatrices: [...(preset.requiredMatrices ?? [])],
+      requiredMatrixClassifications: [...(preset.requiredMatrixClassifications ?? [])],
+      requiredMatrixRuntimeSignals: [...(preset.requiredMatrixRuntimeSignals ?? [])],
+      requiredDeploymentPresets: [...(preset.requiredDeploymentPresets ?? [])],
+      requiredProviders: [...(preset.requiredProviders ?? [])],
+      requiredScenarios: [...(preset.requiredScenarios ?? [])],
+      requiredGeneratedEvidenceKinds: [...(preset.requiredGeneratedEvidenceKinds ?? [])],
+      requiredGeneratedMatrixArtifactIndexes: [...(preset.requiredGeneratedMatrixArtifactIndexes ?? [])],
+      requiredGeneratedMatrixLimitations: [...(preset.requiredGeneratedMatrixLimitations ?? [])],
+      requiredGeneratedValidationSuiteArtifactIndexes: [...(preset.requiredGeneratedValidationSuiteArtifactIndexes ?? [])],
+      requiredGeneratedValidationSuiteFailureRoots: [...(preset.requiredGeneratedValidationSuiteFailureRoots ?? [])],
+    }
+  })
+}
+
+export function expandValidationGatePresetRequirements({
+  presets,
+  requiredPlatformCoverageAreas,
+  requiredArtifactCoverageAreas = [],
+  requiredArtifactSchemas = [],
+  requiredArtifactKinds = [],
+  requiredArtifactGeneratedEvidenceKinds = [],
+  requiredArtifactGeneratedEvidenceRepos = [],
+  requiredArtifactGeneratedMatrixArtifactIndexes = [],
+  requiredArtifactGeneratedMatrixLimitations = [],
+  requiredArtifactGeneratedMatrixNames = [],
+  requiredArtifactGeneratedMatrixRepos = [],
+  requiredArtifactGeneratedValidationSuiteArtifactIndexes = [],
+  requiredArtifactGeneratedValidationSuiteFailureRoots = [],
+  requiredArtifactEvidenceRepos = [],
+  requiredArtifactProviderAccountAliases = [],
+  requiredArtifactValidationPresets = [],
+  requiredArtifactRuntimeAuthorityInvariants = [],
+  requiredRuntimeAuthorityInvariants = [],
+  requiredArtifactRuntimeSignals = [],
+  requiredArtifactRuntimeSignalOwners = [],
+  requiredArtifactOwners = [],
+  requiredArtifactClassifications = [],
+  requiredArtifactFailureClassifications = [],
+  requiredArtifactPlannedOwners = [],
+  requiredArtifactPlannedClassifications = [],
+  requiredArtifactExitCriterionStatuses = [],
+  requiredArtifactIncompleteExitCriterionStatuses = [],
+  requiredRuntimeSignals = [],
+  requiredRuntimeSignalOwners = [],
+  requiredFailureClassifications,
+  requiredMatrices,
+  requiredMatrixClassifications,
+  requiredMatrixRuntimeSignals = [],
+  requiredDeploymentPresets,
+  requiredProviders,
+  requiredScenarios,
+  requiredGeneratedEvidenceKinds = [],
+  requiredGeneratedMatrixArtifactIndexes = [],
+  requiredGeneratedMatrixLimitations = [],
+  requiredGeneratedValidationSuiteArtifactIndexes = [],
+  requiredGeneratedValidationSuiteFailureRoots = [],
+}) {
+  const expanded = {
+    requiredPlatformCoverageAreas: [...requiredPlatformCoverageAreas],
+    requiredArtifactCoverageAreas: [...requiredArtifactCoverageAreas],
+    requiredArtifactSchemas: [...requiredArtifactSchemas],
+    requiredArtifactKinds: [...requiredArtifactKinds],
+    requiredArtifactGeneratedEvidenceKinds: [...requiredArtifactGeneratedEvidenceKinds],
+    requiredArtifactGeneratedEvidenceRepos: [...requiredArtifactGeneratedEvidenceRepos],
+    requiredArtifactGeneratedMatrixArtifactIndexes: [...requiredArtifactGeneratedMatrixArtifactIndexes],
+    requiredArtifactGeneratedMatrixLimitations: [...requiredArtifactGeneratedMatrixLimitations],
+    requiredArtifactGeneratedMatrixNames: [...requiredArtifactGeneratedMatrixNames],
+    requiredArtifactGeneratedMatrixRepos: [...requiredArtifactGeneratedMatrixRepos],
+    requiredArtifactGeneratedValidationSuiteArtifactIndexes: [...requiredArtifactGeneratedValidationSuiteArtifactIndexes],
+    requiredArtifactGeneratedValidationSuiteFailureRoots: [...requiredArtifactGeneratedValidationSuiteFailureRoots],
+    requiredArtifactEvidenceRepos: [...requiredArtifactEvidenceRepos],
+    requiredArtifactProviderAccountAliases: [...requiredArtifactProviderAccountAliases],
+    requiredArtifactValidationPresets: [...requiredArtifactValidationPresets],
+    requiredArtifactRuntimeAuthorityInvariants: [...requiredArtifactRuntimeAuthorityInvariants],
+    requiredRuntimeAuthorityInvariants: [...requiredRuntimeAuthorityInvariants],
+    requiredArtifactRuntimeSignals: [...requiredArtifactRuntimeSignals],
+    requiredArtifactRuntimeSignalOwners: [...requiredArtifactRuntimeSignalOwners],
+    requiredArtifactOwners: [...requiredArtifactOwners],
+    requiredArtifactClassifications: [...requiredArtifactClassifications],
+    requiredArtifactFailureClassifications: [...requiredArtifactFailureClassifications],
+    requiredArtifactPlannedOwners: [...requiredArtifactPlannedOwners],
+    requiredArtifactPlannedClassifications: [...requiredArtifactPlannedClassifications],
+    requiredArtifactExitCriterionStatuses: [...requiredArtifactExitCriterionStatuses],
+    requiredArtifactIncompleteExitCriterionStatuses: [...requiredArtifactIncompleteExitCriterionStatuses],
+    requiredRuntimeSignals: [...requiredRuntimeSignals],
+    requiredRuntimeSignalOwners: [...requiredRuntimeSignalOwners],
+    requiredFailureClassifications: [...requiredFailureClassifications],
+    requiredMatrices: [...requiredMatrices],
+    requiredMatrixClassifications: [...requiredMatrixClassifications],
+    requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+    requiredDeploymentPresets: [...requiredDeploymentPresets],
+    requiredProviders: [...requiredProviders],
+    requiredScenarios: [...requiredScenarios],
+    requiredGeneratedEvidenceKinds: [...requiredGeneratedEvidenceKinds],
+    requiredGeneratedMatrixArtifactIndexes: [...requiredGeneratedMatrixArtifactIndexes],
+    requiredGeneratedMatrixLimitations: [...requiredGeneratedMatrixLimitations],
+    requiredGeneratedValidationSuiteArtifactIndexes: [...requiredGeneratedValidationSuiteArtifactIndexes],
+    requiredGeneratedValidationSuiteFailureRoots: [...requiredGeneratedValidationSuiteFailureRoots],
+  }
+  for (const presetName of presets) {
+    const preset = DRILL_VALIDATION_GATE_PRESETS[presetName]
+    expanded.requiredPlatformCoverageAreas.push(...(preset.requiredPlatformCoverageAreas ?? []))
+    expanded.requiredArtifactCoverageAreas.push(...(preset.requiredArtifactCoverageAreas ?? []))
+    expanded.requiredArtifactSchemas.push(...(preset.requiredArtifactSchemas ?? []))
+    expanded.requiredArtifactKinds.push(...(preset.requiredArtifactKinds ?? []))
+    expanded.requiredArtifactGeneratedEvidenceKinds.push(...(preset.requiredArtifactGeneratedEvidenceKinds ?? []))
+    expanded.requiredArtifactGeneratedEvidenceRepos.push(...(preset.requiredArtifactGeneratedEvidenceRepos ?? []))
+    expanded.requiredArtifactGeneratedMatrixArtifactIndexes.push(...(preset.requiredArtifactGeneratedMatrixArtifactIndexes ?? []))
+    expanded.requiredArtifactGeneratedMatrixLimitations.push(...(preset.requiredArtifactGeneratedMatrixLimitations ?? []))
+    expanded.requiredArtifactGeneratedMatrixNames.push(...(preset.requiredArtifactGeneratedMatrixNames ?? []))
+    expanded.requiredArtifactGeneratedMatrixRepos.push(...(preset.requiredArtifactGeneratedMatrixRepos ?? []))
+    expanded.requiredArtifactGeneratedValidationSuiteArtifactIndexes.push(...(preset.requiredArtifactGeneratedValidationSuiteArtifactIndexes ?? []))
+    expanded.requiredArtifactGeneratedValidationSuiteFailureRoots.push(...(preset.requiredArtifactGeneratedValidationSuiteFailureRoots ?? []))
+    expanded.requiredArtifactEvidenceRepos.push(...(preset.requiredArtifactEvidenceRepos ?? []))
+    expanded.requiredArtifactProviderAccountAliases.push(...(preset.requiredArtifactProviderAccountAliases ?? []))
+    expanded.requiredArtifactValidationPresets.push(...(preset.requiredArtifactValidationPresets ?? []))
+    expanded.requiredArtifactRuntimeAuthorityInvariants.push(...(preset.requiredArtifactRuntimeAuthorityInvariants ?? []))
+    expanded.requiredRuntimeAuthorityInvariants.push(...(preset.requiredRuntimeAuthorityInvariants ?? []))
+    expanded.requiredArtifactRuntimeSignals.push(...(preset.requiredArtifactRuntimeSignals ?? []))
+    expanded.requiredArtifactRuntimeSignalOwners.push(...(preset.requiredArtifactRuntimeSignalOwners ?? []))
+    expanded.requiredArtifactOwners.push(...(preset.requiredArtifactOwners ?? []))
+    expanded.requiredArtifactClassifications.push(...(preset.requiredArtifactClassifications ?? []))
+    expanded.requiredArtifactFailureClassifications.push(...(preset.requiredArtifactFailureClassifications ?? []))
+    expanded.requiredArtifactPlannedOwners.push(...(preset.requiredArtifactPlannedOwners ?? []))
+    expanded.requiredArtifactPlannedClassifications.push(...(preset.requiredArtifactPlannedClassifications ?? []))
+    expanded.requiredArtifactExitCriterionStatuses.push(...(preset.requiredArtifactExitCriterionStatuses ?? []))
+    expanded.requiredArtifactIncompleteExitCriterionStatuses.push(...(preset.requiredArtifactIncompleteExitCriterionStatuses ?? []))
+    expanded.requiredRuntimeSignals.push(...(preset.requiredRuntimeSignals ?? []))
+    expanded.requiredRuntimeSignalOwners.push(...presetRuntimeSignalOwners(preset))
+    expanded.requiredFailureClassifications.push(...(preset.requiredFailureClassifications ?? []))
+    expanded.requiredMatrices.push(...(preset.requiredMatrices ?? []))
+    expanded.requiredMatrixClassifications.push(...(preset.requiredMatrixClassifications ?? []))
+    expanded.requiredMatrixRuntimeSignals.push(...(preset.requiredMatrixRuntimeSignals ?? []))
+    expanded.requiredDeploymentPresets.push(...(preset.requiredDeploymentPresets ?? []))
+    expanded.requiredProviders.push(...(preset.requiredProviders ?? []))
+    expanded.requiredScenarios.push(...(preset.requiredScenarios ?? []))
+    expanded.requiredGeneratedEvidenceKinds.push(...(preset.requiredGeneratedEvidenceKinds ?? []))
+    expanded.requiredGeneratedMatrixArtifactIndexes.push(...(preset.requiredGeneratedMatrixArtifactIndexes ?? []))
+    expanded.requiredGeneratedMatrixLimitations.push(...(preset.requiredGeneratedMatrixLimitations ?? []))
+    expanded.requiredGeneratedValidationSuiteArtifactIndexes.push(...(preset.requiredGeneratedValidationSuiteArtifactIndexes ?? []))
+    expanded.requiredGeneratedValidationSuiteFailureRoots.push(...(preset.requiredGeneratedValidationSuiteFailureRoots ?? []))
+  }
+  return expanded
+}
+
+function presetRuntimeSignalOwners(preset) {
+  if (preset.requiredRuntimeSignalOwners !== undefined) {
+    return [...preset.requiredRuntimeSignalOwners]
+  }
+  return drillRuntimeSignalOwnersFor(preset.requiredRuntimeSignals ?? [])
+}
+
+export function normalizeRequiredArtifactCoverageAreas(requiredArtifactCoverageAreas) {
+  if (!Array.isArray(requiredArtifactCoverageAreas)) {
+    throw new Error("requiredArtifactCoverageAreas must be an array")
+  }
+  const areas = []
+  for (const area of requiredArtifactCoverageAreas) {
+    if (!nonEmptyString(area)) {
+      throw new Error("requiredArtifactCoverageAreas has invalid area")
+    }
+    for (const value of area.split(",")) {
+      const normalized = value.trim()
+      if (normalized) areas.push(normalized)
+    }
+  }
+  return [...new Set(areas)].sort()
+}
+
+export function normalizeRequiredArtifactSchemas(requiredArtifactSchemas) {
+  if (!Array.isArray(requiredArtifactSchemas)) {
+    throw new Error("requiredArtifactSchemas must be an array")
+  }
+  const schemas = []
+  for (const schema of requiredArtifactSchemas) {
+    if (!nonEmptyString(schema)) {
+      throw new Error("requiredArtifactSchemas has invalid schema")
+    }
+    for (const value of schema.split(",")) {
+      const normalized = value.trim()
+      if (normalized) schemas.push(normalized)
+    }
+  }
+  return [...new Set(schemas)].sort()
+}
+
+export function normalizeRequiredArtifactKinds(requiredArtifactKinds) {
+  const kinds = normalizeCommaSeparatedStrings(requiredArtifactKinds, {
+    fieldName: "requiredArtifactKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    validateDrillArtifactKind(kind, "required artifact kinds", {
+      message: () => `unknown required artifact kind: ${kind}`,
+    })
+  }
+  return kinds
+}
+
+export function normalizeRequiredGeneratedEvidenceKinds(requiredGeneratedEvidenceKinds) {
+  const kinds = normalizeCommaSeparatedStrings(requiredGeneratedEvidenceKinds, {
+    fieldName: "requiredGeneratedEvidenceKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    validateDrillGeneratedEvidenceKind(kind, "requiredGeneratedEvidenceKinds", {
+      message: () => `unknown required generated evidence kind: ${kind}`,
+    })
+  }
+  return kinds
+}
+
+export function normalizeRequiredGeneratedMatrixLimitations(requiredGeneratedMatrixLimitations) {
+  const limitations = normalizeCommaSeparatedStrings(requiredGeneratedMatrixLimitations, {
+    fieldName: "requiredGeneratedMatrixLimitations",
+    itemName: "limitation",
+  })
+  for (const limitation of limitations) {
+    validateDrillGeneratedMatrixLimitation(limitation, "requiredGeneratedMatrixLimitations", {
+      message: () => `unknown required generated matrix limitation: ${limitation}`,
+    })
+  }
+  return limitations
+}
+
+export function normalizeRequiredGeneratedMatrixArtifactIndexes(requiredGeneratedMatrixArtifactIndexes) {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedMatrixArtifactIndexes, {
+    fieldName: "requiredGeneratedMatrixArtifactIndexes",
+    itemName: "path",
+  })
+}
+
+export function normalizeRequiredGeneratedValidationSuiteFailureRoots(requiredGeneratedValidationSuiteFailureRoots) {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedValidationSuiteFailureRoots, {
+    fieldName: "requiredGeneratedValidationSuiteFailureRoots",
+    itemName: "root",
+  })
+}
+
+export function normalizeRequiredGeneratedValidationSuiteArtifactIndexes(requiredGeneratedValidationSuiteArtifactIndexes) {
+  return normalizeGeneratedEvidencePathRequirements(requiredGeneratedValidationSuiteArtifactIndexes, {
+    fieldName: "requiredGeneratedValidationSuiteArtifactIndexes",
+    itemName: "path",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixArtifactIndexes(requiredArtifactGeneratedMatrixArtifactIndexes) {
+  return normalizeGeneratedEvidencePathRequirements(requiredArtifactGeneratedMatrixArtifactIndexes, {
+    fieldName: "requiredArtifactGeneratedMatrixArtifactIndexes",
+    itemName: "path",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedValidationSuiteArtifactIndexes(requiredArtifactGeneratedValidationSuiteArtifactIndexes) {
+  return normalizeGeneratedEvidencePathRequirements(requiredArtifactGeneratedValidationSuiteArtifactIndexes, {
+    fieldName: "requiredArtifactGeneratedValidationSuiteArtifactIndexes",
+    itemName: "path",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedValidationSuiteFailureRoots(requiredArtifactGeneratedValidationSuiteFailureRoots) {
+  return normalizeGeneratedEvidencePathRequirements(requiredArtifactGeneratedValidationSuiteFailureRoots, {
+    fieldName: "requiredArtifactGeneratedValidationSuiteFailureRoots",
+    itemName: "root",
+  })
+}
+
+export function normalizeRequiredArtifactGeneratedEvidenceKinds(requiredArtifactGeneratedEvidenceKinds) {
+  const kinds = normalizeCommaSeparatedStrings(requiredArtifactGeneratedEvidenceKinds, {
+    fieldName: "requiredArtifactGeneratedEvidenceKinds",
+    itemName: "kind",
+  })
+  for (const kind of kinds) {
+    validateDrillGeneratedEvidenceKind(kind, "requiredArtifactGeneratedEvidenceKinds", {
+      message: () => `unknown required artifact generated evidence kind: ${kind}`,
+    })
+  }
+  return kinds
+}
+
+export function normalizeRequiredArtifactGeneratedEvidenceRepos(requiredArtifactGeneratedEvidenceRepos) {
+  const repos = normalizeCommaSeparatedStrings(requiredArtifactGeneratedEvidenceRepos, {
+    fieldName: "requiredArtifactGeneratedEvidenceRepos",
+    itemName: "repo",
+  })
+  for (const repo of repos) {
+    validateDrillArtifactEvidenceRepo(repo, "required artifact generated evidence repos", {
+      message: () => `unknown required artifact generated evidence repo: ${repo}`,
+    })
+  }
+  return repos
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixLimitations(requiredArtifactGeneratedMatrixLimitations) {
+  const limitations = normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixLimitations, {
+    fieldName: "requiredArtifactGeneratedMatrixLimitations",
+    itemName: "limitation",
+  })
+  for (const limitation of limitations) {
+    validateDrillGeneratedMatrixLimitation(limitation, "requiredArtifactGeneratedMatrixLimitations", {
+      message: () => `unknown required artifact generated matrix limitation: ${limitation}`,
+    })
+  }
+  return limitations
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixNames(requiredArtifactGeneratedMatrixNames) {
+  const matrixNames = normalizeDiagnosticTextRequirements(requiredArtifactGeneratedMatrixNames, {
+    fieldName: "requiredArtifactGeneratedMatrixNames",
+    itemName: "matrix",
+  })
+  for (const matrixName of matrixNames) {
+    validateDrillGeneratedMatrixName(matrixName, {
+      secretSource: "requiredArtifactGeneratedMatrixNames",
+      unknownSource: "requiredArtifactGeneratedMatrixNames",
+      message: () => `unknown required artifact generated matrix name: ${matrixName}`,
+    })
+  }
+  return matrixNames
+}
+
+export function normalizeRequiredArtifactGeneratedMatrixRepos(requiredArtifactGeneratedMatrixRepos) {
+  const repos = normalizeCommaSeparatedStrings(requiredArtifactGeneratedMatrixRepos, {
+    fieldName: "requiredArtifactGeneratedMatrixRepos",
+    itemName: "repo",
+  })
+  for (const repo of repos) {
+    validateDrillArtifactEvidenceRepo(repo, "required artifact generated matrix repos", {
+      message: () => `unknown required artifact generated matrix repo: ${repo}`,
+    })
+  }
+  return repos
+}
+
+export function normalizeRequiredArtifactEvidenceRepos(requiredArtifactEvidenceRepos) {
+  const repos = normalizeCommaSeparatedStrings(requiredArtifactEvidenceRepos, {
+    fieldName: "requiredArtifactEvidenceRepos",
+    itemName: "repo",
+  })
+  for (const repo of repos) {
+    validateDrillArtifactEvidenceRepo(repo, "required artifact evidence repos", {
+      message: () => `unknown required artifact evidence repo: ${repo}`,
+    })
+  }
+  return repos
+}
+
+export function normalizeRequiredArtifactProviderAccountAliases(requiredArtifactProviderAccountAliases) {
+  const aliases = normalizeCommaSeparatedStrings(requiredArtifactProviderAccountAliases, {
+    fieldName: "requiredArtifactProviderAccountAliases",
+    itemName: "alias",
+  })
+  for (const alias of aliases) {
+    const { provider } = parseProviderAccountAlias(alias)
+    validateDrillProvider(provider, "required artifact provider account aliases", {
+      message: () => `unknown required artifact provider account alias provider: ${provider}`,
+    })
+  }
+  return aliases
+}
+
+export function normalizeRequiredArtifactValidationPresets(requiredArtifactValidationPresets) {
+  const presets = normalizeCommaSeparatedStrings(requiredArtifactValidationPresets, {
+    fieldName: "requiredArtifactValidationPresets",
+    itemName: "preset",
+  })
+  for (const preset of presets) {
+    validateDrillArtifactValidationPreset(preset, "required artifact validation presets", {
+      message: () => `unknown required artifact validation preset: ${preset}`,
+    })
+  }
+  return presets
+}
+
+export function normalizeRequiredArtifactRuntimeSignals(requiredArtifactRuntimeSignals) {
+  const signals = normalizeCommaSeparatedStrings(requiredArtifactRuntimeSignals, {
+    fieldName: "requiredArtifactRuntimeSignals",
+    itemName: "signal",
+  })
+  for (const signal of signals) {
+    validateDrillRuntimeSignal(signal, "required artifact runtime signals", {
+      message: () => `unknown required artifact runtime signal: ${signal}`,
+    })
+  }
+  return signals
+}
+
+export function normalizeRequiredArtifactRuntimeAuthorityInvariants(requiredArtifactRuntimeAuthorityInvariants) {
+  const invariants = normalizeCommaSeparatedStrings(requiredArtifactRuntimeAuthorityInvariants, {
+    fieldName: "requiredArtifactRuntimeAuthorityInvariants",
+    itemName: "invariant",
+  })
+  for (const invariant of invariants) {
+    validateDrillRuntimeAuthorityInvariant(invariant, "required artifact runtime authority invariants", {
+      message: () => `unknown required artifact runtime authority invariant: ${invariant}`,
+    })
+  }
+  return invariants
+}
+
+export function normalizeRequiredArtifactRuntimeSignalOwners(requiredArtifactRuntimeSignalOwners) {
+  const owners = normalizeCommaSeparatedStrings(requiredArtifactRuntimeSignalOwners, {
+    fieldName: "requiredArtifactRuntimeSignalOwners",
+    itemName: "owner",
+  })
+  for (const owner of owners) {
+    validateDrillRuntimeSignalOwner(owner, "requiredArtifactRuntimeSignalOwners", {
+      message: () => `unknown required artifact runtime signal owner: ${owner}`,
+    })
+  }
+  return owners
+}
+
+export function normalizeRequiredRuntimeSignalOwners(requiredRuntimeSignalOwners) {
+  const owners = normalizeCommaSeparatedStrings(requiredRuntimeSignalOwners, {
+    fieldName: "requiredRuntimeSignalOwners",
+    itemName: "owner",
+  })
+  for (const owner of owners) {
+    validateDrillRuntimeSignalOwner(owner, "requiredRuntimeSignalOwners", {
+      message: () => `unknown required runtime signal owner: ${owner}`,
+    })
+  }
+  return owners
+}
+
+export function normalizeRequiredArtifactOwners(requiredArtifactOwners) {
+  return normalizeCommaSeparatedStrings(requiredArtifactOwners, {
+    fieldName: "requiredArtifactOwners",
+    itemName: "owner",
+  })
+}
+
+export function normalizeRequiredArtifactClassifications(requiredArtifactClassifications) {
+  return normalizeCommaSeparatedStrings(requiredArtifactClassifications, {
+    fieldName: "requiredArtifactClassifications",
+    itemName: "classification",
+  })
+}
+
+export function normalizeRequiredArtifactFailureClassifications(requiredArtifactFailureClassifications) {
+  const classifications = normalizeCommaSeparatedStrings(requiredArtifactFailureClassifications, {
+    fieldName: "requiredArtifactFailureClassifications",
+    itemName: "classification",
+  })
+  for (const classification of classifications) {
+    validateDrillFailureClassification(classification, "required artifact failure classifications", {
+      message: () => `unknown required artifact failure classification: ${classification}`,
+    })
+  }
+  return classifications
+}
+
+export function normalizeRequiredArtifactPlannedOwners(requiredArtifactPlannedOwners) {
+  return normalizeDiagnosticTextRequirements(requiredArtifactPlannedOwners, {
+    fieldName: "requiredArtifactPlannedOwners",
+    itemName: "owner",
+  })
+}
+
+export function normalizeRequiredArtifactPlannedClassifications(requiredArtifactPlannedClassifications) {
+  return normalizeDiagnosticTextRequirements(requiredArtifactPlannedClassifications, {
+    fieldName: "requiredArtifactPlannedClassifications",
+    itemName: "classification",
+  })
+}
+
+export function normalizeRequiredArtifactExitCriterionStatuses(requiredArtifactExitCriterionStatuses) {
+  const statuses = normalizeCommaSeparatedStrings(requiredArtifactExitCriterionStatuses, {
+    fieldName: "requiredArtifactExitCriterionStatuses",
+    itemName: "status",
+  })
+  validateExitCriterionStatuses(statuses, "requiredArtifactExitCriterionStatuses")
+  return statuses
+}
+
+export function normalizeRequiredArtifactIncompleteExitCriterionStatuses(requiredArtifactIncompleteExitCriterionStatuses) {
+  const statuses = normalizeCommaSeparatedStrings(requiredArtifactIncompleteExitCriterionStatuses, {
+    fieldName: "requiredArtifactIncompleteExitCriterionStatuses",
+    itemName: "status",
+  })
+  validateExitCriterionStatuses(statuses, "requiredArtifactIncompleteExitCriterionStatuses")
+  return statuses
+}
+
+export function normalizeRequiredRuntimeSignals(requiredRuntimeSignals) {
+  if (!Array.isArray(requiredRuntimeSignals)) {
+    throw new Error("requiredRuntimeSignals must be an array")
+  }
+  const signals = []
+  for (const signal of requiredRuntimeSignals) {
+    if (!nonEmptyString(signal)) {
+      throw new Error("requiredRuntimeSignals has invalid signal")
+    }
+    for (const value of signal.split(",")) {
+      const normalized = value.trim()
+      if (normalized) signals.push(normalized)
+    }
+  }
+  const normalizedSignals = [...new Set(signals)].sort()
+  for (const signal of normalizedSignals) {
+    validateDrillRuntimeSignal(signal, "required runtime signals", {
+      message: () => `unknown required runtime signal: ${signal}`,
+    })
+  }
+  return normalizedSignals
+}
+
+export function normalizeRequiredPlatformCoverageAreas(requiredPlatformCoverageAreas) {
+  if (!Array.isArray(requiredPlatformCoverageAreas)) {
+    throw new Error("requiredPlatformCoverageAreas must be an array")
+  }
+  const areas = []
+  for (const area of requiredPlatformCoverageAreas) {
+    if (!nonEmptyString(area)) {
+      throw new Error("requiredPlatformCoverageAreas has invalid area")
+    }
+    for (const value of area.split(",")) {
+      const normalized = value.trim()
+      if (normalized) areas.push(normalized)
+    }
+  }
+  return [...new Set(areas)].sort()
+}
+
+export function normalizeRequiredPresets(presets) {
+  if (!Array.isArray(presets)) {
+    throw new Error("presets must be an array")
+  }
+  const names = []
+  for (const preset of presets) {
+    if (!nonEmptyString(preset)) {
+      throw new Error("presets has invalid preset")
+    }
+    for (const value of preset.split(",")) {
+      const normalized = value.trim()
+      if (normalized) names.push(normalized)
+    }
+  }
+  const normalizedNames = [...new Set(names)].sort()
+  for (const preset of normalizedNames) {
+    validateDrillValidationGatePreset(preset, "validation gate presets", {
+      message: () => `unknown validation gate preset: ${preset}`,
+    })
+  }
+  return normalizedNames
+}
+
+export function isKnownDrillValidationGatePreset(preset) {
+  return typeof preset === "string"
+    && Object.prototype.hasOwnProperty.call(DRILL_VALIDATION_GATE_PRESETS, preset)
+}
+
+export function validateDrillValidationGatePreset(preset, source, { message } = {}) {
+  if (!isKnownDrillValidationGatePreset(preset)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(preset) : message)
+    }
+    throw new Error(`${source} has unknown validation gate preset ${JSON.stringify(preset)}`)
+  }
+}
+
+export function isKnownDrillArtifactValidationPreset(preset) {
+  return typeof preset === "string"
+    && DRILL_ARTIFACT_VALIDATION_PRESETS.includes(preset)
+}
+
+export function validateDrillArtifactValidationPreset(preset, source, {
+  label = "validation preset",
+  message,
+} = {}) {
+  if (!isKnownDrillArtifactValidationPreset(preset)) {
+    if (message !== undefined) {
+      throw new Error(typeof message === "function" ? message(preset) : message)
+    }
+    throw new Error(`${source} has unknown ${label} ${JSON.stringify(preset)}`)
+  }
+}
+
+export function normalizeRequiredFailureClassifications(requiredFailureClassifications) {
+  if (!Array.isArray(requiredFailureClassifications)) {
+    throw new Error("requiredFailureClassifications must be an array")
+  }
+  const classifications = []
+  for (const classification of requiredFailureClassifications) {
+    if (!nonEmptyString(classification)) {
+      throw new Error("requiredFailureClassifications has invalid classification")
+    }
+    for (const value of classification.split(",")) {
+      const normalized = value.trim()
+      if (normalized) classifications.push(normalized)
+    }
+  }
+  const normalizedClassifications = [...new Set(classifications)].sort()
+  for (const classification of normalizedClassifications) {
+    validateDrillFailureClassification(classification, "required failure classifications", {
+      message: () => `unknown required failure classification: ${classification}`,
+    })
+  }
+  return normalizedClassifications
+}
+
+export function normalizeRequiredMatrices(requiredMatrices) {
+  if (!Array.isArray(requiredMatrices)) {
+    throw new Error("requiredMatrices must be an array")
+  }
+  const matrices = []
+  for (const matrix of requiredMatrices) {
+    if (!nonEmptyString(matrix)) {
+      throw new Error("requiredMatrices has invalid matrix")
+    }
+    for (const value of matrix.split(",")) {
+      const normalized = value.trim()
+      if (normalized) matrices.push(normalized)
+    }
+  }
+  return [...new Set(matrices)].sort()
+}
+
+export function normalizeRequiredMatrixClassifications(requiredMatrixClassifications) {
+  if (!Array.isArray(requiredMatrixClassifications)) {
+    throw new Error("requiredMatrixClassifications must be an array")
+  }
+  const classifications = []
+  for (const classification of requiredMatrixClassifications) {
+    if (!nonEmptyString(classification)) {
+      throw new Error("requiredMatrixClassifications has invalid classification")
+    }
+    for (const value of classification.split(",")) {
+      const normalized = value.trim()
+      if (normalized) classifications.push(normalized)
+    }
+  }
+  const normalizedClassifications = [...new Set(classifications)].sort()
+  for (const classification of normalizedClassifications) {
+    validateDrillFailureClassification(classification, "required matrix classifications", {
+      message: () => `unknown required matrix classification: ${classification}`,
+    })
+  }
+  return normalizedClassifications
+}
+
+export function normalizeRequiredMatrixRuntimeSignals(requiredMatrixRuntimeSignals) {
+  if (!Array.isArray(requiredMatrixRuntimeSignals)) {
+    throw new Error("requiredMatrixRuntimeSignals must be an array")
+  }
+  const signals = []
+  for (const signal of requiredMatrixRuntimeSignals) {
+    if (!nonEmptyString(signal)) {
+      throw new Error("requiredMatrixRuntimeSignals has invalid signal")
+    }
+    for (const value of signal.split(",")) {
+      const normalized = value.trim()
+      if (normalized) signals.push(normalized)
+    }
+  }
+  const normalizedSignals = [...new Set(signals)].sort()
+  for (const signal of normalizedSignals) {
+    validateDrillRuntimeSignal(signal, "required matrix runtime signals", {
+      message: () => `unknown required matrix runtime signal: ${signal}`,
+    })
+  }
+  return normalizedSignals
+}
+
+export function normalizeRequiredDeploymentPresets(requiredDeploymentPresets) {
+  if (!Array.isArray(requiredDeploymentPresets)) {
+    throw new Error("requiredDeploymentPresets must be an array")
+  }
+  const presets = []
+  for (const preset of requiredDeploymentPresets) {
+    if (!nonEmptyString(preset)) {
+      throw new Error("requiredDeploymentPresets has invalid preset")
+    }
+    for (const value of preset.split(",")) {
+      const normalized = value.trim()
+      if (normalized) presets.push(normalized)
+    }
+  }
+  const normalizedPresets = [...new Set(presets)].sort()
+  for (const preset of normalizedPresets) {
+    validateDrillDeploymentPreset(preset, "required deployment presets", {
+      message: () => `unknown required deployment preset: ${preset}`,
+    })
+  }
+  return normalizedPresets
+}
+
+export function normalizeRequiredProviders(requiredProviders) {
+  const providers = normalizeCommaSeparatedStrings(requiredProviders, {
+    fieldName: "requiredProviders",
+    itemName: "provider",
+  })
+  for (const provider of providers) {
+    validateDrillProvider(provider, "required providers", {
+      message: () => `unknown required provider: ${provider}`,
+    })
+  }
+  return providers
+}
+
+export function normalizeRequiredScenarios(requiredScenarios) {
+  if (!Array.isArray(requiredScenarios)) {
+    throw new Error("requiredScenarios must be an array")
+  }
+  const scenarios = []
+  for (const scenario of requiredScenarios) {
+    if (!nonEmptyString(scenario)) {
+      throw new Error("requiredScenarios has invalid scenario")
+    }
+    for (const value of scenario.split(",")) {
+      const normalized = value.trim()
+      if (normalized) scenarios.push(normalized)
+    }
+  }
+  return [...new Set(scenarios)].sort()
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function normalizeCommaSeparatedStrings(values, { fieldName, itemName }) {
+  if (!Array.isArray(values)) {
+    throw new Error(`${fieldName} must be an array`)
+  }
+  const normalizedValues = []
+  for (const value of values) {
+    if (!nonEmptyString(value)) {
+      throw new Error(`${fieldName} has invalid ${itemName}`)
+    }
+    for (const part of value.split(",")) {
+      const normalized = part.trim()
+      if (normalized) normalizedValues.push(normalized)
+    }
+  }
+  return [...new Set(normalizedValues)].sort()
+}
+
+function normalizeGeneratedEvidencePathRequirements(values, { fieldName, itemName }) {
+  const paths = normalizeCommaSeparatedStrings(values, { fieldName, itemName })
+  for (const [index, valuePath] of paths.entries()) {
+    validateDrillGeneratedEvidencePath(valuePath, `${fieldName}[${index}]`)
+  }
+  return paths
+}
+
+function normalizeDiagnosticTextRequirements(values, { fieldName, itemName }) {
+  const texts = normalizeCommaSeparatedStrings(values, { fieldName, itemName })
+  for (const [index, text] of texts.entries()) {
+    if (redactDrillSecretText(text) !== text) {
+      throw new Error(`${fieldName}[${index}] includes secret-looking diagnostic text`)
+    }
+  }
+  return texts
+}
+
+function validateExitCriterionStatuses(statuses, fieldName) {
+  for (const status of statuses) {
+    validateDrillExitCriterionStatus(status, fieldName, {
+      message: () => `unknown required artifact exit criterion status in ${fieldName}: ${status}`,
+    })
+  }
+}

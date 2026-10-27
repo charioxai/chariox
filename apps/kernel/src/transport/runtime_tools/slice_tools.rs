@@ -1,0 +1,546 @@
+use super::*;
+
+pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
+    let canonical = vec![
+        RuntimeToolSpec { name: SLICE_ACCESSIBILITY_TOOL.into(), description: "MP-08: bounded native AT-SPI desktop snapshot. Prefer showing actionable nodes. Opaque target_id and tree_revision are observer-bound; fallback OCR if text is absent. Windows without accessibility (e.g. terminals) are black in captures and listed in masked as [x,y,w,h], yet still take input.".into(), input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}) },
+        RuntimeToolSpec { name: SLICE_TARGET_ACTION_TOOL.into(), description: "MP-08 / MP-11: perform one advertised native action using target_id/tree_revision from slice_accessibility. Room takeover, membership and Computer revocation apply. Handles expire after action or tree/protection change.".into(), input_schema: serde_json::json!({"type":"object","properties":{"tree_revision":{"type":"integer","minimum":1},"target_id":{"type":"string","maxLength":128},"action":{"type":"string","maxLength":64}},"required":["tree_revision","target_id","action"],"additionalProperties":false}) },
+        RuntimeToolSpec {
+            name: SLICE_SCREEN_STATUS_TOOL.to_string(),
+            description: "Return availability and display dimensions for the shared Chariox Computer. A local slice may also return its private viewer URL; a Room agent receives canonical Room dimensions and a client-attachment marker instead of worker connection details.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_SCREENSHOT_TOOL.to_string(),
+            description: "Capture the current shared Chariox Computer screen. Set return_image_base64 to receive a native MCP image block bounded to 16 MiB. A local slice may honor path; a Room-owned remote Computer returns opaque artifact metadata and never exposes its worker path.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "return_image_base64": {"type": "boolean"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_OCR_TOOL.to_string(),
+            description: "Extract visible text from the shared Chariox Computer with the slice OCR engine. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "image_path": {"type": "string"},
+                    "artifact_id": {"type": "string", "minLength": 1}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_FIND_TEXT_TOOL.to_string(),
+            description: "Locate every visible occurrence of text on the shared Chariox Computer in reading order and return native display-pixel bounding boxes and center points. The backward-compatible match field contains the first result, while matches and match_count describe the complete result. A Room agent may reuse an opaque artifact_id returned by slice_screenshot; local slices may use image_path. If both are omitted, Chariox captures a fresh screenshot first.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    "image_path": {"type": "string"},
+                    "artifact_id": {"type": "string", "minLength": 1}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_MOUSE_TOOL.to_string(),
+            description: "Control the shared Chariox Computer pointer through the Room action authority. Actions: move, click, double_click, scroll, drag, hold. Hold requires x, y and duration_ms (1-10000 ms) and releases automatically; cancel through the Room Action. Room scroll requires x and y; amount is vertical steps and horizontal_steps is horizontal steps.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["move", "click", "double_click", "scroll", "drag", "hold"]
+                    },
+                    "x": {"type": "integer"},
+                    "y": {"type": "integer"},
+                    "to_x": {"type": "integer"},
+                    "to_y": {"type": "integer"},
+                    "amount": {"type": "integer"},
+                    "horizontal_steps": {"type": "integer"},
+                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
+                    "button": {"type": "string", "enum": ["left", "middle", "right"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_KEYBOARD_TOOL.to_string(),
+            description: "Control the shared Chariox Computer keyboard through the Room action authority. Use action=type with text or action=key with an xdotool-compatible key name and optional repeat count. Use action=hold with key and duration_ms (1-10000 ms) for an explicit press/hold/release within one Room Action; cancellation releases input. Hold keys must be base-layout key names; shifted keys need an explicit shift chord.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["type", "key", "hold"]
+                    },
+                    "text": {"type": "string"},
+                    "key": {"type": "string"},
+                    "duration_ms": {"type": "integer", "minimum": 1, "maximum": 10000},
+                    "repeat": {"type": "integer", "minimum": 1, "maximum": 32}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_CLIPBOARD_WRITE_TOOL.to_string(),
+            description: "Write text to the shared Chariox Computer clipboard through the Room action authority. This is write-only: agents cannot read clipboard contents. The text is sent through stdin and is not retained in Room history.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string", "maxLength": 262144}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_OPEN_URL_TOOL.to_string(),
+            description: "Open a URL in the Chariox slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["url"],
+                "properties": {
+                    "url": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_STATUS_TOOL.to_string(),
+            description: "Return DOM-level browser status for the Chariox slice browser, including URL, title, focused element, and visible fields/buttons/links. Output is capped at 24 KiB. When page.next_cursor is present the page has more elements: call again with cursor set to it, or use slice_browser_find to locate a specific element.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "cursor": {"type": "integer", "minimum": 0, "default": 0, "description": "page.next_cursor from a previous slice_browser_status result."}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_TAB_TOOL.to_string(),
+            description: "Activate or close a stable Room browser tab returned by slice_browser_status. The kernel resolves the opaque tab ID and serializes the mutation through the shared Room action authority.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["tab_id", "action"],
+                "properties": {
+                    "tab_id": {"type": "string", "minLength": 1},
+                    "action": {"type": "string", "enum": ["activate", "close"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_HISTORY_TOOL.to_string(),
+            description: "Navigate back, forward, or reload in a stable Room browser tab returned by slice_browser_status. The kernel resolves the opaque tab ID and serializes the mutation through the shared Room action authority.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["tab_id", "action"],
+                "properties": {
+                    "tab_id": {"type": "string", "minLength": 1},
+                    "action": {"type": "string", "enum": ["back", "forward", "reload"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_FIND_TOOL.to_string(),
+            description: "Find visible browser fields, buttons, or links by label, placeholder, name, text, role, or selector.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["query"],
+                "properties": {
+                    "query": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["field", "button", "link", "any"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_FILL_TOOL.to_string(),
+            description: "Fill a slice browser input, textarea, select, or contenteditable element by selector or field_id returned by slice_browser_find.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"},
+                    "text": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_CLICK_TOOL.to_string(),
+            description: "Click a slice browser element by selector or field_id returned by slice_browser_find.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_SUBMIT_TOOL.to_string(),
+            description: "Submit the nearest form for a slice browser element by selector/field_id, or the currently focused form when omitted.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "field_id": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_DIALOG_TOOL.to_string(),
+            description: "Accept or dismiss the currently open native JavaScript alert, confirm, or prompt in the Chariox slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["accept", "dismiss"]},
+                    "prompt_text": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_EVENTS_TOOL.to_string(),
+            description: "Poll the bounded, sanitized Room browser event stream. Use browser_generation from slice_browser_status and resume with next_cursor.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["browser_generation"],
+                "properties": {
+                    "browser_generation": {"type": "integer", "minimum": 1},
+                    "cursor": {"type": "integer", "minimum": 0, "default": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 100}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_DOWNLOADS_TOOL.to_string(),
+            description: "Enable downloads for the focused Room browser tab, or cancel an active download using its observed browser_generation and guid from slice_browser_events. Cancellation is requested, not completed, until a canceled progress event arrives. Download paths remain private to the slice.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "cancel": {
+                        "type": "object", "required": ["browser_generation", "guid"],
+                        "properties": {
+                            "browser_generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991u64},
+                            "guid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$"}
+                        },
+                        "additionalProperties": false
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_ARTIFACT_TOOL.to_string(),
+            description: "Capture the actual focused Browser tab as a bounded image, passive redacted network HAR, or completed download artifact. Use the observed browser_generation; download also requires its observed guid. Images with return_image_base64=true arrive as native MCP image bytes. Read/inspect an opaque artifact from this Room/tab; reads are bounded to 128 KiB and text/PDF inspection to 256 KiB. Protected image frames are fully masked. Paths stay private.".into(),
+            input_schema: serde_json::json!({"type":"object", "oneOf": [
+                {"type":"object", "required":["action","kind","browser_generation"], "properties": {
+                    "action":{"const":"capture"}, "kind":{"enum":["image","network","download"]},
+                    "browser_generation":{"type":"integer","minimum":1}, "guid":{"type":"string","maxLength":128},
+                    "return_image_base64":{"type":"boolean","default":false}}, "additionalProperties":false},
+                {"type":"object", "required":["action","artifact_id","max_bytes"], "properties": {
+                    "action":{"const":"read"}, "artifact_id":{"type":"string","minLength":1}, "offset":{"type":"integer","minimum":0},
+                    "max_bytes":{"type":"integer","minimum":1,"maximum":131072}}, "additionalProperties":false},
+                {"type":"object", "required":["action","artifact_id"], "properties": {
+                    "action":{"const":"inspect"}, "artifact_id":{"type":"string","minLength":1}}, "additionalProperties":false}
+            ]}),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_UPLOAD_TOOL.to_string(),
+            description: "Upload permitted opaque artifact_ids (or legacy configured-root files) through an observed field_id. A visible chooser must open a matching tab/document-bound file input. Artifacts retain exact filenames and byte hashes; do not supply raw provider-profile paths.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["field_id"],
+                "oneOf": [{"required":["files"]},{"required":["artifact_ids"]}],
+                "properties": {
+                    "field_id": {"type": "string", "minLength": 1},
+                    "artifact_ids": {"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1}},
+                    "files": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 20,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 4096}
+                    }
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_PERMISSION_TOOL.to_string(),
+            description: "Set a closed-list browser permission decision for the focused Room browser origin.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["permission", "setting"],
+                "properties": {
+                    "permission": {
+                        "type": "string",
+                        "enum": ["camera", "clipboard-read-write", "clipboard-sanitized-write", "display-capture", "geolocation", "local-fonts", "microphone", "midi", "midi-sysex", "notifications"]
+                    },
+                    "setting": {"type": "string", "enum": ["granted", "denied", "prompt"]}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_TEXT_TOOL.to_string(),
+            description: "Return the current slice browser document body text.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_TEXT_TOOL.to_string(),
+            description: "Wait until the slice browser document body contains text, keeping browser automation inside the runtime MCP instead of shell sleeps.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL.to_string(),
+            description: "Wait until a selector exists and is visible in the slice browser.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["selector"],
+                "properties": {
+                    "selector": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: SLICE_BROWSER_WAIT_FOR_IDLE_TOOL.to_string(),
+            description: "Wait until the slice browser reports a complete document ready state.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timeout_ms": {"type": "integer", "minimum": 100, "maximum": 60000}
+                },
+                "additionalProperties": false
+            }),
+        },
+    ];
+    let aliases = canonical
+        .iter()
+        .filter_map(slice_alias_spec)
+        .collect::<Vec<_>>();
+    let mut specs = canonical;
+    specs.extend(aliases);
+    specs
+}
+
+fn slice_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
+    let alias = match spec.name.as_str() {
+        SLICE_SCREEN_STATUS_TOOL => SLICE_SCREEN_STATUS_TOOL_ALIAS,
+        SLICE_SCREENSHOT_TOOL => SLICE_SCREENSHOT_TOOL_ALIAS,
+        SLICE_OCR_TOOL => SLICE_OCR_TOOL_ALIAS,
+        SLICE_ACCESSIBILITY_TOOL => "slice_accessibility",
+        SLICE_TARGET_ACTION_TOOL => "slice_target_action",
+        SLICE_FIND_TEXT_TOOL => SLICE_FIND_TEXT_TOOL_ALIAS,
+        SLICE_MOUSE_TOOL => SLICE_MOUSE_TOOL_ALIAS,
+        SLICE_KEYBOARD_TOOL => SLICE_KEYBOARD_TOOL_ALIAS,
+        SLICE_CLIPBOARD_WRITE_TOOL => SLICE_CLIPBOARD_WRITE_TOOL_ALIAS,
+        SLICE_OPEN_URL_TOOL => SLICE_OPEN_URL_TOOL_ALIAS,
+        SLICE_BROWSER_STATUS_TOOL => SLICE_BROWSER_STATUS_TOOL_ALIAS,
+        SLICE_BROWSER_TAB_TOOL => SLICE_BROWSER_TAB_TOOL_ALIAS,
+        SLICE_BROWSER_HISTORY_TOOL => SLICE_BROWSER_HISTORY_TOOL_ALIAS,
+        SLICE_BROWSER_FIND_TOOL => SLICE_BROWSER_FIND_TOOL_ALIAS,
+        SLICE_BROWSER_FILL_TOOL => SLICE_BROWSER_FILL_TOOL_ALIAS,
+        SLICE_BROWSER_CLICK_TOOL => SLICE_BROWSER_CLICK_TOOL_ALIAS,
+        SLICE_BROWSER_SUBMIT_TOOL => SLICE_BROWSER_SUBMIT_TOOL_ALIAS,
+        SLICE_BROWSER_DIALOG_TOOL => SLICE_BROWSER_DIALOG_TOOL_ALIAS,
+        SLICE_BROWSER_EVENTS_TOOL => SLICE_BROWSER_EVENTS_TOOL_ALIAS,
+        SLICE_BROWSER_DOWNLOADS_TOOL => SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS,
+        SLICE_BROWSER_ARTIFACT_TOOL => SLICE_BROWSER_ARTIFACT_TOOL_ALIAS,
+        SLICE_BROWSER_UPLOAD_TOOL => SLICE_BROWSER_UPLOAD_TOOL_ALIAS,
+        SLICE_BROWSER_PERMISSION_TOOL => SLICE_BROWSER_PERMISSION_TOOL_ALIAS,
+        SLICE_BROWSER_TEXT_TOOL => SLICE_BROWSER_TEXT_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_TEXT_TOOL => SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL => SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS,
+        SLICE_BROWSER_WAIT_FOR_IDLE_TOOL => SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS,
+        _ => return None,
+    };
+    let mut spec = spec.clone();
+    spec.name = alias.to_string();
+    spec.description = format!(
+        "{} Alias for `{}`.",
+        spec.description,
+        canonical_slice_tool_name(alias).unwrap_or(alias)
+    );
+    Some(spec)
+}
+
+pub fn canonical_slice_tool_name(tool_name: &str) -> Option<&'static str> {
+    match tool_name {
+        SLICE_SCREEN_STATUS_TOOL
+        | SLICE_SCREEN_STATUS_TOOL_ALIAS
+        | "chariox_slice_screen_status"
+        | "mcp__chariox__slice_screen_status"
+        | "mcp__chariox__chariox_slice_screen_status" => Some(SLICE_SCREEN_STATUS_TOOL),
+        SLICE_SCREENSHOT_TOOL
+        | SLICE_SCREENSHOT_TOOL_ALIAS
+        | "chariox_slice_screenshot"
+        | "mcp__chariox__slice_screenshot"
+        | "mcp__chariox__chariox_slice_screenshot" => Some(SLICE_SCREENSHOT_TOOL),
+        SLICE_OCR_TOOL
+        | SLICE_OCR_TOOL_ALIAS
+        | "chariox_slice_ocr"
+        | "mcp__chariox__slice_ocr"
+        | "mcp__chariox__chariox_slice_ocr" => Some(SLICE_OCR_TOOL),
+        SLICE_ACCESSIBILITY_TOOL
+        | "slice_accessibility"
+        | "chariox_slice_accessibility"
+        | "mcp__chariox__slice_accessibility"
+        | "mcp__chariox__chariox_slice_accessibility" => Some(SLICE_ACCESSIBILITY_TOOL),
+        SLICE_TARGET_ACTION_TOOL
+        | "slice_target_action"
+        | "chariox_slice_target_action"
+        | "mcp__chariox__slice_target_action"
+        | "mcp__chariox__chariox_slice_target_action" => Some(SLICE_TARGET_ACTION_TOOL),
+        SLICE_FIND_TEXT_TOOL
+        | SLICE_FIND_TEXT_TOOL_ALIAS
+        | "chariox_slice_find_text"
+        | "mcp__chariox__slice_find_text"
+        | "mcp__chariox__chariox_slice_find_text" => Some(SLICE_FIND_TEXT_TOOL),
+        SLICE_MOUSE_TOOL
+        | SLICE_MOUSE_TOOL_ALIAS
+        | "chariox_slice_mouse"
+        | "mcp__chariox__slice_mouse"
+        | "mcp__chariox__chariox_slice_mouse" => Some(SLICE_MOUSE_TOOL),
+        SLICE_KEYBOARD_TOOL
+        | SLICE_KEYBOARD_TOOL_ALIAS
+        | "chariox_slice_keyboard"
+        | "mcp__chariox__slice_keyboard"
+        | "mcp__chariox__chariox_slice_keyboard" => Some(SLICE_KEYBOARD_TOOL),
+        SLICE_CLIPBOARD_WRITE_TOOL
+        | SLICE_CLIPBOARD_WRITE_TOOL_ALIAS
+        | "chariox_slice_clipboard_write"
+        | "mcp__chariox__slice_clipboard_write"
+        | "mcp__chariox__chariox_slice_clipboard_write" => Some(SLICE_CLIPBOARD_WRITE_TOOL),
+        SLICE_OPEN_URL_TOOL
+        | SLICE_OPEN_URL_TOOL_ALIAS
+        | "chariox_slice_open_url"
+        | "mcp__chariox__slice_open_url"
+        | "mcp__chariox__chariox_slice_open_url" => Some(SLICE_OPEN_URL_TOOL),
+        SLICE_BROWSER_STATUS_TOOL
+        | SLICE_BROWSER_STATUS_TOOL_ALIAS
+        | "chariox_slice_browser_status"
+        | "mcp__chariox__slice_browser_status"
+        | "mcp__chariox__chariox_slice_browser_status" => Some(SLICE_BROWSER_STATUS_TOOL),
+        SLICE_BROWSER_TAB_TOOL
+        | SLICE_BROWSER_TAB_TOOL_ALIAS
+        | "chariox_slice_browser_tab"
+        | "mcp__chariox__slice_browser_tab"
+        | "mcp__chariox__chariox_slice_browser_tab" => Some(SLICE_BROWSER_TAB_TOOL),
+        SLICE_BROWSER_HISTORY_TOOL
+        | SLICE_BROWSER_HISTORY_TOOL_ALIAS
+        | "chariox_slice_browser_history"
+        | "mcp__chariox__slice_browser_history"
+        | "mcp__chariox__chariox_slice_browser_history" => Some(SLICE_BROWSER_HISTORY_TOOL),
+        SLICE_BROWSER_FIND_TOOL
+        | SLICE_BROWSER_FIND_TOOL_ALIAS
+        | "chariox_slice_browser_find"
+        | "mcp__chariox__slice_browser_find"
+        | "mcp__chariox__chariox_slice_browser_find" => Some(SLICE_BROWSER_FIND_TOOL),
+        SLICE_BROWSER_FILL_TOOL
+        | SLICE_BROWSER_FILL_TOOL_ALIAS
+        | "chariox_slice_browser_fill"
+        | "mcp__chariox__slice_browser_fill"
+        | "mcp__chariox__chariox_slice_browser_fill" => Some(SLICE_BROWSER_FILL_TOOL),
+        SLICE_BROWSER_CLICK_TOOL
+        | SLICE_BROWSER_CLICK_TOOL_ALIAS
+        | "chariox_slice_browser_click"
+        | "mcp__chariox__slice_browser_click"
+        | "mcp__chariox__chariox_slice_browser_click" => Some(SLICE_BROWSER_CLICK_TOOL),
+        SLICE_BROWSER_SUBMIT_TOOL
+        | SLICE_BROWSER_SUBMIT_TOOL_ALIAS
+        | "chariox_slice_browser_submit"
+        | "mcp__chariox__slice_browser_submit"
+        | "mcp__chariox__chariox_slice_browser_submit" => Some(SLICE_BROWSER_SUBMIT_TOOL),
+        SLICE_BROWSER_DIALOG_TOOL
+        | SLICE_BROWSER_DIALOG_TOOL_ALIAS
+        | "chariox_slice_browser_dialog"
+        | "mcp__chariox__slice_browser_dialog"
+        | "mcp__chariox__chariox_slice_browser_dialog" => Some(SLICE_BROWSER_DIALOG_TOOL),
+        SLICE_BROWSER_EVENTS_TOOL
+        | SLICE_BROWSER_EVENTS_TOOL_ALIAS
+        | "chariox_slice_browser_events"
+        | "mcp__chariox__slice_browser_events"
+        | "mcp__chariox__chariox_slice_browser_events" => Some(SLICE_BROWSER_EVENTS_TOOL),
+        SLICE_BROWSER_DOWNLOADS_TOOL
+        | SLICE_BROWSER_DOWNLOADS_TOOL_ALIAS
+        | "chariox_slice_browser_downloads"
+        | "mcp__chariox__slice_browser_downloads"
+        | "mcp__chariox__chariox_slice_browser_downloads" => Some(SLICE_BROWSER_DOWNLOADS_TOOL),
+        SLICE_BROWSER_ARTIFACT_TOOL
+        | SLICE_BROWSER_ARTIFACT_TOOL_ALIAS
+        | "chariox_slice_browser_artifact"
+        | "mcp__chariox__slice_browser_artifact"
+        | "mcp__chariox__chariox_slice_browser_artifact" => Some(SLICE_BROWSER_ARTIFACT_TOOL),
+        SLICE_BROWSER_UPLOAD_TOOL
+        | SLICE_BROWSER_UPLOAD_TOOL_ALIAS
+        | "chariox_slice_browser_upload"
+        | "mcp__chariox__slice_browser_upload"
+        | "mcp__chariox__chariox_slice_browser_upload" => Some(SLICE_BROWSER_UPLOAD_TOOL),
+        SLICE_BROWSER_PERMISSION_TOOL
+        | SLICE_BROWSER_PERMISSION_TOOL_ALIAS
+        | "chariox_slice_browser_permission"
+        | "mcp__chariox__slice_browser_permission"
+        | "mcp__chariox__chariox_slice_browser_permission" => Some(SLICE_BROWSER_PERMISSION_TOOL),
+        SLICE_BROWSER_TEXT_TOOL
+        | SLICE_BROWSER_TEXT_TOOL_ALIAS
+        | "chariox_slice_browser_text"
+        | "mcp__chariox__slice_browser_text"
+        | "mcp__chariox__chariox_slice_browser_text" => Some(SLICE_BROWSER_TEXT_TOOL),
+        SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+        | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL_ALIAS
+        | "chariox_slice_browser_wait_for_text"
+        | "mcp__chariox__slice_browser_wait_for_text"
+        | "mcp__chariox__chariox_slice_browser_wait_for_text" => {
+            Some(SLICE_BROWSER_WAIT_FOR_TEXT_TOOL)
+        }
+        SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+        | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL_ALIAS
+        | "chariox_slice_browser_wait_for_selector"
+        | "mcp__chariox__slice_browser_wait_for_selector"
+        | "mcp__chariox__chariox_slice_browser_wait_for_selector" => {
+            Some(SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL)
+        }
+        SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+        | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL_ALIAS
+        | "chariox_slice_browser_wait_for_idle"
+        | "mcp__chariox__slice_browser_wait_for_idle"
+        | "mcp__chariox__chariox_slice_browser_wait_for_idle" => {
+            Some(SLICE_BROWSER_WAIT_FOR_IDLE_TOOL)
+        }
+        _ => None,
+    }
+}

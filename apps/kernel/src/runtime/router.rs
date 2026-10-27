@@ -1,0 +1,288 @@
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::sync::RwLock;
+
+use crate::app::DaemonApp;
+use crate::history::OperationalHistoryStore;
+use crate::history::SessionHistoryStore;
+use crate::provider::ProviderRunOperationLanes;
+use crate::runtime::agent_actor::AgentRuntime;
+use crate::runtime::capability_executor::{CapabilityExecutorHealthStore, CapabilityRuntimeStore};
+use crate::runtime::credential_enrollment_control::CredentialEnrollmentControl;
+use crate::runtime::projection::{
+    AgentRuntimeProjectionStore, DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
+    ProviderProcessProjectionStore, ProviderRunProjectionStore,
+    RemoteRelayInventoryProjectionStore, SessionStateProjectionStore, TransportHealthStore,
+};
+use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::session_actor::{FocusedAgentProjection, SessionRuntime};
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::terminal_output_executor::TerminalOutputExecutor;
+use crate::runtime::waiting_room_public_projection::WaitingRoomSessionSummaryProjectionStore;
+use crate::runtime::workflow_actor::WorkflowRuntime;
+use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
+use crate::terminal::TerminalStreamHealthStore;
+use crate::transport::relay_client::RelayClientState;
+
+pub(crate) mod agent_turn_bridge;
+mod caller_identity_bridge;
+mod cloud_relay_bridge;
+mod composition;
+mod dispatch;
+pub(crate) mod event_connection_lifecycle;
+mod kernel_access;
+mod managed_context_bridge;
+mod session_view;
+pub(crate) use managed_context_bridge::{
+    RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
+};
+mod app_event_routes;
+mod app_pre_lane;
+mod meta_runtime_command;
+mod pre_lane_dispatch;
+mod pre_lane_request;
+mod priority_dispatch;
+mod refresh_dispatch;
+mod relay_peer_bridge;
+mod retired_cloud_controls;
+mod runtime_tool_bridge;
+mod slice_relay_token_bridge;
+pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
+pub(in crate::runtime) use slice_relay_token_bridge::{
+    managed_slice_relay_identity_from_environment, ManagedSliceRelayIdentity,
+};
+mod status_projection_bridge;
+mod transport_bridge;
+
+pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
+
+#[derive(Clone)]
+pub(crate) struct CommandRouter {
+    _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
+    app: Arc<Mutex<DaemonApp>>,
+    runtime_state: KernelRuntimeState,
+    agent_runtime: AgentRuntime,
+    session_runtime: SessionRuntime,
+    workflow_runtime: WorkflowRuntime,
+    aegs_management_http_client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
+    event_connection_lanes: event_connection_lifecycle::EventConnectionOperationLanes,
+    provider_runtime_lanes: ProviderRunOperationLanes,
+    focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    waiting_room_session_summaries: WaitingRoomSessionSummaryProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    history_store: SessionHistoryStore,
+    operational_history_store: OperationalHistoryStore,
+    provider_catalog_projection: ProviderCatalogProjectionStore,
+    provider_run_projection: ProviderRunProjectionStore,
+    provider_process_projection: ProviderProcessProjectionStore,
+    credential_enrollment_control: CredentialEnrollmentControl,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
+    managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
+    #[allow(dead_code)]
+    active_turns: crate::app::ActiveTurnStore,
+    config_projection: DaemonConfigProjectionStore,
+    remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    capability_health: CapabilityExecutorHealthStore,
+    capability_runtime: CapabilityRuntimeStore,
+    transport_health: TransportHealthStore,
+    terminal_health: TerminalStreamHealthStore,
+    terminal_output_executor: TerminalOutputExecutor,
+    workspace_coordinator: WorkspaceCoordinator,
+    provider_launch_pending: ProviderLaunchPendingTracker,
+    kernel_gateway: Arc<crate::runtime::kernel_gateway::KernelGateway>,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+    use tokio::time::{timeout, Duration};
+
+    use crate::agent::CreateAgentRequest;
+    use crate::attachment::ClientCapabilityLevel;
+    use crate::local::{
+        AckMetaagentEventsRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,
+        AddWorkflowNodeRequest, AliasSessionRequest, ApplyWorkflowDesignOpRequest,
+        AttachToSessionRequest, AttachWorkspaceLinkRequest, CancelActivePromptRequest,
+        CancelQueuedPromptRequest, CompletePromptRequest, CreateWorkflowEndpointRequest,
+        CreateWorkflowRequest, CreateWorkspaceLinkRequest, CycleAgentFocusRequest,
+        DeleteKernelRequest, DeleteSessionRequest, DestroyAgentRequest, DetachFromSessionRequest,
+        EndSessionRequest, FocusAgentRequest, GetDaemonHealthRequest, GetMetaagentTurnBlobRequest,
+        GetMetaagentTurnOverviewRequest, GetProviderAuthStatusRequest, GetProviderCatalogRequest,
+        GetProviderCommandCatalogsRequest, GetProviderRunRequest, GetSessionStateRequest,
+        GetWorkspaceLiveSyncStatusRequest, InvokeWorkflowEndpointRequest, LaunchProviderRunRequest,
+        ListAgentsRequest, ListMetaagentEventsRequest, ListProviderProcessesRequest,
+        ListSessionsRequest, ListWorkflowRunsRequest, ListWorkflowWatchdogsRequest,
+        ListWorkflowsRequest, LocalDaemonRequest, LocalDaemonResponse, PollRuntimeNoticesRequest,
+        PumpTerminalOutputRequest, ReadMetaagentEventRequest, RelayStatusRequest,
+        RemoveWorkflowEdgeRequest, ResizeTerminalRequest, ResolveSessionRequest,
+        ResolveWorkflowRequest, RunShellCapabilityRequest, SearchMetaagentCommandsRequest,
+        SpawnAgentRequest, SteerQueuedPromptRequest, SubmitPromptRequest,
+        TeardownProviderProcessesRequest, UpdateSessionConfigRequest, WorkflowDesignEdge,
+        WorkflowDesignEndpoint, WorkflowDesignNode, WorkflowDesignNodePatch, WorkflowDesignOp,
+    };
+    use crate::provider::{
+        LaunchProviderRequest, OpenCodeProviderCatalog, OpenCodeProviderInfo,
+        ProviderClientInterface, RuntimeProviderRun,
+    };
+    use crate::runtime::command::{
+        KernelCaller, KernelCallerKind, KernelCommand, KernelCommandSource,
+    };
+    use crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION;
+    use crate::runtime::router::CommandRouter;
+    use crate::session::{
+        CreateSessionRequest, PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+        RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
+        RuntimeInteractionKind, RuntimeInteractionLevel, SessionStatus, DEFAULT_LOCAL_USER_ID,
+    };
+    use crate::{DaemonApp, DaemonConfig, DaemonError};
+
+    fn spawn_test_agent(
+        app: &mut DaemonApp,
+        session_id: &str,
+        alias: &str,
+        provider: &str,
+    ) -> crate::agent::AgentInstance {
+        crate::app::KernelSessionService::new(app)
+            .spawn_agent(CreateAgentRequest::new(session_id, provider).with_alias(alias))
+            .expect("agent should spawn")
+    }
+
+    fn launch_test_provider(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        provider: &str,
+        model: &str,
+    ) -> RuntimeProviderRun {
+        let provider_run = app
+            .launch_provider(
+                LaunchProviderRequest::new(session_id, adapter_key, provider, "default", model)
+                    .with_agent_id(agent_id),
+            )
+            .expect("provider run should launch");
+        app.update_provider_run_projection(provider_run.clone());
+        if app.config().room_agent_tools {
+            crate::test_support::admit_room_test_turn(app, session_id, agent_id);
+            return app
+                .providers()
+                .get_run_for_agent(session_id, agent_id)
+                .unwrap();
+        }
+        provider_run
+    }
+
+    fn remote_command_for_request(
+        request: &LocalDaemonRequest,
+        user_id: Option<&str>,
+    ) -> KernelCommand {
+        KernelCommand::from_local_request_with_caller(
+            "remote-command",
+            KernelCommandSource::RelayClient,
+            KernelCaller {
+                caller_id: "client-remote".to_string(),
+                caller_kind: KernelCallerKind::RemoteClient,
+                user_id: user_id.map(str::to_string),
+                client_id: Some("client-remote".to_string()),
+                machine_id: None,
+                realm_id: Some("realm-1".to_string()),
+                public_key_thumbprint: Some("thumbprint-remote".to_string()),
+                metaagent_id: None,
+                connection_class: None,
+            },
+            None,
+            None,
+            request,
+        )
+    }
+
+    fn focus_test_agent(app: &mut DaemonApp, session_id: &str, agent_id: &str) {
+        crate::app::KernelSessionService::new(app)
+            .focus_agent(session_id, agent_id)
+            .expect("focus should succeed");
+    }
+
+    mod agent_archive;
+    mod agent_messaging;
+    mod agent_prompt_schedules;
+    mod app_bindings;
+    mod app_capability_grants;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_open;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod app_tools;
+    mod browser_import;
+    mod credential_enrollment;
+    mod interactive_command_admission;
+    mod kernel_browser;
+    mod lease_worker_authority;
+    mod m16_runtime_extension_registration;
+    mod m23_metaagent_runtime_tools;
+    mod normal_stack;
+    mod provider_projection;
+    #[cfg(unix)]
+    mod provider_setup_token;
+    mod relay_leased_prompt_steer;
+    mod relay_subscription_attachment;
+    mod remote_agent_message_origin;
+    mod remote_authorization;
+    mod remote_workspace_live_sync_authorization;
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    mod user_app_views;
+    // Kernel resource telemetry reads /proc; other platforms report it as unsupported.
+    mod agent_workflow;
+    mod dictation;
+    mod outside_events;
+    #[cfg(target_os = "linux")]
+    mod resource_telemetry;
+    mod room_environment_placement;
+    #[cfg(unix)]
+    mod room_terminal;
+    mod runtime_persistence;
+    mod session_actor_projection;
+    mod session_lifecycle_projection;
+    mod session_read_projection;
+    mod stack_budget;
+    mod status_projection;
+    mod terminal_output_projection;
+    mod terminal_tools;
+    mod workflow_revision;
+
+    fn attach_request(session_id: &str, client_id: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.to_string(),
+            client_id: client_id.to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        })
+    }
+
+    fn focus_request(session_id: &str, agent_id: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::FocusAgent(FocusAgentRequest {
+            session_id: session_id.to_string(),
+            agent_id: agent_id.to_string(),
+        })
+    }
+
+    fn assert_ownership_denied(error: DaemonError, user_id: &str, owner_user_id: &str) {
+        assert!(
+            matches!(
+                error,
+                DaemonError::OwnershipAccessDenied {
+                    user_id: ref denied_user,
+                    owner_user_id: ref denied_owner,
+                    ..
+                } if denied_user == user_id && denied_owner == owner_user_id
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+}

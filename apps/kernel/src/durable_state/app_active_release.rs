@@ -1,0 +1,236 @@
+//! The active release of an installation, re-read from the release store and
+//! re-verified against the owner's current publisher trust. A revoked
+//! publisher or inactive installation yields nothing. No worker is needed.
+use super::DurableKernelStateStore;
+use chariox_app_package::{verify, VerificationPolicy, VerifiedPackage};
+use chariox_app_runtime::{
+    app_catalog::AppCatalog,
+    app_inbox::IncomingCatalog,
+    app_outbox::EventCatalog,
+    installation::{InstallationRegistry, StageTrustBinding},
+    publisher_trust::{PublisherTrustRegistry, TrustedPublisherSnapshot},
+    release_store::ReleaseStore,
+};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveReleaseError {
+    NotActive,
+    Untrusted,
+    Unavailable,
+    Invalid,
+    Storage,
+}
+
+pub(crate) struct ActiveRelease {
+    bytes: Vec<u8>,
+    binding: StageTrustBinding,
+    trust: TrustedPublisherSnapshot,
+}
+
+impl ActiveRelease {
+    pub(crate) fn binding(&self) -> &StageTrustBinding {
+        &self.binding
+    }
+
+    /// Reads the stored archive of an already-resolved binding. Worker start
+    /// and worker-free reads share this and `verify`, so their policy matches.
+    pub(crate) fn load(
+        store_path: &std::path::Path,
+        binding: StageTrustBinding,
+        trust: TrustedPublisherSnapshot,
+    ) -> Result<Self, ActiveReleaseError> {
+        let bytes = ReleaseStore::open_or_create(store_path)
+            .and_then(|store| store.open_stored_archive(binding.package_digest()))
+            .and_then(|mut archive| archive.read_bytes())
+            .map_err(|_| ActiveReleaseError::Unavailable)?;
+        Ok(Self {
+            bytes,
+            binding,
+            trust,
+        })
+    }
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.binding.token().generation
+    }
+    pub(crate) fn event_catalog(
+        &self,
+        verified: &VerifiedPackage<'_>,
+    ) -> Result<Arc<EventCatalog>, ActiveReleaseError> {
+        let catalog = AppCatalog::compile(verified, &self.binding, &self.trust)
+            .map_err(|_| ActiveReleaseError::Untrusted)?;
+        EventCatalog::compile(verified, Arc::new(catalog))
+            .map(Arc::new)
+            .map_err(|_| ActiveReleaseError::Invalid)
+    }
+    pub(crate) fn verify(&self) -> Result<VerifiedPackage<'_>, ActiveReleaseError> {
+        let verified = verify(
+            &self.bytes,
+            &VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![self.trust.publisher().clone()],
+            ),
+        )
+        .map_err(|_| ActiveReleaseError::Invalid)?;
+        if verified.package_digest() != self.binding.package_digest() {
+            return Err(ActiveReleaseError::Invalid);
+        }
+        Ok(verified)
+    }
+}
+
+/// The App error an owner sees when the active release cannot be read.
+impl From<ActiveReleaseError> for crate::local::AppRequestErrorCode {
+    fn from(error: ActiveReleaseError) -> Self {
+        match error {
+            ActiveReleaseError::NotActive => Self::NotFound,
+            ActiveReleaseError::Untrusted | ActiveReleaseError::Invalid => Self::Conflict,
+            ActiveReleaseError::Unavailable | ActiveReleaseError::Storage => {
+                Self::StorageUnavailable
+            }
+        }
+    }
+}
+
+impl DurableKernelStateStore {
+    pub(crate) fn active_app_release(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<ActiveRelease, ActiveReleaseError> {
+        let (binding, trust) = {
+            let mut connection = self
+                .lock_connection("durable_state.active_app_release")
+                .map_err(|_| ActiveReleaseError::Storage)?;
+            let binding = InstallationRegistry::new(&mut connection)
+                .active_trust(owner, installation)
+                .map_err(|_| ActiveReleaseError::NotActive)?;
+            let trust = PublisherTrustRegistry::new(&mut connection)
+                .trusted_publisher(owner, binding.publisher_id(), binding.key_id())
+                .map_err(|_| ActiveReleaseError::Untrusted)?;
+            (binding, trust)
+        };
+        ActiveRelease::load(self.path(), binding, trust)
+    }
+
+    /// The installation's verified event catalog, whether or not it runs.
+    pub(crate) fn active_app_event_catalog(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Arc<EventCatalog>, ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        release.event_catalog(&verified)
+    }
+
+    /// The active generation and its signed incoming event schemas.
+    pub(crate) fn active_app_incoming_catalog(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(u64, IncomingCatalog), ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        let catalog =
+            IncomingCatalog::compile(&verified).map_err(|_| ActiveReleaseError::Invalid)?;
+        Ok((release.generation(), catalog))
+    }
+
+    /// The active release's package digest and signed capabilities (protocol
+    /// 361 App sets).
+    pub(crate) fn active_app_capabilities(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(String, serde_json::Value), ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        let capabilities = serde_json::to_value(&verified.manifest().capabilities)
+            .map_err(|_| ActiveReleaseError::Invalid)?;
+        Ok((verified.package_digest().to_owned(), capabilities))
+    }
+
+    /// The signer and approved capabilities digest of the active release
+    /// (protocol 366 App plans), with its package digest.
+    pub(crate) fn active_app_release_identity(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<(String, crate::workflow_publication_apps::ReleaseIdentity), ActiveReleaseError>
+    {
+        let mut connection = self
+            .lock_connection("durable_state.active_app_release_identity")
+            .map_err(|_| ActiveReleaseError::Storage)?;
+        let registry = InstallationRegistry::new(&mut connection);
+        let binding = registry
+            .active_trust(owner, installation)
+            .map_err(|_| ActiveReleaseError::NotActive)?;
+        let active = registry
+            .get(installation)
+            .ok()
+            .and_then(|installation| installation.active)
+            .ok_or(ActiveReleaseError::NotActive)?;
+        if active.release.package_digest != binding.package_digest() {
+            return Err(ActiveReleaseError::Invalid);
+        }
+        Ok((
+            active.release.package_digest,
+            crate::workflow_publication_apps::ReleaseIdentity {
+                capabilities_digest: active.release.capabilities_digest,
+                publisher_key_id: binding.key_id().to_owned(),
+                publisher_key_fingerprint: binding.public_key_fingerprint().to_owned(),
+            },
+        ))
+    }
+
+    /// Protocol 367: the signed capabilities of a release in the local release
+    /// store, re-verified against the owner's current trust in its signer.
+    pub(crate) fn stored_app_release_capabilities(
+        &self,
+        owner: &str,
+        publisher_id: &str,
+        key_id: &str,
+        package_digest: &str,
+    ) -> Result<serde_json::Value, ActiveReleaseError> {
+        let trust = {
+            let mut connection = self
+                .lock_connection("durable_state.stored_app_release")
+                .map_err(|_| ActiveReleaseError::Storage)?;
+            PublisherTrustRegistry::new(&mut connection)
+                .trusted_publisher(owner, publisher_id, key_id)
+                .map_err(|_| ActiveReleaseError::Untrusted)?
+        };
+        let bytes = ReleaseStore::open_or_create(self.path())
+            .and_then(|store| store.open_stored_archive(package_digest))
+            .and_then(|mut archive| archive.read_bytes())
+            .map_err(|_| ActiveReleaseError::Unavailable)?;
+        let verified = verify(
+            &bytes,
+            &VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![trust.publisher().clone()],
+            ),
+        )
+        .map_err(|_| ActiveReleaseError::Invalid)?;
+        if verified.package_digest() != package_digest {
+            return Err(ActiveReleaseError::Invalid);
+        }
+        serde_json::to_value(&verified.manifest().capabilities)
+            .map_err(|_| ActiveReleaseError::Invalid)
+    }
+
+    /// The active release's signed `capabilities.connections` (protocol 359).
+    pub(crate) fn active_app_connection_access(
+        &self,
+        owner: &str,
+        installation: &str,
+    ) -> Result<Vec<chariox_app_package::ConnectionAccess>, ActiveReleaseError> {
+        let release = self.active_app_release(owner, installation)?;
+        let verified = release.verify()?;
+        Ok(verified.manifest().capabilities.connections.clone())
+    }
+}

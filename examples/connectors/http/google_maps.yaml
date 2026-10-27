@@ -1,0 +1,25 @@
+kind: connector
+name: google_maps
+description: Google Maps geocoding connector.
+adapter: http
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: geocode
+    description: Convert an address into coordinates.
+    safety: read
+    input_schema:
+      type: object
+      required: [address]
+      properties:
+        address:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://maps.googleapis.com
+      method: GET
+      path: /maps/api/geocode/json
+      query:
+        address: "{{address}}"

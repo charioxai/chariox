@@ -1,0 +1,294 @@
+use std::collections::{HashMap, HashSet};
+
+use serde::Deserialize;
+
+use crate::error::DaemonError;
+use crate::local::{SemanticRecallMatch, SemanticRecallSearchUtilityInput};
+
+#[derive(Debug, Deserialize)]
+struct SemanticRecallUtilityOutput {
+    answer: String,
+    matches: Vec<SemanticRecallUtilityOutputMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SemanticRecallUtilityOutputMatch {
+    event_id: String,
+    #[serde(default)]
+    chunk_index: Option<usize>,
+    relevance: String,
+    reason: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct SemanticRecallUtilityParsedOutput {
+    pub(crate) answer: String,
+    pub(crate) matches: Vec<SemanticRecallMatch>,
+}
+
+pub(crate) fn parse_semantic_recall_search_utility_output(
+    output: &str,
+    candidates: &[SemanticRecallMatch],
+) -> Result<SemanticRecallUtilityParsedOutput, DaemonError> {
+    let json = extract_json_object(output).ok_or_else(|| DaemonError::LocalTransport {
+        operation: "run semantic recall search utility",
+        message: "semantic recall utility did not return a JSON object".to_string(),
+    })?;
+    let schema = semantic_recall_search_utility_schema();
+    crate::transport::runtime_tools::validate_json_output_schema(
+        "semantic_recall_search_utility_output",
+        &schema,
+        json,
+    )
+    .map_err(|warning| DaemonError::LocalTransport {
+        operation: "run semantic recall search utility",
+        message: format!("semantic recall utility output failed validation: {warning}"),
+    })?;
+    let output = serde_json::from_str::<SemanticRecallUtilityOutput>(json).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "run semantic recall search utility",
+            message: format!("semantic recall utility output was not parseable: {error}"),
+        }
+    })?;
+    let candidates_by_event = candidates
+        .iter()
+        .map(|candidate| (candidate.event.event_id.as_str(), candidate))
+        .collect::<HashMap<_, _>>();
+    let mut matches = Vec::new();
+    let mut seen = HashSet::new();
+    for selected in output.matches {
+        if !seen.insert(selected.event_id.clone()) {
+            continue;
+        }
+        let Some(candidate) = candidates_by_event.get(selected.event_id.as_str()) else {
+            return Err(DaemonError::LocalTransport {
+                operation: "run semantic recall search utility",
+                message: format!(
+                    "semantic recall utility referenced unknown event `{}`",
+                    selected.event_id
+                ),
+            });
+        };
+        let mut candidate = (*candidate).clone();
+        candidate.chunk_index = selected.chunk_index.or(candidate.chunk_index);
+        candidate.reason = Some(format!("{}: {}", selected.relevance, selected.reason));
+        matches.push(candidate);
+    }
+    Ok(SemanticRecallUtilityParsedOutput {
+        answer: output.answer,
+        matches,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn semantic_recall_search_utility_prompt(
+    input: &SemanticRecallSearchUtilityInput,
+    candidates: &[SemanticRecallMatch],
+) -> Result<String, DaemonError> {
+    let assembly = semantic_recall_search_utility_prompt_assembly(input, candidates)?;
+    Ok(format!(
+        "{}\n\n{}",
+        assembly.hidden_system_context, assembly.visible_user_prompt
+    ))
+}
+
+pub(crate) struct SemanticRecallSearchUtilityPrompt {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
+}
+
+pub(crate) fn semantic_recall_search_utility_prompt_assembly(
+    input: &SemanticRecallSearchUtilityInput,
+    candidates: &[SemanticRecallMatch],
+) -> Result<SemanticRecallSearchUtilityPrompt, DaemonError> {
+    let schema = semantic_recall_search_utility_schema();
+    let candidate_json = serde_json::to_string_pretty(
+        &candidates
+            .iter()
+            .map(semantic_recall_candidate_for_prompt)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "run semantic recall search utility",
+        message: format!("could not encode semantic recall candidates: {error}"),
+    })?;
+    Ok(SemanticRecallSearchUtilityPrompt {
+        visible_user_prompt: format!(
+            "JSON Schema:\n{schema}\n\n\
+User question:\n{query}\n\n\
+Recall candidates:\n{candidates}\n\n\
+Output JSON only.",
+            schema = serde_json::to_string_pretty(&schema).unwrap_or_else(|_| "{}".to_string()),
+            query = input.query.trim(),
+            candidates = candidate_json,
+        ),
+        hidden_system_context: crate::prompt_assembly::PromptAssemblyService::from_env()?
+            .assemble_hidden_context_only(&["utility/semantic-recall-search"])?
+            .0,
+    })
+}
+
+fn semantic_recall_search_utility_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "required": ["answer", "matches"],
+        "additionalProperties": false,
+        "properties": {
+            "answer": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "matches": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                    "type": "object",
+                    "required": ["event_id", "relevance", "reason"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "event_id": {"type": "string", "minLength": 1},
+                        "chunk_index": {"type": ["integer", "null"], "minimum": 0},
+                        "relevance": {"type": "string", "enum": ["high", "medium", "low"]},
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 300}
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn extract_json_object(output: &str) -> Option<&str> {
+    let trimmed = output.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    (start < end).then_some(&trimmed[start..=end])
+}
+
+fn semantic_recall_candidate_for_prompt(match_: &SemanticRecallMatch) -> serde_json::Value {
+    serde_json::json!({
+        "event_id": match_.event.event_id,
+        "chunk_index": match_.chunk_index,
+        "score_millis": match_.score_millis,
+        "timestamp_ms": match_.event.timestamp_ms,
+        "session_id": match_.event.session_id,
+        "agent_id": match_.event.agent_id,
+        "provider": match_.event.provider,
+        "model": match_.event.model,
+        "kind": match_.event.kind,
+        "role": match_.event.role,
+        "content": match_.chunk_text.as_ref().or(match_.event.content.as_ref()),
+        "metadata": match_.event.metadata,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use crate::history::{HistoryEvent, HistoryEventKind, HistoryEventRole};
+
+    #[test]
+    fn parses_selected_history_matches_and_dedupes_events() {
+        let candidates = vec![
+            candidate("event-1", "first chunk"),
+            candidate("event-2", "second chunk"),
+        ];
+
+        let parsed = parse_semantic_recall_search_utility_output(
+            r#"prefix {"answer":"Use event 2","matches":[
+              {"event_id":"event-2","chunk_index":4,"relevance":"high","reason":"answers it"},
+              {"event_id":"event-2","relevance":"low","reason":"duplicate"}
+            ]} suffix"#,
+            &candidates,
+        )
+        .expect("parse utility output");
+
+        assert_eq!(parsed.answer, "Use event 2");
+        assert_eq!(parsed.matches.len(), 1);
+        assert_eq!(parsed.matches[0].event.event_id, "event-2");
+        assert_eq!(parsed.matches[0].chunk_index, Some(4));
+        assert_eq!(
+            parsed.matches[0].reason.as_deref(),
+            Some("high: answers it")
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_history_event_references() {
+        let error = parse_semantic_recall_search_utility_output(
+            r#"{"answer":"bad","matches":[{"event_id":"missing","relevance":"high","reason":"no"}]}"#,
+            &[candidate("event-1", "first")],
+        )
+        .expect_err("unknown event should fail");
+
+        assert!(format!("{error}").contains("unknown event `missing`"));
+    }
+
+    #[test]
+    fn prompt_contains_trimmed_query_schema_and_candidate_payload() {
+        let prompt = semantic_recall_search_utility_prompt(
+            &SemanticRecallSearchUtilityInput {
+                query: "  where did deploy fail?  ".to_string(),
+                session_id: None,
+                agent_id: None,
+                provider: None,
+                model: None,
+                workflow_id: None,
+                machine_id: None,
+                repo_root: None,
+                worktree_path: None,
+                kind: None,
+                limit: None,
+            },
+            &[candidate("event-1", "deploy failed")],
+        )
+        .expect("build prompt");
+
+        assert!(prompt.contains("where did deploy fail?"));
+        assert!(prompt.contains("\"event_id\": \"event-1\""));
+        assert!(prompt.contains("\"content\": \"deploy failed\""));
+        assert!(prompt.contains("\"required\""));
+    }
+
+    fn candidate(event_id: &str, chunk_text: &str) -> SemanticRecallMatch {
+        SemanticRecallMatch {
+            event: HistoryEvent {
+                public_history_owner_user_id: None,
+                event_id: event_id.to_string(),
+                sequence: 1,
+                timestamp_ms: 100,
+                workspace_id: Some("/repo".to_string()),
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("agent-1".to_string()),
+                agent_alias: None,
+                provider: Some("codex".to_string()),
+                model: Some("gpt".to_string()),
+                turn_id: None,
+                prompt_id: None,
+                provider_run_id: None,
+                provider_session_id: None,
+                workflow_id: None,
+                workflow_run_id: None,
+                workflow_node_id: None,
+                machine_id: None,
+                repo_root: None,
+                worktree_path: None,
+                kind: HistoryEventKind::ProviderOutput,
+                role: Some(HistoryEventRole::Assistant),
+                content: Some("full event content".to_string()),
+                content_ref: None,
+                metadata: BTreeMap::new(),
+                candidate_agent_ids: Vec::new(),
+                candidate_prompt_ids: Vec::new(),
+                candidate_turn_ids: Vec::new(),
+                attribution_confidence: None,
+                caused_by_event_id: None,
+            },
+            score_millis: Some(10),
+            chunk_index: Some(1),
+            chunk_text: Some(chunk_text.to_string()),
+            reason: None,
+        }
+    }
+}

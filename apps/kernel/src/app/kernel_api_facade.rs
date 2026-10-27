@@ -1,0 +1,227 @@
+use std::path::Path;
+
+use crate::agent::{AgentInstance, CreateAgentRequest};
+use crate::app::{DaemonApp, KernelSessionService, ProviderRunReadService};
+use crate::config::WorkflowCodeLimitsConfig;
+use crate::error::DaemonError;
+use crate::session::{CreateSessionRequest, RuntimeSession};
+use crate::workflow_code::{
+    WorkflowCodeAgentRebinding, WorkflowCodeApplyReport, WorkflowCodeCompileAndApplyResult,
+    WorkflowCodeDefinition, WorkflowCodeLanguage, WorkflowCodeProviderRebinding,
+};
+
+impl DaemonApp {
+    #[doc(hidden)]
+    pub fn create_session(
+        &mut self,
+        request: CreateSessionRequest,
+    ) -> Result<(RuntimeSession, AgentInstance), DaemonError> {
+        KernelSessionService::new(self).create_session(request)
+    }
+
+    #[doc(hidden)]
+    pub fn attach(
+        &mut self,
+        request: crate::attachment::AttachRequest,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        KernelSessionService::new(self).attach(request)
+    }
+
+    #[doc(hidden)]
+    pub fn detach(
+        &mut self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        KernelSessionService::new(self).detach(attachment_id)
+    }
+
+    #[doc(hidden)]
+    pub fn end_session(&mut self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
+        KernelSessionService::new(self).end_session(session_id)
+    }
+
+    #[doc(hidden)]
+    pub fn spawn_agent(
+        &mut self,
+        request: CreateAgentRequest,
+    ) -> Result<AgentInstance, DaemonError> {
+        KernelSessionService::new(self).spawn_agent(request)
+    }
+
+    #[doc(hidden)]
+    pub fn apply_workflow_code_definition(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        KernelSessionService::new(self).apply_workflow_code_definition(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+        )
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing apply_workflow_code_definition_with_rebindings operation signature and explicit context arguments"
+    )]
+    pub fn apply_workflow_code_definition_with_rebindings(
+        &mut self,
+        session_id: &str,
+        definition: &WorkflowCodeDefinition,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        KernelSessionService::new(self).apply_workflow_code_definition_with_rebindings(
+            session_id,
+            definition,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            provider_rebindings,
+            agent_rebindings,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn compile_and_apply_workflow_code_javascript(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        KernelSessionService::new(self).compile_and_apply_workflow_code_javascript(
+            session_id,
+            node_path,
+            source,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+        )
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_javascript_with_rebindings operation signature and explicit context arguments"
+    )]
+    pub fn compile_and_apply_workflow_code_javascript_with_rebindings(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        KernelSessionService::new(self).compile_and_apply_workflow_code_javascript_with_rebindings(
+            session_id,
+            node_path,
+            source,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            provider_rebindings,
+            agent_rebindings,
+        )
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Preserve the existing compile_and_apply_workflow_code_source_with_rebindings operation signature and explicit context arguments"
+    )]
+    pub fn compile_and_apply_workflow_code_source_with_rebindings(
+        &mut self,
+        session_id: &str,
+        node_path: impl AsRef<Path>,
+        source: &str,
+        language: WorkflowCodeLanguage,
+        limits: &WorkflowCodeLimitsConfig,
+        created_by_user_id: String,
+        controlled_by_metaagent_id: Option<String>,
+        provider_rebindings: &[WorkflowCodeProviderRebinding],
+        agent_rebindings: &[WorkflowCodeAgentRebinding],
+    ) -> Result<WorkflowCodeCompileAndApplyResult, DaemonError> {
+        KernelSessionService::new(self).compile_and_apply_workflow_code_source_with_rebindings(
+            session_id,
+            node_path,
+            source,
+            language,
+            limits,
+            created_by_user_id,
+            controlled_by_metaagent_id,
+            provider_rebindings,
+            agent_rebindings,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn focus_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<AgentInstance, DaemonError> {
+        KernelSessionService::new(self).focus_agent(session_id, agent_id)
+    }
+
+    #[doc(hidden)]
+    pub fn resize_terminal(
+        &mut self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        KernelSessionService::new(self).resize_terminal(session_id, cols, rows)
+    }
+
+    #[doc(hidden)]
+    pub fn send_terminal_input(
+        &mut self,
+        session_id: &str,
+        attachment_id: &str,
+        provider_run_id: Option<&str>,
+        bytes: &[u8],
+    ) -> Result<(), DaemonError> {
+        let provider_run_id = match provider_run_id {
+            Some(provider_run_id) => {
+                ProviderRunReadService::new(self)
+                    .ensure_provider_run_in_session(session_id, provider_run_id)?;
+                provider_run_id.to_string()
+            }
+            None => self
+                .sessions()
+                .get_session(session_id)?
+                .active_provider_run_id()
+                .ok_or_else(|| DaemonError::NoActiveProviderRun {
+                    session_id: session_id.to_string(),
+                })?
+                .to_string(),
+        };
+        crate::app::terminal_input::ProviderTerminalInput::new(self).send_provider_input(
+            session_id,
+            &provider_run_id,
+            attachment_id,
+            bytes,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn pump_active_prompt_outputs(&mut self) {
+        crate::app::provider_output::pump_active_prompt_outputs(self);
+    }
+}

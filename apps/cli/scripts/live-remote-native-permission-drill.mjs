@@ -1,0 +1,469 @@
+import { spawn } from 'node:child_process'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import net from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { runNodeDrillChild } from './lib/drill-child-process.mjs'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const cliRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+
+async function loadCliModules(runtimeDir) {
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+  for (const rel of ['src/ipc.ts', 'src/ipc-requests.ts']) {
+    const sourcePath = path.join(cliRoot, rel)
+    const outPath = path.join(runtimeDir, path.basename(rel).replace(/\.tsx?$/, '.js'))
+    const code = await readFile(sourcePath, 'utf8')
+    const transformed = await transformAsync(code, {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await writeFile(outPath, transformed?.code ?? '', 'utf8')
+  }
+  const ipcUrl = new URL(`file://${path.join(runtimeDir, 'ipc.js')}`).href
+  const requestsUrl = new URL(`file://${path.join(runtimeDir, 'ipc-requests.js')}`).href
+  const { LocalIpcClient } = await import(ipcUrl)
+  const requests = await import(requestsUrl)
+  return { LocalIpcClient, requests }
+}
+
+const DEFAULT_PROVIDERS = ['opencode', 'codex']
+const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_TIMEOUT_MS = 420_000
+const DEFAULT_POLL_MS = 1_000
+
+function parseArgs(argv) {
+  const options = {
+    providers: DEFAULT_PROVIDERS,
+    model: DEFAULT_MODEL,
+    providerModels: {},
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+    pollMs: DEFAULT_POLL_MS,
+    keepArtifactsOnFailure: false,
+  }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--providers') options.providers = argv[++i].split(',').map((value) => value.trim()).filter(Boolean)
+    else if (arg === '--provider') options.providers = [argv[++i]]
+    else if (arg === '--model') options.model = argv[++i]
+    else if (arg === '--provider-model') {
+      const [provider, model] = argv[++i].split('=', 2)
+      if (!provider || !model) throw new Error('--provider-model must use provider=model')
+      options.providerModels[provider] = model
+    }
+    else if (arg === '--timeout-ms') options.timeoutMs = Number(argv[++i])
+    else if (arg === '--poll-ms') options.pollMs = Number(argv[++i])
+    else if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help') options.help = true
+    else throw new Error(`unknown argument: ${arg}`)
+  }
+  return options
+}
+
+function defaultModelForProvider(provider) {
+  if (provider === 'opencode') return 'opencode/gpt-5.4'
+  return 'gpt-5.4'
+}
+
+function makePorts() {
+  const base = 59000 + Math.floor(Math.random() * 1000)
+  return {
+    relayPort: base,
+    homeKernelPort: base + 1000,
+    workerKernelPort: base + 1001,
+    homeMcpPort: base + 2000,
+    workerMcpPort: base + 2001,
+    homeOpenCodePort: base + 3000,
+    workerOpenCodePort: base + 3001,
+    homeCodexPort: base + 3002,
+    workerCodexPort: base + 3003,
+  }
+}
+
+function daemonEnv({
+  ports,
+  rootDir,
+  relayToken,
+  daemonId,
+  daemonAlias,
+  machineId,
+  machineAlias,
+  acceptRemoteLeases,
+  kernelPort,
+  mcpPort,
+  opencodePort,
+  codexPort,
+  socketName,
+  historyDir,
+}) {
+  return {
+    ...process.env,
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(mcpPort),
+    CHARIOX_OPENCODE_PORT: String(opencodePort),
+    CHARIOX_CODEX_PORT: String(codexPort),
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${ports.relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_ALIAS: daemonAlias,
+    CHARIOX_MACHINE_ID: machineId,
+    CHARIOX_MACHINE_ALIAS: machineAlias,
+    CHARIOX_ACCEPT_REMOTE_LEASES: acceptRemoteLeases ? '1' : '0',
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, socketName),
+    CHARIOX_SESSION_HISTORY_DIR: historyDir,
+    XDG_CONFIG_HOME: path.join(rootDir, `${daemonId}-xdg-config`),
+    XDG_STATE_HOME: path.join(rootDir, `${daemonId}-xdg-state`),
+    XDG_CACHE_HOME: path.join(rootDir, `${daemonId}-xdg-cache`),
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+const unwrap = (resp, key) => resp?.[key] ?? resp
+const unwrapVariant = (resp, ...keys) => keys.map((key) => resp?.[key]).find((value) => value != null) ?? resp
+
+async function runCommand(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function buildKernelClient() {
+  const result = await runCommand('pnpm', ['--workspace-root', 'run', 'build:kernel-client'])
+  if (result.code !== 0) {
+    throw new Error(`kernel client build failed\n${result.stdout}\n${result.stderr}`)
+  }
+}
+
+async function waitForTcpPort(port, host = '127.0.0.1', timeoutMs = 15_000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const connected = await new Promise((resolve) => {
+      const socket = net.connect({ host, port })
+      socket.once('connect', () => {
+        socket.destroy()
+        resolve(true)
+      })
+      socket.once('error', () => {
+        socket.destroy()
+        resolve(false)
+      })
+    })
+    if (connected) return
+    await sleep(100)
+  }
+  throw new Error(`TCP listener ${host}:${port} did not become reachable`)
+}
+
+async function resolveBinary(binaryPath, manifestPath, binName) {
+  try {
+    await access(binaryPath)
+    return binaryPath
+  } catch {
+    throw new Error(`missing built binary ${binaryPath}; run cargo build --manifest-path ${manifestPath} --bin ${binName} first`)
+  }
+}
+
+async function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode != null) return
+  child.kill(signal)
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    sleep(5_000),
+  ])
+  if (child.exitCode == null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      sleep(2_000),
+    ])
+  }
+}
+
+async function waitForLocalDaemon(LocalIpcClient, kernelUrl, createSessionRequest, endSessionRequest, workspace, localAuthEnvironment) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const probe = new LocalIpcClient(kernelUrl, {
+      localAuthEnvironment,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      const session = unwrap(await probe.send(createSessionRequest(workspace, workspace)), 'SessionCreated').session
+      await probe.send(endSessionRequest(session.id)).catch(() => {})
+      await probe.close()
+      return
+    } catch {
+      await probe.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error('home daemon did not become ready')
+}
+
+async function waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, targetDaemonAlias) {
+  let lastError = null
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const client = new LocalIpcClient(relayUrl, {
+      relayAuthToken: relayToken,
+      targetDaemonAlias,
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    try {
+      await Promise.race([
+        client.send(listRemoteMachinesRequest()),
+        sleep(2_000).then(() => { throw new Error('probe timeout') }),
+      ])
+      await client.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error)
+      await client.close().catch(() => {})
+      await sleep(250)
+    }
+  }
+  throw new Error(`relay target ${targetDaemonAlias} did not become reachable: ${lastError ?? 'unknown error'}`)
+}
+
+async function waitForRemoteMachine(client, listRemoteMachinesRequest, machineRef) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const machines = unwrapVariant(await client.send(listRemoteMachinesRequest()), 'RemoteMachinesListed').machines || []
+    if (machines.some((machine) => machine.machine_id === machineRef || machine.machine_alias === machineRef || machine.display_name === machineRef)) return
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not become visible`)
+}
+
+async function waitForRemoteKernel(client, machineRef, providers) {
+  let last = []
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const response = unwrapVariant(
+      await client.send({ ListRemoteMachineKernels: { machine_ref: machineRef } }),
+      'RemoteMachineKernelsListed',
+    )
+    last = response.kernels || []
+    const kernel = last.find((candidate) => candidate.accepting_remote_leases
+      && providers.every((provider) => (candidate.available_providers || []).includes(provider)))
+    if (kernel) return kernel
+    await sleep(500)
+  }
+  throw new Error(`remote machine ${machineRef} did not advertise providers ${providers.join(',')}; last=${JSON.stringify(last)}`)
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) {
+    console.log('Usage: node apps/cli/scripts/live-remote-native-permission-drill.mjs [--providers opencode,codex] [--model MODEL] [--provider-model PROVIDER=MODEL]')
+    return
+  }
+  if (options.providers.length < 1) throw new Error('remote native permission drill requires at least one provider')
+
+  const runId = `${process.pid}-${Date.now()}`
+  const ports = makePorts()
+  const rootDir = path.join(os.tmpdir(), `chariox-remote-native-permission-${runId}`)
+  const cliRuntimeDir = path.join(cliRoot, `.tmp-live-remote-native-permission-drill-${runId}`)
+  await prepareDrillArtifacts(rootDir)
+  await mkdir(cliRuntimeDir, { recursive: true })
+
+  const relayToken = `relay-token-${process.pid}-${Date.now()}`
+  const relayEnv = {
+    ...process.env,
+    CHARIOX_RELAY_HOST: '127.0.0.1',
+    CHARIOX_RELAY_PORT: String(ports.relayPort),
+    CHARIOX_RELAY_TOKEN: relayToken,
+  }
+  const relayUrl = `ws://127.0.0.1:${ports.relayPort}`
+  const homeKernelUrl = `ws://127.0.0.1:${ports.homeKernelPort}`
+  const workerKernelUrl = `ws://127.0.0.1:${ports.workerKernelPort}`
+  const workerMachineId = `native-permission-machine-worker-${process.pid}`
+  const homeDaemonId = `native-permission-home-${process.pid}-${Date.now()}`
+  const workerDaemonId = `native-permission-worker-${process.pid}-${Date.now()}`
+  const homeHistoryDir = path.join(rootDir, `${homeDaemonId}-history`)
+  const workerHistoryDir = path.join(rootDir, `${workerDaemonId}-history`)
+
+  let relayChild = null
+  let homeChild = null
+  let workerChild = null
+  let localClient = null
+  let LocalIpcClient = null
+  let createSessionRequest = null
+  let endSessionRequest = null
+  let listRemoteMachinesRequest = null
+  let setUserConfigValueRequest = null
+  let relayBinary = null
+  let daemonBinary = null
+  let succeeded = false
+  let failure = null
+
+  try {
+    await buildKernelClient()
+    const loaded = await loadCliModules(cliRuntimeDir)
+    LocalIpcClient = loaded.LocalIpcClient
+    createSessionRequest = loaded.requests.createSessionRequest
+    endSessionRequest = loaded.requests.endSessionRequest
+    listRemoteMachinesRequest = loaded.requests.listRemoteMachinesRequest
+    setUserConfigValueRequest = loaded.requests.setUserConfigValueRequest
+    relayBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/relay/target/debug/chariox-relay'),
+      path.join(repoRoot, 'apps/relay/Cargo.toml'),
+      'chariox-relay',
+    )
+    daemonBinary = await resolveBinary(
+      path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
+      path.join(repoRoot, 'apps/kernel/Cargo.toml'),
+      'chariox-kernel',
+    )
+
+    relayChild = spawn(relayBinary, [], { cwd: repoRoot, env: relayEnv, stdio: ['ignore', 'ignore', 'inherit'] })
+    await waitForTcpPort(ports.relayPort)
+
+    homeChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: daemonEnv({
+        ports,
+        rootDir,
+        relayToken,
+        daemonId: homeDaemonId,
+        daemonAlias: 'home',
+        machineId: `native-permission-machine-home-${process.pid}`,
+        machineAlias: `native-permission-home-machine-${process.pid}`,
+        acceptRemoteLeases: false,
+        kernelPort: ports.homeKernelPort,
+        mcpPort: ports.homeMcpPort,
+        opencodePort: ports.homeOpenCodePort,
+        codexPort: ports.homeCodexPort,
+        socketName: 'home.sock',
+        historyDir: homeHistoryDir,
+      }),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
+    workerChild = spawn(daemonBinary, [], {
+      cwd: repoRoot,
+      env: daemonEnv({
+        ports,
+        rootDir,
+        relayToken,
+        daemonId: workerDaemonId,
+        daemonAlias: 'worker',
+        machineId: workerMachineId,
+        machineAlias: `native-permission-worker-${process.pid}`,
+        acceptRemoteLeases: true,
+        kernelPort: ports.workerKernelPort,
+        mcpPort: ports.workerMcpPort,
+        opencodePort: ports.workerOpenCodePort,
+        codexPort: ports.workerCodexPort,
+        socketName: 'worker.sock',
+        historyDir: workerHistoryDir,
+      }),
+      stdio: ['ignore', 'ignore', 'inherit'],
+    })
+
+    await waitForLocalDaemon(LocalIpcClient, homeKernelUrl, createSessionRequest, endSessionRequest, repoRoot, { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) })
+    await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'home')
+    await waitForRelayTarget(LocalIpcClient, listRemoteMachinesRequest, relayUrl, relayToken, 'worker')
+
+    localClient = new LocalIpcClient(homeKernelUrl, {
+      localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${homeDaemonId}-xdg-state`) },
+      kernelPingIntervalMs: 60_000,
+      kernelMaxMissedPongs: 10,
+    })
+    await waitForRemoteMachine(localClient, listRemoteMachinesRequest, workerMachineId)
+    const workerKernel = await waitForRemoteKernel(localClient, workerMachineId, Array.from(new Set(options.providers)))
+
+    const results = []
+    for (const provider of options.providers) {
+      const model = options.providerModels[provider]
+        ?? (options.model === DEFAULT_MODEL ? defaultModelForProvider(provider) : options.model)
+      const workerClient = new LocalIpcClient(workerKernelUrl, {
+        localAuthEnvironment: { ...process.env, XDG_STATE_HOME: path.join(rootDir, `${workerDaemonId}-xdg-state`) },
+        kernelPingIntervalMs: 60_000,
+        kernelMaxMissedPongs: 10,
+      })
+      try {
+        await localClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'off'))
+        await workerClient.send(setUserConfigValueRequest('providers.workspace_live_sync', 'off'))
+      } finally {
+        await workerClient.close().catch(() => {})
+      }
+      await runNodeDrillChild([
+        path.join('apps', 'cli', 'scripts', 'live-native-permission-drill.mjs'),
+        '--kernel', homeKernelUrl,
+        '--no-spawn-daemon',
+        '--machine-ref', workerMachineId,
+        '--provider', provider,
+        '--model', model,
+        '--timeout-ms', String(options.timeoutMs),
+        '--poll-ms', String(options.pollMs),
+        ...(options.keepArtifactsOnFailure ? ['--keep-artifacts-on-failure'] : []),
+      ], repoRoot, { label: 'remote native permission drill' })
+      results.push({ provider, model, status: 'passed' })
+    }
+
+    console.log(JSON.stringify({
+      status: 'ok',
+      mode: 'remote-native-permission-live-drill',
+      relayUrl,
+      homeKernelUrl,
+      workerMachineId,
+      workerKernel: {
+        kernelId: workerKernel.kernel_id,
+        machineId: workerKernel.machine_id,
+        providers: workerKernel.available_providers,
+      },
+      providers: options.providers,
+      model: options.model,
+      providerModels: options.providerModels,
+      results,
+    }, null, 2))
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    if (localClient) await localClient.close().catch(() => {})
+    await terminateChild(homeChild)
+    await terminateChild(workerChild)
+    await terminateChild(relayChild)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'remote-native-permission',
+        providers: options.providers.join(','),
+        model: options.model,
+        providerModels: options.providerModels,
+        timeoutMs: options.timeoutMs,
+        pollMs: options.pollMs,
+        cliRuntimeDir,
+      },
+      log: (name, details) => console.log(`[remote-native-permission-drill] ${name}`, JSON.stringify(details)),
+    })
+    if (succeeded || !options.keepArtifactsOnFailure) {
+      await rm(cliRuntimeDir, { recursive: true, force: true }).catch(() => {})
+    } else {
+      console.error(`remote native permission drill artifacts kept at ${rootDir}`)
+      console.error(`remote native permission drill transient CLI modules kept at ${cliRuntimeDir}`)
+    }
+  }
+}
+
+await main()

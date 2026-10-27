@@ -1,0 +1,465 @@
+import {
+  formatToolTranscriptUpdate,
+  mergeToolTranscriptUpdate,
+  parseToolTranscriptUpdate,
+  type ToolTranscriptUpdate,
+} from "@chariox/tool-display"
+import {
+  applyTranscriptPromptMetadata,
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptEntryId,
+} from "./transcript-entry-state.js"
+import {
+  applyExternalProviderObservedTranscriptMetadata,
+  externalProviderObservedTranscriptExactIdentityConflicts,
+  type ExternalProviderObservedMutableTranscriptMetadataFields,
+} from "./external-provider-observation.js"
+import type { TranscriptEntry as KernelTranscriptEntry } from "./kernel-types.js"
+
+export {
+  computeCurrentTranscriptTurnId,
+  computeNextTranscriptEntryId,
+} from "./transcript-entry-state.js"
+
+type TranscriptStreamKernelFields = Pick<KernelTranscriptEntry, "id" | "text"> & {
+  readonly turnId?: KernelTranscriptEntry["turnId"] | null
+  readonly mergeKey?: KernelTranscriptEntry["mergeKey"] | null
+  readonly sourceText?: KernelTranscriptEntry["sourceText"] | null
+}
+
+export type TranscriptStreamEntry = {
+  readonly id: TranscriptStreamKernelFields["id"]
+  readonly role: string
+  readonly text: TranscriptStreamKernelFields["text"]
+  readonly turnId?: TranscriptStreamKernelFields["turnId"]
+  readonly providerRunId?: string | null
+  readonly mergeKey?: TranscriptStreamKernelFields["mergeKey"]
+  readonly sourceText?: TranscriptStreamKernelFields["sourceText"]
+  readonly promptId?: string | null
+  readonly promptOrigin?: string | null
+  readonly sourceAttachmentId?: string | null
+  readonly historyEntryIndex?: number
+  readonly historySequenceRanges?: readonly (readonly [number, number])[]
+  readonly historyTurnLifecycle?: "open" | "completed" | "cancelled" | "failed"
+} & ExternalProviderObservedMutableTranscriptMetadataFields
+
+export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
+  readonly historySequence?: number | undefined
+  readonly promptId?: string | null | undefined
+  readonly promptOrigin?: string | null | undefined
+  readonly sourceAttachmentId?: string | null | undefined
+}
+
+export type TranscriptProviderChunkOptions = {
+  readonly role: string
+  readonly chunk: string
+  readonly mergeKey?: string | null | undefined
+  readonly historyEntryIndex?: number | undefined
+  readonly sourceText?: string | null | undefined
+  readonly metadata?: TranscriptStreamMetadata
+  readonly nextEntryId?: number | null | undefined
+  readonly currentTurnId?: number | null | undefined
+  readonly providerRunId?: string | null | undefined
+  readonly mergeAdjacentUnkeyedRoles?: readonly string[] | undefined
+}
+
+export type TranscriptStreamApplyResult<TEntry extends TranscriptStreamEntry> = {
+  readonly kind: "noop" | "appended" | "merged"
+  readonly entries: TEntry[]
+  readonly updatedEntryId?: number
+}
+
+export type TranscriptToolUpdateApplyResult<TEntry extends TranscriptStreamEntry> =
+  TranscriptStreamApplyResult<TEntry> & {
+    readonly parsedUpdate?: ToolTranscriptUpdate
+    readonly mergedUpdate?: ToolTranscriptUpdate
+  }
+
+export type TranscriptStreamRuntimeTransition = {
+  readonly shouldApplyRuntimeActivity: boolean
+  readonly shouldCancelPendingTurnCompletion: boolean
+  readonly working: boolean | null
+  readonly submitting: boolean | null
+  readonly shouldScheduleConfirmedTurnCompletion: boolean
+}
+
+export type TranscriptStreamRuntimeState = {
+  readonly entryCounter: number
+  readonly currentTurnId: number | null
+}
+
+export type TranscriptStreamRuntimeOptions = {
+  readonly nextEntryId: number
+  readonly currentTurnId: number | null
+}
+
+type MutableTranscriptStreamEntry =
+  Omit<
+    TranscriptStreamEntry,
+    | "text"
+    | "turnId"
+    | "providerRunId"
+    | "mergeKey"
+    | "sourceText"
+    | "promptId"
+    | "promptOrigin"
+    | "sourceAttachmentId"
+    | "historySequenceRanges"
+  > & {
+    text: string
+    turnId?: number | null
+    providerRunId?: string | null
+    mergeKey?: string | null
+    sourceText?: string | null
+    promptId?: string | null
+    promptOrigin?: string | null
+    sourceAttachmentId?: string | null
+    historySequenceRanges?: readonly (readonly [number, number])[]
+  }
+
+export function normalizeTranscriptProviderChunk(chunk: string): string {
+  return chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+}
+
+export function transcriptStreamRuntimeTransition<TEntry extends TranscriptStreamEntry>(
+  result: TranscriptStreamApplyResult<TEntry>,
+): TranscriptStreamRuntimeTransition {
+  const shouldApplyRuntimeActivity = result.kind !== "noop"
+  return {
+    shouldApplyRuntimeActivity,
+    shouldCancelPendingTurnCompletion: shouldApplyRuntimeActivity,
+    working: shouldApplyRuntimeActivity ? true : null,
+    submitting: shouldApplyRuntimeActivity ? false : null,
+    shouldScheduleConfirmedTurnCompletion: shouldApplyRuntimeActivity,
+  }
+}
+
+export function transcriptStreamRuntimeOptions(
+  state: TranscriptStreamRuntimeState,
+): TranscriptStreamRuntimeOptions {
+  return {
+    nextEntryId: state.entryCounter + 1,
+    currentTurnId: state.currentTurnId,
+  }
+}
+
+export function applyTranscriptProviderChunk<TEntry extends TranscriptStreamEntry>(
+  entries: readonly TEntry[],
+  options: TranscriptProviderChunkOptions,
+): TranscriptStreamApplyResult<TEntry> {
+  const normalized = normalizeTranscriptProviderChunk(options.chunk)
+  const normalizedSource = options.sourceText === undefined || options.sourceText === null
+    ? undefined
+    : normalizeTranscriptProviderChunk(options.sourceText)
+  const metadata = options.metadata ?? {}
+  if (!normalized) {
+    return { kind: "noop", entries: cloneEntries(entries) }
+  }
+
+  const nextEntries = cloneEntries(entries) as MutableTranscriptStreamEntry[]
+  const currentTurnId = options.currentTurnId !== undefined
+    ? options.currentTurnId
+    : computeCurrentTranscriptTurnId(nextEntries)
+  // A persisted row may already be hydrated before a later tool or text row.
+  // Deduplicate within the stream identity before searching for a merge target;
+  // tool boundaries continue to separate unseen text in output order.
+  if ((options.role === "assistant" || options.role === "reasoning")
+    && metadata.historySequence !== undefined
+    && nextEntries.some(entry => entry.role === options.role
+      && sameStreamingMergeIdentity(entry, { currentTurnId, providerRunId: options.providerRunId, metadata })
+      && entry.historySequenceRanges?.some(([start, end]) => metadata.historySequence! >= start && metadata.historySequence! <= end))) {
+    return { kind: "noop", entries: nextEntries as TEntry[] }
+  }
+  const mergeResult = mergeProviderChunk(nextEntries, {
+    role: options.role,
+    normalized,
+    normalizedSource,
+    mergeKey: options.mergeKey ?? undefined,
+    historyEntryIndex: options.historyEntryIndex,
+    metadata,
+    currentTurnId,
+    providerRunId: options.providerRunId,
+    mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles ?? ["assistant", "reasoning"],
+  })
+
+  if (mergeResult?.kind === "noop") {
+    return { kind: "noop", entries: nextEntries as TEntry[] }
+  }
+
+  if (mergeResult) {
+    return {
+      kind: "merged",
+      entries: nextEntries as TEntry[],
+      updatedEntryId: mergeResult.entry.id,
+    }
+  }
+
+  const nextEntry = createTranscriptEntry(nextEntries, {
+    role: options.role,
+    normalized,
+    normalizedSource,
+    mergeKey: options.mergeKey ?? undefined,
+    metadata,
+    nextEntryId: options.nextEntryId ?? undefined,
+    currentTurnId,
+    providerRunId: options.providerRunId,
+  })
+  nextEntries.push(nextEntry)
+  return {
+    kind: "appended",
+    entries: nextEntries as TEntry[],
+    updatedEntryId: nextEntry.id,
+  }
+}
+
+export function applyTranscriptToolUpdate<TEntry extends TranscriptStreamEntry>(
+  entries: readonly TEntry[],
+  chunk: string,
+  toolState: Map<string, ToolTranscriptUpdate>,
+  metadata: TranscriptStreamMetadata = {},
+  options: {
+    readonly nextEntryId?: number | null
+    readonly currentTurnId?: number | null
+    readonly providerRunId?: string | null
+    readonly mergeAdjacentUnkeyedRoles?: readonly string[]
+  } = {},
+): TranscriptToolUpdateApplyResult<TEntry> {
+  const normalized = normalizeTranscriptProviderChunk(chunk)
+  if (!normalized) {
+    return { kind: "noop", entries: cloneEntries(entries) }
+  }
+
+  const parsed = parseToolTranscriptUpdate(normalized)
+  if (parsed) {
+    const merged = mergeToolTranscriptUpdate(toolState.get(parsed.id) ?? null, parsed)
+    toolState.set(parsed.id, merged)
+    return {
+      ...applyTranscriptProviderChunk(entries, {
+        role: "tool",
+        chunk: formatToolTranscriptUpdate(merged),
+        mergeKey: parsed.id,
+        sourceText: JSON.stringify(merged),
+        metadata,
+        nextEntryId: options.nextEntryId ?? undefined,
+        currentTurnId: options.currentTurnId,
+        providerRunId: options.providerRunId,
+        mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles,
+      }),
+      parsedUpdate: parsed,
+      mergedUpdate: merged,
+    }
+  }
+
+  return applyTranscriptProviderChunk(entries, {
+    role: "tool",
+    chunk: normalized,
+    sourceText: normalized,
+    metadata,
+    nextEntryId: options.nextEntryId ?? undefined,
+    currentTurnId: options.currentTurnId,
+    providerRunId: options.providerRunId,
+    mergeAdjacentUnkeyedRoles: options.mergeAdjacentUnkeyedRoles,
+  })
+}
+
+function mergeProviderChunk(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string | undefined
+    historyEntryIndex: number | undefined
+    metadata: TranscriptStreamMetadata
+    currentTurnId: number | null
+    providerRunId: string | null | undefined
+    mergeAdjacentUnkeyedRoles: readonly string[]
+  },
+): { readonly kind: "noop" | "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  const {
+    role,
+    normalized,
+    normalizedSource,
+    mergeKey,
+    historyEntryIndex,
+    metadata,
+    currentTurnId,
+    providerRunId,
+    mergeAdjacentUnkeyedRoles,
+  } = options
+
+  if (mergeKey) {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const candidate = entries[index]
+      // Text never folds back above a later tool row: it continues as a new
+      // entry after the tool, in output order.
+      if (candidate?.role === "tool" && (role === "assistant" || role === "reasoning")) {
+        break
+      }
+      if (
+        candidate?.role !== role
+        || candidate.mergeKey !== mergeKey
+        || !sameStreamingMergeIdentity(candidate, { currentTurnId, providerRunId, metadata })
+      ) {
+        continue
+      }
+      const kind = applyMergedChunk(
+        candidate,
+        role,
+        normalized,
+        normalizedSource,
+        historyEntryIndex,
+        metadata.historySequence,
+      )
+      if (kind === "noop") {
+        return { kind, entry: candidate }
+      }
+      applyStreamMetadata(candidate, metadata, { preserveExisting: true })
+      return { kind, entry: candidate }
+    }
+  }
+
+  const last = [...entries].reverse().find((entry) => entry.role !== "turn_toggle")
+  if (
+    !mergeKey
+    && last?.role === role
+    && sameStreamingMergeIdentity(last, { currentTurnId, providerRunId, metadata })
+    && mergeAdjacentUnkeyedRoles.includes(role)
+  ) {
+    const kind = applyMergedChunk(
+      last,
+      role,
+      normalized,
+      normalizedSource,
+      historyEntryIndex,
+      metadata.historySequence,
+    )
+    if (kind === "noop") {
+      return { kind, entry: last }
+    }
+    applyStreamMetadata(last, metadata, { preserveExisting: true })
+    return { kind, entry: last }
+  }
+
+  return null
+}
+
+function sameStreamingMergeIdentity(
+  entry: TranscriptStreamEntry,
+  options: {
+    currentTurnId: number | null
+    providerRunId: string | null | undefined
+    metadata?: TranscriptStreamMetadata | null | undefined
+  },
+): boolean {
+  if (options.currentTurnId !== null && entry.turnId !== options.currentTurnId) {
+    return false
+  }
+  if (options.providerRunId !== undefined && entry.providerRunId !== options.providerRunId) {
+    return false
+  }
+  if (
+    options.metadata
+    && externalProviderObservedTranscriptExactIdentityConflicts(entry, options.metadata)
+  ) {
+    return false
+  }
+  return true
+}
+
+function applyMergedChunk(
+  candidate: MutableTranscriptStreamEntry,
+  role: string,
+  normalized: string,
+  normalizedSource: string | undefined,
+  historyEntryIndex: number | undefined,
+  historySequence: number | undefined,
+): "noop" | "merged" {
+  if (role === "assistant" || role === "reasoning") {
+    if (historySequence !== undefined && candidate.historySequenceRanges?.some(([start, end]) => historySequence >= start && historySequence <= end)) {
+      return "noop"
+    }
+    if (transcriptStreamEntryIsHydratedHistory(candidate)) {
+      if (historySequence === undefined && historyEntryIndex === undefined && candidate.text === normalized) {
+        return "noop"
+      }
+      if ((historySequence === undefined || historySequence === candidate.historyEntryIndex)
+        && normalized.length > candidate.text.length && normalized.startsWith(candidate.text)) {
+        candidate.text = normalized
+        if (normalizedSource !== undefined) {
+          candidate.sourceText = normalizedSource
+        }
+        return "merged"
+      }
+    }
+    candidate.text += normalized
+    if (normalizedSource !== undefined) {
+      candidate.sourceText = `${candidate.sourceText ?? ""}${normalizedSource}`
+    }
+    return "merged"
+  }
+
+  candidate.text = normalized
+  if (normalizedSource !== undefined) {
+    candidate.sourceText = normalizedSource
+  }
+  return "merged"
+}
+
+function transcriptStreamEntryIsHydratedHistory(entry: TranscriptStreamEntry): boolean {
+  return entry.historyEntryIndex !== undefined || entry.historyTurnLifecycle !== undefined
+}
+
+function createTranscriptEntry(
+  entries: readonly TranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string | undefined
+    metadata: TranscriptStreamMetadata
+    nextEntryId: number | undefined
+    currentTurnId: number | null
+    providerRunId: string | null | undefined
+  },
+): MutableTranscriptStreamEntry {
+  const nextEntry: MutableTranscriptStreamEntry = {
+    id: options.nextEntryId ?? computeNextTranscriptEntryId(entries),
+    role: options.role,
+    text: options.normalized,
+  }
+  if (options.currentTurnId !== null) {
+    nextEntry.turnId = options.currentTurnId
+  }
+  if (options.providerRunId !== undefined) {
+    nextEntry.providerRunId = options.providerRunId
+  }
+  if (options.mergeKey) {
+    nextEntry.mergeKey = options.mergeKey
+  }
+  if (options.normalizedSource !== undefined) {
+    nextEntry.sourceText = options.normalizedSource
+  }
+  applyStreamMetadata(nextEntry, options.metadata)
+  return nextEntry
+}
+
+function applyStreamMetadata(
+  entry: MutableTranscriptStreamEntry,
+  metadata: TranscriptStreamMetadata,
+  options: { readonly preserveExisting?: boolean } = {},
+): void {
+  applyExternalProviderObservedTranscriptMetadata(entry, metadata)
+  applyTranscriptPromptMetadata(entry, metadata, options)
+  if (metadata.historySequence !== undefined) {
+    const ranges = entry.historySequenceRanges ?? []
+    const last = ranges.at(-1)
+    entry.historySequenceRanges = last && last[1] + 1 === metadata.historySequence
+      ? [...ranges.slice(0, -1), [last[0], metadata.historySequence]]
+      : [...ranges, [metadata.historySequence, metadata.historySequence]]
+  }
+}
+
+function cloneEntries<TEntry extends TranscriptStreamEntry>(entries: readonly TEntry[]): TEntry[] {
+  return entries.map((entry) => ({ ...entry }))
+}

@@ -1,0 +1,1357 @@
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptStatus {
+    Queued,
+    Dispatching,
+    Running,
+    Cancelling,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptOrigin {
+    #[default]
+    #[serde(alias = "arroba")]
+    Chariox,
+    CompletionCheck,
+    External,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DurablePromptDeliveryPhase {
+    Accepted,
+    Dispatching,
+    Delivered,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptAttachment {
+    url: String,
+    mime: String,
+    filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contents_base64: Option<String>,
+}
+
+impl PromptAttachment {
+    pub fn new(url: impl Into<String>, mime: impl Into<String>, filename: Option<String>) -> Self {
+        Self {
+            url: url.into(),
+            mime: mime.into(),
+            filename,
+            contents_base64: None,
+        }
+    }
+
+    pub fn with_contents_base64(mut self, contents_base64: impl Into<String>) -> Self {
+        self.contents_base64 = Some(contents_base64.into());
+        self
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn mime(&self) -> &str {
+        &self.mime
+    }
+
+    pub fn filename(&self) -> Option<&str> {
+        self.filename.as_deref()
+    }
+
+    pub fn contents_base64(&self) -> Option<&str> {
+        self.contents_base64.as_deref()
+    }
+
+    /// Text decoding shared by provider input and Room observation protection.
+    pub(crate) fn text_contents(&self) -> Option<String> {
+        use base64::Engine as _;
+        let textual = self.mime.starts_with("text/")
+            || matches!(
+                self.mime.as_str(),
+                "application/json"
+                    | "application/javascript"
+                    | "application/typescript"
+                    | "application/xml"
+                    | "application/yaml"
+                    | "application/x-yaml"
+            )
+            || self.mime.ends_with("+json")
+            || self.mime.ends_with("+xml");
+        if !textual {
+            return None;
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(self.contents_base64()?)
+            .ok()?;
+        String::from_utf8(bytes).ok()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptQueueItem {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_prompt_id: Option<String>,
+    source_attachment_id: String,
+    target_agent_id: String,
+    prompt: String,
+    attachments: Vec<PromptAttachment>,
+    #[serde(default = "crate::session::unix_epoch_ms")]
+    created_at_ms: u64,
+    #[serde(default = "crate::session::unix_epoch_ms")]
+    updated_at_ms: u64,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
+    status: PromptStatus,
+    #[serde(default)]
+    prompt_origin: PromptOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    external_provider_turn_id: Option<String>,
+    workflow_run_id: Option<String>,
+    workflow_node_run_id: Option<String>,
+}
+
+/// Durable identity needed to keep an ambiguously delivered queued steer blocked
+/// until a future exact worker receipt can reconcile it. Relay credentials are
+/// deliberately excluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DurableRemoteQueuedSteerUncertainty {
+    target_home_prompt_id: String,
+    worker_provider_run_id: Option<String>,
+    worker_kernel_id: String,
+    worker_machine_id: String,
+    execution_lease_id: String,
+    leased_agent_id: String,
+}
+
+/// Clone-shared runtime reservation and fail-closed uncertainty marker. The
+/// transient reservation is not serialized; uncertainty is persisted separately
+/// in `DurablePromptPrivateState`.
+#[derive(Debug, Clone, Default)]
+struct RemoteSteerReservation {
+    id: Arc<AtomicU64>,
+    uncertainty: Arc<Mutex<Option<DurableRemoteQueuedSteerUncertainty>>>,
+}
+
+impl PartialEq for RemoteSteerReservation {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for RemoteSteerReservation {}
+
+static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DurablePromptPrivateState {
+    pub(crate) session_id: String,
+    pub(crate) prompt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agent_prompt_schedule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_user_id: Option<String>,
+    /// MP-08/MP-11: submitted by the owner through a human terminal attachment.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) owner_request: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) hidden_system_context: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) operation_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) initially_queued: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_phase: Option<DurablePromptDeliveryPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_provider_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) delivery_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) delivery_reconciliation_pending: bool,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) delivery_failure_pending: bool,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub(crate) recovery_generation: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_operation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PromptPrivateMetadata {
+    agent_prompt_schedule_id: Option<String>,
+    source_client_id: Option<String>,
+    source_user_id: Option<String>,
+    owner_request: bool,
+    hidden_system_context: String,
+    operation_id: Option<String>,
+    operation_fingerprint: Option<String>,
+    initially_queued: Option<bool>,
+    delivery_phase: Option<DurablePromptDeliveryPhase>,
+    delivery_provider_run_id: Option<String>,
+    delivery_provider_session_id: Option<String>,
+    delivery_reconciliation_pending: bool,
+    delivery_failure_pending: bool,
+    recovery_generation: u32,
+    recovery_operation_id: Option<String>,
+    recovery_phase: Option<DurablePromptDeliveryPhase>,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+
+fn is_false_bool(value: &bool) -> bool {
+    !*value
+}
+
+impl DurablePromptPrivateState {
+    pub(crate) fn from_prompt(session_id: &str, prompt: &PromptQueueItem) -> Option<Self> {
+        let remote_steer_uncertainty = prompt
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let metadata = prompt
+            .private_metadata
+            .as_deref()
+            .cloned()
+            .unwrap_or_default();
+        (prompt.private_metadata.is_some() || remote_steer_uncertainty.is_some()).then(|| Self {
+            session_id: session_id.to_string(),
+            prompt_id: prompt.id.clone(),
+            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id,
+            source_client_id: metadata.source_client_id,
+            source_user_id: metadata.source_user_id,
+            owner_request: metadata.owner_request,
+            hidden_system_context: metadata.hidden_system_context,
+            operation_id: metadata.operation_id,
+            operation_fingerprint: metadata.operation_fingerprint,
+            initially_queued: metadata.initially_queued,
+            delivery_phase: metadata.delivery_phase,
+            delivery_provider_run_id: metadata.delivery_provider_run_id,
+            delivery_provider_session_id: metadata.delivery_provider_session_id,
+            delivery_reconciliation_pending: metadata.delivery_reconciliation_pending,
+            delivery_failure_pending: metadata.delivery_failure_pending,
+            recovery_generation: metadata.recovery_generation,
+            recovery_operation_id: metadata.recovery_operation_id,
+            recovery_phase: metadata.recovery_phase,
+            remote_steer_uncertainty,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingPromptSubmission {
+    pending_prompt_id: String,
+    source_attachment_id: String,
+    target_agent_id: String,
+    prompt: String,
+    attachments: Vec<PromptAttachment>,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    private_metadata: Option<Box<PromptPrivateMetadata>>,
+    #[serde(skip)]
+    remote_steer_reservation: RemoteSteerReservation,
+    prompt_origin: PromptOrigin,
+    external_provider: Option<String>,
+    external_provider_session_id: Option<String>,
+    external_provider_turn_id: Option<String>,
+    workflow_run_id: Option<String>,
+    workflow_node_run_id: Option<String>,
+}
+
+impl PendingPromptSubmission {
+    fn from_prompt_queue_item(
+        pending_prompt_id: impl Into<String>,
+        prompt: PromptQueueItem,
+    ) -> Self {
+        let now = crate::session::unix_epoch_ms();
+        Self {
+            pending_prompt_id: pending_prompt_id.into(),
+            source_attachment_id: prompt.source_attachment_id,
+            target_agent_id: prompt.target_agent_id,
+            prompt: prompt.prompt,
+            attachments: prompt.attachments,
+            created_at_ms: now,
+            updated_at_ms: now,
+            private_metadata: prompt.private_metadata,
+            remote_steer_reservation: prompt.remote_steer_reservation,
+            prompt_origin: prompt.prompt_origin,
+            external_provider: prompt.external_provider,
+            external_provider_session_id: prompt.external_provider_session_id,
+            external_provider_turn_id: prompt.external_provider_turn_id,
+            workflow_run_id: prompt.workflow_run_id,
+            workflow_node_run_id: prompt.workflow_node_run_id,
+        }
+    }
+
+    fn into_queue_item(self) -> PromptQueueItem {
+        PromptQueueItem {
+            id: self.pending_prompt_id.clone(),
+            pending_prompt_id: Some(self.pending_prompt_id),
+            source_attachment_id: self.source_attachment_id,
+            target_agent_id: self.target_agent_id,
+            prompt: self.prompt,
+            attachments: self.attachments,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            private_metadata: self.private_metadata,
+            remote_steer_reservation: self.remote_steer_reservation,
+            status: PromptStatus::Queued,
+            prompt_origin: self.prompt_origin,
+            external_provider: self.external_provider,
+            external_provider_session_id: self.external_provider_session_id,
+            external_provider_turn_id: self.external_provider_turn_id,
+            workflow_run_id: self.workflow_run_id,
+            workflow_node_run_id: self.workflow_node_run_id,
+        }
+    }
+}
+
+impl PromptQueueItem {
+    pub fn new(
+        id: impl Into<String>,
+        source_attachment_id: impl Into<String>,
+        target_agent_id: impl Into<String>,
+        prompt: impl Into<String>,
+        status: PromptStatus,
+    ) -> Self {
+        let now = crate::session::unix_epoch_ms();
+        Self {
+            id: id.into(),
+            pending_prompt_id: None,
+            source_attachment_id: source_attachment_id.into(),
+            target_agent_id: target_agent_id.into(),
+            prompt: prompt.into(),
+            attachments: Vec::new(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            private_metadata: None,
+            remote_steer_reservation: RemoteSteerReservation::default(),
+            status,
+            prompt_origin: PromptOrigin::Chariox,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            workflow_run_id: None,
+            workflow_node_run_id: None,
+        }
+    }
+
+    pub fn external_observed_running(
+        provider: impl Into<String>,
+        provider_session_id: impl Into<String>,
+        provider_turn_id: impl Into<String>,
+        target_agent_id: impl Into<String>,
+        prompt: impl Into<String>,
+    ) -> Self {
+        let external_observed_id = crate::history::ExternalProviderObservedId {
+            provider: provider.into(),
+            provider_session_id: provider_session_id.into(),
+            provider_turn_id: provider_turn_id.into(),
+        };
+        let id = crate::history::external_provider_observed_merge_key(
+            &external_observed_id.provider,
+            &external_observed_id.provider_session_id,
+            &external_observed_id.provider_turn_id,
+        );
+        let prompt = Self::new(
+            id,
+            format!("external:{}", external_observed_id.provider),
+            target_agent_id,
+            prompt,
+            PromptStatus::Running,
+        )
+        .with_prompt_origin(PromptOrigin::External);
+        prompt.with_external_observed_id(external_observed_id)
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<PromptAttachment>) -> Self {
+        self.attachments = attachments;
+        self
+    }
+
+    pub(crate) fn with_prompt_text(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
+    pub fn with_hidden_system_context(mut self, hidden_system_context: impl Into<String>) -> Self {
+        let hidden_system_context = hidden_system_context.into();
+        if hidden_system_context.is_empty() {
+            if let Some(metadata) = self.private_metadata.as_mut() {
+                metadata.hidden_system_context.clear();
+                if metadata.operation_id.is_none()
+                    && metadata.agent_prompt_schedule_id.is_none()
+                    && metadata.delivery_phase.is_none()
+                    && metadata.recovery_operation_id.is_none()
+                    && metadata.source_client_id.is_none()
+                    && metadata.source_user_id.is_none()
+                {
+                    self.private_metadata = None;
+                }
+            }
+            return self;
+        }
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .hidden_system_context = hidden_system_context;
+        self
+    }
+
+    pub(crate) fn with_source_attribution(
+        mut self,
+        source_client_id: impl Into<String>,
+        source_user_id: impl Into<String>,
+    ) -> Self {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.source_client_id = Some(source_client_id.into());
+        metadata.source_user_id = Some(source_user_id.into());
+        self
+    }
+
+    /// MP-08/MP-11: attribute the submitting attachment. Only a human terminal
+    /// attachment makes the prompt an owner request; automation never does.
+    pub(crate) fn with_source_attachment(
+        self,
+        attachment: &crate::attachment::RuntimeAttachment,
+    ) -> Self {
+        let mut prompt =
+            self.with_source_attribution(attachment.client_id(), attachment.owner_user_id());
+        if let Some(metadata) = prompt.private_metadata.as_mut() {
+            metadata.owner_request = matches!(
+                attachment.capability_level(),
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            );
+        }
+        prompt
+    }
+
+    /// MP-08/MP-11: typed prompt causation for user-requested capability grants.
+    pub(crate) fn owner_request(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.owner_request)
+            && self.workflow_run_id.is_none()
+            && self.agent_prompt_schedule_id().is_none()
+    }
+
+    pub(crate) fn with_agent_prompt_schedule(mut self, schedule_id: impl Into<String>) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .agent_prompt_schedule_id = Some(schedule_id.into());
+        self
+    }
+
+    pub(crate) fn with_durable_operation(
+        mut self,
+        operation_id: impl Into<String>,
+        fingerprint: impl Into<String>,
+    ) -> Self {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.operation_id = Some(operation_id.into());
+        metadata.operation_fingerprint = Some(fingerprint.into());
+        self
+    }
+
+    pub fn with_workflow_context(
+        mut self,
+        workflow_run_id: impl Into<String>,
+        workflow_node_run_id: impl Into<String>,
+    ) -> Self {
+        self.workflow_run_id = Some(workflow_run_id.into());
+        self.workflow_node_run_id = Some(workflow_node_run_id.into());
+        self
+    }
+
+    pub fn with_prompt_origin(mut self, prompt_origin: PromptOrigin) -> Self {
+        self.prompt_origin = prompt_origin;
+        self
+    }
+
+    pub fn with_external_observed_id(
+        mut self,
+        external_observed_id: crate::history::ExternalProviderObservedId,
+    ) -> Self {
+        self.external_provider = Some(external_observed_id.provider);
+        self.external_provider_session_id = Some(external_observed_id.provider_session_id);
+        self.external_provider_turn_id = Some(external_observed_id.provider_turn_id);
+        self
+    }
+
+    /// Drops what the prompt told the agent; the identity and status remain.
+    pub(crate) fn clear_instruction(&mut self) {
+        self.prompt.clear();
+        self.attachments.clear();
+    }
+
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self.pending_prompt_id = None;
+        self
+    }
+
+    pub fn with_pending_prompt_id(mut self, pending_prompt_id: impl Into<String>) -> Self {
+        let pending_prompt_id = pending_prompt_id.into();
+        self.id = pending_prompt_id.clone();
+        self.pending_prompt_id = Some(pending_prompt_id);
+        self.status = PromptStatus::Queued;
+        self
+    }
+
+    pub fn into_pending_queue_item(self, pending_prompt_id: impl Into<String>) -> Self {
+        PendingPromptSubmission::from_prompt_queue_item(pending_prompt_id, self).into_queue_item()
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn pending_prompt_id(&self) -> Option<&str> {
+        self.pending_prompt_id.as_deref()
+    }
+
+    pub fn source_attachment_id(&self) -> &str {
+        &self.source_attachment_id
+    }
+
+    pub fn target_agent_id(&self) -> &str {
+        &self.target_agent_id
+    }
+
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    pub fn attachments(&self) -> &[PromptAttachment] {
+        &self.attachments
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn updated_at_ms(&self) -> u64 {
+        self.updated_at_ms
+    }
+
+    pub(crate) fn reserve_remote_steer(&self) -> Option<u64> {
+        if self.remote_steer_outcome_uncertainty().is_some() {
+            return None;
+        }
+        let reservation = NEXT_REMOTE_STEER_RESERVATION.fetch_add(1, Ordering::Relaxed);
+        self.remote_steer_reservation
+            .id
+            .compare_exchange(0, reservation, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| reservation)
+    }
+
+    pub(crate) fn remote_steer_reserved(&self) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
+            || self.remote_steer_outcome_uncertainty().is_some()
+    }
+
+    pub(crate) fn remote_steer_reservation_matches(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) == reservation
+    }
+
+    pub(crate) fn release_remote_steer(&self, reservation: u64) -> bool {
+        self.remote_steer_reservation
+            .id
+            .compare_exchange(reservation, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+    )]
+    pub(crate) fn mark_remote_steer_outcome_uncertain(
+        &self,
+        reservation: u64,
+        target_home_prompt_id: String,
+        worker_provider_run_id: Option<String>,
+        worker_kernel_id: String,
+        worker_machine_id: String,
+        execution_lease_id: String,
+        leased_agent_id: String,
+    ) -> bool {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return false;
+        }
+        *self
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(DurableRemoteQueuedSteerUncertainty {
+                target_home_prompt_id,
+                worker_provider_run_id,
+                worker_kernel_id,
+                worker_machine_id,
+                execution_lease_id,
+                leased_agent_id,
+            });
+        true
+    }
+
+    pub(crate) fn clear_remote_steer_outcome_uncertainty(
+        &self,
+        reservation: u64,
+    ) -> Option<(String, Option<String>, String, String, String, String)> {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return None;
+        }
+        self.remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|uncertainty| {
+                (
+                    uncertainty.target_home_prompt_id,
+                    uncertainty.worker_provider_run_id,
+                    uncertainty.worker_kernel_id,
+                    uncertainty.worker_machine_id,
+                    uncertainty.execution_lease_id,
+                    uncertainty.leased_agent_id,
+                )
+            })
+    }
+
+    pub(crate) fn clear_remote_steer_outcome_uncertainty_for_receipt(
+        &self,
+        target_home_prompt_id: &str,
+        worker_provider_run_id: &str,
+        worker_kernel_id: &str,
+        worker_machine_id: &str,
+        execution_lease_id: &str,
+        leased_agent_id: &str,
+    ) -> bool {
+        let mut uncertainty = self
+            .remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(current) = uncertainty.as_ref() else {
+            return false;
+        };
+        if current.target_home_prompt_id != target_home_prompt_id
+            || current.worker_provider_run_id.as_deref() != Some(worker_provider_run_id)
+            || current.worker_kernel_id != worker_kernel_id
+            || current.worker_machine_id != worker_machine_id
+            || current.execution_lease_id != execution_lease_id
+            || current.leased_agent_id != leased_agent_id
+        {
+            return false;
+        }
+        uncertainty.take();
+        self.remote_steer_reservation.id.store(0, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn remote_steer_outcome_uncertainty(
+        &self,
+    ) -> Option<(String, Option<String>, String, String, String, String)> {
+        self.remote_steer_reservation
+            .uncertainty
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|uncertainty| {
+                (
+                    uncertainty.target_home_prompt_id.clone(),
+                    uncertainty.worker_provider_run_id.clone(),
+                    uncertainty.worker_kernel_id.clone(),
+                    uncertainty.worker_machine_id.clone(),
+                    uncertainty.execution_lease_id.clone(),
+                    uncertainty.leased_agent_id.clone(),
+                )
+            })
+    }
+
+    fn restore_remote_steer_outcome_uncertainty(
+        &self,
+        uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+    ) {
+        if let Some(uncertainty) = uncertainty {
+            *self
+                .remote_steer_reservation
+                .uncertainty
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(uncertainty);
+        }
+    }
+
+    pub fn hidden_system_context(&self) -> &str {
+        self.private_metadata
+            .as_ref()
+            .map(|metadata| metadata.hidden_system_context.as_str())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn source_client_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source_client_id.as_deref())
+    }
+
+    pub(crate) fn agent_prompt_schedule_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.agent_prompt_schedule_id.as_deref())
+    }
+
+    pub(crate) fn source_user_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source_user_id.as_deref())
+    }
+
+    pub(crate) fn durable_operation_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.operation_id.as_deref())
+    }
+
+    pub(crate) fn durable_operation_fingerprint(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.operation_fingerprint.as_deref())
+    }
+
+    pub(crate) fn durable_initially_queued(&self) -> Option<bool> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.initially_queued)
+    }
+
+    pub(crate) fn set_durable_initially_queued(&mut self, queued: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .initially_queued = Some(queued);
+    }
+
+    pub(crate) fn durable_delivery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_phase)
+    }
+
+    /// Returns true while a durable prompt has been accepted by the kernel but has not
+    /// yet been acknowledged by its provider. Provider output from a previous turn must
+    /// not be allowed to settle this prompt during that window.
+    pub(crate) fn delivery_pending(&self) -> bool {
+        self.status == PromptStatus::Dispatching
+            || matches!(
+                self.durable_delivery_phase(),
+                Some(
+                    DurablePromptDeliveryPhase::Accepted | DurablePromptDeliveryPhase::Dispatching
+                )
+            )
+    }
+
+    pub(crate) fn durable_delivery_provider_run_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_provider_run_id.as_deref())
+    }
+
+    pub(crate) fn durable_delivery_provider_session_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.delivery_provider_session_id.as_deref())
+    }
+
+    pub(crate) fn durable_delivery_failure_pending(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.delivery_failure_pending)
+    }
+
+    pub(crate) fn set_durable_delivery_failure_pending(&mut self, pending: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .delivery_failure_pending = pending;
+    }
+
+    pub(crate) fn durable_delivery_reconciliation_pending(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.delivery_reconciliation_pending)
+    }
+
+    pub(crate) fn set_durable_delivery_reconciliation_pending(&mut self, pending: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .delivery_reconciliation_pending = pending;
+    }
+
+    pub(crate) fn set_durable_delivery(
+        &mut self,
+        phase: DurablePromptDeliveryPhase,
+        provider_run_id: Option<String>,
+        provider_session_id: Option<String>,
+    ) {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.delivery_phase = Some(phase);
+        metadata.delivery_provider_run_id = provider_run_id;
+        metadata.delivery_provider_session_id = provider_session_id;
+        if phase == DurablePromptDeliveryPhase::Delivered {
+            metadata.delivery_failure_pending = false;
+            metadata.delivery_reconciliation_pending = false;
+        }
+    }
+
+    pub(crate) fn durable_recovery_operation_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.recovery_operation_id.as_deref())
+    }
+
+    pub(crate) fn durable_recovery_phase(&self) -> Option<DurablePromptDeliveryPhase> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.recovery_phase)
+    }
+
+    pub(crate) fn begin_durable_recovery_operation(&mut self) -> String {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        if metadata.recovery_phase == Some(DurablePromptDeliveryPhase::Accepted) {
+            if let Some(operation_id) = metadata.recovery_operation_id.as_ref() {
+                return operation_id.clone();
+            }
+        }
+        metadata.recovery_generation = metadata.recovery_generation.saturating_add(1).max(1);
+        let operation_id = format!(
+            "chariox-recovery:{}:{}",
+            self.id, metadata.recovery_generation
+        );
+        metadata.recovery_operation_id = Some(operation_id.clone());
+        metadata.recovery_phase = Some(DurablePromptDeliveryPhase::Accepted);
+        operation_id
+    }
+
+    pub(crate) fn mark_durable_recovery_phase(
+        &mut self,
+        operation_id: &str,
+        phase: DurablePromptDeliveryPhase,
+    ) -> bool {
+        let Some(metadata) = self.private_metadata.as_mut() else {
+            return false;
+        };
+        if metadata.recovery_operation_id.as_deref() != Some(operation_id) {
+            return false;
+        }
+        metadata.recovery_phase = Some(phase);
+        true
+    }
+
+    pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
+        if private.hidden_system_context.is_empty()
+            && private.agent_prompt_schedule_id.is_none()
+            && private.operation_id.is_none()
+            && private.delivery_phase.is_none()
+            && !private.delivery_reconciliation_pending
+            && !private.delivery_failure_pending
+            && private.recovery_operation_id.is_none()
+            && private.source_client_id.is_none()
+            && private.source_user_id.is_none()
+            && private.remote_steer_uncertainty.is_none()
+        {
+            self.private_metadata = None;
+            self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
+            return;
+        }
+        self.private_metadata = Some(Box::new(PromptPrivateMetadata {
+            agent_prompt_schedule_id: private.agent_prompt_schedule_id.clone(),
+            source_client_id: private.source_client_id.clone(),
+            source_user_id: private.source_user_id.clone(),
+            owner_request: private.owner_request,
+            hidden_system_context: private.hidden_system_context.clone(),
+            operation_id: private.operation_id.clone(),
+            operation_fingerprint: private.operation_fingerprint.clone(),
+            initially_queued: private.initially_queued,
+            delivery_phase: private.delivery_phase,
+            delivery_provider_run_id: private.delivery_provider_run_id.clone(),
+            delivery_provider_session_id: private.delivery_provider_session_id.clone(),
+            delivery_reconciliation_pending: private.delivery_reconciliation_pending,
+            delivery_failure_pending: private.delivery_failure_pending,
+            recovery_generation: private.recovery_generation,
+            recovery_operation_id: private.recovery_operation_id.clone(),
+            recovery_phase: private.recovery_phase,
+        }));
+        self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
+    }
+
+    pub fn status(&self) -> PromptStatus {
+        self.status
+    }
+
+    pub fn prompt_origin(&self) -> PromptOrigin {
+        self.prompt_origin
+    }
+
+    pub fn is_external(&self) -> bool {
+        self.prompt_origin == PromptOrigin::External
+    }
+
+    pub fn is_chariox_owned(&self) -> bool {
+        matches!(
+            self.prompt_origin,
+            PromptOrigin::Chariox | PromptOrigin::CompletionCheck
+        )
+    }
+
+    pub fn external_observed_id(&self) -> Option<crate::history::ExternalProviderObservedId> {
+        if !self.is_external() {
+            return None;
+        }
+        Some(crate::history::ExternalProviderObservedId {
+            provider: self.external_provider.clone()?,
+            provider_session_id: self.external_provider_session_id.clone()?,
+            provider_turn_id: self.external_provider_turn_id.clone()?,
+        })
+    }
+
+    pub fn external_provider(&self) -> Option<&str> {
+        self.external_provider.as_deref()
+    }
+
+    pub fn external_provider_session_id(&self) -> Option<&str> {
+        self.external_provider_session_id.as_deref()
+    }
+
+    pub fn external_provider_turn_id(&self) -> Option<&str> {
+        self.external_provider_turn_id.as_deref()
+    }
+
+    pub fn workflow_run_id(&self) -> Option<&str> {
+        self.workflow_run_id.as_deref()
+    }
+
+    pub fn workflow_node_run_id(&self) -> Option<&str> {
+        self.workflow_node_run_id.as_deref()
+    }
+
+    pub fn set_status(&mut self, status: PromptStatus) {
+        self.status = status;
+    }
+
+    pub fn set_prompt(&mut self, prompt: impl Into<String>) {
+        self.prompt = prompt.into();
+        self.updated_at_ms = crate::session::unix_epoch_ms();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptSubmissionOutcome {
+    Started { prompt: PromptQueueItem },
+    Queued { prompt: PromptQueueItem },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AgentPromptState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::session) active_prompt: Option<PromptQueueItem>,
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub(in crate::session) queued_prompts: VecDeque<PromptQueueItem>,
+}
+
+impl AgentPromptState {
+    pub(in crate::session) fn from_parts(
+        active_prompt: Option<PromptQueueItem>,
+        queued_prompts: VecDeque<PromptQueueItem>,
+    ) -> Self {
+        Self {
+            active_prompt,
+            queued_prompts,
+        }
+    }
+
+    pub fn active_prompt(&self) -> Option<&PromptQueueItem> {
+        self.active_prompt.as_ref()
+    }
+
+    pub fn queued_prompts(&self) -> &VecDeque<PromptQueueItem> {
+        &self.queued_prompts
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptCompletion {
+    pub completed: PromptQueueItem,
+    pub started_next: Option<PromptQueueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptCancellation {
+    pub prompt: PromptQueueItem,
+    pub started_next: Option<PromptQueueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PromptDetachEffect {
+    pub removed_active_prompt: bool,
+    pub removed_queued_prompt_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_queue_item_does_not_serialize_private_runtime_metadata() {
+        let mut item = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "VISIBLE_PROMPT_TOKEN",
+            PromptStatus::Queued,
+        )
+        .with_source_attribution("client-private", "user-private")
+        .with_agent_prompt_schedule("schedule-private")
+        .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
+        .with_durable_operation("operation-private", "fingerprint-private");
+        item.set_durable_initially_queued(true);
+        item.set_durable_delivery(
+            DurablePromptDeliveryPhase::Delivered,
+            Some("provider-run-private".to_string()),
+            Some("provider-session-private".to_string()),
+        );
+        let recovery_operation_id = item.begin_durable_recovery_operation();
+
+        let payload = serde_json::to_string(&item).expect("prompt should serialize");
+
+        assert!(payload.contains("VISIBLE_PROMPT_TOKEN"));
+        assert!(!payload.contains("HIDDEN_CONTEXT_TOKEN"));
+        assert!(!payload.contains("hidden_system_context"));
+        assert!(!payload.contains("operation-private"));
+        assert!(!payload.contains("fingerprint-private"));
+        assert!(!payload.contains("durable_initially_queued"));
+        assert!(!payload.contains("private_metadata"));
+        assert!(!payload.contains("client-private"));
+        assert!(!payload.contains("user-private"));
+        assert!(!payload.contains("schedule-private"));
+        assert!(!payload.contains("provider-run-private"));
+        assert!(!payload.contains("provider-session-private"));
+        assert!(!payload.contains(&recovery_operation_id));
+    }
+
+    #[test]
+    fn remote_steer_reservation_is_clone_shared_exact_and_transient() {
+        let prompt = PromptQueueItem::new(
+            "prompt-queued",
+            "attachment-1",
+            "agent-1",
+            "queued prompt",
+            PromptStatus::Queued,
+        );
+        let clone = prompt.clone();
+        let before = serde_json::to_value(&prompt).expect("prompt should serialize");
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("the first remote steer should own the queue item");
+
+        assert!(clone.remote_steer_reserved());
+        assert!(clone.reserve_remote_steer().is_none());
+        assert!(!clone.release_remote_steer(reservation + 1));
+        assert!(prompt.remote_steer_reservation_matches(reservation));
+        assert_eq!(
+            serde_json::to_value(&prompt).expect("reserved prompt should serialize"),
+            before,
+            "the transient steer reservation must not change serialized prompt state"
+        );
+        let restored: PromptQueueItem =
+            serde_json::from_value(before).expect("serialized prompt should deserialize");
+        assert!(!restored.remote_steer_reserved());
+        assert!(clone.release_remote_steer(reservation));
+        assert!(!prompt.remote_steer_reserved());
+    }
+
+    #[test]
+    fn uncertain_remote_steer_survives_durable_restore_and_remains_reserved() {
+        let prompt = PromptQueueItem::new(
+            "queued-steer-1",
+            "attachment-1",
+            "agent-1",
+            "queued body",
+            PromptStatus::Queued,
+        );
+        let reservation = prompt
+            .reserve_remote_steer()
+            .expect("steer should reserve before delivery");
+        let uncertainty = DurableRemoteQueuedSteerUncertainty {
+            target_home_prompt_id: "home-prompt-1".to_string(),
+            worker_provider_run_id: Some("worker-run-1".to_string()),
+            worker_kernel_id: "worker-kernel-1".to_string(),
+            worker_machine_id: "worker-machine-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-agent-1".to_string(),
+        };
+        assert!(prompt.mark_remote_steer_outcome_uncertain(
+            reservation,
+            uncertainty.target_home_prompt_id.clone(),
+            uncertainty.worker_provider_run_id.clone(),
+            uncertainty.worker_kernel_id.clone(),
+            uncertainty.worker_machine_id.clone(),
+            uncertainty.execution_lease_id.clone(),
+            uncertainty.leased_agent_id.clone(),
+        ));
+        assert!(prompt.release_remote_steer(reservation));
+        assert!(
+            prompt.remote_steer_reserved(),
+            "dropping the transient reservation must not release an uncertain prompt"
+        );
+
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt)
+            .expect("uncertain state should be included in durable private state");
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let public_prompt = serde_json::to_value(&prompt).unwrap();
+        assert!(public_prompt.get("remote_steer_uncertainty").is_none());
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(public_prompt).expect("public prompt should restore");
+        assert!(!restored.remote_steer_reserved());
+        restored.restore_durable_private_state(&private);
+
+        assert!(restored.remote_steer_reserved());
+        assert_eq!(restored.id(), "queued-steer-1");
+        assert_eq!(
+            restored.remote_steer_outcome_uncertainty(),
+            Some((
+                uncertainty.target_home_prompt_id,
+                uncertainty.worker_provider_run_id,
+                uncertainty.worker_kernel_id,
+                uncertainty.worker_machine_id,
+                uncertainty.execution_lease_id,
+                uncertainty.leased_agent_id,
+            ))
+        );
+        assert!(
+            restored.reserve_remote_steer().is_none(),
+            "restored uncertain prompt must not be retried as a new steer"
+        );
+    }
+
+    #[test]
+    fn prompt_queue_item_deserialization_drops_hidden_system_context() {
+        let payload = r#"{
+            "id":"prompt-1",
+            "source_attachment_id":"attachment-1",
+            "target_agent_id":"agent-1",
+            "prompt":"VISIBLE_PROMPT_TOKEN",
+            "attachments":[],
+            "hidden_system_context":"HIDDEN_CONTEXT_TOKEN",
+            "status":"Queued",
+            "workflow_run_id":null,
+            "workflow_node_run_id":null
+        }"#;
+
+        let item: PromptQueueItem =
+            serde_json::from_str(payload).expect("prompt should deserialize");
+
+        assert_eq!(item.prompt(), "VISIBLE_PROMPT_TOKEN");
+        assert_eq!(item.hidden_system_context(), "");
+    }
+
+    #[test]
+    fn agent_prompt_schedule_provenance_survives_private_state_and_queue_promotion() {
+        let prompt = PromptQueueItem::new(
+            "scheduled-prompt",
+            "attachment-1",
+            "agent-1",
+            "same text",
+            PromptStatus::Queued,
+        )
+        .with_agent_prompt_schedule("wait-1")
+        .with_hidden_system_context("")
+        .into_pending_queue_item("pending-1");
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
+        assert_eq!(restored.agent_prompt_schedule_id(), None);
+        restored.restore_durable_private_state(&private);
+        let promoted = restored.with_id("running-1");
+        assert_eq!(promoted.agent_prompt_schedule_id(), Some("wait-1"));
+        assert!(promoted.hidden_system_context().is_empty());
+
+        let mut legacy = serde_json::to_value(private).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_prompt_schedule_id");
+        let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.agent_prompt_schedule_id, None);
+    }
+
+    #[test]
+    fn reconciliation_pending_survives_private_state_restore_until_delivery_is_durable() {
+        let mut prompt = PromptQueueItem::new(
+            "prompt-uncertain",
+            "attachment-1",
+            "agent-1",
+            "same prompt body",
+            PromptStatus::Running,
+        );
+        prompt.set_durable_delivery(DurablePromptDeliveryPhase::Dispatching, None, None);
+        prompt.set_durable_delivery_reconciliation_pending(true);
+
+        let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
+        let private: DurablePromptPrivateState =
+            serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
+        let mut restored: PromptQueueItem =
+            serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
+        restored.restore_durable_private_state(&private);
+
+        assert_eq!(restored.id(), "prompt-uncertain");
+        assert_eq!(
+            restored.durable_delivery_phase(),
+            Some(DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert!(restored.durable_delivery_reconciliation_pending());
+
+        restored.set_durable_delivery(
+            DurablePromptDeliveryPhase::Delivered,
+            Some("worker-run-1".to_string()),
+            None,
+        );
+        assert!(!restored.durable_delivery_reconciliation_pending());
+    }
+
+    #[test]
+    fn renamed_prompt_origin_restores_and_serializes_canonically() {
+        let origin: PromptOrigin =
+            serde_json::from_str(r#""arroba""#).expect("renamed prompt origin should restore");
+
+        assert_eq!(origin, PromptOrigin::Chariox);
+        assert_eq!(
+            serde_json::to_string(&origin).expect("prompt origin should serialize"),
+            r#""chariox""#
+        );
+    }
+
+    #[test]
+    fn prompt_queue_item_classifies_prompt_ownership() {
+        let chariox_prompt = PromptQueueItem::new(
+            "prompt-1",
+            "attachment-1",
+            "agent-1",
+            "prompt",
+            PromptStatus::Queued,
+        );
+        let external_prompt = chariox_prompt
+            .clone()
+            .with_prompt_origin(PromptOrigin::External);
+
+        let completion_check = chariox_prompt
+            .clone()
+            .with_prompt_origin(PromptOrigin::CompletionCheck);
+        assert!(
+            completion_check.is_chariox_owned(),
+            "MP-08/MP-09/MP-10/MP-11 A12: normal dispatch must admit the assessment turn"
+        );
+        assert!(!completion_check.is_external());
+        assert!(chariox_prompt.is_chariox_owned());
+        assert!(!chariox_prompt.is_external());
+        assert!(external_prompt.is_external());
+        assert!(!external_prompt.is_chariox_owned());
+    }
+
+    #[test]
+    fn prompt_queue_item_external_observed_running_sets_runtime_identity() {
+        let prompt = PromptQueueItem::external_observed_running(
+            "codex", "thread-1", "user-1", "agent-1", "run this",
+        );
+
+        assert_eq!(prompt.id(), "external:codex:thread-1:user-1");
+        assert_eq!(prompt.source_attachment_id(), "external:codex");
+        assert_eq!(prompt.target_agent_id(), "agent-1");
+        assert_eq!(prompt.prompt(), "run this");
+        assert_eq!(prompt.status(), PromptStatus::Running);
+        assert!(prompt.is_external());
+        assert!(!prompt.is_chariox_owned());
+        assert_eq!(
+            prompt.external_observed_id(),
+            Some(crate::history::ExternalProviderObservedId {
+                provider: "codex".to_string(),
+                provider_session_id: "thread-1".to_string(),
+                provider_turn_id: "user-1".to_string(),
+            })
+        );
+        assert_eq!(prompt.external_provider(), Some("codex"));
+        assert_eq!(prompt.external_provider_session_id(), Some("thread-1"));
+        assert_eq!(prompt.external_provider_turn_id(), Some("user-1"));
+
+        let payload = serde_json::to_value(&prompt).expect("prompt should serialize");
+        assert_eq!(
+            payload.pointer("/external_provider"),
+            Some(&serde_json::json!("codex"))
+        );
+        assert_eq!(
+            payload.pointer("/external_provider_session_id"),
+            Some(&serde_json::json!("thread-1"))
+        );
+        assert_eq!(
+            payload.pointer("/external_provider_turn_id"),
+            Some(&serde_json::json!("user-1"))
+        );
+    }
+
+    #[test]
+    fn prompt_queue_item_pending_conversion_preserves_external_metadata() {
+        let prompt = PromptQueueItem::external_observed_running(
+            "codex", "thread-1", "user-1", "agent-1", "run this",
+        );
+
+        let pending = prompt.into_pending_queue_item("pending-1");
+
+        assert_eq!(pending.id(), "pending-1");
+        assert_eq!(
+            pending.external_observed_id(),
+            Some(crate::history::ExternalProviderObservedId {
+                provider: "codex".to_string(),
+                provider_session_id: "thread-1".to_string(),
+                provider_turn_id: "user-1".to_string(),
+            })
+        );
+    }
+}

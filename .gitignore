@@ -1,0 +1,48 @@
+# Node
+node_modules/
+.pnpm-store/
+
+# chariox
+.chariox/
+# Legacy runtime artifacts must never be created or committed.
+.arroba/
+
+# Build artifacts
+dist/
+coverage/
+
+# Rust
+**/target/
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Other
+.tmp/
+.artifacts/
+happy-main/
+opencode-dev/
+codex-main/
+paseo/
+.gstack/
+
+# Scratch worktrees and generated drill artifacts
+worktree-*/
+host-worktree/
+outputs/
+tmp/
+.tmp-opencode-openapi.json
+docs/artifacts/**/*.png
+docs/artifacts/**/*.jpg
+docs/artifacts/**/*.jpeg
+docs/artifacts/**/*.webp
+docs/artifacts/**/*.gif
+
+commands.txt
+gmail-view-email-sent-*.png
+
+# Python bytecode from local test runs (kept out of the git-based slice runtime-source revision)
+__pycache__/

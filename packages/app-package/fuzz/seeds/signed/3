@@ -1,0 +1,1 @@
+{"actions": [{"name": "create_todo", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"], "additionalProperties": false}, "criticalValidation": {"reason": "Confirm creation", "userVerification": true}, "effectRoutes": [{"origin": "https://api.example.com", "method": "POST", "path": "/todos", "connection": "todo_account"}]}]}

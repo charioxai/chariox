@@ -1,0 +1,371 @@
+import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
+import { promisify } from "node:util"
+import { test } from "node:test"
+
+const rawExecFileAsync = promisify(execFile)
+const repositoryRoot = resolve(import.meta.dirname, "..")
+const entrypoint = await readFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), "utf8")
+
+// Host fixtures exercise import/admission only. Container users and /home,/run
+// mounts belong to the image; keep every writable path inside this run's root.
+async function execFileAsync(command, args, options) {
+  if (command !== "bash" || args[0] !== join(repositoryRoot, "docker/publication/entrypoint.sh")) {
+    return rawExecFileAsync(command, args, options)
+  }
+  const root = resolve(options.env.HOME, "..")
+  const script = join(root, "entrypoint-fixture.sh")
+  const fixture = entrypoint
+    .replace("readonly CHARIOX_ACTION_HOME=/home/chariox-action", `readonly CHARIOX_ACTION_HOME=${JSON.stringify(join(root, "action-home"))}`)
+    .replace("readonly CHARIOX_GATEWAY_HOME=/home/chariox-gateway", `readonly CHARIOX_GATEWAY_HOME=${JSON.stringify(join(root, "gateway-home"))}`)
+    .replace("readonly CHARIOX_CAPABILITY_ROOT=/run/chariox-publication-capabilities", `readonly CHARIOX_CAPABILITY_ROOT=${JSON.stringify(join(root, "capabilities"))}`)
+    .replace(/\bchariox(?:-action|-gateway)?:chariox(?:-action|-gateway)?\b/g, "$(id -u):$(id -g)")
+  await writeFile(script, fixture, {mode: 0o600, flag: "wx"})
+  try { return await rawExecFileAsync(command, [script, ...args.slice(1)], options) }
+  finally { await rm(script, {force:true}) }
+}
+
+
+test("publication entrypoint keeps builder actions outside credential and transport environments", () => {
+  assert.match(entrypoint, /^umask 077$/m)
+  assert.match(entrypoint, /runuser -u chariox-action -- env -i/)
+  assert.match(entrypoint, /runuser -u chariox-gateway --preserve-environment/)
+  assert.match(entrypoint, /launch_kernel_as_chariox "\$\{CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE:-\}"/)
+  assert.match(entrypoint, /require_private_capability_file "\$kernel_local_auth_file" chariox-gateway/)
+  assert.match(entrypoint, /CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE/)
+  assert.match(entrypoint, /CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE/)
+  assert.match(entrypoint, /read_bootstrap_capability_file/)
+  assert.match(entrypoint, /O_RDONLY \| fs\.constants\.O_NOFOLLOW/)
+  assert.match(entrypoint, /publication audit URL and URL file cannot both be configured/)
+  assert.match(entrypoint, /chmod 700 "\$HOME"/)
+  assert.match(entrypoint, /chmod 700 "\$CHARIOX_WORKSPACE_DIR"/)
+  assert.match(entrypoint, /chmod -R go-rwx "\$CHARIOX_WORKSPACE_DIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_KERNEL_TMPDIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_GATEWAY_TMPDIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_ACTION_TMPDIR"/)
+  assert.match(entrypoint, /O_EXCL/)
+  assert.match(entrypoint, /O_NOFOLLOW/)
+  assert.match(entrypoint, /renameSync\(temporary, destination\)/)
+  assert.match(entrypoint, /CHARIOX_CAPABILITY_STAGING_DIR="\$CHARIOX_CAPABILITY_ROOT\/\.staging"/)
+  assert.match(entrypoint, /first_unsafe_tree_path/)
+  assert.match(entrypoint, /publication credential destination contains an unsafe path/)
+  assert.match(entrypoint, /GATEWAY_PID="\$!"/)
+  assert.match(entrypoint, /trap 'exit 143' TERM/)
+  for (const name of [
+    "CHARIOX_RELAY_URL",
+    "CHARIOX_RELAY_TOKEN",
+    "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+    "CHARIOX_RELAY_HEARTBEAT_MS",
+    "CHARIOX_KERNEL_QUEUE_CAPACITY",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "CHARIOX_PUBLICATION_CLOUD_API_URL",
+    "CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID",
+    "CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN",
+  ]) assert.match(entrypoint, new RegExp(`\\b${name} \\\\`))
+  assert.doesNotMatch(entrypoint, /chmod 755 "\$HOME"/)
+  assert.doesNotMatch(entrypoint, /CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY/)
+  assert.doesNotMatch(entrypoint, /printf '%s' "\$value" > "\$path"/)
+})
+
+test("publication entrypoint imports legacy and single-account credential bindings into runtime home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-credentials-"))
+  const home = join(root, "home")
+  const bindings = join(root, "bindings")
+  const codex = join(bindings, "000", "home", ".codex")
+  const claude = join(bindings, "001", "home", ".claude")
+  await mkdir(codex, { recursive: true })
+  await mkdir(claude, { recursive: true })
+  await writeFile(join(codex, "auth.json"), "codex-fixture")
+  await writeFile(join(claude, ".credentials.json"), "claude-fixture")
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...process.env,
+        HOME: home,
+        CHARIOX_CONFIG_DIR: join(home, ".config", "chariox"),
+        CHARIOX_DATA_DIR: join(home, ".local", "share", "chariox"),
+        CHARIOX_RUNTIME_DIR: join(home, ".cache", "chariox", "runtime"),
+        CHARIOX_SESSION_HISTORY_DIR: join(home, ".local", "share", "chariox", "sessions"),
+        CHARIOX_CREDENTIAL_BINDINGS_ROOT: bindings,
+        CHARIOX_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
+        CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
+      },
+    })
+    assert.equal(await readFile(join(home, ".codex", "auth.json"), "utf8"), "codex-fixture")
+    assert.equal(await readFile(join(home, ".claude", ".credentials.json"), "utf8"), "claude-fixture")
+    assert.equal((await stat(home)).mode & 0o777, 0o700)
+    assert.equal((await stat(join(home, ".codex", "auth.json"))).mode & 0o077, 0)
+    assert.equal((await stat(join(home, ".claude", ".credentials.json"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint imports only the designated default when multiple accounts share a provider", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-multi-account-"))
+  const home = join(root, "home")
+  const bindings = join(root, "bindings")
+  for (const [index, profileId] of [["000", "profile-main"], ["001", "profile-secondary"]]) {
+    const profile = join(bindings, index)
+    await mkdir(join(profile, "home", ".codex"), { recursive: true })
+    await writeFile(join(profile, "profile.json"), JSON.stringify({
+      kind: "provider",
+      provider: "codex",
+      profileId,
+    }))
+    await writeFile(join(profile, "home", ".codex", "auth.json"), profileId)
+  }
+  const accounts = [
+    { provider: "codex", account_profile: "profile-main", label: "Main", home: `${bindings}/000/home` },
+    { provider: "codex", account_profile: "profile-secondary", label: "Secondary", home: `${bindings}/001/home` },
+  ]
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: JSON.stringify({
+          schema_version: 1,
+          defaults: [{ provider: "codex", account_profile: "profile-main" }],
+          accounts,
+        }),
+      },
+    })
+    assert.equal(await readFile(join(home, ".codex", "auth.json"), "utf8"), "profile-main")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint stages root-only account bindings into the ephemeral runtime home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-accounts-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home", ".codex"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "provider",
+    provider: "codex",
+    profileId: "profile-secondary",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", ".codex", "auth.json"), "secondary-fixture", {
+    mode: 0o600,
+  })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: JSON.stringify({
+          schema_version: 1,
+          defaults: [],
+          accounts: [{
+            provider: "codex",
+            account_profile: "profile-secondary",
+            label: "Secondary",
+            home: `${bindings}/000/home`,
+          }],
+        }),
+      },
+    })
+    assert.equal(
+      await readFile(join(bindings, "000", "home", ".codex", "auth.json"), "utf8"),
+      "secondary-fixture",
+    )
+    assert.equal(await readFile(join(sourceProfile, "home", ".codex", "auth.json"), "utf8"), "secondary-fixture")
+    assert.equal((await stat(bindings)).mode & 0o777, 0o700)
+    assert.equal((await stat(join(bindings, "000", "home", ".codex", "auth.json"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint keeps integration secrets scoped to runtime credential bindings", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-integration-binding-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "integration",
+    integration: "github-deployment-acceptance",
+    profileId: "profile-github",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", "secret"), "opaque-bearer-fixture", { mode: 0o600 })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+      },
+    })
+    assert.equal(await readFile(join(bindings, "000", "home", "secret"), "utf8"), "opaque-bearer-fixture")
+    await assert.rejects(readFile(join(home, "secret")), { code: "ENOENT" })
+    assert.equal((await stat(join(bindings, "000", "home", "secret"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint rejects hidden state in staged account binding roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-account-state-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  await mkdir(join(sources, "000", "home", ".codex"), { recursive: true })
+  await mkdir(bindings, { recursive: true })
+  await writeFile(join(bindings, ".stale"), "must-not-be-ignored")
+  try {
+    await assert.rejects(
+      execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings }),
+          CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 70)
+        assert.match(error.stderr, /credential bindings destination must be empty/)
+        return true
+      },
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("publication entrypoint rejects unsafe credential profile and destination paths", async () => {
+  const cases = [
+    {
+      name: "source symlink",
+      expected: /credential profile contains an unsafe path/,
+      setup: async ({ root, bindings }) => {
+        const codex = join(bindings, "000", "home", ".codex")
+        await mkdir(codex, { recursive: true })
+        await writeFile(join(root, "outside-auth.json"), "outside")
+        await symlink(join(root, "outside-auth.json"), join(codex, "auth.json"))
+      },
+    },
+    {
+      name: "bindings root symlink",
+      expected: /credential bindings root must not be a symlink/,
+      setup: async ({ root, bindings }) => {
+        const target = join(root, "bindings-target")
+        const codex = join(target, "000", "home", ".codex")
+        await mkdir(codex, { recursive: true })
+        await writeFile(join(codex, "auth.json"), "codex-fixture")
+        await symlink(target, bindings)
+      },
+    },
+    {
+      name: "unsupported home entry",
+      expected: /credential profile contains an unsupported home entry/,
+      setup: async ({ bindings }) => {
+        const ssh = join(bindings, "000", "home", ".ssh")
+        await mkdir(ssh, { recursive: true })
+        await writeFile(join(ssh, "id"), "not-a-provider-profile")
+      },
+    },
+    {
+      name: "destination symlink",
+      expected: /credential destination contains an unsafe path/,
+      setup: async ({ home, bindings }) => {
+        const escape = join(home, "escape")
+        const codex = join(bindings, "000", "home", ".codex")
+        await mkdir(escape, { recursive: true })
+        await symlink(escape, join(home, ".codex"))
+        await mkdir(codex, { recursive: true })
+        await writeFile(join(codex, "auth.json"), "codex-fixture")
+      },
+    },
+  ]
+
+  for (const fixture of cases) {
+    const root = await mkdtemp(join(tmpdir(), "chariox-publication-unsafe-credentials-"))
+    const home = join(root, "home")
+    const bindings = join(root, "bindings")
+    await mkdir(home, { recursive: true })
+    try {
+      await fixture.setup({ root, home, bindings })
+      await assert.rejects(
+        execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+          env: publicationEntrypointEnvironment({ root, home, bindings }),
+        }),
+        (error) => {
+          assert.equal(error.code, 70, fixture.name)
+          assert.match(error.stderr, fixture.expected, fixture.name)
+          return true
+        },
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("publication control state rejects an arbitrary mount or missing stable identities", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-control-guard-"))
+  const home = join(root, "home")
+  try {
+    for (const [control, expected] of [
+      [join(home, "retained"), /publication control state must use the dedicated mount/],
+      ["", /publication control state must use the dedicated mount/],
+      ["/var/lib/chariox/publication-control", /requires stable kernel, machine, runtime key and workspace/],
+    ]) {
+      await assert.rejects(execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings: join(root, "bindings") }),
+          CHARIOX_PUBLICATION_CONTROL_STATE_DIR: control,
+          CHARIOX_DAEMON_ID: "",
+          CHARIOX_MACHINE_ID: "",
+          CHARIOX_PUBLICATION_RUNTIME_KEY: "",
+          CHARIOX_PUBLICATION_RUNTIME_WORKSPACE: "",
+        },
+      }), (error) => error.code === 70 && expected.test(error.stderr))
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+function publicationEntrypointEnvironment({ root, home, bindings }) {
+  return {
+    ...process.env,
+    HOME: home,
+    CHARIOX_CONFIG_DIR: join(home, ".config", "chariox"),
+    CHARIOX_DATA_DIR: join(home, ".local", "share", "chariox"),
+    CHARIOX_RUNTIME_DIR: join(home, ".cache", "chariox", "runtime"),
+    CHARIOX_SESSION_HISTORY_DIR: join(home, ".local", "share", "chariox", "sessions"),
+    CHARIOX_CREDENTIAL_BINDINGS_ROOT: bindings,
+    CHARIOX_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
+    CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
+  }
+}
+
+test('MP-11 F5 bootstrap capability reader refuses FIFOs before a writer arrives', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-fifo-'))
+  try {
+    const input = join(root, 'input')
+    await execFileAsync('mkfifo', ['-m', '600', input])
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, 'audit URL'],
+      { timeout: 2000, maxBuffer: 256 * 1024 }), error => error.killed === false && /private regular file/.test(error.stderr))
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('MP-11 F5 bootstrap capability reader bounds audit URLs and caller claims', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mp11-bootstrap-limit-'))
+  try {
+    const input = join(root, 'input')
+    const fn = entrypoint.match(/^read_bootstrap_capability_file\(\) \{[^]*?^\}/m)[0]
+    for (const [label, maximum] of [['audit URL', 8192], ['caller claims configuration', 65536]]) {
+      await writeFile(input, 'x'.repeat(maximum + 1), { mode: 0o600 })
+      await assert.rejects(execFileAsync('bash', ['-c', `${fn}\nread_bootstrap_capability_file "$1" "$2"`, 'fixture', input, label],
+        { timeout: 2000, maxBuffer: 256 * 1024 }), error => /size limit/.test(error.stderr) && error.stdout === '')
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

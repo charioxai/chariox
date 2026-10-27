@@ -1,0 +1,36 @@
+{
+  "local_protocol": 535,
+  "peer_protocol": 143,
+  "registration": {
+    "kind": "client_subscribe",
+    "request_id": "delivery-request",
+    "subscription_id": "fresh-relay-id",
+    "target": {
+      "daemon_id": "home",
+      "daemon_alias": null
+    },
+    "session_id": "delivery-old",
+    "attachment_id": "7",
+    "client_public_key": "viewer-key",
+    "subscription_scope": "kernel_browser_display_resume",
+    "resume_from_event_id": null
+  },
+  "worker_request": {
+    "kind": "room_shared_display",
+    "session_id": "room-1",
+    "slice_id": "slice-1",
+    "lease_id": "delivery-old",
+    "command": {
+      "op": "resume_attach"
+    }
+  },
+  "reply": {
+    "ok": true,
+    "display_attached": true,
+    "binding": {
+      "generation": 7,
+      "subscription_id": "delivery-new",
+      "resumed": true
+    }
+  }
+}

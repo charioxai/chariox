@@ -1,0 +1,1065 @@
+use super::*;
+
+#[test]
+fn private_meta_continuation_observation_matches_its_owned_marker() {
+    let mut counts = BTreeMap::from([("<metaagent-event/>".to_string(), 1)]);
+
+    assert!(consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        "The task context rendered by the provider.<metaagent-event/>"
+    ));
+    assert!(counts.is_empty());
+}
+
+#[test]
+fn retained_external_history_appends_without_projecting_live_work() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-observed".to_string(),
+        "codex".to_string(),
+        "thread-observed".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    let idle_activity_revision = app.session_state_projection_store().change_sequence();
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "external response".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed history should append");
+    let history_activity_revision = app.session_state_projection_store().change_sequence();
+
+    assert_eq!(outcome.changed_count, 2);
+    assert!(
+        history_activity_revision >= idle_activity_revision,
+        "history import may refresh the session projection without claiming live work"
+    );
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_none());
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+            .expect("queued count should load"),
+        0
+    );
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| {
+        entry.external_provider.as_deref() == Some("codex")
+            && entry.external_provider_session_id.as_deref() == Some("thread-observed")
+    }));
+
+    let projection = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        session.id(),
+        0,
+    )
+    .expect("session projection should load");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("imported agent activity should project");
+    assert_eq!(
+        activity.status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle,
+        "retained transcript history is not provider liveness authority"
+    );
+    assert_eq!(
+        activity.prompt_status,
+        crate::runtime::projection::AgentPromptRuntimeStatus::None
+    );
+    assert!(activity.active_turn.is_none());
+
+    let import = app
+        .agents()
+        .get_agent(agent.id())
+        .expect("imported agent should load")
+        .external_provider_import()
+        .cloned()
+        .expect("import metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "external response".to_string(),
+                    observed_at_ms: Some(84),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("task-complete-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                    observed_at_ms: Some(100),
+                },
+            ],
+        },
+    )
+    .expect("observed completion should append");
+    assert!(
+        app.session_state_projection_store().change_sequence() >= history_activity_revision,
+        "settled retained history must remain non-live"
+    );
+
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_none());
+    let projection = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        session.id(),
+        0,
+    )
+    .expect("settled session projection should load");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("settled imported agent activity should project");
+    assert_eq!(
+        activity.status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert_eq!(
+        activity.prompt_status,
+        crate::runtime::projection::AgentPromptRuntimeStatus::None
+    );
+    assert!(activity.active_turn.is_none());
+}
+
+#[test]
+fn empty_external_observation_clears_projected_activity() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-observed".to_string(),
+        "codex".to_string(),
+        "thread-observed".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("assistant-1".to_string()),
+        Some(40),
+        Some(crate::history::external_provider_observed_merge_key(
+            "codex",
+            "thread-observed",
+            "assistant-1",
+        )),
+    ));
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import.clone(),
+            ),
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "retained response".to_string(),
+                    observed_at_ms: Some(40),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-2".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(42),
+                },
+            ],
+        },
+    )
+    .expect("live observation should project");
+    let active_revision = app.session_state_projection_store().change_sequence();
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: Vec::new(),
+        },
+    )
+    .expect("empty observation should clear projected activity");
+
+    assert!(
+        app.session_state_projection_store().change_sequence() > active_revision,
+        "clearing unreadable external activity should wake projection subscribers"
+    );
+    let projection = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        session.id(),
+        0,
+    )
+    .expect("session projection should load");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("imported agent activity should project");
+    assert_eq!(
+        activity.status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert!(activity.active_turn.is_none());
+}
+
+#[test]
+fn older_delayed_external_observation_cannot_restore_settled_activity() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-delayed".to_string(),
+        "codex".to_string(),
+        "thread-delayed".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("assistant-1".to_string()),
+        Some(84),
+        Some(crate::history::external_provider_observed_merge_key(
+            "codex",
+            "thread-delayed",
+            "assistant-1",
+        )),
+    ));
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+    let mut older = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import.clone(),
+    );
+    reserve_external_observation_generations(&app, std::slice::from_mut(&mut older));
+    let mut settled = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    reserve_external_observation_generations(&app, std::slice::from_mut(&mut settled));
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: settled,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("task-complete-2".to_string()),
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{\"turn_id\":\"turn-2\"}".to_string(),
+                observed_at_ms: Some(120),
+            }],
+        },
+    )
+    .expect("newer settlement should apply");
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: older,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("user-2".to_string()),
+                role: ObservedExternalProviderTurnRole::User,
+                text: "delayed external prompt".to_string(),
+                observed_at_ms: Some(100),
+            }],
+        },
+    )
+    .expect("older delayed history may reconcile without restoring activity");
+
+    let projection = crate::runtime::projection::SessionSnapshotProjection::from_daemon_app(
+        &mut app,
+        session.id(),
+        0,
+    )
+    .expect("session projection should load");
+    let activity = projection
+        .agent_activity
+        .get(agent.id())
+        .expect("agent activity should project");
+    assert_eq!(
+        activity.status,
+        crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert!(activity.active_turn.is_none());
+}
+
+#[test]
+fn chariox_owned_turn_with_generated_runtime_context_is_not_imported_again() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    app.append_user_prompt_history(
+        session.id(),
+        attachment.id(),
+        agent.id(),
+        "run the check",
+        &[],
+    );
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-owned".to_string(),
+        "codex".to_string(),
+        "thread-owned".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "run the check <runtime-instructions>generated</runtime-instructions> \
+                        <native-permission-instructions>generated</native-permission-instructions>"
+                        .to_string(),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "done".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed history should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_external_provider_observed());
+}
+
+#[test]
+fn chariox_owned_agent_message_with_provider_attachment_suffix_is_not_imported_again() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let prompt = "agent agent-2 message:\n\nReview the attached evidence.";
+    app.append_user_prompt_history(session.id(), attachment.id(), agent.id(), prompt, &[]);
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-owned".to_string(),
+        "codex".to_string(),
+        "thread-owned".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("user-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: format!(
+                        "{prompt}Attachment: note.txt (text/plain) at data:text/plain;base64,SGVsbG8="
+                    ),
+                    observed_at_ms: Some(42),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-owned".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "done".to_string(),
+                    observed_at_ms: Some(84),
+                },
+            ],
+        },
+    )
+    .expect("observed history should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_external_provider_observed());
+}
+
+#[test]
+fn claude_internal_task_notification_stays_with_active_chariox_prompt() {
+    assert_claude_internal_continuation_stays_with_active_chariox_prompt(
+        "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>",
+    );
+}
+
+#[test]
+fn claude_auto_compaction_stays_with_active_chariox_prompt() {
+    assert_claude_internal_continuation_stays_with_active_chariox_prompt(
+        "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Summary: Preserve the audit and answer the current memory probe.",
+    );
+}
+
+fn assert_claude_internal_continuation_stays_with_active_chariox_prompt(prompt: &str) {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let active_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "run the background check",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start");
+    };
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-owned".to_string(),
+        "claude".to_string(),
+        "thread-owned".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("task-notification-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: prompt.to_string(),
+                    observed_at_ms: Some(100),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "BACKGROUND_CHECK_OK".to_string(),
+                    observed_at_ms: Some(110),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1:completed".to_string()),
+                    role: ObservedExternalProviderTurnRole::Status,
+                    text: "claude message completed\n{\"stop_reason\":\"end_turn\"}".to_string(),
+                    observed_at_ms: Some(120),
+                },
+            ],
+        },
+    )
+    .expect("internal continuation should reconcile");
+
+    assert_eq!(outcome.changed_count, 0);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert!(
+        entries.is_empty(),
+        "provider-internal continuation must not duplicate managed output"
+    );
+}
+
+#[test]
+fn claude_task_notification_without_active_chariox_prompt_remains_external() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-external".to_string(),
+        "claude".to_string(),
+        "thread-external".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("task-notification-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "<task-notification><task-id>sleep-1</task-id><status>completed</status></task-notification>".to_string(),
+                    observed_at_ms: Some(100),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("assistant-1".to_string()),
+                    role: ObservedExternalProviderTurnRole::Assistant,
+                    text: "BACKGROUND_CHECK_OK".to_string(),
+                    observed_at_ms: Some(110),
+                },
+            ],
+        },
+    )
+    .expect("external native continuation should import");
+
+    assert_eq!(outcome.changed_count, 2);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 2);
+    assert!(entries
+        .iter()
+        .all(SessionHistoryEntry::is_external_provider_observed));
+}
+
+#[test]
+fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "opencode:thread-observed".to_string(),
+        "opencode".to_string(),
+        "thread-observed".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    let outcome = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("opencode-user-2".to_string()),
+                    role: ObservedExternalProviderTurnRole::User,
+                    text: "external prompt".to_string(),
+                    observed_at_ms: Some(100),
+                },
+                ObservedExternalProviderTurn {
+                    provider_turn_id: Some("opencode-reasoning-2".to_string()),
+                    role: ObservedExternalProviderTurnRole::Reasoning,
+                    text: "external reasoning after prompt".to_string(),
+                    observed_at_ms: Some(101),
+                },
+            ],
+        },
+    )
+    .expect("observed history should append");
+
+    assert_eq!(outcome.changed_count, 2);
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert!(entries
+        .iter()
+        .any(|entry| entry.text == "external reasoning after prompt"));
+
+    let records = app
+        .terminal_stream_store()
+        .drain_output_records(session.id(), attachment.id());
+    assert_eq!(
+        records.len(),
+        1,
+        "multi-entry external imports should trigger one history recovery after the batch"
+    );
+    assert_eq!(
+        records[0].kind,
+        crate::terminal::TerminalOutputKind::ProviderStatus
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&records[0].bytes),
+        EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS
+    );
+    assert_eq!(
+        records[0]
+            .external_observation_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.external_provider_turn_id.as_deref()),
+        Some("opencode-user-2")
+    );
+}
+
+#[test]
+fn timestamp_less_external_turn_is_stable_across_repeated_polls() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-observed".to_string(),
+        "claude".to_string(),
+        "thread-observed".to_string(),
+    );
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+    let turn = ObservedExternalProviderTurn {
+        provider_turn_id: Some("permission-mode-session-thread-observed".to_string()),
+        role: ObservedExternalProviderTurnRole::Status,
+        text: "claude permission-mode".to_string(),
+        observed_at_ms: None,
+    };
+
+    let first = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: target.clone(),
+            turns: vec![turn.clone()],
+        },
+    )
+    .expect("first poll should append");
+    assert_eq!(first.changed_count, 1);
+    assert_eq!(
+        app.terminal_stream_store()
+            .drain_output_records(session.id(), attachment.id())
+            .len(),
+        1,
+    );
+    let first_observed_at_ms = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load")[0]
+        .observed_at_ms;
+
+    let second = append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![turn],
+        },
+    )
+    .expect("second poll should be a no-op");
+    assert_eq!(second.changed_count, 0);
+    assert!(app
+        .terminal_stream_store()
+        .drain_output_records(session.id(), attachment.id())
+        .is_empty());
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].observed_at_ms, first_observed_at_ms);
+}
+
+#[test]
+fn observed_live_external_user_turn_is_history_only() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "opencode:thread-live".to_string(),
+        "opencode".to_string(),
+        "thread-live".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("assistant-1".to_string()),
+        Some(84),
+        Some(crate::history::external_provider_observed_merge_key(
+            "opencode",
+            "thread-live",
+            "assistant-1",
+        )),
+    ));
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("opencode-user-2".to_string()),
+                role: ObservedExternalProviderTurnRole::User,
+                text: "external live prompt".to_string(),
+                observed_at_ms: Some(100),
+            }],
+        },
+    )
+    .expect("observed history should append");
+
+    assert!(app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .is_none());
+}
+
+#[test]
+fn observed_live_external_completion_does_not_clear_active_prompt() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "opencode:thread-live".to_string(),
+        "opencode".to_string(),
+        "thread-live".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("opencode-user-2".to_string()),
+        Some(100),
+        Some(crate::history::external_provider_observed_merge_key(
+            "opencode",
+            "thread-live",
+            "opencode-user-2",
+        )),
+    ));
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let active_prompt = PromptQueueItem::external_observed_running(
+        "opencode",
+        "thread-live",
+        "opencode-user-2",
+        agent.id(),
+        "external live prompt",
+    );
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(active_prompt))
+        .expect("external active prompt should sync");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("message-status-opencode-completion".to_string()),
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "opencode message completed\n{\"finish\":\"stop\"}".to_string(),
+                observed_at_ms: Some(120),
+            }],
+        },
+    )
+    .expect("observed completion should append");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("observed completion must not settle kernel prompt state");
+    assert_eq!(active.prompt(), "external live prompt");
+}
+
+#[test]
+fn observed_live_external_completion_does_not_advance_queued_chariox_prompt() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-live".to_string(),
+        "codex".to_string(),
+        "thread-live".to_string(),
+    )
+    .with_cursor(ExternalProviderObservedCursor::new(
+        Some("codex-user-2".to_string()),
+        Some(100),
+        Some(crate::history::external_provider_observed_merge_key(
+            "codex",
+            "thread-live",
+            "codex-user-2",
+        )),
+    ));
+    let agent =
+        persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+            .expect("metadata should persist");
+    let run = test_codex_run(session.id(), agent.id(), "run-live", "thread-live");
+    app.providers_mut().insert_run_for_test(run.clone());
+    let active_prompt = PromptQueueItem::external_observed_running(
+        "codex",
+        "thread-live",
+        "codex-user-2",
+        agent.id(),
+        "external live prompt",
+    );
+    app.prompt_owner_sync_external_active_prompt(session.id(), agent.id(), Some(active_prompt))
+        .expect("external active prompt should sync");
+    let queued_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "queued kernel prompt after external turn",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("second prompt should queue behind external prompt")
+    else {
+        panic!("second prompt should queue");
+    };
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        Some(run.id().to_string()),
+        import,
+    );
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("task-complete-1".to_string()),
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                observed_at_ms: Some(120),
+            }],
+        },
+    )
+    .expect("observed completion should append");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("observed completion must not settle kernel prompt state");
+    assert_eq!(active.prompt(), "external live prompt");
+    assert_eq!(
+        active.prompt_origin(),
+        crate::session::PromptOrigin::External
+    );
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+            .expect("queued count should load"),
+        1
+    );
+}
+
+#[test]
+fn observed_external_completion_does_not_dispatch_queued_chariox_prompt() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let active_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "kernel owned prompt",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), active_prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("first prompt should start");
+    };
+    let queued_prompt = PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "queued kernel prompt",
+        PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Queued { .. } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), queued_prompt, false)
+        .expect("second prompt should queue")
+    else {
+        panic!("second prompt should queue");
+    };
+    let import = ExternalProviderImportMetadata::observed_history(
+        "codex:thread-observed".to_string(),
+        "codex".to_string(),
+        "thread-observed".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+    let target = attached_external_observer_target_from_import(
+        session.id().to_string(),
+        agent.id().to_string(),
+        None,
+        import,
+    );
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target,
+            turns: vec![ObservedExternalProviderTurn {
+                provider_turn_id: Some("task-complete-1".to_string()),
+                role: ObservedExternalProviderTurnRole::Status,
+                text: "codex task_complete\n{\"turn_id\":\"turn-1\"}".to_string(),
+                observed_at_ms: Some(84),
+            }],
+        },
+    )
+    .expect("observed completion should append");
+
+    let active = app
+        .prompt_owner_active_prompt_for_agent_snapshot(session.id(), agent.id())
+        .expect("active prompt should load")
+        .expect("kernel-owned active prompt must remain active");
+    assert_eq!(active.prompt(), "kernel owned prompt");
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), agent.id())
+            .expect("queued count should load"),
+        1
+    );
+}
+
+#[test]
+fn observed_native_paste_consumes_only_one_owned_prompt() {
+    let prompt = "Audit the native prompt path.";
+    let mut counts = BTreeMap::from([(prompt.to_string(), 1)]);
+    let wrapped = format!("<pasted_content id=\"71b3\"> {prompt} </pasted_content id=\"71b3\">");
+    assert!(consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        &wrapped
+    ));
+    assert!(counts.is_empty());
+    assert!(!consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        &wrapped
+    ));
+    assert!(!consume_chariox_owned_prompt_text_match(
+        &mut counts,
+        prompt
+    ));
+}

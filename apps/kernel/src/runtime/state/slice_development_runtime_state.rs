@@ -1,0 +1,969 @@
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use crate::error::DaemonError;
+use crate::managed_context::development::{
+    cleanup_development_context_publication, cleanup_development_context_publication_staging,
+    export_development_context, import_development_context_with_publication,
+    recover_pruned_development_context_publication_for_cleanup,
+    recover_pruned_mutable_development_context_publication, DevelopmentContextExportRequest,
+    DevelopmentContextImportRequest, DevelopmentRepositoryRole, DevelopmentRepositorySelection,
+    DevelopmentSourceRepositoryBinding,
+};
+use crate::managed_context::package::ManagedContextDevelopmentSelection;
+
+use super::KernelRuntimeState;
+
+#[path = "slice_empty_development.rs"]
+mod empty_development;
+
+const SLICE_DEVELOPMENT_PUBLICATION_ID: &str = "development";
+const SLICE_DEVELOPMENT_EXPORT_SCRATCH: &str = ".slice-development-export";
+const MANAGED_PUBLICATION_ACCESS_HELPER: &str = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh";
+const MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES: usize = 16 * 1024;
+
+impl KernelRuntimeState {
+    pub(crate) fn prepare_slice_development_storage_parent(
+        &self,
+        config: &crate::config::DaemonConfig,
+    ) -> Result<PathBuf, DaemonError> {
+        let options = crate::slice::LocalDockerSliceOptions::from_config(config);
+        let storage_parent = options.root.join("development");
+        ensure_private_real_directory(&storage_parent)?;
+        fs::canonicalize(&storage_parent)
+            .map_err(|error| slice_development_io_error("resolve", &storage_parent, error))
+    }
+
+    pub(crate) fn slice_development_selection_for_session(
+        &self,
+        session: &crate::session::RuntimeSession,
+        worktree_id: &str,
+    ) -> Result<ManagedContextDevelopmentSelection, DaemonError> {
+        self.slice_development_selection_for_project(
+            session.project_id(),
+            Some(session.workspace_id()),
+            Some(worktree_id),
+        )
+        .map(|(selection, _, _)| selection)
+    }
+
+    /// A slice developing `workspace_id` (default: the Project's primary
+    /// Workspace) of a Project on this kernel, with the Project's other
+    /// Workspaces as supporting repositories. Returns the selection and the
+    /// chosen workspace and worktree.
+    pub(crate) fn slice_development_selection_for_project(
+        &self,
+        project_id: &str,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+    ) -> Result<(ManagedContextDevelopmentSelection, String, String), DaemonError> {
+        let project = self.owned.session_store.get_project(project_id)?;
+        let workspace_id = workspace_id.unwrap_or(project.workspace_id()).to_string();
+        let worktree_id = worktree_id.unwrap_or(&workspace_id).to_string();
+        let mut repositories = Vec::with_capacity(project.workspace_ids().len());
+        repositories.push(DevelopmentSourceRepositoryBinding {
+            role: DevelopmentRepositoryRole::Primary,
+            workspace_id: workspace_id.clone(),
+            worktree_id: Some(worktree_id.clone()),
+        });
+        repositories.extend(
+            project
+                .workspace_ids()
+                .iter()
+                .filter(|workspace| **workspace != workspace_id)
+                .map(|workspace| DevelopmentSourceRepositoryBinding {
+                    role: DevelopmentRepositoryRole::Supporting,
+                    workspace_id: workspace.clone(),
+                    worktree_id: None,
+                }),
+        );
+        let selection = ManagedContextDevelopmentSelection::SourceProject {
+            project_id: project.id().to_string(),
+            repositories,
+        };
+        self.validate_slice_development_selection(
+            Some(&selection),
+            &crate::slice::SliceBackendKind::LocalDocker,
+            Some(&workspace_id),
+            Some(&worktree_id),
+            None,
+        )?;
+        Ok((selection, workspace_id, worktree_id))
+    }
+
+    pub(crate) fn validate_slice_development_selection(
+        &self,
+        development: Option<&ManagedContextDevelopmentSelection>,
+        backend: &crate::slice::SliceBackendKind,
+        workspace_id: Option<&str>,
+        worktree_id: Option<&str>,
+        source_slice_ref: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        if let Some(source_ref) = source_slice_ref {
+            self.validate_source_slice_export(source_ref, development)?;
+        }
+        let Some(ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        }) = development
+        else {
+            return Ok(());
+        };
+        if *backend != crate::slice::SliceBackendKind::LocalDocker {
+            return Err(slice_development_error(
+                "source-project development materialization requires a local Docker slice",
+            ));
+        }
+        crate::managed_context::package::validate_development_selection(
+            development.expect("source project selection"),
+        )?;
+        let primary = repositories
+            .iter()
+            .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+            .expect("validated development selection has one primary repository");
+        if workspace_id != Some(primary.workspace_id.as_str())
+            || worktree_id != primary.worktree_id.as_deref()
+        {
+            return Err(slice_development_error(
+                "slice workspace/worktree must match the primary development repository",
+            ));
+        }
+        let project = self.owned.session_store.get_project(project_id)?;
+        for repository in repositories {
+            if !project.contains_workspace(&repository.workspace_id) {
+                return Err(slice_development_error(format!(
+                    "project `{project_id}` does not include Workspace `{}`",
+                    repository.workspace_id
+                )));
+            }
+            if source_slice_ref.is_none() {
+                crate::managed_context::outbound_service::resolve_repository_selection(repository)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn materialize_slice_development_context(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        if slice.development.is_none()
+            || slice.backend != crate::slice::SliceBackendKind::LocalDocker
+        {
+            return Ok(slice.clone());
+        }
+        let publication_parent = slice_development_storage_root(slice)?;
+        let resolved = if slice.development_publication.is_some() {
+            None
+        } else {
+            Some(self.slice_repository_selections(slice)?)
+        };
+        let publication = match slice.development.as_ref().expect("checked development") {
+            ManagedContextDevelopmentSelection::Empty => empty_development::materialize(
+                &publication_parent,
+                slice.development_publication.as_ref(),
+            )?,
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            } => materialize_slice_development_publication_with_access(
+                &publication_parent,
+                project_id,
+                repositories,
+                slice.development_publication.as_ref(),
+                update_managed_publication_access,
+                resolved,
+            )?,
+        };
+        if slice
+            .development_publication
+            .as_ref()
+            .is_some_and(|expected| expected != &publication)
+        {
+            return Err(slice_development_error(
+                "recovered slice development publication does not match durable state",
+            ));
+        }
+        let updated = self.owned.slice_store.set_development_publication(
+            &slice.id,
+            publication,
+            crate::session::unix_epoch_ms(),
+        )?;
+        self.append_slice_durable_event("slice.updated", &updated)?;
+        Ok(updated)
+    }
+
+    pub(crate) fn cleanup_slice_development_context(
+        &self,
+        slice: &crate::slice::SliceRecord,
+    ) -> Result<(), DaemonError> {
+        if matches!(
+            slice.development,
+            Some(ManagedContextDevelopmentSelection::Empty)
+        ) {
+            // Old Empty records never owned a publication. Never remove their parent workspace.
+            if slice.development_storage_root.is_none() {
+                return Ok(());
+            }
+            return empty_development::cleanup(&slice_development_storage_root(slice)?);
+        }
+        let Some(ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        }) = slice.development.as_ref()
+        else {
+            return Ok(());
+        };
+        let publication_parent = slice_development_storage_root(slice)?;
+        cleanup_slice_development_publication(&publication_parent, project_id, repositories)
+    }
+}
+
+fn materialize_slice_development_publication_with_access(
+    publication_parent: &Path,
+    project_id: &str,
+    repositories: &[DevelopmentSourceRepositoryBinding],
+    expected_publication: Option<&crate::slice::SliceDevelopmentPublication>,
+    update_access: impl Fn(
+        &str,
+        &Path,
+        &crate::slice::SliceDevelopmentPublication,
+    ) -> Result<(), DaemonError>,
+    resolved_source: Option<Vec<DevelopmentRepositorySelection>>,
+) -> Result<crate::slice::SliceDevelopmentPublication, DaemonError> {
+    let access_action = if expected_publication.is_some() {
+        "verify"
+    } else {
+        "grant"
+    };
+    if expected_publication.is_none() {
+        ensure_private_real_directory(publication_parent)?;
+    } else {
+        require_existing_real_directory(publication_parent)?;
+    }
+    let canonical_publication_parent = fs::canonicalize(publication_parent)
+        .map_err(|error| slice_development_io_error("resolve", publication_parent, error))?;
+    if canonical_publication_parent != publication_parent {
+        return Err(slice_development_error(
+            "slice development storage root changed after it was recorded",
+        ));
+    }
+    let publication_parent = canonical_publication_parent;
+    cleanup_slice_development_export_scratch(&publication_parent)?;
+    let receipt = match recover_pruned_mutable_development_context_publication(
+        &publication_parent,
+        project_id,
+        repositories,
+    )? {
+        Some(receipt) => receipt,
+        None if expected_publication.is_some() => {
+            return Err(slice_development_error(
+                "durable slice development publication is missing",
+            ))
+        }
+        None => {
+            let scratch_root = publication_parent.join(SLICE_DEVELOPMENT_EXPORT_SCRATCH);
+            ensure_private_real_directory(&scratch_root)?;
+            let scratch_cleanup = SliceDevelopmentScratchCleanup(scratch_root.clone());
+            let archive_path = scratch_root.join("development.tar.gz");
+            let resolved = match resolved_source {
+                Some(resolved) => resolved,
+                None => repositories
+                    .iter()
+                    .map(crate::managed_context::outbound_service::resolve_repository_selection)
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            let exported = export_development_context(DevelopmentContextExportRequest {
+                project_id: project_id.to_string(),
+                repositories: resolved,
+                archive_path: archive_path.clone(),
+            })?;
+            let publication_id = SLICE_DEVELOPMENT_PUBLICATION_ID.to_string();
+            let destination_root = publication_parent.join(&publication_id);
+            let request = DevelopmentContextImportRequest {
+                archive_path,
+                expected_archive_sha256: exported.archive_sha256,
+                expected_project_id: project_id.to_string(),
+                expected_source_repositories: Some(repositories.to_vec()),
+                destination_root: destination_root.clone(),
+            };
+            let imported =
+                import_development_context_with_publication(request, publication_id.clone());
+            drop(scratch_cleanup);
+            match imported {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let _ = cleanup_development_context_publication_staging(
+                        &destination_root,
+                        &publication_id,
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    };
+    let primary = receipt
+        .repositories
+        .iter()
+        .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+        .ok_or_else(|| slice_development_error("slice publication has no primary repository"))?;
+    let repository_paths = receipt
+        .repositories
+        .iter()
+        .map(|repository| path_to_string(&repository.destination_path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let publication = crate::slice::SliceDevelopmentPublication {
+        publication_id: receipt.publication_id,
+        destination_root: path_to_string(&receipt.destination_root)?,
+        primary_repository_path: path_to_string(&primary.destination_path)?,
+        repository_paths,
+    };
+    update_access(access_action, &publication_parent, &publication)?;
+    Ok(publication)
+}
+
+fn cleanup_slice_development_publication(
+    publication_parent: &Path,
+    project_id: &str,
+    repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<(), DaemonError> {
+    let parent_metadata = match fs::symlink_metadata(publication_parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(slice_development_io_error(
+                "inspect",
+                publication_parent,
+                error,
+            ))
+        }
+    };
+    if !parent_metadata.is_dir() || parent_metadata.file_type().is_symlink() {
+        return Err(slice_development_error(
+            "slice development publication parent is unsafe",
+        ));
+    }
+    let expected_publication_parent = publication_parent.to_path_buf();
+    let publication_parent = fs::canonicalize(publication_parent)
+        .map_err(|error| slice_development_io_error("resolve", publication_parent, error))?;
+    if publication_parent != expected_publication_parent {
+        return Err(slice_development_error(
+            "slice development storage root changed after it was recorded",
+        ));
+    }
+    cleanup_slice_development_export_scratch(&publication_parent)?;
+    let recovered = recover_pruned_development_context_publication_for_cleanup(
+        &publication_parent,
+        project_id,
+        repositories,
+    )?;
+    let destination_root = publication_parent.join(SLICE_DEVELOPMENT_PUBLICATION_ID);
+    cleanup_development_context_publication_staging(
+        &destination_root,
+        SLICE_DEVELOPMENT_PUBLICATION_ID,
+    )?;
+    if let Some(receipt) = recovered {
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: receipt.publication_id.clone(),
+            destination_root: path_to_string(&receipt.destination_root)?,
+            primary_repository_path: receipt
+                .repositories
+                .iter()
+                .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+                .map(|repository| path_to_string(&repository.destination_path))
+                .transpose()?
+                .ok_or_else(|| {
+                    slice_development_error("slice publication has no primary repository")
+                })?,
+            repository_paths: receipt
+                .repositories
+                .iter()
+                .map(|repository| path_to_string(&repository.destination_path))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        update_managed_publication_access("revoke", &publication_parent, &publication)?;
+        cleanup_development_context_publication(
+            &receipt.destination_root,
+            &receipt.publication_id,
+        )?;
+    }
+    fs::remove_dir(&publication_parent)
+        .map_err(|error| slice_development_io_error("remove", &publication_parent, error))
+}
+
+fn update_managed_publication_access(
+    action: &str,
+    storage_root: &Path,
+    publication: &crate::slice::SliceDevelopmentPublication,
+) -> Result<(), DaemonError> {
+    if !crate::slice::managed_docker_broker_configured() {
+        return Ok(());
+    }
+    run_managed_publication_access_helper(
+        Path::new(MANAGED_PUBLICATION_ACCESS_HELPER),
+        action,
+        storage_root,
+        publication,
+    )
+}
+
+fn run_managed_publication_access_helper(
+    helper: &Path,
+    action: &str,
+    storage_root: &Path,
+    publication: &crate::slice::SliceDevelopmentPublication,
+) -> Result<(), DaemonError> {
+    let mut child = Command::new(helper)
+        .arg(action)
+        .arg(storage_root)
+        .arg(&publication.destination_root)
+        .args(&publication.repository_paths)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            slice_development_error(format!("run managed publication access helper: {error}"))
+        })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| slice_development_error("managed publication helper stdout is missing"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| slice_development_error("managed publication helper stderr is missing"))?;
+    let stdout_reader = std::thread::spawn(move || read_bounded_helper_output(stdout));
+    let stderr_reader = std::thread::spawn(move || read_bounded_helper_output(stderr));
+    let status = child.wait().map_err(|error| {
+        slice_development_error(format!(
+            "wait for managed publication access helper: {error}"
+        ))
+    })?;
+    let (_, stdout_truncated) = join_helper_output_reader(stdout_reader, "stdout")?;
+    let (stderr, stderr_truncated) = join_helper_output_reader(stderr_reader, "stderr")?;
+    if stdout_truncated || stderr_truncated {
+        return Err(slice_development_error(format!(
+            "managed publication access helper failed with {status}: OUTPUT_LIMIT"
+        )));
+    }
+    if status.success() {
+        Ok(())
+    } else {
+        let detail = managed_publication_helper_error_code(&stderr)
+            .map(|code| format!(": {code}"))
+            .unwrap_or_default();
+        Err(slice_development_error(format!(
+            "managed publication access helper failed with {status}{detail}"
+        )))
+    }
+}
+
+fn read_bounded_helper_output(mut reader: impl Read) -> (Vec<u8>, bool) {
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut truncated = false;
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            truncated = true;
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    (retained, truncated)
+}
+
+fn join_helper_output_reader(
+    reader: std::thread::JoinHandle<(Vec<u8>, bool)>,
+    stream: &str,
+) -> Result<(Vec<u8>, bool), DaemonError> {
+    reader.join().map_err(|_| {
+        slice_development_error(format!("managed publication helper {stream} reader failed"))
+    })
+}
+
+fn managed_publication_helper_error_code(stderr: &[u8]) -> Option<&'static str> {
+    const CODES: &[&str] = &[
+        "ACL_INSPECTION_FAILED",
+        "ACL_INVALID",
+        "ACL_MUTATION_FAILED",
+        "ACL_VALIDATOR_INVALID",
+        "DESTINATION_ESCAPE",
+        "HARD_LINK_DETECTED",
+        "HARD_LINK_RACE",
+        "INVALID_ACTION",
+        "INVALID_ARGUMENTS",
+        "NONCANONICAL_DIRECTORY",
+        "REPOSITORY_ESCAPE",
+        "STORAGE_ROOT_ESCAPE",
+        "SUBUID_MAPPING_INVALID",
+        "UNSAFE_DIRECTORY",
+        "UNSUPPORTED_FILE_TYPE",
+    ];
+    let stderr = String::from_utf8_lossy(stderr);
+    stderr.lines().rev().find_map(|line| {
+        let code = line
+            .strip_prefix("managed-publication-access.sh: ")?
+            .split_whitespace()
+            .next()?;
+        CODES.iter().copied().find(|candidate| *candidate == code)
+    })
+}
+
+struct SliceDevelopmentScratchCleanup(PathBuf);
+
+impl Drop for SliceDevelopmentScratchCleanup {
+    fn drop(&mut self) {
+        let _ = cleanup_slice_development_export_scratch_root(&self.0);
+    }
+}
+
+fn slice_development_storage_root(
+    slice: &crate::slice::SliceRecord,
+) -> Result<PathBuf, DaemonError> {
+    let storage_root = slice
+        .development_storage_root
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| {
+            slice
+                .development_publication
+                .as_ref()
+                .and_then(|publication| Path::new(&publication.destination_root).parent())
+                .map(Path::to_path_buf)
+        })
+        .ok_or_else(|| {
+            slice_development_error("slice development storage root is missing from durable state")
+        })?;
+    if !storage_root.is_absolute() {
+        return Err(slice_development_error(
+            "slice development storage root is not absolute",
+        ));
+    }
+    if let Some(publication) = slice.development_publication.as_ref() {
+        let destination = Path::new(&publication.destination_root);
+        if destination.parent() != Some(storage_root.as_path())
+            || destination.file_name().and_then(|name| name.to_str())
+                != Some(publication.publication_id.as_str())
+        {
+            return Err(slice_development_error(
+                "slice development publication escaped its durable storage root",
+            ));
+        }
+    }
+    Ok(storage_root)
+}
+
+fn cleanup_slice_development_export_scratch(publication_parent: &Path) -> Result<(), DaemonError> {
+    cleanup_slice_development_export_scratch_root(
+        &publication_parent.join(SLICE_DEVELOPMENT_EXPORT_SCRATCH),
+    )
+}
+
+fn cleanup_slice_development_export_scratch_root(path: &Path) -> Result<(), DaemonError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(slice_development_io_error("inspect", path, error)),
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(path).map_err(|error| slice_development_io_error("remove", path, error))?;
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .map_err(|error| slice_development_io_error("remove", path, error))?;
+    } else {
+        return Err(slice_development_error(
+            "slice development export scratch has an unsupported file type",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_private_real_directory(path: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(path).map_err(|error| slice_development_io_error("create", path, error))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| slice_development_io_error("inspect", path, error))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(slice_development_error(format!(
+            "slice development root `{}` is not a real directory",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| slice_development_io_error("protect", path, error))?;
+    }
+    Ok(())
+}
+
+fn require_existing_real_directory(path: &Path) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| slice_development_io_error("inspect", path, error))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(slice_development_error(format!(
+            "slice development root `{}` is not a real directory",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn path_to_string(path: &Path) -> Result<String, DaemonError> {
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| slice_development_error("slice development path is not portable UTF-8"))
+}
+
+fn slice_development_io_error(operation: &str, path: &Path, error: std::io::Error) -> DaemonError {
+    slice_development_error(format!(
+        "failed to {operation} slice development root {}: {error}",
+        path.display()
+    ))
+}
+
+fn slice_development_error(message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.development",
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn slice_development_materializes_recovers_and_cleans_two_repositories() {
+        let root = test_root("slice-project-materialization");
+        let primary_source = root.join("primary-source");
+        let supporting_source = root.join("supporting-source");
+        init_repository(&primary_source, "primary.txt", "primary source\n");
+        init_repository(&supporting_source, "supporting.txt", "supporting source\n");
+        let repositories = vec![
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Primary,
+                workspace_id: path_to_string(&primary_source).expect("primary source path"),
+                worktree_id: None,
+            },
+            DevelopmentSourceRepositoryBinding {
+                role: DevelopmentRepositoryRole::Supporting,
+                workspace_id: path_to_string(&supporting_source).expect("supporting source path"),
+                worktree_id: None,
+            },
+        ];
+        let publication_parent = fs::canonicalize(&root)
+            .expect("canonical test root")
+            .join("slice-root/development/slice-1");
+        let helper = root.join("publication-access-helper.sh");
+        let helper_log = root.join("publication-access-helper.log");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(
+                &helper,
+                format!(
+                    "#!/bin/sh\nmode=$(stat -c %a -- \"$2\" 2>/dev/null || stat -f %Lp -- \"$2\")\nprintf '%s %s\\n' \"$1\" \"$mode\" >> '{}'\n",
+                    helper_log.display()
+                ),
+            )
+            .expect("write publication access test helper");
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))
+                .expect("make publication access test helper executable");
+        }
+        let update_access =
+            |action: &str,
+             storage_root: &Path,
+             publication: &crate::slice::SliceDevelopmentPublication| {
+                #[cfg(unix)]
+                {
+                    run_managed_publication_access_helper(
+                        &helper,
+                        action,
+                        storage_root,
+                        publication,
+                    )
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (action, storage_root, publication);
+                    Ok(())
+                }
+            };
+        let stale_scratch = publication_parent.join(SLICE_DEVELOPMENT_EXPORT_SCRATCH);
+        fs::create_dir_all(stale_scratch.join("staging")).expect("create stale export scratch");
+        fs::write(stale_scratch.join("development.tar.gz"), b"stale plaintext")
+            .expect("write stale export archive");
+
+        let publication = materialize_slice_development_publication_with_access(
+            &publication_parent,
+            "project-1",
+            &repositories,
+            None,
+            update_access,
+            None,
+        )
+        .expect("materialize slice Project");
+        assert!(!stale_scratch.exists());
+        let receipt = recover_pruned_mutable_development_context_publication(
+            &publication_parent,
+            "project-1",
+            &repositories,
+        )
+        .expect("recover publication")
+        .expect("publication receipt");
+        assert_eq!(receipt.repositories.len(), 2);
+        let primary = receipt
+            .repositories
+            .iter()
+            .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+            .expect("primary repository");
+        let supporting = receipt
+            .repositories
+            .iter()
+            .find(|repository| repository.role == DevelopmentRepositoryRole::Supporting)
+            .expect("supporting repository");
+        assert_eq!(
+            fs::read_to_string(primary.destination_path.join("primary.txt"))
+                .expect("read primary repository"),
+            "primary source\n"
+        );
+        assert_eq!(
+            fs::read_to_string(supporting.destination_path.join("supporting.txt"))
+                .expect("read supporting repository"),
+            "supporting source\n"
+        );
+
+        fs::write(
+            primary.destination_path.join("primary.txt"),
+            "preserved slice edit\n",
+        )
+        .expect("edit materialized primary repository");
+        configure_test_repository_identity(&primary.destination_path);
+        git(&primary.destination_path, &["add", "primary.txt"]);
+        git(&primary.destination_path, &["commit", "-m", "slice edit"]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&publication_parent, fs::Permissions::from_mode(0o710))
+                .expect("set recovered publication parent mode");
+        }
+        let recovered = materialize_slice_development_publication_with_access(
+            &publication_parent,
+            "project-1",
+            &repositories,
+            Some(&publication),
+            update_access,
+            None,
+        )
+        .expect("recover slice Project after restart");
+        assert_eq!(recovered, publication);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&publication_parent)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o710
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(primary.destination_path.join("primary.txt"))
+                .expect("read recovered primary repository"),
+            "preserved slice edit\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_to_string(&helper_log).expect("read publication helper observations"),
+            "grant 700\nverify 710\n"
+        );
+
+        fs::create_dir_all(stale_scratch.join("staging"))
+            .expect("recreate stale export scratch before delete");
+        fs::write(stale_scratch.join("development.tar.gz"), b"stale plaintext")
+            .expect("rewrite stale export archive");
+        fs::remove_dir_all(&supporting.destination_path)
+            .expect("simulate agent removing a supporting repository");
+        cleanup_slice_development_publication(&publication_parent, "project-1", &repositories)
+            .expect("clean exact receipted publication");
+        assert!(!publication_parent.exists());
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn slice_development_uses_its_durable_storage_root_after_config_changes() {
+        let store = crate::slice::SliceStore::default();
+        let slice = store
+            .create(
+                "kernel-1",
+                "machine-1",
+                crate::slice::CreateSliceInput {
+                    source_slice_ref: None,
+                    name: "project-slice".to_string(),
+                    backend: crate::slice::SliceBackendKind::SshDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headless,
+                    display_backend: crate::slice::SliceDisplayBackend::default(),
+                    workspace_id: Some("/primary".to_string()),
+                    worktree_id: Some("/primary-worktree".to_string()),
+                    workspace_mount: Some("/primary-worktree".to_string()),
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 1,
+                },
+            )
+            .expect("create slice record");
+        let slice = store
+            .set_development_storage_root(
+                &slice.id,
+                "/old-config-root/development/slice-1".to_string(),
+                2,
+            )
+            .expect("persist storage root");
+        let slice = store
+            .set_development_publication(
+                &slice.id,
+                crate::slice::SliceDevelopmentPublication {
+                    publication_id: SLICE_DEVELOPMENT_PUBLICATION_ID.to_string(),
+                    destination_root: "/old-config-root/development/slice-1/development"
+                        .to_string(),
+                    primary_repository_path:
+                        "/old-config-root/development/slice-1/development/primary".to_string(),
+                    repository_paths: vec![
+                        "/old-config-root/development/slice-1/development/primary".to_string(),
+                    ],
+                },
+                3,
+            )
+            .expect("persist publication");
+
+        assert_eq!(
+            slice_development_storage_root(&slice).expect("resolve durable root"),
+            PathBuf::from("/old-config-root/development/slice-1")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_access_helper_output_is_bounded_without_pipe_deadlock() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("publication-helper-output-bound");
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 8192 ]; do\n  printf 'stdout-output-0123456789abcdef\\n'\n  printf 'stderr-output-0123456789abcdef\\n' >&2\n  i=$((i + 1))\ndone\nprintf 'managed-publication-access.sh: ACL_INVALID /private/publication/path\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: "development".into(),
+            destination_root: "/unused/development".into(),
+            primary_repository_path: "/unused/development/repository".into(),
+            repository_paths: vec!["/unused/development/repository".into()],
+        };
+
+        let started = Instant::now();
+        let error = run_managed_publication_access_helper(
+            &helper,
+            "verify",
+            Path::new("/unused"),
+            &publication,
+        )
+        .expect_err("oversized helper output must fail closed");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("OUTPUT_LIMIT"));
+        assert!(!error.to_string().contains("/private/publication/path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_access_helper_diagnostic_keeps_code_and_redacts_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = test_root("publication-helper-redaction");
+        fs::create_dir_all(&root).unwrap();
+        let helper = root.join("helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nprintf 'managed-publication-access.sh: ACL_INVALID /private/publication/path\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: "development".into(),
+            destination_root: "/unused/development".into(),
+            primary_repository_path: "/unused/development/repository".into(),
+            repository_paths: vec!["/unused/development/repository".into()],
+        };
+
+        let error = run_managed_publication_access_helper(
+            &helper,
+            "verify",
+            Path::new("/unused"),
+            &publication,
+        )
+        .expect_err("helper failure must be projected");
+        assert!(error.to_string().contains("ACL_INVALID"));
+        assert!(!error.to_string().contains("/private/publication/path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn init_repository(path: &Path, file: &str, contents: &str) {
+        fs::create_dir_all(path).expect("create repository");
+        git(path, &["init", "-b", "main"]);
+        configure_test_repository_identity(path);
+        fs::write(path.join(file), contents).expect("write repository file");
+        git(path, &["add", file]);
+        git(path, &["commit", "-m", "initial"]);
+    }
+
+    fn configure_test_repository_identity(path: &Path) {
+        git(path, &["config", "user.email", "tests@chariox.local"]);
+        git(path, &["config", "user.name", "Chariox Tests"]);
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        root_path(label, nonce)
+    }
+
+    fn root_path(label: &str, nonce: u128) -> PathBuf {
+        std::env::temp_dir().join(format!("chariox-{label}-{}-{nonce}", std::process::id()))
+    }
+}

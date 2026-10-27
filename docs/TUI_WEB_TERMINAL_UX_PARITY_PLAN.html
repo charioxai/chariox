@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TUI and Web Terminal UX Parity Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-soft: #141720;
+      --text: #eef1f6;
+      --muted: #a7afbd;
+      --line: #303746;
+      --accent: #f28c45;
+      --good: #7edc91;
+      --warn: #f0c66a;
+      --code: #222838;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 44px 24px 72px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 34px;
+    }
+
+    h2 {
+      margin-top: 36px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+      color: var(--accent);
+      font-size: 23px;
+    }
+
+    h3 {
+      margin-top: 22px;
+      font-size: 17px;
+    }
+
+    p {
+      margin: 10px 0 0;
+      color: var(--muted);
+    }
+
+    ul, ol {
+      margin: 12px 0 0;
+      padding-left: 24px;
+    }
+
+    li {
+      margin: 7px 0;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--code);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      margin: 14px 0 0;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--code);
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      font-size: 13px;
+    }
+
+    table {
+      width: 100%;
+      margin-top: 16px;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .summary {
+      margin-top: 20px;
+      padding: 18px 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .card {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .status {
+      font-weight: 700;
+    }
+
+    .ok {
+      color: var(--good);
+    }
+
+    .gap {
+      color: var(--warn);
+    }
+
+    .repo {
+      color: var(--accent);
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TUI and Web Terminal UX Parity Plan</h1>
+    <p>
+      Plan to close the local TUI UX gap against the web terminal for Freeform agent panes,
+      prompt queue and steering behavior, prompt chrome, screen footer, and Waiting Room.
+      Workflow canvas behavior is intentionally out of scope because the TUI has no canvas.
+    </p>
+
+    <section class="summary" aria-label="Summary">
+      <strong>Target outcome</strong>
+      <p>
+        The TUI should feel analogous to the web Freeform terminal where the medium allows it:
+        assistant messages expanded, non-assistant activity blobs collapsed by default, historical turns
+        auto-collapsed, queue/steering visible and actionable, footer state consistent, and Waiting Room
+        rows/footers driven by the same runtime facts.
+      </p>
+    </section>
+
+    <h2>Live PTY Drill Update - 2026-06-30</h2>
+    <p>
+      Live visual PTY drills were run against the TUI using the seeded web-parity visual session. The first pass exposed
+      duplicate queue rendering, unreliable queue action projection, narrow-row clipping, and sparse collapsed blob rows.
+      Follow-up slices closed the queue rendering and actionability gaps, added bounded footer/Waiting Room rows,
+      extended the live visual drill to cover collapsed blobs plus attached-to-Waiting-Room transition state,
+      and added direct loaded lazy-history blob evidence.
+    </p>
+    <ul>
+      <li><code>pnpm --filter @chariox/cli run build</code> passed before the drill.</li>
+      <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
+      <li>Full parity evidence directory: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Loaded-history evidence directory: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
+      <li>Latest live assertions include <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>loaded-history</code>, <code>loaded-history-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> through the visual-control automation socket.</li>
+      <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, loaded-history, and Waiting Room states.</li>
+      <li><code>pnpm --filter @chariox/cli run tui-web-parity:drill</code> passed with 150 focused tests, syntax checks, and drill JSON validation.</li>
+      <li><code>pnpm run validation:suite</code> passed with 534 shared non-live validation tests.</li>
+      <li>The live PTY wrappers were exited cleanly after each run.</li>
+    </ul>
+
+    <h3>Observed Gaps From Initial Drill</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Observation</th>
+          <th>Implication</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Queued prompt rendering</td>
+          <td>Queued prompts rendered both as freeform transcript rows and in the bottom queue strip.</td>
+          <td><span class="status ok">Closed</span>: live queued prompts now render through the strip only, matching Web's single queue surface.</td>
+        </tr>
+        <tr>
+          <td>Queue lifecycle</td>
+          <td>After steering/canceling, old queued prompt text stayed visible in transcript along with permanent status notices.</td>
+          <td><span class="status ok">Closed</span>: successful lifecycle notices are filtered and the strip shows transient steering/cancelling states.</td>
+        </tr>
+        <tr>
+          <td>Queue controls</td>
+          <td>Direct kernel steer/cancel calls worked, but PTY <code>Alt+S</code>/<code>Alt+C</code> did not update the queue during the drill.</td>
+          <td><span class="status ok">Closed</span>: visual-control invokes the same strip handler, raw stdin escape-prefix keys normalize into queued-prompt shortcuts, and the latest live PTY run saved post-shortcut narrow/wide terminal captures.</td>
+        </tr>
+        <tr>
+          <td>Multiple queued prompts</td>
+          <td>The keyboard handler targets the first queued strip item only.</td>
+          <td><span class="status ok">Closed</span>: the strip tracks selected queued prompt IDs and keyboard/automation actions target the selected or addressed prompt.</td>
+        </tr>
+        <tr>
+          <td>Queue strip layout</td>
+          <td>Action labels clipped and overlapped in narrow PTY output, for example <code>Alt+S ste</code> colliding with <code>Alt+C canc</code>.</td>
+          <td><span class="status ok">Closed</span>: focused rows use compact <code>[S]</code>/<code>[C]</code> controls and the title carries the action legend.</td>
+        </tr>
+        <tr>
+          <td>Blob rendering</td>
+          <td>Lazy blob expansion works after async content loads, but collapsed rows are sparse and lack useful Web-like summaries/loading feedback.</td>
+          <td><span class="status ok">Closed</span>: collapsed blob rows now expose headers, role metadata, loading/error states, live assertions, narrow/wide terminal captures for collapsed plus expanded reasoning states, and loaded lazy-history detail.</td>
+        </tr>
+        <tr>
+          <td>Turn collapse</td>
+          <td>Turn collapse worked in snapshots.</td>
+          <td>This area is not the primary blocker.</td>
+        </tr>
+        <tr>
+          <td>Waiting Room</td>
+          <td><code>/waiting</code> transitioned successfully and rows populated, but footer text showed the same clipping risk as the queue strip.</td>
+          <td><span class="status ok">Closed</span>: row/footer width assertions are present and the live drill now validates attached transition plus seeded idle/done session rows with generated 80x24 and 120x32 terminal captures.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Progress</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Slice</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Agent pane footer parity</td>
+          <td>TUI footer metadata now includes provider, model, effort, mode, permission, runtime placement, slice, alias, and active turn clock where space allows.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Steered queued prompt echo</td>
+          <td>Steering appends a non-turn-tracking user echo and reconciles returned kernel session state.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queued prompt transcript metadata</td>
+          <td>Queued prompt rows show attachment counts and expose actionability in automation snapshots.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Screen footer queue visibility</td>
+          <td>Footer copy now reports queue-only prompt state even when no prompt is actively running.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room work counts</td>
+          <td>Recent-session rows now surface working, active prompt, and queued prompt counts from runtime activity.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Turn collapse terminology</td>
+          <td>Display helpers and tests now name the stored state as collapsed turn IDs, with compatibility aliases for existing wiring.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Transcript blob parity</td>
+          <td>User, assistant, and error entries stay expanded; reasoning, tool, status, notice, and history blobs collapse by default with focused tests.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Dedicated queued-prompt strip</td>
+          <td>Queued prompts now render in the pane interaction strip with status, prompt text, attachment counts, mouse actions, and focused-agent <code>Alt+S</code>/<code>Alt+C</code> shortcuts.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue scrollback cleanup</td>
+          <td>Live queued prompts are no longer appended into transcript scrollback when the strip is active, legacy queued transcript rows are pruned from authoritative queue projections, and successful queue lifecycle runtime notices stay out of agent-pane history.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Compact queue strip controls</td>
+          <td>The focused queue strip now advertises <code>S steer</code>/<code>C cancel</code> in the title and renders compact <code>[S]</code>/<code>[C]</code> row actions so 80-column PTY rows no longer collide.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue keyboard selection</td>
+          <td>The focused queue strip now tracks a selected queued prompt, supports <code>Alt+J/K</code> and <code>Alt+Up/Down</code> selection, and sends <code>Alt+S</code>/<code>Alt+C</code> actions to the selected row instead of always using the first prompt.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue transient status</td>
+          <td>Queued-prompt steer/cancel actions now use a strip-local optimistic status overlay, so <code>steering</code> and <code>cancelling</code> states remain visible even though live queued prompts are no longer transcript rows.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue notice suppression</td>
+          <td>Successful queued-prompt lifecycle notices are now filtered from both event-stream and polling runtime-notice paths, while failure notices still render in transcript history.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Compact screen footer summary</td>
+          <td>The attached-session and Waiting Room screen footer summaries now compact action labels and truncate as a last resort against the live terminal width, keeping 80-column footer text bounded.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Collapsed blob presentation</td>
+          <td>Collapsed transcript blobs now render an explicit header, role/status metadata, loading/error/retry labels for lazy history blobs, and role-specific titles for reasoning, status, and notice entries.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queue strip automation assertions</td>
+          <td>CLI automation snapshots now expose dedicated queued-prompt strip items and selected index per agent, and the live visual-control drill can assert strip projection without relying on transcript-row residue.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room row width assertions</td>
+          <td>Waiting Room menu rows now format through a width-bounded helper, with 80-column truncation and wider-row preservation covered by focused tests.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Queued prompt action automation</td>
+          <td>The automation server can now invoke the selected or addressed queued-prompt strip item through the same steer/cancel handler as the TUI strip, and the visual-control drill exposes <code>steer-queued</code>/<code>cancel-queued</code> evidence commands.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Live queue strip validation</td>
+          <td>The live PTY drill now asserts that rendered queue strips appear in automation snapshots, that queued prompts are not duplicated as transcript rows, and that steer/cancel actions update strip-local status.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Live blob and Waiting Room validation</td>
+          <td>The live PTY drill now asserts collapsed blob roles, lazy history placeholders, normal assistant/user/error expansion, attached-to-Waiting-Room transition, seeded idle/done session rows, and compact session row summaries.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Waiting Room transition wiring</td>
+          <td>The app root now passes slice state into the primary transcript composition so a detached Waiting Room redraw can render slice and recent-session rows during live transition drills.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Raw PTY queue shortcuts</td>
+          <td>Raw stdin key handling now routes queued-prompt shortcuts before prompt-owned input and normalizes terminal escape-prefix keys such as <code>Esc+s</code> into the existing <code>Alt+S</code> strip action path.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Generated terminal capture evidence</td>
+          <td>The live visual-control drill now writes bounded 80x24 and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, loaded-history, and Waiting Room states, with line-width assertions before artifact creation.</td>
+        </tr>
+        <tr>
+          <td><span class="status ok">Landed</span></td>
+          <td>Loaded lazy history blob detail</td>
+          <td>The live visual-control drill can expand a lazy history blob through the same TUI toggle path, wait for the placeholder to become loaded text entries, summarize loaded roles/text, and capture the loaded state at 80x24 and 120x32.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Code Areas Inspected</h2>
+    <div class="grid">
+      <section class="card">
+        <h3>OSS TUI</h3>
+        <ul>
+          <li><code>apps/cli/src/transcript-display.ts</code></li>
+          <li><code>apps/cli/src/transcript-render.ts</code></li>
+          <li><code>apps/cli/src/agent-pane-state.ts</code></li>
+          <li><code>apps/cli/src/queued-prompt-transcript.ts</code></li>
+          <li><code>apps/cli/src/split-pane-footer.ts</code></li>
+          <li><code>apps/cli/src/split-pane-footer-renderer.ts</code></li>
+          <li><code>apps/cli/src/cli-prompt-surface-composition.ts</code></li>
+          <li><code>apps/cli/src/waiting-room-*.ts</code></li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Web Terminal</h3>
+        <ul>
+          <li><code>apps/web/src/terminal/freeform-transcript-renderer.ts</code></li>
+          <li><code>apps/web/src/terminal/turn-state.ts</code></li>
+          <li><code>apps/web/src/terminal/agent-history-state.ts</code></li>
+          <li><code>apps/web/src/react/terminal/FreeformQueuedPromptStripMount.tsx</code></li>
+          <li><code>apps/web/src/terminal/queued-prompt-action-controller.ts</code></li>
+          <li><code>apps/web/src/react/terminal/FreeformPaneShellMount.tsx</code></li>
+          <li><code>apps/web/src/terminal/freeform-pane-footer-controller.ts</code></li>
+          <li><code>apps/web/src/ui/waiting-room-*.ts</code></li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h3>Shared Kernel Support</h3>
+        <ul>
+          <li><code>packages/kernel-client/src/queued-prompt-controls.ts</code></li>
+          <li><code>packages/kernel-client/src/session-prompt-identity.ts</code></li>
+          <li><code>packages/kernel-client/src/session-agent-prompt-state.ts</code></li>
+          <li><code>packages/kernel-client/src/session-prompt-lifecycle.ts</code></li>
+          <li><code>packages/kernel-client/src/session-prompt-work.ts</code></li>
+          <li><code>packages/kernel-client/src/session-runtime-lookup.ts</code></li>
+          <li><code>packages/kernel-client/src/session-runtime-status.ts</code></li>
+          <li><code>packages/kernel-client/src/session-runtime-transition.ts</code></li>
+          <li><code>packages/kernel-client/src/waiting-room-activity.ts</code></li>
+          <li><code>apps/kernel/src/runtime/state/prompt_dispatch.rs</code></li>
+          <li><code>apps/kernel/src/app/kernel_agent/prompt_commands/queue.rs</code></li>
+        </ul>
+      </section>
+    </div>
+
+    <h2>Parity Matrix</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Web Behavior</th>
+          <th>TUI State</th>
+          <th>Gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Transcript blobs</td>
+          <td>Assistant, user, and error entries are expanded. Tool, reasoning, status, and history blobs are collapsed by default.</td>
+          <td>Blob collapse policy exists; collapsed rows show headers, role/status metadata, summaries, and lazy history loading/error/retry states.</td>
+          <td><span class="status ok">Aligned</span>: live assertions and generated 80x24/120x32 captures cover collapsed reasoning/tool/status-or-notice rows, lazy history placeholders, expanded reasoning, loaded lazy-history content, and normal entry expansion.</td>
+        </tr>
+        <tr>
+          <td>Turn lifecycle</td>
+          <td>Active turns stay expanded; completed historical turns can collapse to a prompt plus final assistant summary.</td>
+          <td>Historical collapse and latest-turn preservation exist in agent pane state.</td>
+          <td><span class="status ok">Aligned</span>; focused tests cover active turns, completed collapse, and refresh preservation.</td>
+        </tr>
+        <tr>
+          <td>History loading</td>
+          <td>Per-agent history state tracks loading, older-page loading, cursors, and minimum loader visibility.</td>
+          <td>TUI loads older pages, backfills history to preserve renderable count, keeps collapse state across refresh, and renders loading/error messages in the transcript history loader.</td>
+          <td><span class="status ok">Aligned</span> for TUI-visible loading/error state and expansion preservation tests.</td>
+        </tr>
+        <tr>
+          <td>Queued prompts</td>
+          <td>Dedicated queued-prompt strip shows status, text, attachments, steer, and cancel.</td>
+          <td>Queued prompts render through the pane interaction strip; live queued prompts are no longer appended as transcript rows; keyboard actions target the selected queued prompt; raw stdin escape-prefix shortcuts route to the same strip handler; automation snapshots expose strip rows and selection; the live visual-control drill asserts the projection.</td>
+          <td><span class="status ok">Aligned</span>: generated narrow/wide terminal captures are saved for the attached queue strip and the post-raw-steer state.</td>
+        </tr>
+        <tr>
+          <td>Steering echo</td>
+          <td>Steered queued prompts append a non-turn-tracking user echo and dedupe against kernel echoes.</td>
+          <td>TUI can steer through the kernel request path, successful queue lifecycle notices are filtered out of scrollback for both event-stream and polling paths, pending steer/cancel actions show transient strip status, visual-control can trigger the same strip handler live, and raw stdin shortcut routing reaches that handler.</td>
+          <td><span class="status ok">Aligned</span>: the latest PTY run used raw <code>Esc+s</code> delivery and saved post-shortcut status/footer captures.</td>
+        </tr>
+        <tr>
+          <td>Agent pane footer</td>
+          <td>Status badge, alias edit, runtime placement, config menu, substitute actions, slice link, and turn clock.</td>
+          <td>Status badge plus alias, provider, model, effort, mode, permission, runtime placement, slice, substitute, and task metadata render in TUI form.</td>
+          <td><span class="status ok">Aligned</span> for TUI-appropriate text surfaces; web-only button rows remain intentionally omitted.</td>
+        </tr>
+        <tr>
+          <td>Prompt area</td>
+          <td>Drafts, attachments, history navigation, send/stop behavior, failed-submit restore, and queued-submit no-echo.</td>
+          <td>Comparable draft, attachment, history, focus retention, failed-submit restore, queue-aware submit behavior, active prompt footer hints, and pane queued-prompt strip exist.</td>
+          <td><span class="status ok">Aligned</span> for TUI prompt chrome; queued prompts remain visible in the pane strip and active/queued prompt state is prioritized in the screen footer.</td>
+        </tr>
+        <tr>
+          <td>Screen footer</td>
+          <td>Status region reports connect/session/focus/action feedback and Waiting Room hints.</td>
+          <td>TUI derives active prompt, queue depth, status line, hotkeys, connection, sync footer text, and width-bounded attached/Waiting Room footer summaries.</td>
+          <td><span class="status ok">Aligned</span>: broader live-drill assertions now include generated 80x24 and 120x32 footer/status captures for attached and Waiting Room states.</td>
+        </tr>
+        <tr>
+          <td>Waiting Room</td>
+          <td>Richer recent-session picker, session tree, side panels, web-only unattached-agent surfaces, and modal actions.</td>
+          <td>Compact rows for start, sessions, external provider sessions, remotes, slices, terminals, and theme, with recent-activity sorting, work/done markers, prompt counts, and recovery next actions.</td>
+          <td><span class="status ok">Aligned</span>: row semantics, screen footer compaction, row width assertions, attached transition validation, and wider/narrower terminal capture coverage are present for the TUI Waiting Room surface.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Current Remediation Plan</h2>
+    <ol>
+      <li>
+        <strong>Make the queue a single Web-like surface.</strong>
+        Done: queued prompts render through the dedicated strip, live queued prompt rows are not duplicated in
+        transcript scrollback, and successful queued-prompt lifecycle notices are filtered from agent-pane history.
+      </li>
+      <li>
+        <strong>Normalize queue lifecycle rendering.</strong>
+        Done: steering renders one intentional non-turn-tracking user echo, cancellation removes the queued item without
+        stale transcript residue, and steering/cancelling feedback stays transient in the strip.
+      </li>
+      <li>
+        <strong>Fix queue keyboard control.</strong>
+        Done for focused queue selection, deterministic TUI input handling, automation controls, raw stdin
+        escape-prefix shortcut routing, and saved post-shortcut narrow/wide terminal captures.
+      </li>
+      <li>
+        <strong>Rebuild queue strip layout.</strong>
+        Done: focused queue rows use compact <code>[S]</code>/<code>[C]</code> controls, prompt/meta truncation, and
+        generated 80x24/120x32 captures prove the strip stays bounded.
+      </li>
+      <li>
+        <strong>Upgrade collapsed blob presentation.</strong>
+        Done for the core TUI projection: collapsed blobs have useful headers, type/status metadata, compact summaries,
+        loading/error states, live PTY assertions, screenshot-backed narrow/wide terminal captures, and loaded
+        lazy-history content detail.
+      </li>
+      <li>
+        <strong>Apply the same compact layout rules to Waiting Room and footer actions.</strong>
+        Done for row/footer formatting, session-row truncation tests, live attached transition validation, and generated
+        terminal capture at 80x24 and 120x32 widths.
+      </li>
+      <li>
+        <strong>Add parity drills as invariants.</strong>
+        Done for behavior assertions in the seeded TUI/Web fixture: queued prompt appears once, queued notices are
+        excluded from transcript scrollback, raw shortcut steering removes stale rows, blobs expose collapsed/expanded
+        state, turn collapse still works in focused tests, Waiting Room rows/footer hints render without overlap, and
+        generated emulator-style terminal captures are saved as a second layer.
+      </li>
+      <li>
+        <strong>Keep this below clients where possible.</strong>
+        Done for this parity plan: queue projection, notice filtering, blob summaries, history loading, footer state,
+        and Waiting Room rows stay in shared TUI/kernel-client paths with no parallel prompt, history, permission,
+        attachment, or relay authority path. No serialized protocol shape change was required for the TUI parity slices.
+      </li>
+    </ol>
+
+    <h2>Previously Landed Implementation Work</h2>
+    <ol>
+      <li>
+        <strong>Done.</strong> Add focused parity fixtures for transcript entries and turns. Cover assistant/user/error expanded by default,
+        non-assistant blobs collapsed by default, active turn expanded, completed older turns collapsed, and history
+        refresh preserving collapse state.
+      </li>
+      <li>
+        <strong>Done.</strong> Normalize the TUI transcript display terminology. Keep public behavior stable, but make the internal state
+        distinguish collapsed turn IDs from expanded turn IDs so future changes do not invert behavior accidentally.
+      </li>
+      <li>
+        <strong>Done.</strong> Add a TUI queued-prompt strip above the pane footer or prompt area. It uses
+        <code>queuedPromptProjectionForAgent</code>, shows status/text/attachment count, and exposes steer/cancel
+        through both keyboard and mouse.
+      </li>
+      <li>
+        <strong>Done.</strong> Preserve existing queued-prompt transcript rows as scrollback context unless the strip fully replaces them
+        without losing historical clarity. If both remain, avoid duplicate action affordances fighting each other.
+      </li>
+      <li>
+        <strong>Done.</strong> Align queued-prompt actions with web behavior: optimistic <code>steering</code>/<code>cancelling</code> state,
+        stale disabled reason, returned session reconciliation, visible steered prompt echo, and focus returning to
+        the prompt area.
+      </li>
+      <li>
+        <strong>Done.</strong> Expand the TUI agent footer formatter to include provider, model, variant/effort, mode, permission, runtime
+        placement, substitute summary, and active turn clock where there is space. Compress predictably at small widths.
+      </li>
+      <li>
+        <strong>Done.</strong> Keep web-only footer buttons out of the TUI, but provide analogous commands or keyboard paths for config,
+        alias edit, substitute actions, and slice actions.
+      </li>
+      <li>
+        <strong>Done.</strong> Tighten prompt chrome so active prompt ID plus queue depth appears in the screen footer consistently, and queued
+        submissions never render as normal user turns.
+      </li>
+      <li>
+        <strong>Done.</strong> Align Waiting Room row semantics with web: sorting by recent activity, active work markers, unread idle output,
+        active/queued prompt counts where available, remote/slice recovery next actions, and footer hints.
+      </li>
+      <li>
+        <strong>Done.</strong> Add live visual-control assertions for collapsed transcript blobs, lazy history placeholders,
+        assistant/user/error expansion, attached-to-Waiting-Room transition, seeded idle/done session rows, and bounded
+        session row summaries.
+      </li>
+      <li>
+        <strong>Done.</strong> Add a <code>request_waiting_room</code> automation action that routes through the same attached
+        Waiting Room transition path as the TUI, with focused handler coverage for attached and detached states.
+      </li>
+      <li>
+        <strong>Done.</strong> Route raw stdin queued-prompt shortcuts through the same strip handler as prompt textarea
+        shortcuts, including terminal escape-prefix normalization for <code>Esc+s</code>, <code>Esc+c</code>,
+        <code>Esc+j</code>, and <code>Esc+k</code>.
+      </li>
+      <li>
+        <strong>Done.</strong> Add a <code>capture-layouts</code> live visual-control action that writes bounded 80x24
+        and 120x32 text plus PNG terminal captures for attached, raw-shortcut, blob-expanded, and Waiting Room states.
+      </li>
+      <li>
+        <strong>Done.</strong> Add an <code>expand-history-blob</code> live visual-control action that expands a lazy
+        history blob, waits for loaded replacement entries, and records loaded history role/text summaries.
+      </li>
+      <li>
+        <strong>Done.</strong> Document intentional TUI differences: no workflow canvas, no web side panels, no web-only unattached-agent list,
+        and no pane-button row under agents.
+      </li>
+    </ol>
+
+    <h2>Test Evidence</h2>
+    <ul>
+      <li><code>apps/cli/src/transcript-display.test.ts</code>: blob defaults, turn collapse, active turn expansion, steered-prompt turn exclusion, and refresh preservation.</li>
+      <li><code>apps/cli/src/transcript-collapsed-blob.test.ts</code>: collapsed blob headers, role metadata, history loading labels, and retry/error labels.</li>
+      <li><code>apps/cli/src/session-history-outline.test.ts</code> and <code>history-outline:tui-drill</code>: lazy history blob placeholders load into replacement entries and remove the placeholder row.</li>
+      <li><code>apps/cli/src/agent-pane-state.test.ts</code>: collapse-state preservation, history backfill, loaded blob preservation, and completed-turn rendering across refresh.</li>
+      <li><code>apps/cli/src/queued-prompt-transcript.test.ts</code>, <code>queued-prompt-strip-state.test.ts</code>, <code>agent-interaction-strip-controller.test.ts</code>, and <code>prompt-keydown-controller.test.ts</code>: projected actionability, stale controls, strip source state, action rendering, and keyboard routing.</li>
+      <li><code>apps/cli/src/cli-automation-snapshot.test.ts</code>: automation snapshots expose queued-prompt strip rows, selected index, and transcript queue metadata for live parity drills.</li>
+      <li><code>apps/cli/src/cli-automation-handler.test.ts</code>: automation queued-prompt steer/cancel actions route through the selected or addressed strip item, and <code>request_waiting_room</code> uses the attached or detached Waiting Room path as appropriate.</li>
+      <li><code>apps/cli/src/cli-stdin-key-controller.test.ts</code> and <code>prompt-keydown-controller.test.ts</code>: raw stdin and prompt textarea shortcuts route queued-prompt actions before prompt-owned handlers, with escape-prefix stdin keys normalized into the existing Alt shortcut shape.</li>
+      <li><code>apps/cli/src/split-pane-footer.test.ts</code>: provider/model/mode/permission/runtime placement, substitute/slice metadata, activity badges, and compact footer parts.</li>
+      <li><code>apps/cli/src/session-chrome-state.test.ts</code> and <code>prompt-chrome-projection-controller.test.ts</code>: active prompt and queue depth footer priority.</li>
+      <li><code>apps/cli/src/waiting-room-session-rows.test.ts</code> and <code>waiting-room-rows.test.ts</code>: recent-activity sorting, active work, unread done, queue counts, next actions, menu composition, and focus normalization parity.</li>
+      <li><code>apps/cli/src/waiting-room-menu-row.test.ts</code>: Waiting Room menu rows truncate at 80 columns and preserve full content on wider terminal budgets.</li>
+      <li><code>apps/cli/src/history-loading-render-controller.test.ts</code>, <code>cli-loading-state-controller.test.ts</code>, and <code>transcript-history-autoload-controller.test.ts</code>: visible loading/error state and older-history autoload behavior.</li>
+      <li><code>apps/web/src/terminal/queued-prompt-action-controller.test.ts</code>: web steering/cancel behavior remains locked.</li>
+      <li><code>apps/web/src/terminal/turn-state.test.ts</code> and <code>turn-renderer.test.ts</code>: web turn collapse and steering chronology remain locked.</li>
+      <li><code>apps/cli/scripts/live-tui-web-parity-visual-session.mjs</code> and <code>tui-web-parity-visual-control.mjs</code>: live PTY fixture plus <code>assert-blobs</code>, <code>expand-history-blob</code>, <code>capture-layouts</code>, and <code>waiting-room</code> actions validate collapsed blob roles, lazy history placeholders, loaded lazy-history text, normal message expansion, attached transition, seeded idle/done Waiting Room rows, raw queue shortcut delivery, and bounded terminal captures.</li>
+      <li>Full live PTY evidence: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
+      <li>Loaded-history live PTY evidence: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
+      <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, <code>terminal-captures/loaded-history-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
+      <li><code>pnpm --filter @chariox/cli run tui-web-parity:drill</code>: passed with 150 tests plus script syntax and drill JSON checks.</li>
+      <li><code>pnpm run validation:suite</code>: passed with 534 tests.</li>
+    </ul>
+
+    <h2>VS Code Terminal Validation</h2>
+    <p>
+      Run these from the VS Code integrated terminal so the final TUI behavior is visible in the same screen surface
+      used for manual validation.
+    </p>
+
+    <h3>Build and focused tests</h3>
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run build
+pnpm --filter @chariox/cli exec node --test \
+  dist/transcript-collapsed-blob.test.js \
+  dist/transcript-display.test.js \
+  dist/queued-prompt-transcript.test.js \
+  dist/queued-prompt-strip-state.test.js \
+  dist/agent-interaction-strip-controller.test.js \
+  dist/prompt-keydown-controller.test.js \
+  dist/footer-summary-compact.test.js \
+  dist/split-pane-footer.test.js \
+  dist/session-chrome-render-controller.test.js \
+  dist/session-chrome-state.test.js \
+  dist/cli-automation-snapshot.test.js \
+  dist/waiting-room-menu-row.test.js \
+  dist/waiting-room-session-rows.test.js \
+  dist/waiting-room-rows.test.js</code></pre>
+
+    <h3>Existing TUI drills</h3>
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run tui-web-parity:drill
+pnpm --filter @chariox/cli run agent-footer-status:drill
+pnpm --filter @chariox/cli run history-outline:tui-drill
+pnpm run validation:suite</code></pre>
+
+    <h3>Live visual TUI session</h3>
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run tui-web-parity:visual-session
+
+# In a second terminal while the live session is open:
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action assert --label initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label attached-initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label blob-expanded-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action expand-history-blob --label loaded-history
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label loaded-history-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
+
+# To validate terminal shortcut delivery, press Esc+s or Alt+S in the live PTY, then capture:
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label post-raw-steer
+
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action waiting-room --label waiting-room
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label waiting-room-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action report</code></pre>
+
+    <h3>Manual visual checklist</h3>
+    <ul>
+      <li>Assistant messages remain expanded and readable.</li>
+      <li>Tool, reasoning, status, and history blobs start collapsed.</li>
+      <li>Old completed turns collapse while the active/latest turn stays expanded.</li>
+      <li>Loading older history does not lose blob or turn collapse state.</li>
+      <li>Queued prompt strip appears with prompt preview, status, attachment count, steer, and cancel.</li>
+      <li>Steer and cancel work through keyboard and mouse.</li>
+      <li>Steered prompt appears in the correct chronological position without creating a new active turn.</li>
+      <li>Pane footer shows the same runtime facts as web in TUI form: status, alias, provider, model, mode, permission, runtime placement, and slice/substitute hints.</li>
+      <li>Screen footer prioritizes fatal errors, active prompt, queue depth, status line, connection, and hotkeys consistently.</li>
+      <li>Waiting Room rows show working/done/idle sessions, remote and slice next actions, and footer hints matching web semantics where applicable.</li>
+    </ul>
+
+    <h2>Non-Goals</h2>
+    <ul>
+      <li>Do not add a workflow canvas to TUI.</li>
+      <li>Do not add web-only buttons under TUI agent panes.</li>
+      <li>Do not make the relay or web app the runtime authority for any of this behavior.</li>
+      <li>Do not create a separate prompt, permission, attachment, history, or relay path for native provider TUIs.</li>
+    </ul>
+  </main>
+</body>
+</html>

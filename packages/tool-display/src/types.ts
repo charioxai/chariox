@@ -1,0 +1,63 @@
+export type ToolTranscriptUpdate = {
+  id: string
+  tool?: string
+  status?: string
+  title?: string
+  description?: string
+  text?: string
+  input?: unknown
+  output?: string
+  error?: string
+  raw?: string
+  placement?: "worker-local" | "home-proxy" | "skill snapshot" | string
+  authority?: "home" | "worker" | string
+  execution_location?: "home" | "worker" | "none" | string
+}
+
+export type InlineCodeSpan = {
+  text: string
+  code: boolean
+}
+
+export type ToolDisplayStatus = "running" | "completed" | "error" | "cancelled" | string
+
+export type ToolDisplayBlock =
+  | { kind: "text"; text: string }
+  | { kind: "code"; language: string; text: string }
+  | { kind: "patch"; files: ToolDisplayPatchFile[] }
+  | { kind: "json"; value: unknown }
+  | { kind: "table"; columns: string[]; rows: string[][] }
+
+export type ApplyPatchFile = {
+  kind: "add" | "delete" | "update" | "move"
+  filePath: string
+  title: string
+  diff: string | null
+}
+
+export type ToolDisplayPatchLine = {
+  kind: "context" | "added" | "removed" | "meta"
+  text: string
+}
+
+export type ToolDisplayPatchFile = ApplyPatchFile & {
+  previewLines: ToolDisplayPatchLine[]
+}
+
+export type ToolDisplayIcon =
+  | "terminal" | "read" | "edit" | "search" | "web" | "browser" | "mcp" | "agent" | "plan" | "tool"
+
+export type ToolDisplay = {
+  version: 1
+  tool: string
+  status?: ToolDisplayStatus | undefined
+  /** Shown left of the title (per tool kind). */
+  icon: ToolDisplayIcon
+  title: string
+  summary: string
+  collapsed: {
+    title: string
+    summary: string
+  }
+  blocks: ToolDisplayBlock[]
+}

@@ -1,0 +1,19 @@
+{
+  "protocol_version": 550,
+  "peer_protocol_version": 158,
+  "command": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_next",
+        "subscription_id": "s",
+        "generation": 2,
+        "after_sequence": 3,
+        "drift_nodes": [],
+        "known_sheets": [
+          "aaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "wait_ms": 1500
+      }
+    }
+  }
+}

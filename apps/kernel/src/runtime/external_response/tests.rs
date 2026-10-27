@@ -1,0 +1,653 @@
+use super::*;
+use crate::config::{
+    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialSourceConfig,
+};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest};
+
+const CANARY: &str = "MP-11-generated-test-only-secret";
+
+#[test]
+fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    let cases = [
+        (
+            DaemonError::AgentNotInSession {
+                session_id: CANARY.into(),
+                agent_id: CANARY.into(),
+            },
+            "agent_not_in_session",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AgentNotFound {
+                agent_id: CANARY.into(),
+            },
+            "agent_not_found",
+            "ListAgents",
+        ),
+        (
+            DaemonError::AttachmentNotFound {
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_found",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::AttachmentNotInSession {
+                session_id: CANARY.into(),
+                attachment_id: CANARY.into(),
+            },
+            "attachment_not_in_session",
+            "AttachToSession",
+        ),
+        (
+            DaemonError::NoActivePrompt {
+                session_id: CANARY.into(),
+            },
+            "no_active_prompt",
+            "GetSessionState",
+        ),
+    ];
+    for (error, code, action) in cases {
+        let projected = protect_error(error);
+        let mapped = map_kernel_error(&projected);
+        assert_eq!(mapped.code, code);
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains(action), "{}", mapped.message);
+        assert!(!mapped.message.contains(CANARY));
+    }
+}
+
+// MP-08 / MP-10 / MP-11: notification metadata remains usable through both
+// the typed executor and cached wire boundary for grants and sudo callers.
+#[test]
+fn external_response_preserves_workflow_notification_metadata() {
+    let source = serde_json::json!({
+        "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
+        "session_id":"source-room", "workflow_id":"source-workflow",
+        "enabled":true, "available":true
+    });
+    let subscription = serde_json::json!({
+        "subscription_id":"subscription", "source_id":"source", "owner_user_id":"local",
+        "target_kernel_id":"home", "session_id":"target-room", "workflow_id":"target-workflow",
+        "publication_id":"publication", "endpoint_id":"endpoint", "queue_id":"queue",
+        "ttl_days":7, "source_available":true, "source_kernel_id":"home",
+        "events":"both", "filters":{"release":"candidate"}, "delivery_mode":"queue"
+    });
+    for value in [
+        serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
+        serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
+        serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
+        serde_json::json!({"WorkflowNotifications":{
+            "sources":[], "subscriptions":[subscription],
+            "diagnostics":[{"source_id":"source", "occurrence_id":"occurrence", "code":"expired"}]
+        }}),
+    ] {
+        let response: LocalDaemonResponse = serde_json::from_value(value).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        for class in [
+            KernelConnectionClass::ExternalAgent,
+            KernelConnectionClass::KernelAgent,
+        ] {
+            let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+            assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+        }
+        let mut cached = expected.clone();
+        project_response_value(&mut cached).unwrap();
+        assert_eq!(cached, expected);
+    }
+}
+
+// MP-08 / MP-11: exercise executor projection BEFORE transport mapping for
+// both external grants and the sudo MCP caller, including nested cleanup.
+#[test]
+fn external_response_preserves_executor_error_codes_and_retryability() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let caller = command(class);
+        let errors = vec![
+            DaemonError::SessionNotFound {
+                session_id: CANARY.into(),
+            },
+            DaemonError::AttachmentNotFound {
+                attachment_id: CANARY.into(),
+            },
+            DaemonError::AttachmentNotInSession {
+                session_id: CANARY.into(),
+                attachment_id: CANARY.into(),
+            },
+            DaemonError::NoActiveProviderRun {
+                session_id: CANARY.into(),
+            },
+            DaemonError::ProviderRunNotFound {
+                provider_run_id: CANARY.into(),
+            },
+            DaemonError::WorkspaceClaimConflict {
+                workspace_id: CANARY.into(),
+                worktree_id: CANARY.into(),
+                existing_session_id: CANARY.into(),
+                existing_operation: Box::new(CANARY.into()),
+                requested_session_id: CANARY.into(),
+                requested_operation: Box::new(CANARY.into()),
+            },
+            DaemonError::ProviderAdapterNotFound {
+                adapter_key: CANARY.into(),
+            },
+            DaemonError::ProviderProtocol {
+                provider_run_id: CANARY.into(),
+                operation: CANARY,
+                message: CANARY.into(),
+            },
+            DaemonError::LocalTransport {
+                operation: "credential_vault_locked",
+                message: CANARY.into(),
+            },
+            DaemonError::LocalTransport {
+                operation: CANARY,
+                message: CANARY.into(),
+            },
+            DaemonError::RelayTransport {
+                operation: CANARY,
+                code: CANARY.into(),
+                message: CANARY.into(),
+                retryable: false,
+            },
+            DaemonError::RelayTransport {
+                operation: CANARY,
+                code: CANARY.into(),
+                message: CANARY.into(),
+                retryable: true,
+            },
+            DaemonError::RelayPeerCleanupAbsent {
+                worker_kernel_id: CANARY.into(),
+                resource_id: CANARY.into(),
+                code: CANARY,
+            },
+            DaemonError::PtySpawn {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyCleanup {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyWrite {
+                provider_run_id: CANARY.into(),
+                message: CANARY.into(),
+            },
+            DaemonError::PtyResize {
+                provider_run_id: CANARY.into(),
+                cols: 80,
+                rows: 24,
+                message: CANARY.into(),
+            },
+            DaemonError::AgentNotFound {
+                agent_id: CANARY.into(),
+            },
+            DaemonError::AgentWorkerCleanup {
+                agent_id: CANARY.into(),
+                source: Box::new(DaemonError::SessionNotFound {
+                    session_id: CANARY.into(),
+                }),
+            },
+        ];
+        for error in errors {
+            let original = map_kernel_error(&error);
+            let protected = finish_response(&caller, Err(error)).unwrap_err();
+            let projected = map_kernel_error(&protected);
+            assert_eq!(
+                (projected.code, projected.retryable),
+                (original.code, original.retryable)
+            );
+            assert!(!protected.to_string().contains(CANARY));
+            assert!(!format!("{protected:?}").contains(CANARY));
+        }
+    }
+}
+
+fn credential() -> UserCredentialConfig {
+    UserCredentialConfig {
+        id: format!("response-canary-{:016x}", rand::random::<u64>()),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "UNUSED_TEST_ONLY".into(),
+        },
+        allowed_hosts: vec!["example.com".into()],
+        allowed_uses: vec![crate::config::UserCredentialUse::Http],
+        injection: UserCredentialInjectionConfig::Header {
+            name: "Authorization".into(),
+            value: CANARY.into(),
+        },
+        metadata: None,
+    }
+}
+
+fn command(class: KernelConnectionClass) -> KernelCommand {
+    let request = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
+    let mut command = KernelCommand::from_local_request("response-test", None, None, &request);
+    command.caller.connection_class = Some(class);
+    command.caller.caller_id = match class {
+        KernelConnectionClass::KernelAgent => "sudo:test",
+        _ => "grant:test",
+    }
+    .into();
+    command
+}
+
+fn secret_responses() -> Vec<LocalDaemonResponse> {
+    let credential = credential();
+    let path = std::path::PathBuf::from("test-only.yaml");
+    let mut mcp = crate::mcp::CharioxMcpServerConfig::stdio("response-secret", "true", vec![]);
+    if let crate::mcp::CharioxMcpTransportConfig::Stdio { env, .. } = &mut mcp.transport {
+        env.insert("API_KEY".into(), CANARY.into());
+    }
+    let mut agent = crate::agent::AgentInstance::new(
+        "reply-agent",
+        "a1",
+        "reply-session",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker".into(),
+        worker_machine_id: "machine".into(),
+        execution_lease_id: "lease".into(),
+        leased_agent_id: "leased".into(),
+        active_worker_provider_run_id: None,
+        relay_url: None,
+        relay_token: Some(CANARY.into()),
+        relay_peer_protocol_version: None,
+    }));
+    let mut http = crate::mcp::CharioxMcpServerConfig::streamable_http(
+        "response-header",
+        "https://example.com/mcp",
+    );
+    if let crate::mcp::CharioxMcpTransportConfig::StreamableHttp { http_headers, .. } =
+        &mut http.transport
+    {
+        http_headers.insert("Authorization".into(), CANARY.into());
+    }
+    vec![
+        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
+        LocalDaemonResponse::McpServer { mcp: http },
+        LocalDaemonResponse::CredentialRegistered {
+            credential: credential.clone(),
+            path: path.clone(),
+        },
+        LocalDaemonResponse::CredentialUpserted {
+            credential: credential.clone(),
+            path: path.clone(),
+        },
+        LocalDaemonResponse::CredentialRemoved {
+            credential: credential.clone(),
+            path: path.clone(),
+        },
+        LocalDaemonResponse::Credential {
+            credential: credential.clone(),
+        },
+        LocalDaemonResponse::CredentialsListed {
+            credentials: vec![credential],
+        },
+        LocalDaemonResponse::McpServerInstalled {
+            mcp: mcp.clone(),
+            path: path.clone(),
+        },
+        LocalDaemonResponse::McpServerUpdated {
+            mcp: mcp.clone(),
+            path,
+        },
+        LocalDaemonResponse::McpServer { mcp: mcp.clone() },
+        LocalDaemonResponse::McpServersListed { mcps: vec![mcp] },
+        LocalDaemonResponse::ProviderLoginStarted {
+            login: crate::provider::ProviderLoginStart {
+                provider: "codex".into(),
+                account_profile: "test".into(),
+                login_kind: "device_code".into(),
+                login_id: None,
+                auth_url: Some(CANARY.into()),
+                verification_url: None,
+                user_code: Some(CANARY.into()),
+            },
+        },
+        serde_json::from_value(serde_json::json!({"EnvironmentProviderAuthorizationLink":{"link":{
+            "provider":"codex","linked_profile_ref":null,"authorization_url":CANARY,"expires_at_ms":1}}}))
+        .unwrap(),
+    ]
+}
+
+// Generate the complete request-name inventory from the actual enum. Exercise
+// the final router boundary for every command kind, independently of which
+// executor produced a response. This is not a claim to execute all operations.
+#[test]
+fn external_response_all_request_variants_protect_secret_replies() {
+    let source = include_str!("../../local/api/types/request.rs");
+    let names: Vec<_> = source
+        .lines()
+        .filter_map(|line| {
+            let declaration = line.strip_prefix("    ")?;
+            let name = declaration.split(['(', '{', ',']).next()?.trim();
+            (name.chars().next()?.is_ascii_uppercase()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then_some(name)
+        })
+        .collect();
+    assert!(names.len() > 300);
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        for name in &names {
+            let mut command = command(class);
+            command.command_type = (*name).into();
+            for response in secret_responses() {
+                if let Ok(projected) = finish_response(&command, Ok(response)) {
+                    assert!(
+                        !serde_json::to_string(&projected).unwrap().contains(CANARY),
+                        "secret response escaped for {name}"
+                    );
+                }
+            }
+            let failure = DaemonError::LocalTransport {
+                operation: "test-secret-parse",
+                message: CANARY.into(),
+            };
+            let error = finish_response(&command, Err(failure)).unwrap_err();
+            assert!(
+                !error.to_string().contains(CANARY),
+                "secret error escaped for {name}"
+            );
+        }
+    }
+}
+
+// MP-08 / MP-11: #888's portability preflight acknowledgement is empty and
+// carries no credential, so it is public on typed and raw reply paths.
+#[test]
+fn external_response_provider_portability_acknowledgement_is_public() {
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let projected = finish_response(
+            &command(class),
+            Ok(LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {}),
+        )
+        .unwrap();
+        assert!(matches!(
+            projected,
+            LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {}
+        ));
+    }
+    let mut raw = serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}});
+    project_response_value(&mut raw).unwrap();
+    assert_eq!(
+        raw,
+        serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}})
+    );
+}
+
+#[test]
+fn external_response_terminal_retains_owner_replies() {
+    for response in secret_responses() {
+        let projected =
+            finish_response(&command(KernelConnectionClass::Terminal), Ok(response)).unwrap();
+        assert!(serde_json::to_string(&projected).unwrap().contains(CANARY));
+    }
+}
+
+#[test]
+fn external_response_preserves_notification_metadata_and_sudo_extension() {
+    let source = serde_json::json!({
+        "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
+        "session_id":"room", "workflow_id":"workflow", "enabled":true,
+        "available":true, "name":"review", "output_fields":["finding"]
+    });
+    let subscription = serde_json::json!({
+        "subscription_id":"subscription", "source_id":"source", "owner_user_id":"owner",
+        "target_kernel_id":"worker", "target_kind":"workflow_endpoint", "session_id":"room",
+        "workflow_id":"workflow", "publication_id":"publication", "endpoint_id":"endpoint",
+        "queue_id":"queue", "ttl_days":7, "source_available":true,
+        "source_kernel_id":"home", "events":"success", "filters":{}, "delivery_mode":"queue"
+    });
+    let turn = serde_json::json!({
+        "entry_id":"sudo:window", "session_id":"room", "agent_id":"agent",
+        "owner_user_id":"owner", "terminal_id":"terminal", "prompt_id":"prompt",
+        "provider_run_id":"run", "task_id":"task", "duration_minutes":60,
+        "expires_at_ms":3600000, "revision":2, "warning_sent":false
+    });
+    let replies = [
+        serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
+        serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
+        serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
+        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"diagnostics":[]}}),
+        serde_json::json!({"KernelSudoExtended":{"turn":turn}}),
+    ];
+    for reply in replies {
+        let response: LocalDaemonResponse = serde_json::from_value(reply).unwrap();
+        let expected = serde_json::to_value(&response).unwrap();
+        for class in [
+            KernelConnectionClass::ExternalAgent,
+            KernelConnectionClass::KernelAgent,
+        ] {
+            let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+            assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+        }
+        let mut raw = expected.clone();
+        project_response_value(&mut raw).unwrap();
+        assert_eq!(raw, expected);
+    }
+}
+
+// A grant holder that picks a taken session alias learns which session holds it.
+#[test]
+fn external_response_tells_a_grant_holder_which_session_holds_an_alias() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let told = finish_response(
+        &caller,
+        Err(DaemonError::SessionAliasConflict {
+            workspace_id: "w1".into(),
+            alias: "main".into(),
+            session_id: "s-7".into(),
+        }),
+    )
+    .unwrap_err();
+    assert!(told.to_string().contains("`s-7`"), "{told}");
+    assert_eq!(
+        crate::transport::kernel_protocol::map_kernel_error(&told).code,
+        "session_alias_conflict"
+    );
+}
+
+#[test]
+fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let said = "this Room has no terminal `t-1`";
+    // The terminal service's refusal, here or on a worker (which answers through the relay).
+    for error in [
+        crate::room_terminal::refused_for_test(said),
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        },
+    ] {
+        let told = finish_response(&caller, Err(error)).unwrap_err();
+        assert!(told.to_string().contains(said), "{told}");
+        assert_eq!(
+            crate::transport::kernel_protocol::map_kernel_error(&told).code,
+            crate::room_terminal::REFUSED_CODE
+        );
+    }
+    // The machine that relays a worker's refusal passes it on with its code and words.
+    let relayed =
+        crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+            operation: "relay request",
+            code: crate::room_terminal::REFUSED_CODE.into(),
+            message: said.into(),
+            retryable: false,
+        });
+    assert_eq!(
+        (relayed.code.as_str(), relayed.message.as_str()),
+        (crate::room_terminal::REFUSED_CODE, said)
+    );
+    // Any other failure keeps its details in the host terminal.
+    for other in [
+        DaemonError::LocalTransport {
+            operation: "list sessions",
+            message: format!("{said} {CANARY}"),
+        },
+        DaemonError::RelayTransport {
+            operation: "relay request",
+            code: "transport_error".into(),
+            message: format!("{said} {CANARY}"),
+            retryable: false,
+        },
+    ] {
+        let hidden = finish_response(&caller, Err(other)).unwrap_err();
+        assert!(!hidden.to_string().contains(CANARY));
+    }
+}
+
+#[test]
+fn external_response_retains_only_exact_public_authority_errors() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let reasons = crate::runtime::kernel_access::Refusal::ALL.map(|reason| reason.message());
+    for message in [
+        "grant revoked or expired",
+        "sudo request refused",
+        "sudo request expired; answer the popup in a Chariox terminal",
+    ]
+    .into_iter()
+    .chain(reasons)
+    {
+        let error = finish_response(&caller, Err(crate::runtime::kernel_access::error(message)))
+            .unwrap_err();
+        assert!(error.to_string().contains(message));
+        let tainted = finish_response(
+            &caller,
+            Err(crate::runtime::kernel_access::error(format!(
+                "{message}: {CANARY}"
+            ))),
+        )
+        .unwrap_err();
+        assert!(!tainted.to_string().contains(CANARY));
+    }
+}
+
+#[test]
+fn external_response_redacts_nested_remote_bindings_without_scanning_history() {
+    let mut value = serde_json::json!({"sessions":[{"agents":[{"remote_execution":{
+        "worker_kernel_id":"worker", "relay_token":CANARY
+    }}]}],"nested_credential":{"injection":{"kind":"header","name":"Authorization","value":CANARY}},
+    "interaction":{"provider_login":{"login":{"auth_url":CANARY},"terminal_output_base64":CANARY},
+        "message":CANARY,"title":CANARY,"choices":[{"label":CANARY}]},"history_text":CANARY});
+    // MP-11: exercise the common structured-secret projection used at delivery.
+    redact_secret_values(&mut value);
+    assert!(value["sessions"][0]["agents"][0]["remote_execution"]
+        .get("relay_token")
+        .is_none());
+    assert_eq!(value["history_text"], CANARY);
+    assert!(value["interaction"].get("provider_login").is_none());
+    assert!(!value["interaction"].to_string().contains(CANARY));
+    assert_eq!(
+        value["nested_credential"]["injection"]["value"],
+        "[REDACTED]"
+    );
+}
+
+#[tokio::test]
+async fn external_response_register_and_remove_existing_literal_credentials() {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    let worktree = crate::test_support::TestWorktree::new("response-credential");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    );
+    let grant = router
+        .runtime_state()
+        .insert_access_grant_for_test(session.id());
+    let credential = credential();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let (_, path) = registry.upsert(credential.clone()).unwrap();
+    for request in [
+        LocalDaemonRequest::RegisterCredential(crate::local::RegisterCredentialRequest {
+            source_path: path.clone(),
+        }),
+        LocalDaemonRequest::RemoveCredential(crate::local::RemoveCredentialRequest {
+            id: credential.id.clone(),
+        }),
+    ] {
+        let mut caller = command(KernelConnectionClass::ExternalAgent);
+        caller.caller.caller_id = grant.clone();
+        let response = router.dispatch(caller, request).await.unwrap();
+        // Both mutations succeed and retain their public acknowledgement.
+        assert!(!serde_json::to_string(&response).unwrap().contains(CANARY));
+    }
+    assert!(!path.exists());
+}
+
+#[test]
+fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
+    let response = LocalDaemonResponse::SshMachine {
+        machine: crate::local::SshMachineResult {
+            install_id: "byom-owned".into(),
+            status: "ready".into(),
+            kernel_id: Some("kernel-owned".into()),
+            machine_id: Some("machine-owned".into()),
+            release_digest: format!("sha256:{}", "a".repeat(64)),
+            state_retained: false,
+        },
+    };
+    let expected = serde_json::to_value(&response).unwrap();
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let projected = finish_response(&command(class), Ok(response.clone())).unwrap();
+        assert_eq!(serde_json::to_value(projected).unwrap(), expected);
+    }
+    let mut cached = expected.clone();
+    project_response_value(&mut cached).unwrap();
+    assert_eq!(cached, expected);
+}
+
+// MP-08 / MP-11: a renamed/missing session has an actionable, value-free error.
+#[test]
+fn mp11_missing_session_reason_is_public_without_echoing_private_reference() {
+    for class in [
+        KernelConnectionClass::ExternalAgent,
+        KernelConnectionClass::KernelAgent,
+    ] {
+        let caller = command(class);
+        let error = finish_response(
+            &caller,
+            Err(DaemonError::SessionNotFound {
+                session_id: CANARY.into(),
+            }),
+        )
+        .unwrap_err();
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "session_not_found");
+        assert!(
+            mapped.message.contains("session not found"),
+            "{}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains(CANARY));
+    }
+}

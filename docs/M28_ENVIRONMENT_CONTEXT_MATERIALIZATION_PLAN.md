@@ -1,0 +1,231 @@
+# M28: Environment context materialization
+
+Status: implemented on `codex/managed-remote-kernels`; hosted acceptance pending
+
+Scope: `chariox` runtime, managed slices, and independently authoritative managed kernels
+
+Cloud companion: `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`
+
+## 1. Runtime contract
+
+Chariox materializes development context for two distinct topologies:
+
+- A managed slice remains owned by its parent kernel. The parent owns the session,
+  agents, prompt history, grants, and runtime interactions. The slice is only the
+  selected execution environment.
+- A managed remote kernel is independent. It owns its own identity, sessions,
+  agents, provider runs, history, workspaces, child slices, and terminal streams.
+  It is never represented as a home-worker lease.
+
+Both paths reuse the same Project repository selection and development snapshot
+logic. They do not share runtime authority.
+
+## 2. Context layers
+
+The implemented launch plan keeps four layers separate:
+
+1. The immutable managed-kernel release and bootstrap supervisor.
+2. Kernel context, either Empty or copied from one connected source kernel.
+3. Development context, either Empty or an exact Project repository selection.
+4. Provider and SCM runtime material selected from that same source kernel.
+
+The user-facing source field is `Kernel context from`. Empty installs the managed
+release with default extensions and an empty Vault. A connected source copies the
+portable kernel context and complete encrypted Vault snapshot. Development and
+provider material can still require a source when kernel context is Empty. All
+source-backed layers must name the same connected source target.
+
+Sessions, agents, provider runs, prompts, grants, history, attachments, runtime
+interactions, and source machine identity are never transferred.
+
+## 3. Direct transfer
+
+Cloud authorizes and binds a transfer. It stores the normalized launch plan,
+including source target, Project, Workspace, worktree, provider-account, and SCM
+handle metadata, plus hashes, coarse phase, and redacted errors. Source and target
+kernels exchange the package directly over the encrypted relay peer channel. The
+relay sees encrypted routing traffic. Neither Cloud nor the relay receives package
+plaintext or credential values.
+
+The source kernel:
+
+- fetches an authoritative, short-lived transfer ticket from Cloud;
+- exports the selected kernel, development, provider, and SCM components;
+- persists the prepared package and operation status under its private Chariox
+  state root;
+- sends bounded chunks to the exact target kernel;
+- resumes from the target's committed offset after disconnect or restart; and
+- treats a matching completed receipt as authoritative after a lost finalize
+  response.
+
+The target kernel:
+
+- validates the source and target relay identities, plan digest, package digest,
+  expiry, capacity, and single-consumer binding;
+- commits chunks and transfer state durably before acknowledging them;
+- imports components into isolated staging paths;
+- publishes the final launch target only after every selected component succeeds;
+  and
+- preserves consumed receipts and launch targets across restart for idempotent
+  replay.
+
+Receipt replay is transactional recovery only. After a successful import, the
+target kernel owns the imported accounts, Git credentials, repositories, Vault,
+and provider-native state. Normal launches do not resynchronize them from the
+source. Later changes happen through ordinary target-kernel operations or a new,
+explicitly authorized transfer.
+
+A retryable source or transport failure remains visible to the initiating client.
+The launch never falls back to Empty.
+
+## 4. Kernel context
+
+The kernel package contains the portable kernel configuration, unified Extension
+registry, extension packages, scopes, and a target-sealed Vault snapshot. Supported
+extension kinds include MCP, Skill, Script, and Connector. Package hashes and
+configuration remain bound to the transfer manifest.
+
+A portable stdio MCP uses one dedicated package directory at
+`<user-mcp-root>/<mcp-name>/`. Its executable, working directory, and referenced
+runtime files must remain inside that directory. Export snapshots and hashes the
+package, preserves executable bits, and normalizes command paths; import verifies
+it before materializing it below the target user's MCP root. Host-path arguments,
+ambient or literal credential environment values, duplicate definitions, and
+paths outside the package fail closed. HTTP MCP definitions transfer configuration
+only because they have no local runtime artifact.
+
+The target creates its own kernel identity before import. It does not import the
+source identity or source runtime database.
+
+## 5. Development context
+
+A Project can name several Workspaces. At launch the user selects one primary
+Workspace and an explicit repository set. The primary repository is mandatory.
+Supporting repositories default from the Project and can be removed or restored
+before launch.
+
+Each selected repository is exported independently with its Git branch, commit,
+tracked files, untracked files, and working state. The target materializes every
+repository under its own target Workspace path and reports those target paths in
+the launch receipt. The imported Project is registered in the target kernel before
+the client creates the session, so Project selection and slice validation use the
+target's authoritative Workspace records.
+
+Managed slices accept the same repository topology. Slice reuse requires an exact
+topology match and never changes the parent-kernel ownership model.
+
+For a local Docker slice, explicitly selecting Empty development creates a blank,
+slice-owned workspace below the configured slice development storage root. It
+does not bind or copy the parent Workspace, even when the launch request includes
+that Workspace for Room association. The kernel persists the publication path,
+uses the existing managed publication access helper and broker, and maps provider
+execution to that path. Restart preserves workspace edits. Missing durable
+content or an invalid ownership receipt fails closed rather than replacing it
+with an empty directory. Delete removes only the owned publication.
+
+Legacy Empty slice records without a development storage root are not silently
+migrated or emptied. Recreate those slices explicitly after preserving any work;
+their parent Workspace is not removed by slice cleanup. Requests that omit the
+development selection retain their existing workspace behavior.
+
+Repository `AGENTS.md` and `CLAUDE.md` files remain normal repository content.
+
+### Project environment layer (locked 2026-10-01; MP-08/MP-10/MP-11)
+
+The owner-locked contract is recorded in
+`docs/BROWSER_COMPUTER_USE_END_TO_END_PLAN.md`, section "Locked decisions for
+2026-10-01: Project environment layer". That contract supersedes the former
+exclusion of development environment variables and secrets from M28. Any kernel
+holding the Project can be its source, including a managed kernel.
+
+An official-provider utility agent discovers referenced names, value locators,
+file/line evidence and toolchain/package/service hints, never secret values. The
+kernel stores a Project environment manifest with default-secret classification,
+found/missing/problem status and an evidence digest. A kernel-owned deterministic
+resolver reads only referenced values; secrets enter the Vault directly and
+transfer target-sealed. Non-secret values and allowed config files accompany
+development context independently of full kernel-context selection, materialize
+at the same relative paths with mode 0600, and feed Project provider, terminal
+and setup/validation launches on both slices and managed machines.
+
+A single kernel RuntimeInteraction names unresolved entries and their use sites
+in Web and TUI. Supplied values enter the Vault and are reused. Every export
+refreshes the source kernel's manifest: unchanged evidence reuses discovery
+without an agent run; changed evidence receives an incremental pass over only
+the differences and prompts only for new missing entries. Values are re-resolved
+from their locators at every export. Capture is limited to Project references;
+values never enter logs or model context. Transfers are auditable and machine
+deletion removes its values.
+
+There is no ongoing synchronization between kernels. Each imported Project and
+manifest evolves independently, and a later export from any kernel uses that
+kernel's own refreshed manifest. Implementation and acceptance remain open.
+Source tests do not close MP-08, MP-10 or MP-11. The acceptance drill must export
+a realistic Project to a fresh slice with only one deliberately missing user
+input, then change the target Project and export it to a second fresh slice,
+proving new-entry discovery and current-value transfer while the original
+source manifest stays unchanged.
+
+## 6. Provider and SCM runtime
+
+Selected Codex, OpenCode, and Claude account profiles are exported and restored
+through their official provider-local file and CLI mechanisms. Chariox does not
+use provider SDKs or alternate hosted agent services. Claude headless and native
+profiles resolve to the same canonical Claude account material.
+
+The first SCM implementation supports an explicitly selected GitHub credential.
+SCM import uses the existing safe slice baseline and configures target-local Git
+credential behavior without sending credential values through Cloud or relay
+control records.
+
+## 7. Empty context
+
+Empty context creates a durable target Workspace owned by the independent kernel.
+The launch receipt contains that target Workspace and worktree path. This path is
+not a source-machine placeholder and remains valid across client retry and kernel
+restart.
+
+## 8. Client behavior
+
+The TUI and web Waiting Room use the ordinary Machine field. Selecting
+`+ New Chariox-managed machine...` opens a dedicated managed-machine dialog for
+compute class, region, kernel-context source, development setup, repository
+selection, provider accounts, Git credentials, and auto-stop policy. Those fields
+never appear in the ordinary session form. Ordinary machines retain their
+existing rows.
+
+The client persists one launch attempt identity through retries, waits for Cloud
+provisioning and relay readiness, performs any direct source transfer, switches to
+the target kernel, verifies the launch target, and only then creates the session.
+Cancellation never silently creates a local session.
+
+## 9. Detached execution and activity
+
+The independent kernel remains the authority when every terminal disconnects.
+Active provider turns continue, queued prompts advance, outputs and tool results
+are written to durable agent-scoped history, and unresolved interactions remain
+available for later attachments. Zero-recipient live output is not retained in the
+bounded terminal fanout queue because durable history is the recovery source.
+
+The managed activity reporter maintains a signed monotonic cursor over a binary
+zero or nonzero running-agent count. It sends initial state, count transitions,
+restart resynchronization, lost-ack replay, and corrective same-count cursor
+updates. Active prompts, queued prompts, provider settlement, and unresolved
+interactions count as work. The kernel persists response and prompt settlement
+state before it reports zero.
+
+## 10. Protocol and validation
+
+The original M28 implementation used local daemon protocol 280. MP-08 Project
+environment manifest metadata queries use protocol 370; the environment extension
+and its full export/provider/client acceptance remain in progress. Shape tests cover
+managed environment summaries and control, transfer preparation and status,
+explicit launch-target requests, multi-Workspace Projects, slice repository
+topology, and provider and SCM selection. Managed activity uses a separately
+authenticated Cloud HTTP contract with canonical signature vectors and cursor
+tests.
+
+Focused tests cover transfer resume and replay, restart recovery, bounded storage,
+identity binding, Vault sealing, exact Project materialization, detached queue
+advancement, and zero-recipient history behavior. Final acceptance still requires
+the hosted relay and provider matrix listed in the goal and Cloud milestone.

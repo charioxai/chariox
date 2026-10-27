@@ -1,0 +1,1023 @@
+use crate::config::DaemonConfig;
+use crate::error::DaemonError;
+use crate::provider::opencode_binding::OpenCodeRunSelection;
+use crate::provider::{
+    AgentEndpointMode, ProviderClientInterface, ProviderLaunchResult, ProviderPromptSignalBatch,
+    ProviderResumeState, RuntimeProviderRun,
+};
+use crate::session::{SessionService, SessionStatus};
+
+use super::{
+    LaunchProviderRequest, ProviderProcessService, ProviderRunLivenessReconciliation,
+    ProviderRunState,
+};
+
+fn sessions() -> SessionService {
+    SessionService::new(&DaemonConfig::for_tests())
+}
+
+fn launch_request(session_id: &str, model: &str) -> LaunchProviderRequest {
+    LaunchProviderRequest::new(session_id, "dev-stub", "claude-code", "default", model)
+}
+
+fn launch_running_provider_run(
+    providers: &mut ProviderProcessService,
+    sessions: &mut SessionService,
+    request: LaunchProviderRequest,
+) -> RuntimeProviderRun {
+    let outcome = providers
+        .start_run_provider_only(request)
+        .expect("provider-only start should succeed");
+    let run = providers
+        .mark_run_running(outcome.run().id())
+        .expect("provider run should mark running");
+    sessions
+        .set_active_provider_run(run.session_id(), Some(run.id().to_string()))
+        .expect("session active run should be set");
+    run
+}
+
+#[test]
+fn launches_the_first_provider_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-first");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+    let session = sessions
+        .get_session(session.id())
+        .expect("session should exist");
+
+    assert_eq!(run.id(), "provider-run-1");
+    assert_eq!(run.state(), ProviderRunState::Running);
+    assert_eq!(run.adapter_key(), "dev-stub");
+    assert_eq!(session.active_provider_run_id(), Some(run.id()));
+    assert_eq!(session.status(), SessionStatus::Active);
+}
+
+#[test]
+fn rejects_workspace_live_sync_when_adapter_cannot_enforce_writes() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-managed-sync");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let error = providers
+        .start_run_provider_only(
+            launch_request(session.id(), "sonnet").with_workspace_live_sync_managed(),
+        )
+        .expect_err("dev-stub cannot enforce workspace live sync writes");
+
+    match error {
+        DaemonError::ProviderWorkspaceLiveSyncUnsupported { adapter_key, .. } => {
+            assert_eq!(adapter_key, "dev-stub");
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[test]
+fn tracked_workspace_live_sync_does_not_require_managed_write_enforcement() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-tracked-sync");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let outcome = providers
+        .start_run_provider_only(
+            launch_request(session.id(), "sonnet")
+                .with_workspace_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+        )
+        .expect("tracked mode should not need managed write fencing");
+
+    assert!(!outcome.run().requires_workspace_live_sync());
+    assert!(outcome.run().tracks_workspace_live_sync());
+}
+
+#[test]
+fn active_provider_run_lookup_prefers_deterministic_latest_highest_state_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-latest");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let agent_id = "agent-1".to_string();
+    let mut providers = ProviderProcessService::new();
+
+    let first = providers
+        .start_run_provider_only(launch_request(session.id(), "sonnet").with_agent_id(&agent_id))
+        .expect("first provider run should start");
+    let second = providers
+        .start_run_provider_only(launch_request(session.id(), "opus").with_agent_id(&agent_id))
+        .expect("second provider run should start");
+    let first = providers
+        .mark_run_running(first.run().id())
+        .expect("first run should mark running");
+    let second = providers
+        .mark_run_running(second.run().id())
+        .expect("second run should mark running");
+
+    assert_eq!(
+        providers
+            .get_run_for_agent(session.id(), &agent_id)
+            .map(|run| run.id().to_string()),
+        Some(second.id().to_string())
+    );
+    assert_eq!(
+        providers
+            .get_session_run_for_provider(session.id(), "claude-code")
+            .map(|run| run.id().to_string()),
+        Some(second.id().to_string())
+    );
+    assert!(second.active_selection_cmp(&first).is_gt());
+}
+
+#[test]
+fn active_provider_run_lookup_prefers_new_starting_run_over_parked_fallback() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-starting");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let agent_id = "agent-1".to_string();
+    let mut providers = ProviderProcessService::new();
+
+    let parked = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet").with_agent_id(&agent_id),
+    );
+    providers
+        .park_run_provider_only(session.id(), parked.id())
+        .expect("old provider run should park");
+    let starting = providers
+        .start_run_provider_only(launch_request(session.id(), "opus").with_agent_id(&agent_id))
+        .expect("replacement provider run should start");
+
+    assert_eq!(
+        providers
+            .get_run_for_agent(session.id(), &agent_id)
+            .map(|run| run.id().to_string()),
+        Some(starting.run().id().to_string())
+    );
+}
+
+#[test]
+fn claude_native_tui_runs_use_pty_output_pumping() {
+    let providers = ProviderProcessService::new();
+    let request = LaunchProviderRequest::new("session-1", "claude", "default", "sonnet", "low")
+        .with_client_interface(ProviderClientInterface::NativeTui);
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "claude:native-tui".to_string(),
+            pty_target: None,
+            pty_program: Some("claude".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+
+    assert!(!providers.run_uses_structured_prompt_io(&run));
+}
+
+#[test]
+fn claude_headless_runs_use_pty_output_pumping() {
+    let providers = ProviderProcessService::new();
+    let request = LaunchProviderRequest::new(
+        "session-1",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-sonnet-4-6",
+    );
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "claude:headless".to_string(),
+            pty_target: None,
+            pty_program: Some("claude".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+
+    assert!(!providers.run_uses_structured_prompt_io(&run));
+}
+
+#[test]
+fn managed_structured_providers_use_structured_prompt_io() {
+    let providers = ProviderProcessService::new();
+    for (adapter_key, provider, expected) in [
+        ("codex", "codex", true),
+        ("opencode", "opencode", true),
+        ("claude", "claude", true),
+        ("dev-stub", "slow-structured", true),
+        ("dev-stub", "plain", false),
+    ] {
+        let request =
+            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model");
+        let run = RuntimeProviderRun::new(
+            format!("provider-run-{adapter_key}-{provider}"),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: provider.to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+
+        assert_eq!(providers.run_uses_structured_prompt_io(&run), expected);
+    }
+}
+
+#[test]
+fn provider_only_start_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-start");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let outcome = providers
+        .start_run_provider_only(launch_request(session.id(), "sonnet"))
+        .expect("provider-only start should succeed");
+
+    assert_eq!(outcome.run().session_id(), session.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Starting);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        None
+    );
+}
+
+#[test]
+fn liveness_reconciliation_without_process_observation_does_not_end_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-observed");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    let reconciliation = providers
+        .reconcile_run_liveness_provider_only(session.id(), run.id(), None)
+        .expect("liveness reconciliation should succeed");
+
+    assert!(matches!(
+        reconciliation,
+        ProviderRunLivenessReconciliation::StillRunning(_)
+    ));
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+    assert_eq!(
+        providers
+            .get_run(run.id())
+            .expect("run should still exist")
+            .state(),
+        ProviderRunState::Running
+    );
+}
+
+#[test]
+fn provider_only_liveness_does_not_end_starting_run_before_launch_settles() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-starting");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let outcome = providers
+        .start_run_provider_only(launch_request(session.id(), "sonnet"))
+        .expect("provider-only start should succeed");
+
+    let reconciliation = providers
+        .reconcile_run_liveness_provider_only(session.id(), outcome.run().id(), Some(false))
+        .expect("liveness reconciliation should succeed");
+
+    assert!(matches!(
+        reconciliation,
+        ProviderRunLivenessReconciliation::StillRunning(_)
+    ));
+    assert_eq!(
+        providers
+            .get_run(outcome.run().id())
+            .expect("run should still exist")
+            .state(),
+        ProviderRunState::Starting
+    );
+}
+
+#[test]
+fn provider_only_liveness_reconciliation_with_exited_process_marks_run_ended() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-exited");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    let reconciliation = providers
+        .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
+        .expect("liveness reconciliation should succeed");
+
+    assert!(matches!(
+        reconciliation,
+        ProviderRunLivenessReconciliation::NewlyEnded(_)
+    ));
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+    assert_eq!(
+        providers
+            .get_run(run.id())
+            .expect("run should still exist")
+            .state(),
+        ProviderRunState::Ended
+    );
+}
+
+#[test]
+fn provider_only_liveness_reconciliation_handles_already_ended_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-liveness-ended");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    providers
+        .reconcile_run_liveness_provider_only(session.id(), run.id(), Some(false))
+        .expect("initial provider-only reconciliation should succeed");
+
+    let reconciliation = providers
+        .reconcile_run_liveness_provider_only(session.id(), run.id(), None)
+        .expect("provider-only reconciliation should succeed");
+
+    assert!(matches!(
+        reconciliation,
+        ProviderRunLivenessReconciliation::AlreadyEnded(_)
+    ));
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+    assert_eq!(
+        providers
+            .get_run(run.id())
+            .expect("run should still exist")
+            .state(),
+        ProviderRunState::Ended
+    );
+}
+
+#[test]
+fn provider_only_mark_run_ended_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-mark-ended");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    let outcome = providers
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider-only ending should succeed");
+
+    assert!(!outcome.already_ended);
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+
+    let outcome = providers
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("already-ended provider-only ending should succeed");
+    assert!(outcome.already_ended);
+    assert_eq!(outcome.run().id(), run.id());
+}
+
+#[test]
+fn provider_only_terminate_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminate");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    let outcome = providers
+        .terminate_run_provider_only(session.id(), run.id())
+        .expect("provider-only termination should succeed");
+
+    assert!(!outcome.already_ended);
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+
+    let outcome = providers
+        .terminate_run_provider_only(session.id(), run.id())
+        .expect("already-ended provider-only termination should succeed");
+    assert!(outcome.already_ended);
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Ended);
+}
+
+#[test]
+fn provider_only_terminate_session_runs_returns_outcomes_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminate-session");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let first = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+    let second = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "opus"),
+    );
+
+    let outcome = providers
+        .terminate_session_runs_provider_only(session.id())
+        .expect("provider-only session termination should succeed");
+
+    let terminated_run_ids = outcome
+        .runs()
+        .iter()
+        .map(|outcome| outcome.run().id().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(terminated_run_ids, vec![first.id(), second.id()]);
+    assert_eq!(
+        providers
+            .get_run(first.id())
+            .expect("first run should remain recorded")
+            .state(),
+        ProviderRunState::Ended
+    );
+    assert_eq!(
+        providers
+            .get_run(second.id())
+            .expect("second run should remain recorded")
+            .state(),
+        ProviderRunState::Ended
+    );
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(second.id())
+    );
+}
+
+#[test]
+fn provider_only_park_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    let outcome = providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("provider-only park should succeed");
+
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Parked);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+}
+
+#[test]
+fn provider_only_park_run_is_idempotent_when_already_parked() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park-idempotent");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("first provider-only park should succeed");
+    let outcome = providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("second provider-only park should be idempotent");
+
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Parked);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+}
+
+#[test]
+fn provider_only_resume_run_returns_outcome_without_session_mutation() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-resume");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+    providers
+        .park_run_provider_only(session.id(), run.id())
+        .expect("provider run should park");
+
+    let outcome = providers
+        .resume_run_provider_only(session.id(), run.id())
+        .expect("provider-only resume should succeed");
+
+    assert_eq!(outcome.run().id(), run.id());
+    assert_eq!(outcome.run().state(), ProviderRunState::Running);
+    assert_eq!(
+        sessions
+            .get_session(session.id())
+            .expect("session should exist")
+            .active_provider_run_id(),
+        Some(run.id())
+    );
+}
+
+#[test]
+fn parks_existing_run_when_new_run_becomes_active() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-park-existing");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let first = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+    let outcome = providers
+        .park_run_provider_only(session.id(), first.id())
+        .expect("first run should park");
+    sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("session active run should clear");
+    assert_eq!(outcome.run().state(), ProviderRunState::Parked);
+
+    let second = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "opus"),
+    );
+
+    let first = providers
+        .get_run(first.id())
+        .expect("first run should still exist");
+    let session = sessions
+        .get_session(session.id())
+        .expect("session should exist");
+
+    assert_eq!(first.state(), ProviderRunState::Parked);
+    assert_eq!(second.state(), ProviderRunState::Running);
+    assert_eq!(session.active_provider_run_id(), Some(second.id()));
+}
+
+#[test]
+fn provider_only_start_allows_new_run_after_ended_run() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-start-after-ended");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let first = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+    providers
+        .get_run_mut(first.id())
+        .expect("first run should exist")
+        .mark_ended();
+
+    let second = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "opus"),
+    );
+    let session = sessions
+        .get_session(session.id())
+        .expect("session should exist");
+    let first = providers
+        .get_run(first.id())
+        .expect("first run should still exist");
+
+    assert_eq!(first.state(), ProviderRunState::Ended);
+    assert_eq!(second.state(), ProviderRunState::Running);
+    assert_eq!(session.active_provider_run_id(), Some(second.id()));
+}
+
+#[test]
+fn launch_run_preserves_resume_state_from_the_request() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-resume-state");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet")
+            .with_resume_state(ProviderResumeState::from_codex_thread_id("thread-1")),
+    );
+
+    assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+}
+
+#[test]
+fn structured_output_metadata_records_terminal_diagnostic() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-terminal-diagnostic");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet"),
+    );
+
+    providers
+        .apply_structured_output_metadata(
+            run.id(),
+            &ProviderPromptSignalBatch {
+                terminal_failure: Some("provider no credits".to_string()),
+                ..ProviderPromptSignalBatch::default()
+            },
+        )
+        .expect("terminal diagnostic should record");
+
+    let run = providers.get_run(run.id()).expect("run should exist");
+    assert_eq!(run.terminal_diagnostic(), Some("provider no credits"));
+}
+
+#[test]
+fn structured_output_metadata_records_completed_codex_resume_state() {
+    let worktree = crate::test_support::TestWorktree::new("provider-service-codex-resume");
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let mut providers = ProviderProcessService::new();
+    let run = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5"),
+    );
+
+    providers
+        .apply_structured_output_metadata(
+            run.id(),
+            &ProviderPromptSignalBatch {
+                resolved_resume_state: Some(ProviderResumeState::from_codex_thread_id("thread-1")),
+                ..ProviderPromptSignalBatch::default()
+            },
+        )
+        .expect("completed Codex resume state should record");
+
+    let run = providers.get_run(run.id()).expect("run should exist");
+    assert_eq!(run.resume_state().codex_thread_id(), Some("thread-1"));
+    assert_eq!(run.provider_session_id(), Some("thread-1"));
+}
+
+#[test]
+fn merge_opencode_run_selection_keeps_the_existing_run_when_sync_has_no_metadata() {
+    let request = LaunchProviderRequest::new(
+        "session-1",
+        "opencode",
+        "opencode",
+        "default",
+        "anthropic/claude-sonnet-4",
+    );
+    let run = RuntimeProviderRun::new(
+        "provider-run-1",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "opencode:endpoint".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("http://127.0.0.1:43112".to_string()),
+        },
+    );
+
+    let merged =
+        ProviderProcessService::merge_opencode_run_selection(&run, OpenCodeRunSelection::default());
+
+    assert_eq!(merged.model.as_deref(), Some("anthropic/claude-sonnet-4"));
+    assert_eq!(merged.variant.as_deref(), None);
+}
+
+#[test]
+fn abort_interrupts_fresh_metadata_utility_before_its_deadline() {
+    use std::time::{Duration, Instant};
+    let root = std::env::temp_dir().join(format!("metadata-abort-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let marker = root.join("utility-started");
+    let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+    let program = format!(
+        "import sys,time,pathlib,json\nfor line in sys.stdin:\n pathlib.Path({:?}).touch()\n time.sleep(3)\n print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'brief'}}]}}}}),flush=True)\n print(json.dumps({{'type':'result','subtype':'success'}}),flush=True)",
+        marker.to_string_lossy(),
+    );
+    let mut run = RuntimeProviderRun::new(
+        "metadata-abort",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "metadata-abort-regression".into(),
+            pty_target: None,
+            pty_program: Some("/usr/bin/python3".into()),
+            pty_args: vec!["-u".into(), "-c".into(), program],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.set_execution_config(
+        crate::provider::AgentExecutionMode::Plan,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+    run.mark_running();
+    let store = crate::provider::ProviderProcessServiceStore::new(ProviderProcessService::new());
+    store.write().insert_run_for_test(run.clone());
+    store.initialize_runtime(&run).unwrap();
+    let worker_store = store.clone();
+    let utility = run.clone();
+    let worker = std::thread::spawn(move || {
+        worker_store.run_structured_utility_prompt(
+            &utility,
+            "brief",
+            "",
+            Duration::from_secs(5),
+            crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        )
+    });
+    let started = Instant::now();
+    while !marker.exists() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(marker.exists(), "utility must be executing before Abort");
+    let cancelled = Instant::now();
+    store
+        .enqueue_structured_prompt_abort("s".into(), run.id().into(), "utility-cancel".into())
+        .unwrap();
+    let result = worker.join().unwrap();
+    let elapsed = cancelled.elapsed();
+    drop(store);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "Abort must interrupt the fresh utility, not queue behind it: {elapsed:?}"
+    );
+    assert!(
+        result.is_err(),
+        "cancelled utility must not publish a successful fold"
+    );
+}
+
+#[test]
+fn a_long_utility_does_not_lock_other_provider_runs() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let root = std::env::temp_dir().join(format!(
+        "chariox-utility-lock-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let marker = root.join("started");
+    let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+    let mut utility = RuntimeProviderRun::new("utility", &request, ProviderLaunchResult {
+        endpoint_mode: AgentEndpointMode::Managed, process_label: "fixture".into(),
+        pty_target: None, pty_program: Some("/bin/sh".into()),
+        pty_args: vec!["-c".into(), format!("while IFS= read -r line; do touch '{}'; sleep 1; printf '%s\\n' '{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"brief\"}}]}}}}' '{{\"type\":\"result\",\"subtype\":\"success\"}}'; done", marker.display())],
+        pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
+    });
+    utility.set_execution_config(
+        crate::provider::AgentExecutionMode::Plan,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+    utility.mark_running();
+    let other_request =
+        LaunchProviderRequest::new("s", "dev-stub", "slow-structured", "default", "m");
+    let mut other = RuntimeProviderRun::new(
+        "other",
+        &other_request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    other.mark_running();
+    let store = crate::provider::ProviderProcessServiceStore::new(ProviderProcessService::new());
+    store.write().insert_run_for_test(utility.clone());
+    store.write().insert_run_for_test(other.clone());
+    store.initialize_runtime(&utility).unwrap();
+    let worker_store = store.clone();
+    let worker = std::thread::spawn(move || {
+        worker_store.run_structured_utility_prompt(
+            &utility,
+            "brief",
+            "",
+            Duration::from_secs(3),
+            crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        )
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !marker.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !marker.exists() {
+        let result = worker.join().unwrap();
+        drop(store);
+        std::fs::remove_dir_all(&root).unwrap();
+        panic!("utility should be executing: {result:?}");
+    }
+    let query_store = store.clone();
+    let (tx, rx) = mpsc::channel();
+    let query = std::thread::spawn(move || {
+        query_store.get_run("other").unwrap();
+        query_store
+            .enqueue_structured_prompt_submit(
+                "s".into(),
+                "other".into(),
+                "a".into(),
+                "p".into(),
+                "p",
+                &other,
+                "next",
+                "",
+                &[],
+                crate::prompt_assembly::PromptAssemblyMode::UtilityTurn,
+                None,
+                false,
+            )
+            .unwrap();
+        tx.send(()).unwrap();
+    });
+    let progressed = rx.recv_timeout(Duration::from_millis(300));
+    let result = worker.join().unwrap();
+    query.join().unwrap();
+    assert_eq!(result.unwrap(), "brief");
+    // The supplied remaining deadline ends the fresh utility child and
+    // releases its actor slot instead of leaving an orphan behind.
+    let started = Instant::now();
+    let run = store.get_run("utility").unwrap();
+    let timed_out = store.run_structured_utility_prompt(
+        &run,
+        "brief",
+        "",
+        Duration::from_millis(100),
+        crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+    );
+    assert!(timed_out.is_err());
+    assert!(started.elapsed() < Duration::from_millis(900));
+    assert_eq!(
+        store
+            .run_structured_utility_prompt(
+                &run,
+                "brief",
+                "",
+                Duration::from_secs(3),
+                crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            )
+            .unwrap(),
+        "brief"
+    );
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        progressed.is_ok(),
+        "another run must be queried and dispatched before the utility completes"
+    );
+}

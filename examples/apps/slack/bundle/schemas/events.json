@@ -1,0 +1,209 @@
+{
+  "events": [
+    {
+      "name": "mentioned",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "occurred_at",
+          "text"
+        ],
+        "properties": {
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "generator_id",
+              "connection_id",
+              "event_type",
+              "event_type_version"
+            ],
+            "properties": {
+              "generator_id": {
+                "type": "string"
+              },
+              "connection_id": {
+                "type": "string"
+              },
+              "event_type": {
+                "type": "string"
+              },
+              "event_type_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "occurred_at": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 40000
+          },
+          "metadata": {},
+          "artifacts": {
+            "type": "array",
+            "maxItems": 16
+          },
+          "reply_context": {}
+        }
+      }
+    },
+    {
+      "name": "channel_message",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "occurred_at",
+          "text"
+        ],
+        "properties": {
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "generator_id",
+              "connection_id",
+              "event_type",
+              "event_type_version"
+            ],
+            "properties": {
+              "generator_id": {
+                "type": "string"
+              },
+              "connection_id": {
+                "type": "string"
+              },
+              "event_type": {
+                "type": "string"
+              },
+              "event_type_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "occurred_at": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 40000
+          },
+          "metadata": {},
+          "artifacts": {
+            "type": "array",
+            "maxItems": 16
+          },
+          "reply_context": {}
+        }
+      }
+    },
+    {
+      "name": "reaction_added",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "occurred_at",
+          "text"
+        ],
+        "properties": {
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "generator_id",
+              "connection_id",
+              "event_type",
+              "event_type_version"
+            ],
+            "properties": {
+              "generator_id": {
+                "type": "string"
+              },
+              "connection_id": {
+                "type": "string"
+              },
+              "event_type": {
+                "type": "string"
+              },
+              "event_type_version": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "occurred_at": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 40000
+          },
+          "metadata": {},
+          "artifacts": {
+            "type": "array",
+            "maxItems": 16
+          },
+          "reply_context": {}
+        }
+      }
+    },
+    {
+      "name": "notification",
+      "schemaVersion": 1,
+      "direction": "outgoing",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "text",
+          "occurred_at"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mentioned",
+              "channel_message",
+              "reaction_added"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 40000
+          },
+          "occurred_at": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "channel": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "user": {
+            "type": "string",
+            "maxLength": 64
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,1393 @@
+//! Relay subscription task lifecycle and event polling loops.
+
+use std::future::Future;
+
+use super::request_errors::{map_relay_error, relay_error};
+use super::*;
+use crate::runtime::projection::SessionSnapshotProjection;
+use crate::transport::agent_turn_feed::AgentTurnFeed;
+use crate::transport::home_audit_feed::HomeAuditFeed;
+use crate::transport::kernel_protocol::{
+    requested_heartbeat_interval, WaitingRoomInventoryEventProjection,
+};
+use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
+use chariox_relay::protocol::RelayCallerIdentity;
+
+pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
+
+/// Who a relay subscription serves: the caller's user and, for its passkey
+/// popups (protocol 403), its connection class.
+pub(super) struct RelaySubscriber {
+    pub(super) caller: crate::runtime::command::KernelCaller,
+    pub(super) user_id: String,
+    pub(super) connection_class: crate::local::KernelConnectionClass,
+    /// Protocol 596: the interval of this subscription's `heartbeat` events.
+    pub(super) heartbeat_interval: Duration,
+}
+
+pub(super) struct RelaySubscriptionTask {
+    pub(super) relay_subscription_id: String,
+    pub(super) client_public_key: String,
+    pub(super) display_id: Option<String>,
+    /// MP-08/MP-10: protocol 491 push pump of a display subscription.
+    pub(super) display_pump: Option<Arc<super::display_pump::DisplayPump>>,
+    pub(super) handle: JoinHandle<()>,
+}
+
+pub(super) async fn abort_subscription_tasks(
+    _router: &Arc<CommandRouter>,
+    subscription_tasks: &RelaySubscriptionTasks,
+) {
+    let mut guard = subscription_tasks.lock().await;
+    for task in guard.values() {
+        task.handle.abort();
+        if let Some(pump) = &task.display_pump {
+            pump.stop();
+        }
+    }
+    guard.clear();
+}
+
+pub(super) async fn remove_relay_subscription_task_by_relay_id(
+    subscription_tasks: &RelaySubscriptionTasks,
+    relay_subscription_id: &str,
+) -> Option<RelaySubscriptionTask> {
+    let mut guard = subscription_tasks.lock().await;
+    let task_key = guard.iter().find_map(|(key, task)| {
+        (task.relay_subscription_id == relay_subscription_id).then(|| key.clone())
+    })?;
+    guard.remove(&task_key)
+}
+
+pub(super) fn relay_subscription_task_key(
+    session_id: &str,
+    attachment_id: &str,
+    subscription_scope: Option<&str>,
+    relay_subscription_id: &str,
+) -> String {
+    let scope = subscription_scope.unwrap_or("session");
+    format!("{scope}\u{1f}{session_id}\u{1f}{attachment_id}\u{1f}{relay_subscription_id}")
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing handle_relay_subscribe operation signature and explicit context arguments"
+)]
+pub(super) async fn handle_relay_subscribe(
+    router: &Arc<CommandRouter>,
+    outgoing_tx: &RelayOutgoingSender,
+    subscription_tasks: &RelaySubscriptionTasks,
+    event_runtime: &Arc<RelayEventRuntime>,
+    relay_request_id: String,
+    relay_subscription_id: String,
+    session_id: String,
+    attachment_id: String,
+    caller_identity: Option<RelayCallerIdentity>,
+    client_public_key: String,
+    subscription_scope: Option<String>,
+    resume_from_event_id: Option<u64>,
+    heartbeat_interval_ms: Option<u64>,
+) -> Result<(), DaemonError> {
+    let paired = match router.admit_relay_stream(&client_public_key) {
+        Ok(grant) => grant.is_some(),
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+    if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
+        return super::browser_display::handle_subscribe(
+            router,
+            outgoing_tx,
+            subscription_tasks,
+            super::browser_display::DisplaySubscription {
+                request_id: relay_request_id,
+                relay_id: relay_subscription_id,
+                display_id: session_id,
+                generation: attachment_id,
+                identity: caller_identity,
+                public_key: client_public_key,
+                resume: resume_from_event_id,
+                recover: subscription_scope.as_deref()
+                    == Some(chariox_relay::frame_transport::DISPLAY_RESUME_SCOPE),
+            },
+        )
+        .await;
+    }
+    let heartbeat_interval = match requested_heartbeat_interval(
+        heartbeat_interval_ms,
+        relay_subscription_heartbeat_interval(),
+    ) {
+        Ok(interval) => interval,
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(relay_error(&error.code, &error.message, error.retryable)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+    let subscriber = RelaySubscriber {
+        heartbeat_interval,
+        caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
+        user_id: if paired {
+            crate::session::DEFAULT_LOCAL_USER_ID.into()
+        } else {
+            relay_subscription_caller_user_id(caller_identity.as_ref())
+        },
+        connection_class: if paired {
+            crate::local::KernelConnectionClass::Terminal
+        } else {
+            crate::runtime::command::relay_connection_class(caller_identity.as_ref())
+        },
+    };
+    let is_inventory_subscription =
+        subscription_scope.as_deref() == Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE);
+    if resume_from_event_id.is_none() {
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "relay subscription request received",
+            serde_json::json!({
+                "relay_request_id": relay_request_id,
+                "relay_subscription_id": relay_subscription_id,
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "subscription_scope": subscription_scope,
+                "resume_from_event_id": resume_from_event_id,
+                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+            }),
+        );
+    } else {
+        crate::logging::debug_with_fields(
+            "daemon.relay_client",
+            "relay subscription resume request received",
+            serde_json::json!({
+                "relay_request_id": relay_request_id,
+                "relay_subscription_id": relay_subscription_id,
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "subscription_scope": subscription_scope,
+                "resume_from_event_id": resume_from_event_id,
+                "is_waiting_room_inventory_subscription": is_inventory_subscription,
+            }),
+        );
+    }
+    if !is_inventory_subscription
+        && (session_id == WAITING_ROOM_INVENTORY_SENTINEL_ID
+            || attachment_id == WAITING_ROOM_INVENTORY_SENTINEL_ID)
+    {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "waiting-room inventory sentinel arrived without subscription scope",
+            serde_json::json!({
+                "relay_request_id": relay_request_id,
+                "relay_subscription_id": relay_subscription_id,
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "subscription_scope": subscription_scope,
+                "diagnosis": "relay or client likely dropped subscription_scope=waiting_room_inventory",
+            }),
+        );
+    }
+    if !is_inventory_subscription {
+        let validation = if paired {
+            router
+                .ensure_relay_subscription_attachment_for_user(
+                    &session_id,
+                    &attachment_id,
+                    &subscriber.user_id,
+                )
+                .await
+        } else if let Some(user_id) = caller_identity
+            .as_ref()
+            .and_then(|identity| identity.user_id.as_deref())
+        {
+            router
+                .ensure_relay_subscription_attachment_for_user(&session_id, &attachment_id, user_id)
+                .await
+        } else {
+            router
+                .ensure_relay_subscription_attachment(&session_id, &attachment_id)
+                .await
+        };
+        if let Err(error) = validation {
+            if resume_from_event_id.is_none() {
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "relay subscription attachment validation failed",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "error": error.to_string(),
+                    }),
+                );
+            } else {
+                crate::logging::debug_with_fields(
+                    "daemon.relay_client",
+                    "relay subscription resume attachment validation failed",
+                    serde_json::json!({
+                        "relay_request_id": relay_request_id,
+                        "relay_subscription_id": relay_subscription_id,
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "subscription_scope": subscription_scope,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+        record_relay_subscription_attachment_heartbeat(
+            router,
+            &session_id,
+            &attachment_id,
+            "subscribe",
+        )
+        .await;
+    }
+    let task_key = relay_subscription_task_key(
+        &session_id,
+        &attachment_id,
+        subscription_scope.as_deref(),
+        &relay_subscription_id,
+    );
+    let ack = match encrypt_json_response(
+        router,
+        &client_public_key,
+        serde_json::json!({
+            "ok": true,
+            "resumed_from_event_id": resume_from_event_id,
+        }),
+    )
+    .await
+    {
+        Ok(ack) => ack,
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonResponse {
+            relay_request_id,
+            encrypted_response: Some(ack),
+            error: None,
+        },
+    )?;
+    if subscription_tasks
+        .lock()
+        .await
+        .get(&task_key)
+        .is_some_and(|existing| {
+            relay_subscription_task_matches(existing, &relay_subscription_id, &client_public_key)
+        })
+    {
+        return Ok(());
+    }
+    if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
+        existing.handle.abort();
+    }
+    if !is_inventory_subscription {
+        if let Err(error) = replay_recent_relay_events(
+            event_runtime,
+            router,
+            outgoing_tx,
+            &relay_subscription_id,
+            &client_public_key,
+            &session_id,
+            &attachment_id,
+            resume_from_event_id,
+        )
+        .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "failed to replay relay subscription events",
+                serde_json::json!({
+                    "relay_subscription_id": relay_subscription_id,
+                    "session_id": session_id,
+                    "attachment_id": attachment_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+    let task = tokio::spawn(run_relay_subscription_loop(
+        Arc::clone(router),
+        outgoing_tx.clone(),
+        relay_subscription_id.clone(),
+        client_public_key.clone(),
+        session_id.clone(),
+        attachment_id.clone(),
+        subscription_scope.clone(),
+        Arc::clone(event_runtime),
+        resume_from_event_id.is_some(),
+        subscriber,
+    ));
+    subscription_tasks.lock().await.insert(
+        task_key,
+        RelaySubscriptionTask {
+            display_id: None,
+            display_pump: None,
+            relay_subscription_id,
+            client_public_key,
+            handle: task,
+        },
+    );
+    Ok(())
+}
+
+fn relay_subscription_caller_user_id(caller_identity: Option<&RelayCallerIdentity>) -> String {
+    caller_identity
+        .and_then(|identity| identity.user_id.as_deref())
+        .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID)
+        .to_string()
+}
+
+fn relay_subscription_task_matches(
+    existing: &RelaySubscriptionTask,
+    relay_subscription_id: &str,
+    client_public_key: &str,
+) -> bool {
+    existing.relay_subscription_id == relay_subscription_id
+        && existing.client_public_key == client_public_key
+        && !existing.handle.is_finished()
+}
+
+pub(super) async fn handle_relay_unsubscribe(
+    router: &Arc<CommandRouter>,
+    outgoing_tx: &RelayOutgoingSender,
+    subscription_tasks: &RelaySubscriptionTasks,
+    relay_request_id: String,
+    relay_subscription_id: String,
+    client_public_key: String,
+) -> Result<(), DaemonError> {
+    let existing =
+        remove_relay_subscription_task_by_relay_id(subscription_tasks, &relay_subscription_id)
+            .await;
+    if let Some(task) = existing {
+        task.handle.abort();
+        if let Some(pump) = &task.display_pump {
+            pump.stop();
+        }
+    }
+    let ack = match encrypt_json_response(
+        router,
+        &client_public_key,
+        serde_json::json!({ "ok": true }),
+    )
+    .await
+    {
+        Ok(ack) => ack,
+        Err(error) => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::DaemonResponse {
+                    relay_request_id,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            )?;
+            return Ok(());
+        }
+    };
+    send_outgoing_envelope(
+        outgoing_tx,
+        RelayEnvelope::DaemonResponse {
+            relay_request_id,
+            encrypted_response: Some(ack),
+            error: None,
+        },
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_relay_subscription_loop operation signature and explicit context arguments"
+)]
+pub(super) async fn run_relay_subscription_loop(
+    router: Arc<CommandRouter>,
+    outgoing_tx: RelayOutgoingSender,
+    subscription_id: String,
+    client_public_key: String,
+    session_id: String,
+    attachment_id: String,
+    subscription_scope: Option<String>,
+    event_runtime: Arc<RelayEventRuntime>,
+    resumed: bool,
+    subscriber: RelaySubscriber,
+) {
+    if subscription_scope.as_deref() == Some("waiting_room_inventory") {
+        run_relay_waiting_room_inventory_subscription_loop(
+            router,
+            outgoing_tx,
+            subscription_id,
+            client_public_key,
+            event_runtime,
+            resumed,
+            subscriber,
+        )
+        .await;
+        return;
+    }
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
+    let mut previous_catalog_revision = None;
+    let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
+    let mut last_workflow_design_sequence = 0_u64;
+    let mut last_snapshot_projection_sequence: Option<u64> = None;
+    let mut next_snapshot_reconciliation_at = Instant::now();
+    let mut next_attachment_heartbeat_at = Instant::now();
+    let mut next_heartbeat_at = Instant::now();
+    let mut agent_turns = AgentTurnFeed::default();
+    let mut home_audit = HomeAuditFeed::new(&router);
+    let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
+
+    loop {
+        if router.admit_relay_stream(&client_public_key).is_err() {
+            break;
+        }
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                &event_stream_id,
+                event,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                &event_stream_id,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let terminal_attachment_change_sequence =
+            router.terminal_attachment_change_sequence(&session_id, &attachment_id);
+        let terminal_session_change_sequence = router.terminal_session_change_sequence(&session_id);
+        let session_projection_change_sequence =
+            router.session_projection_session_change_sequence(&session_id);
+        let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let now = Instant::now();
+        let should_check_snapshot = previous_snapshot.is_none()
+            || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
+            || now >= next_snapshot_reconciliation_at;
+        let previous_snapshot_for_watch = if should_check_snapshot {
+            previous_snapshot.clone()
+        } else {
+            None
+        };
+        let watch_result = await_relay_subscription_watch_with_heartbeats(
+            router.relay_watch_subscription_state(
+                &session_id,
+                &attachment_id,
+                should_check_snapshot,
+                previous_snapshot_for_watch,
+                last_workflow_design_sequence,
+            ),
+            &mut next_attachment_heartbeat_at,
+            relay_subscription_heartbeat_interval(),
+            || {
+                let router = Arc::clone(&router);
+                let session_id = session_id.clone();
+                let attachment_id = attachment_id.clone();
+                async move {
+                    record_relay_subscription_attachment_heartbeat(
+                        &router,
+                        &session_id,
+                        &attachment_id,
+                        "heartbeat_deadline",
+                    )
+                    .await;
+                }
+            },
+        )
+        .await;
+        if should_check_snapshot {
+            last_snapshot_projection_sequence = Some(session_projection_change_sequence);
+            next_snapshot_reconciliation_at =
+                Instant::now() + relay_subscription_snapshot_reconciliation_interval();
+        }
+
+        match watch_result {
+            WatchResult::Ok {
+                records,
+                notices,
+                completions,
+                workflow_design_events,
+                workflow_run_updates,
+                snapshot,
+            } => {
+                // The same wake can contain an accepted prompt and a large output
+                // backlog. Publish its authoritative projection before that backlog.
+                let projection_events = (*snapshot)
+                    .map(|snapshot| {
+                        let events = crate::runtime_transport::session_projection_events(
+                            &snapshot,
+                            previous_snapshot.as_ref(),
+                            !workflow_run_updates.is_empty(),
+                        );
+                        agent_turns.observe_snapshot(&snapshot);
+                        previous_snapshot = Some(snapshot);
+                        events
+                    })
+                    .unwrap_or_default();
+                for event in projection_events {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        event,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                for agent_id in records
+                    .iter()
+                    .filter_map(|record| record.agent_id.as_deref())
+                {
+                    agent_turns.mark_changed(agent_id);
+                }
+                if !records.is_empty() {
+                    let mut terminal_output_failed = false;
+                    for records in terminal_output_event_batches(records) {
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            &event_stream_id,
+                            KernelEvent::TerminalOutput { records },
+                        )
+                        .await
+                        .is_err()
+                        {
+                            terminal_output_failed = true;
+                            break;
+                        }
+                    }
+                    if terminal_output_failed {
+                        break;
+                    }
+                }
+                if !notices.is_empty()
+                    && emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::RuntimeNotices { notices },
+                    )
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                for completion in completions {
+                    if let Some(agent_id) = completion.agent_id.as_deref() {
+                        agent_turns.mark_changed(agent_id);
+                    }
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::AssistantMessageCompleted {
+                            session_id: completion.session_id,
+                            provider_run_id: completion.provider_run_id,
+                            agent_id: completion.agent_id,
+                            recipient_attachment_ids: completion.recipient_attachment_ids,
+                            message_id: completion.message_id,
+                            completed_at_ms: completion.completed_at_ms,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                for workflow_event in workflow_design_events {
+                    last_workflow_design_sequence =
+                        last_workflow_design_sequence.max(workflow_event.kernel_sequence);
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::WorkflowDesignOp {
+                            design_op: workflow_event,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                }
+                for workflow_run in workflow_run_updates {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: session_id.clone(),
+                            workflow_run,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
+                let Some(feed_events) =
+                    crate::runtime_transport::await_subscription_work_with_heartbeats(
+                        async {
+                            let mut events = agent_turns.flush(&router, &session_id).await;
+                            events.extend(
+                                home_audit
+                                    .next_events(
+                                        &router,
+                                        &session_id,
+                                        &attachment_id,
+                                        agent_turns.session_agents(),
+                                    )
+                                    .await,
+                            );
+                            events
+                        },
+                        &mut next_heartbeat_at,
+                        subscriber.heartbeat_interval,
+                        || async {
+                            emit_relay_event(
+                                &router,
+                                &outgoing_tx,
+                                &subscription_id,
+                                &client_public_key,
+                                &event_runtime,
+                                &event_stream_id,
+                                KernelEvent::Heartbeat {
+                                    session_id: session_id.clone(),
+                                },
+                            )
+                            .await
+                            .is_ok()
+                        },
+                    )
+                    .await
+                else {
+                    break;
+                };
+                let mut turn_event_failed = false;
+                for event in feed_events {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        event,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        turn_event_failed = true;
+                        break;
+                    }
+                }
+                if turn_event_failed {
+                    break;
+                }
+
+                if Instant::now() >= next_heartbeat_at {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::Heartbeat {
+                            session_id: session_id.clone(),
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                    next_heartbeat_at = advance_relay_subscription_deadline(
+                        next_heartbeat_at,
+                        subscriber.heartbeat_interval,
+                    );
+                }
+            }
+            WatchResult::Unavailable(message) => {
+                let _ = emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    &event_stream_id,
+                    KernelEvent::SessionUnavailable {
+                        session_id: session_id.clone(),
+                        message,
+                    },
+                )
+                .await;
+                break;
+            }
+        }
+
+        let _ = timeout(
+            next_relay_subscription_wait_duration(
+                next_heartbeat_at,
+                agent_turns
+                    .next_due()
+                    .map_or(next_snapshot_reconciliation_at, |due| {
+                        due.min(next_snapshot_reconciliation_at)
+                    }),
+            ),
+            async {
+                tokio::select! {
+                    _ = router.wait_for_terminal_attachment_change_after(
+                        &session_id,
+                        &attachment_id,
+                        terminal_attachment_change_sequence
+                    ) => {}
+                    _ = router.wait_for_terminal_session_change_after(
+                        &session_id,
+                        terminal_session_change_sequence
+                    ) => {}
+                    _ = router.wait_for_session_projection_session_change_after(
+                        &session_id,
+                        session_projection_change_sequence
+                    ) => {}
+                    _ = router.wait_for_workflow_design_change_after(
+                        workflow_design_change_sequence
+                    ) => {}
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
+                    _ = passkey_prompts.changed(&router) => {}
+                    _ = home_audit.changed() => {}
+                }
+            },
+        )
+        .await;
+    }
+}
+
+async fn await_relay_subscription_watch_with_heartbeats<F, T, H, HF>(
+    watch: F,
+    next_heartbeat_at: &mut Instant,
+    heartbeat_interval: Duration,
+    mut heartbeat: H,
+) -> T
+where
+    F: Future<Output = T>,
+    H: FnMut() -> HF,
+    HF: Future<Output = ()>,
+{
+    tokio::pin!(watch);
+    loop {
+        if Instant::now() >= *next_heartbeat_at {
+            heartbeat().await;
+            *next_heartbeat_at =
+                advance_relay_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            continue;
+        }
+        let wait = next_heartbeat_at
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        tokio::select! {
+            result = &mut watch => return result,
+            _ = sleep(wait) => {
+                heartbeat().await;
+                *next_heartbeat_at = advance_relay_subscription_deadline(
+                    *next_heartbeat_at,
+                    heartbeat_interval,
+                );
+            }
+        }
+    }
+}
+
+async fn record_relay_subscription_attachment_heartbeat(
+    router: &Arc<CommandRouter>,
+    session_id: &str,
+    attachment_id: &str,
+    phase: &str,
+) {
+    if let Err(error) = router
+        .record_terminal_attachment_heartbeat(
+            session_id,
+            attachment_id,
+            crate::session::unix_epoch_ms(),
+        )
+        .await
+    {
+        crate::logging::warn_with_fields(
+            "daemon.relay_client",
+            "failed recording relay subscription attachment heartbeat",
+            serde_json::json!({
+                "session_id": session_id,
+                "attachment_id": attachment_id,
+                "phase": phase,
+                "error": error.to_string(),
+            }),
+        );
+    }
+}
+
+fn relay_subscription_heartbeat_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * RELAY_HEARTBEAT_INTERVAL_TICKS)
+}
+
+fn relay_subscription_snapshot_reconciliation_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS)
+}
+
+fn next_relay_subscription_wait_duration(
+    next_heartbeat_at: Instant,
+    next_snapshot_reconciliation_at: Instant,
+) -> Duration {
+    next_heartbeat_at
+        .min(next_snapshot_reconciliation_at)
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::ZERO)
+}
+
+fn advance_relay_subscription_deadline(mut deadline: Instant, interval: Duration) -> Instant {
+    let now = Instant::now();
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
+}
+
+async fn run_relay_waiting_room_inventory_subscription_loop(
+    router: Arc<CommandRouter>,
+    outgoing_tx: RelayOutgoingSender,
+    subscription_id: String,
+    client_public_key: String,
+    event_runtime: Arc<RelayEventRuntime>,
+    resumed: bool,
+    subscriber: RelaySubscriber,
+) {
+    let mut passkey_prompts =
+        PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
+    let mut previous_catalog_revision = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
+    let mut previous_relay_status = if resumed {
+        Some(router.transport_relay_status_snapshot().await)
+    } else {
+        None
+    };
+    let mut previous_remote_machines =
+        resumed.then(|| router.relay_remote_machines_snapshot(&subscriber.caller));
+    let mut previous_provider_catalog = resumed
+        .then(|| router.transport_provider_catalog_snapshot())
+        .flatten();
+    let mut previous_slices = resumed.then(|| router.transport_slices_snapshot());
+    let mut inventory_dirty = !resumed;
+    let mut tick: u64 = 0;
+    let mut next_heartbeat_at = Instant::now();
+    loop {
+        if router.admit_relay_stream(&client_public_key).is_err() {
+            break;
+        }
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                event,
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let session_projection_change_sequence = router.session_projection_change_sequence();
+        if inventory_dirty
+            || (!resumed && tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS))
+        {
+            match router
+                .waiting_room_public_snapshot(&subscriber.user_id, Some(&subscriber.caller))
+                .await
+            {
+                Ok(snapshot) => {
+                    inventory_dirty = false;
+                    for event in waiting_room_event_projection.project(snapshot) {
+                        if emit_relay_event(
+                            &router,
+                            &outgoing_tx,
+                            &subscription_id,
+                            &client_public_key,
+                            &event_runtime,
+                            WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                            event,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "relay waiting-room inventory subscription failed to build snapshot",
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                }
+            }
+        }
+        if Instant::now() >= next_heartbeat_at {
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                KernelEvent::Heartbeat {
+                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+            let status = router.transport_relay_status_snapshot().await;
+            if previous_relay_status.as_ref() != Some(&status) {
+                previous_relay_status = Some(status.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::RelayStatusChanged { status },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+            next_heartbeat_at = advance_relay_subscription_deadline(
+                next_heartbeat_at,
+                subscriber.heartbeat_interval,
+            );
+        }
+        if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
+            let machines = router.relay_remote_machines_snapshot(&subscriber.caller);
+            if previous_remote_machines.as_ref() != Some(&machines) {
+                previous_remote_machines = Some(machines.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::RemoteMachinesChanged { machines },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if let Some(catalog) = router.transport_provider_catalog_snapshot() {
+            if previous_provider_catalog.as_ref() != Some(&catalog) {
+                previous_provider_catalog = Some(catalog.clone());
+                if emit_relay_event(
+                    &router,
+                    &outgoing_tx,
+                    &subscription_id,
+                    &client_public_key,
+                    &event_runtime,
+                    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                    KernelEvent::ProviderCatalogChanged {
+                        generated_at_ms: crate::session::unix_epoch_ms(),
+                        catalog,
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        let slices = router.transport_slices_snapshot();
+        if previous_slices.as_ref() != Some(&slices) {
+            previous_slices = Some(slices.clone());
+            if emit_relay_event(
+                &router,
+                &outgoing_tx,
+                &subscription_id,
+                &client_public_key,
+                &event_runtime,
+                WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+                KernelEvent::SlicesChanged {
+                    generated_at_ms: crate::session::unix_epoch_ms(),
+                    slices,
+                },
+            )
+            .await
+            .is_err()
+            {
+                break;
+            }
+        }
+        let wait_started = Instant::now();
+        let wait_result = timeout(
+            next_heartbeat_at
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO),
+            async {
+                tokio::select! {
+                    _ = wait_for_relay_waiting_room_inventory_change(
+                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                        router.wait_for_session_projection_change_after(
+                            session_projection_change_sequence,
+                        ),
+                    ) => true,
+                    // Popups are sent at once, without the inventory coalescing.
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => false,
+                    _ = passkey_prompts.changed(&router) => false,
+                }
+            },
+        )
+        .await;
+        if matches!(wait_result, Ok(true)) {
+            sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
+            inventory_dirty = true;
+        }
+        let elapsed_ticks =
+            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
+        tick = tick.wrapping_add(elapsed_ticks);
+    }
+}
+
+async fn wait_for_relay_waiting_room_inventory_change(
+    waiting_room_change: impl Future<Output = ()>,
+    session_projection_change: impl Future<Output = ()>,
+) {
+    tokio::pin!(waiting_room_change);
+    tokio::pin!(session_projection_change);
+    tokio::select! {
+        _ = &mut waiting_room_change => {}
+        _ = &mut session_projection_change => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        await_relay_subscription_watch_with_heartbeats, relay_subscription_caller_user_id,
+        relay_subscription_task_key, relay_subscription_task_matches,
+        remove_relay_subscription_task_by_relay_id, wait_for_relay_waiting_room_inventory_change,
+        RelaySubscriptionTask, RelaySubscriptionTasks, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+        WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    };
+
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use tokio::sync::Mutex;
+    use tokio::time::{sleep, Duration};
+
+    #[test]
+    fn relay_subscription_inventory_uses_authenticated_caller_user() {
+        let identity = chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "realm-1".to_string(),
+            subject: "client-1".to_string(),
+            subject_kind: chariox_relay::auth::RelaySubjectKind::Client,
+            expires_at_ms: u64::MAX,
+            token_id: Some("token-1".to_string()),
+            user_id: Some("cloud-user-1".to_string()),
+            public_key_thumbprint: None,
+        };
+
+        assert_eq!(
+            relay_subscription_caller_user_id(Some(&identity)),
+            "cloud-user-1"
+        );
+        assert_eq!(
+            relay_subscription_caller_user_id(None),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_waiting_room_inventory_wakes_for_either_projection_source() {
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_relay_waiting_room_inventory_change(
+                std::future::ready(()),
+                std::future::pending::<()>(),
+            ),
+        )
+        .await
+        .expect("waiting-room changes should wake relay inventory projection");
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_relay_waiting_room_inventory_change(
+                std::future::pending::<()>(),
+                std::future::ready(()),
+            ),
+        )
+        .await
+        .expect("session projection changes should wake relay inventory projection");
+    }
+
+    #[tokio::test]
+    async fn stalled_relay_watch_does_not_starve_attachment_heartbeats() {
+        let heartbeat_count = Arc::new(AtomicUsize::new(0));
+        let mut next_heartbeat_at = std::time::Instant::now();
+        let result = await_relay_subscription_watch_with_heartbeats(
+            async {
+                sleep(Duration::from_millis(30)).await;
+                "watch-complete"
+            },
+            &mut next_heartbeat_at,
+            Duration::from_millis(5),
+            {
+                let heartbeat_count = Arc::clone(&heartbeat_count);
+                move || {
+                    let heartbeat_count = Arc::clone(&heartbeat_count);
+                    async move {
+                        heartbeat_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result, "watch-complete");
+        assert!(heartbeat_count.load(Ordering::SeqCst) > 0);
+    }
+
+    #[tokio::test]
+    async fn ready_relay_watch_does_not_win_over_due_attachment_heartbeat() {
+        let heartbeat_count = Arc::new(AtomicUsize::new(0));
+        let mut next_heartbeat_at = std::time::Instant::now();
+        let result = await_relay_subscription_watch_with_heartbeats(
+            async { "watch-complete" },
+            &mut next_heartbeat_at,
+            Duration::from_millis(5),
+            {
+                let heartbeat_count = Arc::clone(&heartbeat_count);
+                move || {
+                    let heartbeat_count = Arc::clone(&heartbeat_count);
+                    async move {
+                        heartbeat_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result, "watch-complete");
+        assert_eq!(heartbeat_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn relay_subscription_tasks_with_one_attachment_can_coexist() {
+        let tasks: RelaySubscriptionTasks = Arc::new(Mutex::new(BTreeMap::new()));
+        let first_key =
+            relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-1");
+        let second_key =
+            relay_subscription_task_key("session-1", "attachment-1", None, "relay-subscription-2");
+        assert_ne!(first_key, second_key);
+
+        let first_handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        tasks.lock().await.insert(
+            first_key.clone(),
+            RelaySubscriptionTask {
+                display_id: None,
+                display_pump: None,
+                relay_subscription_id: "relay-subscription-1".to_string(),
+                client_public_key: "client-public-key-1".to_string(),
+                handle: first_handle,
+            },
+        );
+
+        let second_handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        tasks.lock().await.insert(
+            second_key,
+            RelaySubscriptionTask {
+                display_id: None,
+                display_pump: None,
+                relay_subscription_id: "relay-subscription-2".to_string(),
+                client_public_key: "client-public-key-2".to_string(),
+                handle: second_handle,
+            },
+        );
+        assert_eq!(tasks.lock().await.len(), 2);
+
+        let removed =
+            remove_relay_subscription_task_by_relay_id(&tasks, "relay-subscription-2").await;
+        assert!(removed.is_some());
+        assert_eq!(tasks.lock().await.len(), 1);
+        assert_eq!(
+            tasks
+                .lock()
+                .await
+                .get(&first_key)
+                .map(|task| task.relay_subscription_id.as_str()),
+            Some("relay-subscription-1")
+        );
+        tasks.lock().await.get(&first_key).unwrap().handle.abort();
+    }
+
+    #[test]
+    fn waiting_room_inventory_tasks_are_owned_by_relay_subscription() {
+        let first_key = relay_subscription_task_key(
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            "relay-subscription-1",
+        );
+        let second_key = relay_subscription_task_key(
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            WAITING_ROOM_INVENTORY_SENTINEL_ID,
+            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+            "relay-subscription-2",
+        );
+        assert_ne!(first_key, second_key);
+    }
+
+    #[tokio::test]
+    async fn relay_subscription_task_reuse_requires_same_client_public_key() {
+        let handle = tokio::spawn(async {
+            sleep(Duration::from_secs(60)).await;
+        });
+        let task = RelaySubscriptionTask {
+            display_id: None,
+            display_pump: None,
+            relay_subscription_id: "relay-subscription-1".to_string(),
+            client_public_key: "client-public-key-1".to_string(),
+            handle,
+        };
+
+        assert!(relay_subscription_task_matches(
+            &task,
+            "relay-subscription-1",
+            "client-public-key-1",
+        ));
+        assert!(
+            !relay_subscription_task_matches(&task, "relay-subscription-1", "client-public-key-2",),
+            "browser event-socket reconnects can reuse the relay subscription id with a fresh client keypair"
+        );
+        task.handle.abort();
+    }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "name": "yolo permission request",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": { "command": "true" }
+    },
+    "behavior": "allow"
+  }
+]

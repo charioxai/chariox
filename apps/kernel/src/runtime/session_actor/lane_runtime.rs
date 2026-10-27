@@ -1,0 +1,518 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, oneshot, Mutex};
+
+use crate::error::DaemonError;
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
+use crate::runtime::command::{KernelCallerKind, KernelCommand};
+use crate::runtime::command_latency::{
+    log_lane_completed, log_lane_dispatched, log_lane_enqueue_failed, log_lane_enqueued,
+    LaneCommandTrace,
+};
+use crate::runtime::projection::{
+    ActorQueueSnapshot, AgentRuntimeProjectionStore, SessionStateProjectionStore,
+};
+use crate::runtime::state::KernelRuntimeState;
+use crate::session::DEFAULT_LOCAL_USER_ID;
+use crate::terminal::TerminalStreamStore;
+
+use super::command_executor::SessionRuntimeCommandExecutor;
+use super::focus_projection::FocusedAgentProjection;
+use super::lane_resolution;
+use super::store::SessionRuntimeStore;
+
+const ROOM_INTERRUPT_LANE_SUFFIX: &str = "::room-interrupt";
+
+#[derive(Debug)]
+struct SessionCommandEnvelope {
+    command_id: String,
+    command_type: String,
+    telemetry: LaneCommandTrace,
+    caller_user_id: String,
+    caller_metaagent_id: Option<String>,
+    provider_run_id: Option<String>,
+    terminal_caller: bool,
+    connection_class: Option<KernelConnectionClass>,
+    external_grant_id: Option<String>,
+    /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
+    sudo_binding: Option<(String, String)>,
+    request: LocalDaemonRequest,
+    result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionRuntime {
+    store: SessionRuntimeStore,
+    queue_limit: usize,
+    focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    terminal_stream: TerminalStreamStore,
+    lanes: Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommandEnvelope>>>>,
+}
+
+impl SessionRuntime {
+    pub(crate) fn with_queue_limit_and_focus_projection(
+        state: KernelRuntimeState,
+        queue_limit: usize,
+        focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        terminal_stream: TerminalStreamStore,
+    ) -> Self {
+        Self::with_store_and_focus_projection(
+            SessionRuntimeStore::new(state),
+            queue_limit,
+            focus_projection,
+            session_projection,
+            agent_runtime_projection,
+            terminal_stream,
+        )
+    }
+
+    pub(crate) fn with_store_and_focus_projection(
+        store: SessionRuntimeStore,
+        queue_limit: usize,
+        focus_projection: FocusedAgentProjection,
+        session_projection: SessionStateProjectionStore,
+        agent_runtime_projection: AgentRuntimeProjectionStore,
+        terminal_stream: TerminalStreamStore,
+    ) -> Self {
+        Self {
+            store,
+            queue_limit,
+            focus_projection,
+            session_projection,
+            agent_runtime_projection,
+            terminal_stream,
+            lanes: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub(crate) async fn dispatch_session_command(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let sudo_binding = self.store.sudo_binding(&command, &request);
+        let session_id = self.resolve_session_lane_key(&request).await?;
+        let lane_id = session_command_lane_id(&request, &session_id);
+        let lane = self.session_lane(&lane_id, &session_id).await;
+        let (result_tx, result_rx) = oneshot::channel();
+        let caller_user_id = command_session_actor_user_id(&command);
+        let telemetry = LaneCommandTrace::new(
+            crate::runtime::command_latency::CommandTrace::from_command(&command),
+            crate::runtime::command_latency::now_ms(),
+        );
+        let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
+        let caller_metaagent_id = self
+            .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
+            .await?;
+        let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
+        let connection_class = command.caller.connection_class;
+        let external_grant_id = command.external_grant_id();
+        let provider_run_id = command.provider_run_id.clone();
+        let command_id = command.command_id;
+        let command_type = command.command_type;
+        match lane.try_send(SessionCommandEnvelope {
+            telemetry: telemetry.clone(),
+            command_id,
+            command_type,
+            caller_user_id,
+            caller_metaagent_id,
+            provider_run_id,
+            terminal_caller,
+            connection_class,
+            external_grant_id,
+            sudo_binding,
+            request,
+            result_tx,
+        }) {
+            Ok(()) => {
+                let queue_depth_after = self.queue_limit.saturating_sub(lane.capacity());
+                log_lane_enqueued(
+                    &telemetry,
+                    "session",
+                    &lane_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    queue_depth_after,
+                );
+            }
+            Err(error) => {
+                let message = format!("session command lane overloaded: {error}");
+                log_lane_enqueue_failed(
+                    &telemetry,
+                    "session",
+                    &lane_id,
+                    self.queue_limit,
+                    queue_depth_before,
+                    &message,
+                );
+                return Err(DaemonError::LocalTransport {
+                    operation: "enqueue session kernel command",
+                    message,
+                });
+            }
+        }
+        let response = result_rx
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "await session kernel command",
+                message: error.to_string(),
+            })??;
+        if matches!(
+            response,
+            LocalDaemonResponse::SessionEnded { .. } | LocalDaemonResponse::SessionDeleted { .. }
+        ) {
+            self.remove_session_lanes(&session_id).await;
+        }
+        Ok(response)
+    }
+
+    pub(super) async fn resolve_session_lane_key(
+        &self,
+        request: &LocalDaemonRequest,
+    ) -> Result<String, DaemonError> {
+        lane_resolution::resolve_session_lane_key(&self.store, &self.session_projection, request)
+            .await
+    }
+
+    async fn session_lane(
+        &self,
+        lane_id: &str,
+        session_id: &str,
+    ) -> mpsc::Sender<SessionCommandEnvelope> {
+        let mut lanes = self.lanes.lock().await;
+        if let Some(lane) = lanes.get(lane_id) {
+            return lane.clone();
+        }
+        let (tx, rx) = mpsc::channel(self.queue_limit);
+        lanes.insert(lane_id.to_string(), tx.clone());
+        tokio::spawn(run_session_command_lane(
+            self.store.clone(),
+            self.focus_projection.clone(),
+            self.session_projection.clone(),
+            self.agent_runtime_projection.clone(),
+            self.terminal_stream.clone(),
+            lane_id.to_string(),
+            session_id.to_string(),
+            rx,
+        ));
+        tx
+    }
+
+    async fn remove_session_lanes(&self, session_id: &str) {
+        let mut lanes = self.lanes.lock().await;
+        let prefix = format!("{session_id}::");
+        lanes.retain(|id, _| id != session_id && !id.starts_with(&prefix));
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn queue_snapshots(&self) -> Vec<ActorQueueSnapshot> {
+        let lanes = self.lanes.lock().await;
+        let mut snapshots = lanes
+            .iter()
+            .map(|(session_id, sender)| {
+                ActorQueueSnapshot::new(
+                    session_id.clone(),
+                    self.queue_limit,
+                    self.queue_limit.saturating_sub(sender.capacity()),
+                )
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| left.lane_id.cmp(&right.lane_id));
+        snapshots
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn has_lane(&self, session_id: &str) -> bool {
+        let lanes = self.lanes.lock().await;
+        lanes.contains_key(session_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn lane_capacity(&self, session_id: &str) -> Option<usize> {
+        let lanes = self.lanes.lock().await;
+        lanes.get(session_id).map(mpsc::Sender::capacity)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn enqueue_for_test(
+        &self,
+        session_id: &str,
+        command_id: impl Into<String>,
+        command_type: impl Into<String>,
+        request: LocalDaemonRequest,
+    ) -> Result<oneshot::Receiver<Result<LocalDaemonResponse, DaemonError>>, DaemonError> {
+        let lane_id = session_command_lane_id(&request, session_id);
+        let lane = self.session_lane(&lane_id, session_id).await;
+        let (result_tx, result_rx) = oneshot::channel();
+        let command_id = command_id.into();
+        let command_type = command_type.into();
+        let mut command =
+            KernelCommand::from_local_request(command_id.clone(), None, None, &request);
+        command.command_type = command_type.clone();
+        lane.try_send(SessionCommandEnvelope {
+            command_id,
+            command_type,
+            telemetry: LaneCommandTrace::new(
+                crate::runtime::command_latency::CommandTrace::from_command(&command),
+                crate::runtime::command_latency::now_ms(),
+            ),
+            caller_user_id: DEFAULT_LOCAL_USER_ID.to_string(),
+            caller_metaagent_id: None,
+            provider_run_id: None,
+            terminal_caller: false,
+            connection_class: None,
+            external_grant_id: None,
+            sudo_binding: None,
+            request,
+            result_tx,
+        })
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "enqueue test session kernel command",
+            message: format!("session command lane overloaded: {error}"),
+        })?;
+        Ok(result_rx)
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_session_command_lane operation signature and explicit context arguments"
+)]
+async fn run_session_command_lane(
+    store: SessionRuntimeStore,
+    focus_projection: FocusedAgentProjection,
+    session_projection: SessionStateProjectionStore,
+    agent_runtime_projection: AgentRuntimeProjectionStore,
+    terminal_stream: TerminalStreamStore,
+    lane_id: String,
+    session_id: String,
+    mut rx: mpsc::Receiver<SessionCommandEnvelope>,
+) {
+    let executor = SessionRuntimeCommandExecutor::new(
+        store.clone(),
+        focus_projection,
+        session_projection,
+        agent_runtime_projection,
+        terminal_stream,
+        session_id.clone(),
+    );
+    while let Some(envelope) = rx.recv().await {
+        let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
+        log_lane_dispatched(
+            &envelope.telemetry,
+            "session",
+            &lane_id,
+            dispatch_started_at_ms,
+        );
+        crate::logging::info_with_fields(
+            "daemon.kernel_session_actor",
+            "session kernel command dispatched",
+            serde_json::json!({
+                "session_id": session_id,
+                "lane_id": lane_id,
+                "command_id": envelope.command_id,
+                "command_type": envelope.command_type,
+            }),
+        );
+        let authorization = envelope
+            .external_grant_id
+            .as_deref()
+            .map(|id| store.authorize_external_access(id, &envelope.request))
+            .transpose();
+        let authorization = authorization.and_then(|_| {
+            store.authorize_room_provider_epoch(
+                envelope.caller_metaagent_id.as_deref(),
+                envelope.provider_run_id.as_deref(),
+            )
+        });
+        let result = match authorization {
+            Err(error) => Err(error),
+            Ok(_) => {
+                executor
+                    .with_external_command_authority(
+                        envelope
+                            .external_grant_id
+                            .as_deref()
+                            .map(|id| (id, &envelope.request)),
+                        envelope.sudo_binding,
+                    )
+                    .with_room_provider_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        envelope.provider_run_id.as_deref(),
+                    )
+                    .with_room_request_origin(
+                        envelope.caller_metaagent_id.as_deref(),
+                        &envelope.request,
+                    )
+                    .execute(
+                        envelope.request,
+                        envelope.caller_user_id,
+                        envelope.caller_metaagent_id,
+                        envelope.terminal_caller,
+                        envelope.connection_class,
+                    )
+                    .await
+            }
+        };
+        log_lane_completed(
+            &envelope.telemetry,
+            "session",
+            &lane_id,
+            dispatch_started_at_ms,
+            &result,
+        );
+        match &result {
+            Ok(response) => crate::logging::info_with_fields(
+                "daemon.kernel_session_actor",
+                "session kernel command completed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "command_id": envelope.command_id,
+                    "command_type": envelope.command_type,
+                    "response_kind": local_response_kind(response),
+                }),
+            ),
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.kernel_session_actor",
+                "session kernel command failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "command_id": envelope.command_id,
+                    "command_type": envelope.command_type,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
+        let _ = envelope.result_tx.send(result);
+    }
+}
+
+fn session_command_lane_id(request: &LocalDaemonRequest, session_id: &str) -> String {
+    let agent_id = match request {
+        LocalDaemonRequest::UpdateAgentProfile(request) => Some(&request.agent_id),
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(&request.agent_id),
+        _ => None,
+    };
+    if let Some(agent_id) = agent_id {
+        // Preserve mutation ordering for this agent while its native command
+        // waits, without blocking notices, input or interaction responses.
+        return format!("{session_id}::agent-config:{agent_id}");
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_)
+            | LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_)
+    ) {
+        format!("{session_id}{ROOM_INTERRUPT_LANE_SUFFIX}")
+    } else {
+        session_id.to_string()
+    }
+}
+
+fn command_session_actor_user_id(command: &KernelCommand) -> String {
+    match command.caller.caller_kind {
+        KernelCallerKind::LocalClient | KernelCallerKind::Metaagent => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+        KernelCallerKind::RemoteClient
+        | KernelCallerKind::RemoteKernel
+        | KernelCallerKind::HostedService => command
+            .caller
+            .user_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LOCAL_USER_ID.to_string()),
+    }
+}
+
+impl SessionRuntime {
+    async fn verified_metaagent_caller_id(
+        &self,
+        command: &KernelCommand,
+        session_id: &str,
+        caller_user_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if command.caller.caller_kind != KernelCallerKind::Metaagent {
+            return Ok(None);
+        }
+        let Some(metaagent_id) = command.caller.metaagent_id.as_deref() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch session metaagent command",
+                message: "metaagent caller kind requires metaagent_id".to_string(),
+            });
+        };
+        let verified = self
+            .store
+            .verify_metaagent_caller(session_id, metaagent_id, caller_user_id)
+            .await?;
+        Ok(Some(verified))
+    }
+}
+
+fn local_response_kind(response: &LocalDaemonResponse) -> &'static str {
+    match response {
+        LocalDaemonResponse::SessionCreated { .. } => "SessionCreated",
+        LocalDaemonResponse::SessionAttached { .. } => "SessionAttached",
+        LocalDaemonResponse::SessionDetached { .. } => "SessionDetached",
+        LocalDaemonResponse::SessionConfigUpdated { .. } => "SessionConfigUpdated",
+        LocalDaemonResponse::SessionAliased { .. } => "SessionAliased",
+        LocalDaemonResponse::SessionEnded { .. } => "SessionEnded",
+        LocalDaemonResponse::SessionDeleted { .. } => "SessionDeleted",
+        LocalDaemonResponse::AgentSpawned { .. } => "AgentSpawned",
+        LocalDaemonResponse::AgentsSpawned { .. } => "AgentsSpawned",
+        LocalDaemonResponse::AgentDestroyed { .. } => "AgentDestroyed",
+        LocalDaemonResponse::AgentFocused { .. } => "AgentFocused",
+        LocalDaemonResponse::AgentOutputSeenAcknowledged { .. } => "AgentOutputSeenAcknowledged",
+        LocalDaemonResponse::AgentFocusCycled { .. } => "AgentFocusCycled",
+        LocalDaemonResponse::AgentAliased { .. } => "AgentAliased",
+        LocalDaemonResponse::AgentConfigUpdated { .. } => "AgentConfigUpdated",
+        LocalDaemonResponse::AgentProfileUpdated { .. } => "AgentProfileUpdated",
+        LocalDaemonResponse::TerminalResized { .. } => "TerminalResized",
+        LocalDaemonResponse::RuntimeNotices { .. } => "RuntimeNotices",
+        _ => "Other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::{
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentStateRequest,
+        RequestRoomEnvironmentInputTakeoverRequest,
+    };
+    use crate::session::InputTarget;
+
+    #[test]
+    fn room_interrupts_use_one_lane_independent_from_ordinary_session_work() {
+        let cancel =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-7".to_string(),
+            });
+        let takeover = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: InputTarget::Desktop,
+            },
+        );
+        let query = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(
+            session_command_lane_id(&cancel, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(
+            session_command_lane_id(&takeover, "session-1"),
+            "session-1::room-interrupt"
+        );
+        assert_eq!(session_command_lane_id(&query, "session-1"), "session-1");
+    }
+}

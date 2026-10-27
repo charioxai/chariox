@@ -1,0 +1,323 @@
+export type ManagedEnvironmentDesiredState = "running" | "stopped" | "deleted"
+
+export type ManagedEnvironmentObservedState =
+  | "requested"
+  | "provisioning"
+  | "bootstrapping"
+  | "awaiting_context"
+  | "ready"
+  | "starting"
+  | "stopping"
+  | "stopped"
+  | "deleting"
+  | "deleted"
+  | "failed"
+
+export type ManagedEnvironmentLifecycleAction = "start" | "stop" | "restart" | "delete"
+export type ManagedEnvironmentReimageReceiptStatus =
+  | "pending"
+  | "provider_applied"
+  | "reenrolling"
+  | "fresh_equivalent"
+  | "failed_closed"
+
+export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
+export const managedEnvironmentCreateMinimumProtocolVersion = 342
+export const managedEnvironmentShutdownObservationMinimumProtocolVersion = 370
+
+export type ManagedEnvironmentAutoStopPolicy = {
+  readonly minimumRuntimeSeconds: number
+  readonly idleDelaySeconds: number | null
+}
+
+export type ManagedEnvironmentRepositorySelection = {
+  readonly role: "primary" | "supporting"
+  readonly workspaceId: string
+  readonly worktreeId: string | null
+}
+
+export type ManagedEnvironmentDevelopmentSetup =
+  | { readonly kind: "empty" }
+  | {
+      readonly kind: "source_project"
+      readonly projectId: string
+      readonly repositories: readonly ManagedEnvironmentRepositorySelection[]
+    }
+
+export type ManagedEnvironmentProviderAccounts =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "selected"
+      readonly accounts: readonly {
+        readonly provider: string
+        readonly accountProfile: string
+      }[]
+    }
+
+export type ManagedEnvironmentGitCredentials =
+  | { readonly kind: "none" }
+  | { readonly kind: "selected"; readonly credentialIds: readonly string[] }
+
+export type ManagedEnvironmentContextPlanInput = {
+  readonly sourceTargetId: string | null
+  readonly kernelContext: "empty" | "source_kernel"
+  readonly developmentSetup: ManagedEnvironmentDevelopmentSetup
+  readonly providerAccounts: ManagedEnvironmentProviderAccounts
+  readonly gitCredentials: ManagedEnvironmentGitCredentials
+}
+
+export type ManagedEnvironmentContextPlan = Omit<ManagedEnvironmentContextPlanInput, "sourceTargetId"> & {
+  readonly schemaVersion: 1
+  readonly contextId: string
+  readonly planDigest: string
+  readonly source: {
+    readonly sourceTargetId: string
+    readonly relayRealmId: string
+    readonly machineId: string
+    readonly kernelId: string
+    readonly keyThumbprint: string
+  } | null
+}
+
+export type ManagedEnvironmentComputeClassOption = {
+  readonly computeClass: string
+  readonly regions: readonly string[]
+}
+
+export type ManagedEnvironmentContextSourceOption = {
+  readonly sourceTargetId: string
+  readonly machineId: string
+  readonly kernelId: string
+  readonly label: string
+}
+
+export type ManagedEnvironmentSummary = {
+  readonly environmentId: string
+  readonly accountId: string
+  readonly createdByUserId: string
+  readonly name: string
+  readonly region: string
+  readonly computeClass: string
+  readonly managedRepositoryRoot: string
+  readonly desiredState: ManagedEnvironmentDesiredState
+  readonly observedState: ManagedEnvironmentObservedState
+  readonly desiredRevision: number
+  readonly observedRevision: number
+  readonly runtimeMachineId: string | null
+  readonly runtimeKernelId: string | null
+  readonly runtimeReleaseDigest: string | null
+  readonly contextPlan: ManagedEnvironmentContextPlan
+  readonly contextManifestDigest: string | null
+  readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+  readonly runtimeStartedAt?: string | null
+  readonly runningAgentCount?: 0 | 1 | null
+  readonly lastActivityReportedAt?: string | null
+  readonly lastActivityChangedAt?: string | null
+  readonly autoStopWarningAt?: string | null
+  readonly autoStopDeadlineAt?: string | null
+  readonly lastErrorCode: string | null
+  readonly lastErrorMessage: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export type ManagedEnvironmentOperationSummary = {
+  readonly operationId: string
+  readonly environmentId: string
+  readonly requestedByUserId: string
+  readonly kind: "create" | ManagedEnvironmentLifecycleAction | "reimage"
+  readonly idempotencyKey: string
+  readonly requestDigest: string
+  readonly desiredRevision: number
+  readonly status: "pending" | "running" | "succeeded" | "failed"
+  readonly attempt: number
+  readonly retryable: boolean
+  readonly failureCode: string | null
+  readonly failureMessage: string | null
+  readonly completedAt: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export type ManagedEnvironmentDetails = {
+  readonly environment: ManagedEnvironmentSummary
+  readonly operations?: readonly ManagedEnvironmentOperationSummary[]
+}
+
+export type ManagedEnvironmentResult = {
+  readonly environment: ManagedEnvironmentSummary
+  readonly operation: ManagedEnvironmentOperationSummary
+}
+
+export type ManagedEnvironmentReimageReceipt = {
+  readonly receiptId: string
+  readonly environmentId: string
+  readonly operationId: string
+  readonly previousGeneration: number
+  readonly generation: number
+  readonly status: ManagedEnvironmentReimageReceiptStatus
+  readonly freshEquivalent: boolean
+  readonly providerServerId: string
+  readonly previousProviderImageId: string | null
+  readonly providerImageId: string
+  readonly providerProfileId: string
+  readonly providerProfileDigest: string
+  readonly runtimeReleaseDigest: string
+  readonly oldMachineId: string | null
+  readonly newMachineId: string | null
+  readonly oldKernelId: string | null
+  readonly newKernelId: string | null
+  readonly oldRelayRealmId: string | null
+  readonly newRelayRealmId: string | null
+  readonly oldRelayTargetId: string | null
+  readonly newRelayTargetId: string | null
+  readonly oldBootstrapGrantId: string | null
+  readonly newBootstrapGrantId: string | null
+  readonly oldCredentialIds: unknown
+  readonly newCredentialIds: unknown
+  readonly runtimeEvidence: unknown
+  readonly sourceEvidence: unknown
+  readonly residueChecks: unknown
+  readonly revocations: unknown
+  readonly billingObservation: unknown
+  readonly resourceObservation: unknown
+  readonly cleanupState: unknown
+  readonly rollbackState: unknown
+  readonly receiptDigest: string | null
+  readonly failureCode: string | null
+  readonly failureMessage: string | null
+  readonly requestedAt: string
+  readonly completedAt: string | null
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+export type ManagedEnvironmentReimageResult = ManagedEnvironmentResult & {
+  readonly receipt: ManagedEnvironmentReimageReceipt
+}
+
+export type ManagedEnvironmentReimagePreflight = {
+  readonly environmentId: string
+  readonly retained: {
+    readonly providerServerId: string
+    readonly generation: number
+    readonly desiredRevision: number
+    readonly observedRevision: number
+    readonly runtimeMachineId: string
+    readonly runtimeKernelId: string
+    readonly runtimeRelayRealmId: string
+    readonly runtimeReleaseDigest: string
+  }
+  readonly desiredRelease: {
+    readonly providerId: "hetzner"
+    readonly providerImageId: string
+    readonly providerProfileId: string
+    readonly providerProfileDigest: string
+    readonly runtimeReleaseDigest: string
+    readonly runtimeSourceCommit: string
+    readonly runtimeSourceTree: string
+  }
+}
+
+export type ManagedEnvironmentPreReimageObservationAcknowledgement = {
+  readonly environmentId: string
+  readonly generation: number
+  readonly observedAt: string
+}
+
+export type ManagedEnvironmentCatalog = {
+  readonly computeClasses: readonly ManagedEnvironmentComputeClassOption[]
+  readonly contextSources: readonly ManagedEnvironmentContextSourceOption[]
+  readonly environments: readonly ManagedEnvironmentSummary[]
+}
+
+export type ManagedContextTransferTicket = {
+  readonly environmentId: string
+  readonly contextPlan: ManagedEnvironmentContextPlan
+  readonly target: {
+    readonly relayRealmId: string
+    readonly machineId: string
+    readonly kernelId: string
+    readonly relayPublicKey: string
+    readonly keyThumbprint: string
+  }
+}
+
+export function listManagedEnvironmentCatalogRequest() {
+  return { ListManagedEnvironmentCatalog: null } as const
+}
+
+export function getManagedEnvironmentRequest(environmentId: string) {
+  return { GetManagedEnvironment: { environmentId } } as const
+}
+
+export function getManagedEnvironmentReimagePreflightRequest(environmentId: string) {
+  return { GetManagedEnvironmentReimagePreflight: { environmentId } } as const
+}
+
+export const managedEnvironmentReimageReceiptMinimumProtocolVersion = 345
+
+export function getManagedEnvironmentReimageReceiptRequest(environmentId: string) {
+  return { GetManagedEnvironmentReimageReceipt: { environmentId } } as const
+}
+
+export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {
+  return { PrepareManagedEnvironmentContextTransfer: { environmentId } } as const
+}
+
+export function prepareManagedEnvironmentGitCredentialEnrollmentRequest(input: {
+  readonly environmentId: string
+  readonly sourceTargetId: string
+  readonly gitCredentials: ManagedEnvironmentGitCredentials
+}) {
+  return { PrepareManagedEnvironmentGitCredentialEnrollment: input } as const
+}
+
+export function createManagedEnvironmentRequest(input: {
+  readonly clientRequestId: string
+  readonly name: string
+  readonly region: string
+  readonly computeClass: string
+  readonly managedRepositoryRoot?: string
+  readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+  readonly contextPlan: ManagedEnvironmentContextPlanInput
+}) {
+  return { CreateManagedEnvironment: input } as const
+}
+
+export function requestManagedEnvironmentLifecycleRequest(input: {
+  readonly environmentId: string
+  readonly action: ManagedEnvironmentLifecycleAction
+  readonly idempotencyKey: string
+}) {
+  return { RequestManagedEnvironmentLifecycle: input } as const
+}
+
+export function requestManagedEnvironmentReimageRequest(input: {
+  readonly environmentId: string
+  readonly expectedGeneration: number
+  readonly expectedProviderServerId: string
+  readonly expectedProviderImageId: string
+  readonly expectedProviderProfileId: string
+  readonly expectedProviderProfileDigest: string
+  readonly expectedRuntimeReleaseDigest: string
+  readonly expectedRuntimeSourceCommit: string
+  readonly expectedRuntimeSourceTree: string
+  readonly contextPlan: ManagedEnvironmentContextPlanInput
+  readonly idempotencyKey: string
+}) {
+  return { RequestManagedEnvironmentReimage: input } as const
+}
+
+export function observeManagedEnvironmentPreReimageRequest(input: {
+  readonly environmentId: string
+  readonly expectedGeneration: number
+}) {
+  return { ObserveManagedEnvironmentPreReimage: input } as const
+}
+
+// MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
+export const providerAccountPortabilityPreflightMinimumProtocolVersion = 491
+export function preflightProviderAccountPortabilityRequest(providerAccounts: ManagedEnvironmentProviderAccounts) {
+  return {PreflightProviderAccountPortability: {providerAccounts}} as const
+}

@@ -1,0 +1,403 @@
+import type {
+  AgentInstance,
+  ProviderAccountProfile,
+  ProviderAuthStatus,
+  RuntimeProviderRun,
+  RuntimeSession,
+} from "./cli-types.js"
+import type { CharioxPreferences } from "./preferences.js"
+import {
+  backendProviderLabel,
+  isBackendProviderId,
+  normalizeBackendProviderId,
+  providerCatalogIsLocalFallback,
+  selectConfiguredModel,
+  selectConfiguredVariant,
+  type BackendProviderId,
+  type ProviderCatalog,
+} from "./provider-catalog.js"
+import { providerRunUsesNativeTui } from "./provider-api.js"
+import type { ThemeRegistry } from "./theme-registry.js"
+import type { WaitingRoomState } from "./waiting-room-types.js"
+import {
+  deriveWaitingRoomModelSelectionDecision,
+  deriveWaitingRoomVariantSelectionDecision,
+} from "./waiting-room-controller.js"
+import {
+  defaultProviderAccountProfileId,
+  resolveProviderAccountSelection,
+} from "./waiting-room-provider-accounts.js"
+import type { SessionListEntry } from "./sessions.js"
+
+type FooterTone = "info" | "error"
+
+type CurrentProviderSelection = {
+  provider: string
+  accountProfile?: string
+  model: string
+  effort: string
+}
+
+type ProviderSelectionDefaults = {
+  provider: BackendProviderId
+  accountProfile?: string
+  model: string
+  effort: string
+}
+
+type ProviderSelectionControllerDeps = {
+  currentProviderSelection: () => CurrentProviderSelection
+  waitingRoomState: () => WaitingRoomState
+  availableSessions: () => SessionListEntry[]
+  providerCatalog: () => ProviderCatalog
+  providerAccounts?: () => readonly ProviderAccountProfile[]
+  loadProviderCatalog?: (provider: BackendProviderId, accountProfile: string) => Promise<ProviderCatalog>
+  setProviderCatalog?: (catalog: ProviderCatalog) => void
+  themeRegistry: () => ThemeRegistry
+  preferences: () => CharioxPreferences
+  defaults: () => ProviderSelectionDefaults
+  setDefaults: (selection: ProviderSelectionDefaults) => void
+  reconcileWaitingRoom: (next: WaitingRoomState) => void
+  isAttached: () => boolean
+  focusedAgentId: () => string | null | undefined
+  providerRunState: () => RuntimeProviderRun | null
+  sessionState: () => RuntimeSession
+  updateAgentProfile: (
+    sessionId: string,
+    agentId: string,
+    profile: ProviderSelectionDefaults,
+  ) => Promise<{ session: RuntimeSession; agent?: AgentInstance }>
+  updateAgentConfig: (
+    sessionId: string,
+    agentId: string,
+    options: {
+      executionMode?: "build" | "plan"
+      permissionLevel?: "required" | "yolo"
+    },
+  ) => Promise<{ session: RuntimeSession; agent?: AgentInstance }>
+  applySessionState: (session: RuntimeSession) => void
+  clearProviderRunState: () => void
+  getProviderAuthStatus: (provider: BackendProviderId, accountProfile: string) => Promise<ProviderAuthStatus>
+  appendNotice: (text: string) => void
+  flashFooter: (message: string, tone: FooterTone) => void
+  warn?: (message: string, fields: Record<string, unknown>) => void
+  formatError?: (error: unknown) => string
+}
+
+export type ProviderSelectionController = {
+  applyModelSelection(modelId: string): Promise<void>
+  applyVariantSelection(variant: string): Promise<void>
+  applyProviderSelection(providerId: string): Promise<void>
+  applyAccountSelection(accountProfile: string, target?: {sessionId: string; agentId: string}): Promise<void>
+  applyModeSelection(mode: string): Promise<void>
+  applyPermissionSelection(permission: string): Promise<void>
+}
+
+export function createProviderSelectionController(
+  deps: ProviderSelectionControllerDeps,
+): ProviderSelectionController {
+  const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
+  const providerAccounts = () => deps.providerAccounts?.() ?? []
+  const loadProviderCatalog = (provider: BackendProviderId, accountProfile: string) => (
+    deps.loadProviderCatalog?.(provider, accountProfile) ?? Promise.resolve(deps.providerCatalog())
+  )
+
+  const updateFocusedAgentProfile = async (
+    selection: ProviderSelectionDefaults,
+    nativeTuiMessage?: string,
+  ): Promise<boolean> => {
+    const agentId = deps.focusedAgentId()
+    if (!agentId) {
+      deps.flashFooter("no focused agent to update", "error")
+      return false
+    }
+    const activeRun = deps.providerRunState()
+    if (nativeTuiMessage && activeRun?.agent_instance_id === agentId && providerRunUsesNativeTui(activeRun)) {
+      deps.flashFooter(nativeTuiMessage, "error")
+      return false
+    }
+    const payload = await deps.updateAgentProfile(deps.sessionState().id, agentId, selection)
+    deps.applySessionState(payload.session)
+    deps.clearProviderRunState()
+    return true
+  }
+
+  const updateFocusedAgentConfig = async (
+    options: Parameters<ProviderSelectionControllerDeps["updateAgentConfig"]>[2],
+  ): Promise<boolean> => {
+    const agentId = deps.focusedAgentId()
+    if (!agentId) {
+      deps.flashFooter("no focused agent to update", "error")
+      return false
+    }
+    const payload = await deps.updateAgentConfig(deps.sessionState().id, agentId, options)
+    deps.applySessionState(payload.session)
+    return true
+  }
+
+  let modelSelectionGeneration = 0
+  return {
+    async applyModelSelection(modelId) {
+      const generation = ++modelSelectionGeneration
+      const currentSelection = deps.currentProviderSelection()
+      const provider = normalizeBackendProviderId(currentSelection.provider)
+      const accountProfile = currentSelection.accountProfile ?? defaultProviderAccountProfileId(providerAccounts(), provider)
+      const sessionId = deps.sessionState().id
+      const agentId = deps.focusedAgentId()
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(provider, accountProfile)
+      } catch (error) {
+        if (generation === modelSelectionGeneration) deps.flashFooter(formatError(error), "error")
+        return
+      }
+      const current = deps.currentProviderSelection()
+      if (generation !== modelSelectionGeneration
+        || deps.sessionState().id !== sessionId || deps.focusedAgentId() !== agentId
+        || normalizeBackendProviderId(current.provider) !== provider
+        || (current.accountProfile ?? defaultProviderAccountProfileId(providerAccounts(), provider)) !== accountProfile) {
+        return
+      }
+      deps.setProviderCatalog?.(catalog)
+      const localFallback = providerCatalogIsLocalFallback(catalog)
+      const decision = deriveWaitingRoomModelSelectionDecision({
+        modelId,
+        state: deps.waitingRoomState(),
+        sessions: deps.availableSessions(),
+        catalog,
+        themeRegistry: deps.themeRegistry(),
+        currentProvider: normalizeBackendProviderId(currentSelection.provider),
+        configuredEffort: currentSelection.effort,
+      })
+      if (decision.kind === "error") {
+        deps.flashFooter(decision.message, "error")
+        return
+      }
+      deps.reconcileWaitingRoom(decision.nextState)
+      if (!deps.isAttached()) {
+        deps.flashFooter(selectionMessage(`selected model ${decision.selectedModelId}`, localFallback), "info")
+        return
+      }
+      const updated = await updateFocusedAgentProfile(decision.launch, "model is controlled by the provider-native TUI for this agent")
+      if (updated) {
+        deps.flashFooter(selectionMessage(`model set to ${decision.selectedModelId}`, localFallback), "info")
+      }
+    },
+    async applyVariantSelection(variant) {
+      const currentSelection = deps.currentProviderSelection()
+      const catalog = deps.providerCatalog()
+      const localFallback = providerCatalogIsLocalFallback(catalog)
+      const decision = deriveWaitingRoomVariantSelectionDecision({
+        variant,
+        currentModelId: currentSelection.model,
+        currentProviderId: normalizeBackendProviderId(currentSelection.provider),
+        state: deps.waitingRoomState(),
+        sessions: deps.availableSessions(),
+        catalog,
+        themeRegistry: deps.themeRegistry(),
+      })
+      if (decision.kind === "error") {
+        deps.flashFooter(decision.message, "error")
+        return
+      }
+      deps.reconcileWaitingRoom(decision.nextState)
+      if (!deps.isAttached()) {
+        deps.flashFooter(selectionMessage(`selected variant ${decision.selectedVariant}`, localFallback), "info")
+        return
+      }
+      const updated = await updateFocusedAgentProfile(decision.launch, "variant is controlled by the provider-native TUI for this agent")
+      if (updated) {
+        deps.flashFooter(selectionMessage(`variant set to ${decision.selectedVariant}`, localFallback), "info")
+      }
+    },
+    async applyProviderSelection(providerId) {
+      if (!isBackendProviderId(providerId)) {
+        deps.flashFooter(`unknown provider: ${providerId}`, "error")
+        return
+      }
+      const defaults = deps.defaults()
+      const saved = deps.preferences().providers?.[providerId]
+      const accountProfile = defaultProviderAccountProfileId(providerAccounts(), providerId)
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(providerId, accountProfile)
+      } catch (error) {
+        deps.flashFooter(formatError(error), "error")
+        return
+      }
+      deps.setProviderCatalog?.(catalog)
+      const localFallback = providerCatalogIsLocalFallback(catalog)
+      const selected = selectConfiguredModel(
+        catalog,
+        saved?.model ?? defaults.model,
+        providerId,
+      )
+      const nextDefaults = {
+        provider: providerId,
+        accountProfile,
+        model: selected?.id ?? defaults.model,
+        effort: saved?.effort ?? (selected ? selectConfiguredVariant(selected, defaults.effort) : defaults.effort),
+      }
+
+      deps.setDefaults(nextDefaults)
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        providerId,
+        accountProfileId: accountProfile,
+        modelId: nextDefaults.model,
+        effort: nextDefaults.effort,
+      })
+
+      if (deps.isAttached()) {
+        try {
+          const updated = await updateFocusedAgentProfile(nextDefaults)
+          if (!updated) {
+            return
+          }
+        } catch (error) {
+          deps.warn?.("provider profile update failed", {
+            provider: providerId,
+            error: formatError(error),
+          })
+          deps.flashFooter(formatError(error), "error")
+          return
+        }
+      }
+
+      if (providerId === "codex") {
+        try {
+          const status = await deps.getProviderAuthStatus(providerId, accountProfile)
+          if (status.auth_state !== "authenticated") {
+            deps.appendNotice([
+              "Codex is not logged in.",
+              status.login_hint ?? "Run /provider login codex to authenticate.",
+            ].join(" "))
+          }
+        } catch (error) {
+          deps.warn?.("provider auth status lookup failed after selection", {
+            provider: providerId,
+            error: formatError(error),
+          })
+        }
+      }
+      deps.flashFooter(selectionMessage(`${backendProviderLabel(providerId)} selected`, localFallback), "info")
+    },
+    async applyAccountSelection(accountProfile, target) {
+      const targetAgent = target && deps.sessionState().id === target.sessionId
+        ? deps.sessionState().agents.find(agent => agent.id === target.agentId) : undefined
+      if (target && !targetAgent) { deps.flashFooter("account recovery target is no longer available", "error"); return }
+      const current = targetAgent
+        ? {provider: targetAgent.provider, accountProfile: targetAgent.account_profile ?? undefined, model: targetAgent.model ?? "", effort: targetAgent.effort ?? ""}
+        : deps.currentProviderSelection()
+      const provider = normalizeBackendProviderId(current.provider)
+      const selection = resolveProviderAccountSelection(providerAccounts(), provider, accountProfile)
+      if (selection.kind === "ambiguous") {
+        deps.flashFooter(`ambiguous ${backendProviderLabel(provider)} account: ${selection.aliases.join(", ")}`, "error")
+        return
+      }
+      if (selection.kind === "missing") {
+        deps.flashFooter(`unknown ${backendProviderLabel(provider)} account`, "error")
+        return
+      }
+      const profile = selection.profile
+      let catalog: ProviderCatalog
+      try {
+        catalog = await loadProviderCatalog(provider, profile.profile_id)
+      } catch (error) {
+        deps.flashFooter(formatError(error), "error")
+        return
+      }
+      if (!target) deps.setProviderCatalog?.(catalog)
+      const selected = selectConfiguredModel(catalog, current.model, provider)
+      if (!selected) {
+        deps.flashFooter(`${profile.label} has no available ${backendProviderLabel(provider)} models`, "error")
+        return
+      }
+      const effort = selectConfiguredVariant(selected, current.effort)
+      const nextSelection = {
+        provider,
+        accountProfile: profile.profile_id,
+        model: selected.id,
+        effort,
+      }
+      if (target) {
+        if (deps.sessionState().id !== target.sessionId || !deps.sessionState().agents.some(agent => agent.id === target.agentId)) return
+        try {
+          const payload = await deps.updateAgentProfile(target.sessionId, target.agentId, nextSelection)
+          if (deps.sessionState().id === target.sessionId) deps.applySessionState(payload.session)
+          if (deps.focusedAgentId() === target.agentId) deps.clearProviderRunState()
+          deps.flashFooter(`account set to ${profile.label}`, "info")
+        } catch (error) { deps.flashFooter(formatError(error), "error") }
+        return
+      }
+      deps.setDefaults(nextSelection)
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        providerId: provider,
+        accountProfileId: profile.profile_id,
+        modelId: selected.id,
+        effort,
+      })
+      if (deps.isAttached()) {
+        try {
+          const updated = await updateFocusedAgentProfile(nextSelection)
+          if (!updated) return
+        } catch (error) {
+          deps.flashFooter(formatError(error), "error")
+          return
+        }
+      }
+      deps.flashFooter(`account set to ${profile.label}`, "info")
+    },
+    async applyModeSelection(rawMode) {
+      const mode = parseExecutionMode(rawMode)
+      if (!mode) {
+        deps.flashFooter("usage: /mode <build|plan>", "error")
+        return
+      }
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        executionMode: mode,
+      })
+      if (!deps.isAttached()) {
+        deps.flashFooter(`mode default set to ${mode}`, "info")
+        return
+      }
+      if (await updateFocusedAgentConfig({ executionMode: mode })) {
+        deps.flashFooter(`mode set to ${mode}`, "info")
+      }
+    },
+    async applyPermissionSelection(rawPermission) {
+      const permission = parsePermissionLevel(rawPermission)
+      if (!permission) {
+        deps.flashFooter("usage: /permissions <required|yolo>", "error")
+        return
+      }
+      deps.reconcileWaitingRoom({
+        ...deps.waitingRoomState(),
+        permissionLevel: permission,
+      })
+      if (!deps.isAttached()) {
+        deps.flashFooter(`permissions default set to ${permission}`, "info")
+        return
+      }
+      if (await updateFocusedAgentConfig({ permissionLevel: permission })) {
+        deps.flashFooter(`permissions set to ${permission}`, "info")
+      }
+    },
+  }
+}
+
+function parseExecutionMode(value: string): "build" | "plan" | null {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "build" || normalized === "plan" ? normalized : null
+}
+
+function parsePermissionLevel(value: string): "required" | "yolo" | null {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "required" || normalized === "yolo" ? normalized : null
+}
+
+function selectionMessage(message: string, localFallback: boolean) {
+  return localFallback ? `${message} (local provider list)` : message
+}

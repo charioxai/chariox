@@ -1,0 +1,219 @@
+import {
+  drillMatrixReportCompletionExitCode,
+  drillMatrixReportExitCode,
+  findDrillMatrixReportPaths,
+  readDrillMatrixReport,
+  summarizeDrillMatrixReports,
+} from "./drill-matrix-report.mjs"
+import { parseDrillIsoTimestamp } from "./drill-time.mjs"
+
+export async function matrixValidationGateCheck({ matrixReports, matrixRoots }, {
+  maxDepth,
+  requireComplete,
+  requiredMatrices,
+  requiredMatrixClassifications,
+  requiredMatrixRuntimeSignals = [],
+  requiredDeploymentPresets,
+  requiredProviders,
+  requiredScenarios,
+  requiredMatrixMaxAgeMs = null,
+  nowMs = Date.now(),
+}) {
+  if (matrixRoots.length === 0
+    && matrixReports.length === 0
+    && requiredMatrices.length === 0
+    && requiredMatrixClassifications.length === 0
+    && requiredMatrixRuntimeSignals.length === 0
+    && requiredDeploymentPresets.length === 0
+    && requiredProviders.length === 0
+    && requiredScenarios.length === 0
+    && requiredMatrixMaxAgeMs === null) {
+    return {
+      status: "skipped",
+      roots: [],
+      inputs: [],
+      reportPaths: [],
+      requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports: [],
+      requiredMatrices: [],
+      missingMatrices: [],
+      requiredMatrixClassifications: [],
+      missingMatrixClassifications: [],
+      requiredMatrixRuntimeSignals: [],
+      missingMatrixRuntimeSignals: [],
+      requiredMatrixRuntimeSignalScenarios: {},
+      requiredDeploymentPresets: [],
+      missingDeploymentPresets: [],
+      requiredProviders: [],
+      missingProviders: [],
+      requiredScenarios: [],
+      missingScenarios: [],
+    }
+  }
+  try {
+    const discovered = matrixRoots.length > 0
+      ? await findDrillMatrixReportPaths(matrixRoots, { maxDepth })
+      : []
+    const reportPaths = [...new Set([...matrixReports, ...discovered])].sort()
+    if (reportPaths.length === 0) {
+      return {
+        status: "failed",
+        roots: [...matrixRoots],
+        inputs: [...matrixReports],
+        reportPaths,
+        requireComplete,
+        requiredMatrixMaxAgeMs,
+        staleMatrixReports: [],
+        requiredMatrices: [...requiredMatrices],
+        missingMatrices: [...requiredMatrices],
+        requiredMatrixClassifications: [...requiredMatrixClassifications],
+        missingMatrixClassifications: [...requiredMatrixClassifications],
+        requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+        missingMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+        requiredMatrixRuntimeSignalScenarios: requiredRuntimeSignalScenarioEvidence(null, requiredMatrixRuntimeSignals),
+        requiredDeploymentPresets: [...requiredDeploymentPresets],
+        missingDeploymentPresets: [...requiredDeploymentPresets],
+        requiredProviders: [...requiredProviders],
+        missingProviders: [...requiredProviders],
+        requiredScenarios: [...requiredScenarios],
+        missingScenarios: [...requiredScenarios],
+        error: "no matrix reports found",
+      }
+    }
+    const reports = await Promise.all(reportPaths.map((reportPath) => readDrillMatrixReport(reportPath)))
+    const aggregate = summarizeDrillMatrixReports(reports, { sources: reportPaths })
+    const staleMatrixReports = staleMatrixReportsFor(reports, reportPaths, {
+      nowMs,
+      requiredMatrixMaxAgeMs,
+    })
+    const exitCode = requireComplete
+      ? drillMatrixReportCompletionExitCode(reports)
+      : drillMatrixReportExitCode(reports)
+    const missingMatrices = missingRequiredMatrices(aggregate, requiredMatrices)
+    const missingMatrixClassifications = missingRequiredMatrixClassifications(aggregate, requiredMatrixClassifications)
+    const missingMatrixRuntimeSignals = missingRequiredMatrixRuntimeSignals(aggregate, requiredMatrixRuntimeSignals)
+    const requiredMatrixRuntimeSignalScenarios = requiredRuntimeSignalScenarioEvidence(aggregate, requiredMatrixRuntimeSignals)
+    const missingDeploymentPresets = missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets)
+    const missingProviders = missingRequiredProviders(aggregate, requiredProviders)
+    const missingScenarios = missingRequiredScenarios(aggregate, requiredScenarios)
+    return {
+      status: exitCode === 0
+        && missingMatrices.length === 0
+        && missingMatrixClassifications.length === 0
+        && missingMatrixRuntimeSignals.length === 0
+        && missingDeploymentPresets.length === 0
+        && missingProviders.length === 0
+        && missingScenarios.length === 0
+        && staleMatrixReports.length === 0
+        ? "passed"
+        : "failed",
+      roots: [...matrixRoots],
+      inputs: [...matrixReports],
+      reportPaths,
+      requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports,
+      requiredMatrices: [...requiredMatrices],
+      missingMatrices,
+      requiredMatrixClassifications: [...requiredMatrixClassifications],
+      missingMatrixClassifications,
+      requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+      missingMatrixRuntimeSignals,
+      requiredMatrixRuntimeSignalScenarios,
+      requiredDeploymentPresets: [...requiredDeploymentPresets],
+      missingDeploymentPresets,
+      requiredProviders: [...requiredProviders],
+      missingProviders,
+      requiredScenarios: [...requiredScenarios],
+      missingScenarios,
+      aggregate,
+    }
+  } catch (error) {
+    return {
+      status: "failed",
+      roots: [...matrixRoots],
+      inputs: [...matrixReports],
+      reportPaths: [],
+      requireComplete,
+      requiredMatrixMaxAgeMs,
+      staleMatrixReports: [],
+      requiredMatrices: [...requiredMatrices],
+      missingMatrices: [...requiredMatrices],
+      requiredMatrixClassifications: [...requiredMatrixClassifications],
+      missingMatrixClassifications: [...requiredMatrixClassifications],
+      requiredMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+      missingMatrixRuntimeSignals: [...requiredMatrixRuntimeSignals],
+      requiredMatrixRuntimeSignalScenarios: requiredRuntimeSignalScenarioEvidence(null, requiredMatrixRuntimeSignals),
+      requiredDeploymentPresets: [...requiredDeploymentPresets],
+      missingDeploymentPresets: [...requiredDeploymentPresets],
+      requiredProviders: [...requiredProviders],
+      missingProviders: [...requiredProviders],
+      requiredScenarios: [...requiredScenarios],
+      missingScenarios: [...requiredScenarios],
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+function missingRequiredDeploymentPresets(aggregate, requiredDeploymentPresets) {
+  const present = new Set(Object.keys(aggregate.deploymentPresets ?? {}))
+  return requiredDeploymentPresets.filter((preset) => !present.has(preset))
+}
+
+function missingRequiredProviders(aggregate, requiredProviders) {
+  const present = new Set(Object.keys(aggregate.providers ?? {}))
+  return requiredProviders.filter((provider) => !present.has(provider))
+}
+
+function missingRequiredScenarios(aggregate, requiredScenarios) {
+  const present = new Set(Object.keys(aggregate.scenarioIds ?? {}))
+  return requiredScenarios.filter((scenario) => !present.has(scenario))
+}
+
+function missingRequiredMatrices(aggregate, requiredMatrices) {
+  const present = new Set(Object.keys(aggregate.matrixNames ?? {}))
+  return requiredMatrices.filter((matrix) => !present.has(matrix))
+}
+
+function missingRequiredMatrixClassifications(aggregate, requiredMatrixClassifications) {
+  const present = new Set(Object.keys(aggregate.classifications ?? {}))
+  return requiredMatrixClassifications.filter((classification) => !present.has(classification))
+}
+
+function missingRequiredMatrixRuntimeSignals(aggregate, requiredMatrixRuntimeSignals) {
+  const present = new Set(Object.keys(aggregate.runtimeSignals ?? {}))
+  return requiredMatrixRuntimeSignals.filter((signal) => !present.has(signal))
+}
+
+function requiredRuntimeSignalScenarioEvidence(aggregate, requiredMatrixRuntimeSignals) {
+  const evidence = aggregate?.runtimeSignalScenarios && typeof aggregate.runtimeSignalScenarios === "object"
+    ? aggregate.runtimeSignalScenarios
+    : {}
+  return Object.fromEntries(requiredMatrixRuntimeSignals.map((signal) => [
+    signal,
+    Array.isArray(evidence[signal]) ? evidence[signal] : [],
+  ]))
+}
+
+function staleMatrixReportsFor(reports, sources, { nowMs, requiredMatrixMaxAgeMs }) {
+  if (requiredMatrixMaxAgeMs === null) return []
+  if (!Number.isSafeInteger(requiredMatrixMaxAgeMs) || requiredMatrixMaxAgeMs < 0) {
+    throw new Error("requiredMatrixMaxAgeMs must be a non-negative integer")
+  }
+  if (!Number.isFinite(nowMs)) {
+    throw new Error("nowMs must be finite")
+  }
+  return reports
+    .map((report, position) => {
+      const completedMs = parseDrillIsoTimestamp(report.completedAt, `matrix report ${sources[position] ?? position}.completedAt`)
+      return {
+        source: sources[position] ?? null,
+        matrix: report.matrix,
+        completedAt: report.completedAt,
+        ageMs: Math.max(0, Math.floor(nowMs - completedMs)),
+        maxAgeMs: requiredMatrixMaxAgeMs,
+      }
+    })
+    .filter((entry) => entry.ageMs > requiredMatrixMaxAgeMs)
+}

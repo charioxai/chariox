@@ -1,0 +1,5 @@
+set provider opencode
+set model opencode/gpt-5.4-mini
+session new --dir /workspace as slice_session
+agent spawn probe opencode/gpt-5.4-mini --dir /workspace as probe
+prompt $probe "Reply with exactly: slice opencode zen ok" --wait --show-reply

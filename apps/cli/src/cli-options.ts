@@ -1,0 +1,370 @@
+import path from "node:path"
+import process from "node:process"
+
+import type {
+  CharioxPreferences,
+} from "./preferences.js"
+import type {
+  CliOptions,
+} from "./cli-types.js"
+import { cliAppUsage, tuiAppHelp } from "./app-command-catalog.js"
+
+export function parseArgs(args: string[]): CliOptions {
+  const options: CliOptions = {
+    clientId: `chariox-cli-${process.pid}`,
+    model: "default",
+    accountProfile: "default",
+    effort: "",
+  }
+  let helpRequested = false
+  let explicitRelayToken: string | undefined
+  let relayTokenSource: "argv" | "environment" | null = null
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? ""
+    const next = () => {
+      const value = args[index + 1]
+      if (!value || value.startsWith("-")) {
+        throw new Error(`missing value for ${arg}`)
+      }
+      index += 1
+      return value
+    }
+
+    switch (arg) {
+      case "--detached":
+        options.detached = true
+        break
+      case "--socket":
+        options.socketPath = next()
+        break
+      case "--automation-socket":
+        options.automationSocket = path.resolve(next())
+        break
+      case "--kernel-url":
+        options.kernelUrl = next()
+        break
+      case "--session":
+        options.sessionId = next()
+        break
+      case "--relay-url":
+        options.relayUrl = next()
+        break
+      case "--relay-token-issuer": {
+        const endpoint = next()
+        const daemonId = next()
+        options.relayTokenIssuer = { endpoint, daemonId }
+        break
+      }
+      case "--relay-token":
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        options.relayToken = explicitRelayToken = next()
+        relayTokenSource = "argv"
+        break
+      case "--relay-token-env": {
+        if (relayTokenSource) throw new Error("--relay-token and --relay-token-env cannot be combined")
+        const name = next()
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("--relay-token-env requires an environment variable name")
+        const token = process.env[name]
+        if (!token?.trim()) throw new Error(`--relay-token-env ${name} is empty or missing`)
+        options.relayToken = explicitRelayToken = token
+        relayTokenSource = "environment"
+        break
+      }
+      case "--target-daemon-id":
+        options.targetDaemonId = next()
+        break
+      case "--target-daemon-alias":
+        options.targetDaemonAlias = next()
+        break
+      case "--terminal-pairing-link":
+      case "--pairing-link":
+        applyTerminalPairingLinkOptions(options, next())
+        break
+      case "--create-session":
+        options.createSession = true
+        break
+      case "--delete-session":
+        options.deleteSessionRef = next()
+        break
+      case "--alias":
+        options.alias = next()
+        break
+      case "--client-id":
+        options.clientId = next()
+        break
+      case "--model":
+        options.model = next()
+        break
+      case "--provider":
+        options.provider = next()
+        break
+      case "--account-profile":
+        options.accountProfile = next()
+        break
+      case "--effort":
+        options.effort = next()
+        break
+      case "--workspace":
+        options.workspace = path.resolve(next())
+        break
+      case "--worktree":
+        options.worktree = path.resolve(next())
+        break
+      case "--help":
+      case "-h":
+        helpRequested = true
+        break
+      default:
+        if (isTerminalPairingLink(arg)) {
+          applyTerminalPairingLinkOptions(options, arg)
+          break
+        }
+        throw new Error(`unknown argument ${arg}`)
+    }
+  }
+
+  if (helpRequested) {
+    printUsage()
+    process.exit(0)
+  }
+  if (explicitRelayToken) options.relayToken = explicitRelayToken
+  if (options.relayToken === "operator-client-token-required") throw new Error("Scoped self-host pairing requires an operator-issued CLIENT transport token; supply --relay-token-env NAME. The kernel credential is private.")
+  validateOptions(options)
+  return options
+}
+
+export function defaultKernelEndpoint(): string {
+  if (process.env.CHARIOX_KERNEL_URL) {
+    return process.env.CHARIOX_KERNEL_URL
+  }
+  const host = process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"
+  const port = process.env.CHARIOX_KERNEL_PORT ?? "43118"
+  return `ws://${host}:${port}/kernel`
+}
+
+export function resolveConfiguredCloudRelayApiUrl(preferences: CharioxPreferences): string | undefined {
+  const configured = process.env.CHARIOX_CLOUD_API_URL
+    ?? process.env.CHARIOX_CLOUD_HOSTED_API_URL
+    ?? preferences.relay?.cloud?.apiUrl
+  return configured?.trim().replace(/\/+$/, "") || undefined
+}
+
+export function applyProviderPreferenceDefaults(options: CliOptions, preferences: CharioxPreferences): CliOptions {
+  const configuredProviderPreferences = preferences.providers?.[options.provider ?? "opencode"]
+  if (options.model === "default") {
+    options.model = configuredProviderPreferences?.model ?? options.model
+  }
+  if (!options.effort.trim()) {
+    options.effort = configuredProviderPreferences?.effort ?? options.effort
+  }
+  return options
+}
+
+function validateOptions(options: CliOptions): void {
+  if (options.createSession && options.sessionId) {
+    throw new Error("--create-session cannot be used together with --session")
+  }
+  if (options.detached && (options.createSession || options.sessionId || options.deleteSessionRef)) {
+    throw new Error("--detached cannot be used together with --create-session, --session, or --delete-session")
+  }
+  if (options.relayUrl && !options.relayToken) {
+    throw new Error("--relay-url requires --relay-token")
+  }
+  if (options.relayUrl && !options.targetDaemonId && !options.targetDaemonAlias) {
+    throw new Error("--relay-url requires --target-daemon-id or --target-daemon-alias")
+  }
+  if (options.relayUrl && (options.kernelUrl || options.socketPath)) {
+    throw new Error("--relay-url cannot be used together with --kernel-url or --socket")
+  }
+  if (options.createSession && options.deleteSessionRef) {
+    throw new Error("--create-session cannot be used together with --delete-session")
+  }
+  if (options.alias && !options.createSession) {
+    throw new Error("--alias requires --create-session")
+  }
+}
+
+function isTerminalPairingLink(value: string) {
+  return value.trim().startsWith("chariox-terminal-pair-v1.")
+}
+
+export function terminalPairingLinkFromArgs(args: string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index] ?? ""
+    if (value === "--terminal-pairing-link" || value === "--pairing-link") {
+      return args[index + 1]?.trim() || null
+    }
+    if (isTerminalPairingLink(value)) return value.trim()
+  }
+  return null
+}
+
+function applyTerminalPairingLinkOptions(options: CliOptions, pairingLink: string) {
+  const parsed = parseTerminalPairingLink(pairingLink)
+  options.relayUrl = parsed.relayUrl
+  options.relayToken = parsed.relayToken
+  options.targetDaemonId = parsed.targetDaemonId
+  if (parsed.targetDaemonAlias) {
+    options.targetDaemonAlias = parsed.targetDaemonAlias
+  }
+  options.clientId = parsed.terminalId ?? options.clientId
+}
+
+export function parseTerminalPairingLink(pairingLink: string) {
+  const payload = pairingLink.trim().replace(/^chariox-terminal-pair-v1[.]/, "")
+  let decoded: Record<string, unknown>
+  try {
+    decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>
+  } catch (error) {
+    throw new Error(`invalid terminal pairing link: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const relayUrl = typeof decoded.relay_url === "string" ? decoded.relay_url : ""
+  const relayToken = typeof decoded.relay_token === "string" ? decoded.relay_token : ""
+  const targetDaemonId = typeof decoded.target_daemon_id === "string" ? decoded.target_daemon_id : ""
+  if (!relayUrl || !relayToken || !targetDaemonId) {
+    throw new Error("invalid terminal pairing link: missing relay target details")
+  }
+  return {
+    relayUrl,
+    relayToken,
+    targetDaemonId,
+    targetDaemonAlias: typeof decoded.target_daemon_alias === "string" ? decoded.target_daemon_alias : undefined,
+    terminalId: typeof decoded.terminal_id === "string" ? decoded.terminal_id : undefined,
+  }
+}
+
+function printUsage() {
+  process.stdout.write([
+    "usage: chariox-cli [--detached] [--kernel-url URL] [--socket PATH] [--automation-socket PATH] [--terminal-pairing-link LINK] [--relay-url URL (--relay-token TOKEN|--relay-token-env NAME) (--target-daemon-id ID|--target-daemon-alias NAME) [--relay-token-issuer LOCAL_ENDPOINT ISSUER_DAEMON_ID]] [--session REF] [--create-session] [--alias NAME] [--delete-session REF] [--client-id ID] [--provider NAME] [--model MODEL] [--account-profile PROFILE] [--effort LEVEL] [--workspace PATH] [--worktree PATH]",
+    "       chariox-cli logs [--follow] [--process-kind KIND] [--component NAME] [--session ID] [--provider-run ID] [--client-id ID] [--level LEVEL] [--limit N] [--bundle DIR]",
+    "       chariox-cli terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]",
+    cliAppUsage(),
+    "",
+    "commands:",
+    "  /stop                 request cancellation of the active provider turn",
+    "  /goal [--interval N] <objective>  run a durable goal (1–60 minutes; default 10)",
+    "  /goal pause|resume|cancel|interval <N>|edit <objective>  control the focused goal",
+    "  /exit                 exit the CLI",
+    "  /waiting              go to the waiting room",
+    "  /provider <name>      select the provider backend",
+    "  /provider status [n]  show auth status for the current or named provider",
+    "  /provider login [n]   start provider-native login for the current or named provider",
+    "  /provider logout [n]  clear the current or named provider login",
+    "  /provider reauth [n]  log out then start a fresh provider login",
+    "  /provider processes [n] list daemon-tracked provider processes",
+    "  /provider processes teardown <n> tear down safe daemon-tracked provider processes",
+    "  /model <id>           select the active model",
+    "  /variant <name>       select the model variant",
+    "  /room terminal [list|new [TITLE]|close ID|ID]  list, open, close or attach a Room terminal (Ctrl-] detaches)",
+    "  /workspace [path]     show or set the next-session workspace path",
+    "  /workspace link ...   manage workspace links for the attached session",
+    "  /worktree [path]      show or set the next-session worktree path",
+    "  /worktree create <branch> [directory] [--from <ref>] create a named git worktree",
+    "  /worktree name [a]    set or clear the current worktree display name",
+    "  /view <mode>          set multi-agent response layout to split|individual",
+    "  /session new [d]      create and attach to a new session, optionally in directory d",
+    "  /session create [d]   alias for /session new",
+    "  /session <a>          alias the current session",
+    "  /session attach <r>   attach to a session by id or alias",
+    "  /session status       show owner, placement, extensions, and blockers",
+    "  /session delete [r]   delete the current or referenced session",
+    "  /agent spawn [a] [m] [--dir d] [--worktree d --branch b] [--machine r|--kernel k|--slice off|new|s] [--slice-display headless|headed] spawn a local, remote, or slice agent",
+    "  /agent delete [r]     delete the focused or referenced agent",
+    "  /agent destroy [r]    alias for /agent delete",
+    "  /agent focus <r>      move the session focus to the referenced agent",
+    "  /agent list           list all agents in the session",
+    "  /agent inspect [r]    show provider, worktree, placement, grants, and sync state",
+    "  /agent cycle          cycle to the next agent (or use Tab)",
+    "  /extension import     import provider MCPs and skills into Chariox",
+    "  /extension grant      grant mcp, skill, script, connector, or app capabilities to an agent",
+    "  /extension revoke     revoke an extension from an agent",
+    "  /extension grants     show worker-local, home-proxy, and skill snapshot grants",
+    "  /extension sync-status show home-proxy manifest sync and recovery for an agent",
+    "  /extension sync-retry retry home-proxy manifest projection after worker reconnect",
+    "  /extension audit      show home extension audit events and denials for an agent",
+    "  /kernel health        show runtime health, remote readiness, and invariants",
+    "  /kernel remote-runtime show home authority, worker runs, slices, home-proxy tools readiness",
+    "  /kernel debug-bundle [label] export attached-session logs on the kernel machine",
+    "  /kernel add <link>    pair with a kernel from its terminal pairing link (--relay-token-env VAR for a scoped relay)",
+    "  /kernel linked       list the kernels paired with /kernel add",
+    "  /kernel unlink <n>   forget a paired kernel",
+    "  /machine list         list approved, pending, and offline remote machines",
+    "  /machine kernels <m>  list live kernels for a remote machine",
+    "  /machine approve <m>  approve a pending remote machine for spawning",
+    "  /machine forget <m>   forget a registered remote machine",
+    "  /machine rename <m> <alias> rename and approve a remote machine",
+    "  /slice list           list slices owned by this kernel",
+    "  /slice create <n>     create a slice (--headed [--display-backend selkies|novnc]|--headless)",
+    "  /slice status [s]     show a slice, defaulting to focused agent slice",
+    "  /slice doctor [s]     check slice worker, scope, display, operation, and auth health",
+    "  /slice logs [s]       show slice worker and lifecycle logs (--tail n)",
+    "  /slice audit [s]      show slice lifecycle and provider-auth audit events",
+    "  /slice state [s]      show saved slice state and restart requirements",
+    "  /slice save-state [s] save slice state after shutdown or agent restart",
+    "  /slice backup [s]     create a recoverable slice state backup",
+    "  /slice backup restore restore a stopped slice from a verified backup",
+    "  /slice reset-state [s] reset saved slice state after agents are detached",
+    "  /slice start [s]      start a slice, defaulting to focused agent slice",
+    "  /slice stop [s]       stop a slice, defaulting to focused agent slice",
+    "  /slice delete <s>     delete a slice",
+    "  /slice screen [s]     open or print the slice screen URL",
+    "  /slice auth import    copy this machine's provider credentials into the slice",
+    "  /slice auth remove    remove slice-local provider credentials and account summary",
+    "  /slice auth login     start provider login inside the slice for a different account",
+    "  /config show          show the Chariox user config",
+    "  /config keys          list settable config keys",
+    "  /config schema        show config key metadata",
+    "  /config set <p> <v>   update the Chariox user config",
+    "  /notifications ...     discover, install, inspect, reconnect, and remove notification services",
+    ...tuiAppHelp(),
+    "  /cloud                open Chariox Cloud terminal",
+    "  chariox cloud login|logout|status|kernels [--api-url URL] manage this terminal profile without a kernel",
+    "  /cloud login          sign in this terminal profile",
+    "  /cloud logout         revoke this terminal profile; kernels keep running",
+    "  /cloud kernels        list My kernels when detached",
+    "  /cloud link           enroll this kernel independently in Chariox Cloud",
+    "  /cloud unlink         revoke this kernel enrollment",
+    "  /cloud status         show Cloud and relay status",
+    "  /cloud deployments    manage deployed workflow projects and releases",
+    "  /cloud deployments claim create|review|accept|revoke manage customer handoff",
+    "  /cloud deployments access|member inspect or change deployment access",
+    "  /cloud deployments audience show|policy|grant|invite|key|jwt|webhook manage app-user access",
+    "  /cloud deployments credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind manage destination credentials",
+    "  /cloud deployments usage|limits inspect usage or change runtime limits",
+    "  /cloud deployments operations show|deny|resume|set manage admission, retention, and alerts",
+    "  /cloud invite create [n] [--level private|transparent|full] create a cloud-backed collaboration invite",
+    "  /cloud invite accept <url> accept a collaboration invite",
+    "  /cloud members        list cloud members for the session",
+    "  /cloud collaborators  list recent cloud collaborators",
+    "  /relay status         show relay configuration and connection status",
+    "  /relay invite create [n] [--level private|transparent|full] create a same-relay collaboration invite",
+    "  /relay invite accept <token> accept a same-relay collaboration invite",
+    "  /relay members        list same-relay members for the session",
+    "  /relay cloud client <daemon> issue a relay client command",
+    "  /collab invite create [n] [--level private|transparent|full] create a collaboration invite using the configured backend",
+    "  /collab invite accept <token-or-url> accept a collaboration invite",
+    "  /collab members       list collaborators for the current session",
+    "  /opencode <cmd>       forward an OpenCode-native command to the focused OpenCode agent",
+    "  /codex <cmd>          forward a Codex-native command to the focused Codex agent",
+    "  /workflow             open the workflow outline",
+    "  /workflow list        list workflows in the workspace",
+    "  /workflow show [r]    show selected workflow or workflow by id/alias",
+    "  /workflow new [a]     create a new workflow with an optional alias",
+    "  /workflow run [w] <e> [p] invoke a workflow endpoint with an optional prompt",
+    "  /workflow runs [w]    list workflow runs for the session or one workflow",
+    "  /workflow cancel <r>  cancel a workflow run",
+    "  /workflow pause <r>   pause a workflow run",
+    "  /workflow resume <r>  resume a paused workflow run",
+    "  /workflow pane logs|trace|edit [w] switch workflow detail pane",
+    "  /workflow watchdog ... manage scheduled endpoint triggers",
+    "  /workflow <id> <a>    assign an alias to an existing workflow",
+    "  /workflow <w> <f> <t> shorthand for /workflow edge add using node ids or agent refs",
+    "  /workflow node ...    add/remove workflow nodes; /workflow add node all adds missing agents",
+    "  /workflow edge ...    add/remove workflow edges; workflow id may be omitted",
+    "  /workflow endpoint ... manage workflow endpoints; workflow id may be omitted",
+    "  Tab                   keyboard shortcut to cycle focus",
+    "  Ctrl+Tab              switch between the agent screens and workflow outline",
+    "",
+  ].join("\n"))
+}

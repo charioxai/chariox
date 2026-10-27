@@ -1,0 +1,1500 @@
+use super::*;
+use crate::session::{WorkflowCanvasLayoutPatch, WorkflowHandoffValidationPolicy};
+
+#[test]
+fn binds_workflow_code_source_with_revision_conflict_protection() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let revision = workflow.revision();
+
+    let bound = service
+        .bind_workflow_code_source(
+            session.id(),
+            workflow.id(),
+            Some(revision),
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "workflow-source-session-1-workflow-1".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "sha256".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
+            crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
+        )
+        .expect("source should bind");
+    let binding = bound.code_source().expect("binding should be projected");
+    assert_eq!(binding.workflow_revision(), revision + 1);
+    assert_eq!(binding.source_sha256(), "sha256");
+
+    let error = service
+        .bind_workflow_code_source(
+            session.id(),
+            workflow.id(),
+            Some(revision),
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "stale-source".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "stale".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
+            crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
+        )
+        .expect_err("stale revision should conflict");
+    assert!(error.to_string().contains("revision conflict"));
+}
+
+#[test]
+fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let first = service
+        .create_workflow(session.id(), Some("review_loop".to_string()))
+        .expect("workflow should be created");
+    let second = service
+        .create_workflow(session.id(), Some("deploy".to_string()))
+        .expect("second workflow should be created");
+
+    let workflows = service
+        .list_workflows(session.id())
+        .expect("workflow list should succeed");
+    assert_eq!(workflows.len(), 2);
+    assert_eq!(workflows[0], first);
+    assert_eq!(workflows[1], second);
+
+    let unique_prefix_len = (1..=first.id().len())
+        .find(|length| {
+            let prefix = &first.id()[..*length];
+            workflows
+                .iter()
+                .filter(|workflow| workflow.id().starts_with(prefix))
+                .count()
+                == 1
+        })
+        .expect("workflow id should have a unique prefix");
+    let unique_prefix = &first.id()[..unique_prefix_len];
+
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), first.id())
+            .expect("workflow id should resolve")
+            .id(),
+        first.id()
+    );
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), unique_prefix)
+            .expect("workflow id prefix should resolve")
+            .id(),
+        first.id()
+    );
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), "review_loop")
+            .expect("workflow alias should resolve")
+            .id(),
+        first.id()
+    );
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), "review")
+            .expect("workflow alias prefix should resolve")
+            .id(),
+        first.id()
+    );
+    assert!(first.flush_agent_context_before_run());
+}
+
+#[test]
+fn restore_purges_unsupported_publication_records() {
+    let mut source = SessionService::new(&test_config());
+    let session = source
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut source, session.id(), &["agent-1"]);
+    let workflow = source
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = source
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+    let endpoint = source
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("main".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let supported = source
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("default".to_string()),
+            Some("review_http".to_string()),
+            Some("ingress".to_string()),
+            Some("/review".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            Some(serde_json::json!({"kind": "json"})),
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "local".to_string(),
+        )
+        .expect("supported publication should be created");
+
+    let mut serialized = serde_json::to_value(
+        source
+            .get_session(session.id())
+            .expect("source session should load"),
+    )
+    .expect("session should serialize");
+    let supported_json = serialized["workflow_publications"]
+        .as_array()
+        .and_then(|publications| publications.first())
+        .cloned()
+        .expect("supported publication should serialize");
+    let supported_snapshot = serialized["workflow_publication_snapshots"]
+        .get(supported.id())
+        .cloned()
+        .expect("supported publication snapshot should serialize");
+    for (id, transport) in [
+        ("unsupported-publication-1", "unsupported_transport_1"),
+        ("unsupported-publication-2", "unsupported_transport_2"),
+        ("unsupported-publication-3", "unsupported_transport_3"),
+    ] {
+        let mut unsupported = supported_json.clone();
+        unsupported["id"] = serde_json::json!(id);
+        unsupported["alias"] = serde_json::json!(id);
+        unsupported["transport"] = serde_json::json!({ "kind": transport });
+        serialized["workflow_publications"]
+            .as_array_mut()
+            .expect("publication list should be mutable")
+            .push(unsupported);
+        serialized["workflow_publication_snapshots"]
+            .as_object_mut()
+            .expect("publication snapshots should be mutable")
+            .insert(id.to_string(), supported_snapshot.clone());
+    }
+
+    let restored_session = serde_json::from_value(serialized).expect("session should deserialize");
+    let mut restored = SessionService::new(&test_config());
+    let restored_session = restored.restore_session(restored_session);
+
+    assert_eq!(
+        restored_session
+            .workflow_publications()
+            .iter()
+            .map(|publication| publication.id())
+            .collect::<Vec<_>>(),
+        vec![supported.id()]
+    );
+}
+
+#[test]
+fn create_workflow_generates_default_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let first = service
+        .create_workflow(session.id(), None)
+        .expect("workflow should be created");
+    let second = service
+        .create_workflow(session.id(), Some(" ".to_string()))
+        .expect("blank alias should allocate a default workflow alias");
+
+    assert_eq!(first.alias(), Some("workflow-1"));
+    assert_eq!(second.alias(), Some("workflow-2"));
+}
+
+#[test]
+fn workflow_design_create_generates_default_alias() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowCreate {
+                workflow: crate::local::WorkflowDesignWorkflow {
+                    id: "workflow-design-1".to_string(),
+                    alias: None,
+                    prompt: None,
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                    schemas: Vec::new(),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design create should apply");
+
+    assert_eq!(created.id(), "workflow-design-1");
+    assert_eq!(created.alias(), Some("workflow-1"));
+}
+
+#[test]
+fn workflow_design_endpoints_enforce_canonical_aliases() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("endpoint-aliases".to_string()))
+        .expect("workflow should be created");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeAdd {
+                workflow_id: workflow.id().to_string(),
+                node: crate::local::WorkflowDesignNode {
+                    id: "node-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("endpoint entry node should be created");
+
+    let invalid = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-invalid".to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some("entry-1.1".to_string()),
+                    max_instances: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("design endpoint aliases must use the canonical alias contract");
+    assert!(matches!(
+        invalid,
+        DaemonError::InvalidWorkflowEndpointAlias { .. }
+    ));
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-valid".to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some(" Entry-1-1 ".to_string()),
+                    max_instances: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid design endpoint alias should apply");
+    assert_eq!(
+        created
+            .endpoint("endpoint-valid")
+            .and_then(|endpoint| endpoint.alias()),
+        Some("entry-1-1")
+    );
+
+    let invalid_update = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: "endpoint-valid".to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: Some(Some("entry-2.1".to_string())),
+                    entry_node_id: None,
+                    max_instances: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("design endpoint updates must use the canonical alias contract");
+    assert!(matches!(
+        invalid_update,
+        DaemonError::InvalidWorkflowEndpointAlias { .. }
+    ));
+}
+
+#[test]
+fn workflow_design_endpoint_max_instances_contract() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = service
+        .create_workflow(session.id(), Some("endpoint-pool".to_string()))
+        .expect("workflow should be created");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeAdd {
+                workflow_id: workflow.id().to_string(),
+                node: crate::local::WorkflowDesignNode {
+                    id: "node-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("endpoint entry node should be created");
+
+    let add_endpoint = |service: &mut SessionService, id: &str, max_instances: Option<u16>| {
+        service.apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: id.to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some(format!("{id}-alias")),
+                    max_instances,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+    };
+
+    let defaulted = add_endpoint(&mut service, "endpoint-default", None)
+        .expect("endpoint without max_instances should apply");
+    assert_eq!(
+        defaulted.endpoint("endpoint-default").map(|endpoint| {
+            (
+                endpoint.max_instances(),
+                crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES,
+            )
+        }),
+        Some((1, 1)),
+        "endpoints must default to max_instances = 1"
+    );
+
+    for invalid in [0u16, 33] {
+        let error = add_endpoint(&mut service, "endpoint-invalid", Some(invalid))
+            .expect_err("endpoint max_instances outside 1..=32 must be rejected");
+        let DaemonError::LocalTransport { message, .. } = error else {
+            panic!("expected design conflict error, got {error:?}");
+        };
+        assert!(
+            message.contains("max_instances must be between 1 and 32"),
+            "{message}"
+        );
+    }
+
+    let pooled = add_endpoint(&mut service, "endpoint-pooled", Some(4))
+        .expect("endpoint with valid max_instances should apply");
+    assert_eq!(
+        pooled
+            .endpoint("endpoint-pooled")
+            .map(|endpoint| endpoint.max_instances()),
+        Some(4)
+    );
+
+    service
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            "endpoint-pooled",
+            Some("default".to_string()),
+            Some("endpoint-pool-events".to_string()),
+            Some("event_based".to_string()),
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("event publication should be created");
+    let mut update_endpoint = |max_instances: Option<u16>| {
+        service.apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: "endpoint-pooled".to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: None,
+                    entry_node_id: None,
+                    max_instances,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+    };
+
+    for invalid in [0u16, 33] {
+        let error = update_endpoint(Some(invalid))
+            .expect_err("endpoint max_instances updates outside 1..=32 must be rejected");
+        let DaemonError::LocalTransport { message, .. } = error else {
+            panic!("expected design conflict error, got {error:?}");
+        };
+        assert!(
+            message.contains("max_instances must be between 1 and 32"),
+            "{message}"
+        );
+    }
+
+    let updated = update_endpoint(Some(32)).expect("valid max_instances update should apply");
+    assert_eq!(
+        updated
+            .endpoint("endpoint-pooled")
+            .map(|endpoint| endpoint.max_instances()),
+        Some(32)
+    );
+    let updated_session = service
+        .get_session(session.id())
+        .expect("updated session should load");
+    assert_eq!(updated_session.workflow_publications().len(), 1);
+}
+
+#[test]
+fn workflow_endpoint_max_instances_defaults_when_deserialized_from_legacy_payloads() {
+    let legacy = serde_json::json!({
+        "id": "endpoint-legacy",
+        "entry_node_id": "node-1"
+    });
+    let endpoint: crate::session::WorkflowEndpointDefinition =
+        serde_json::from_value(legacy).expect("legacy endpoint payload should deserialize");
+    assert_eq!(endpoint.max_instances(), 1);
+}
+
+#[test]
+fn workflow_design_create_and_update_persist_workflow_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    let created = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowCreate {
+                workflow: crate::local::WorkflowDesignWorkflow {
+                    id: "workflow-design-prompt".to_string(),
+                    alias: Some("prompted".to_string()),
+                    prompt: Some("  Shared context for all nodes  ".to_string()),
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                    schemas: Vec::new(),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design create should apply");
+
+    assert_eq!(created.prompt(), Some("Shared context for all nodes"));
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::WorkflowUpdate {
+                workflow_id: created.id().to_string(),
+                patch: crate::local::WorkflowDesignWorkflowPatch {
+                    alias: None,
+                    prompt: Some(None),
+                    flush_agent_context_before_run: None,
+                    max_concurrent: None,
+                    run_output_schema_ref: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("workflow design update should apply");
+
+    assert_eq!(updated.prompt(), None);
+}
+
+#[test]
+fn creates_lists_resolves_and_disables_workflow_publications() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("main".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+
+    let publication = service
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("default".to_string()),
+            Some("public_review".to_string()),
+            Some("ingress".to_string()),
+            Some("/review".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            Some(serde_json::json!({"kind": "path_template", "template": "/review/:prompt"})),
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "local".to_string(),
+        )
+        .expect("workflow publication should be created");
+
+    assert_eq!(publication.workflow_id(), workflow.id());
+    assert_eq!(publication.endpoint_id(), endpoint.id());
+    assert_eq!(publication.queue_ref(), Some("default"));
+    assert_eq!(publication.alias(), Some("public_review"));
+    assert!(publication.enabled());
+
+    let source_agents = service
+        .get_session(session.id())
+        .expect("source session should load")
+        .agents()
+        .to_vec();
+    let creator_a = service
+        .create_workflow_publication_idempotent(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            None,
+            Some("shared-operation-key".to_string()),
+            Some("default".to_string()),
+            Some("creator_a".to_string()),
+            Some("ingress".to_string()),
+            Some("/creator-a".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            source_agents.clone(),
+            "creator-a".to_string(),
+        )
+        .expect("first creator operation should publish");
+    let creator_b = service
+        .create_workflow_publication_idempotent(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            None,
+            Some("shared-operation-key".to_string()),
+            Some("default".to_string()),
+            Some("creator_b".to_string()),
+            Some("ingress".to_string()),
+            Some("/creator-b".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            source_agents,
+            "creator-b".to_string(),
+        )
+        .expect("another creator may reuse the same operation key");
+    assert_ne!(creator_a.id(), creator_b.id());
+
+    let publications = service
+        .list_workflow_publications(session.id())
+        .expect("publication list should succeed");
+    assert_eq!(publications.len(), 3);
+    assert_eq!(publications[0], publication.clone());
+    assert_eq!(
+        service
+            .resolve_workflow_publication_ref(session.id(), "public")
+            .expect("publication alias prefix should resolve")
+            .id(),
+        publication.id()
+    );
+
+    let served = service
+        .register_workflow_publication_endpoint(
+            session.id(),
+            publication.id(),
+            "running",
+            "https://relay.example.test/display/publication-1/",
+            serde_json::json!({
+                "kind": "tunnel",
+                "url": "https://relay.example.test/display/publication-1/",
+                "local_url": "http://127.0.0.1:3000/"
+            }),
+        )
+        .expect("publication endpoint should register");
+    assert_eq!(served.status(), Some("running"));
+    assert_eq!(
+        served.open_url(),
+        Some("https://relay.example.test/display/publication-1/")
+    );
+    assert_eq!(
+        served.viewer_url(),
+        Some("https://relay.example.test/display/publication-1/")
+    );
+    assert!(served.runtime_last_heartbeat_at_ms().is_some());
+    assert_eq!(served.runtime_last_error(), None);
+    assert_eq!(served.runtime_logs().len(), 1);
+    assert_eq!(
+        served.runtime_logs()[0].message,
+        "publication endpoint running"
+    );
+    assert_eq!(
+        served
+            .deployment()
+            .and_then(|deployment| deployment.pointer("/kind"))
+            .and_then(serde_json::Value::as_str),
+        Some("tunnel")
+    );
+
+    let failed = service
+        .mark_workflow_publication_runtime_error(
+            session.id(),
+            publication.id(),
+            "gateway exited immediately",
+        )
+        .expect("publication runtime error should update");
+    assert_eq!(failed.status(), Some("error"));
+    assert_eq!(
+        failed.runtime_last_error(),
+        Some("gateway exited immediately")
+    );
+    assert_eq!(failed.runtime_logs().len(), 2);
+    assert_eq!(failed.runtime_logs()[1].level, "error");
+
+    let stopped = service
+        .mark_workflow_publication_runtime_status(
+            session.id(),
+            publication.id(),
+            "stopped",
+            Some(None),
+            Some(serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped"
+            })),
+        )
+        .expect("publication runtime status should update");
+    assert_eq!(stopped.status(), Some("stopped"));
+    assert_eq!(stopped.open_url(), None);
+    assert_eq!(stopped.viewer_url(), None);
+    assert_eq!(
+        stopped
+            .deployment()
+            .and_then(|deployment| deployment.pointer("/status"))
+            .and_then(serde_json::Value::as_str),
+        Some("stopped")
+    );
+
+    let disabled = service
+        .disable_workflow_publication(session.id(), publication.id())
+        .expect("publication should be disabled");
+    assert!(!disabled.enabled());
+}
+
+#[test]
+fn workflow_flush_context_defaults_true_and_can_be_updated() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    assert!(workflow.flush_agent_context_before_run());
+
+    let updated = service
+        .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), false)
+        .expect("workflow flush setting should update");
+    assert!(!updated.flush_agent_context_before_run());
+}
+
+#[test]
+fn workflow_run_output_and_node_completion_settings_can_be_updated() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+
+    let updated_workflow = service
+        .set_workflow_run_output_schema_ref(
+            session.id(),
+            workflow.id(),
+            Some("/tmp/workflow-run-output-schema.json".to_string()),
+        )
+        .expect("workflow run output schema should update");
+    assert_eq!(
+        updated_workflow.run_output_schema_ref(),
+        Some("/tmp/workflow-run-output-schema.json")
+    );
+    let updated_node = service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node completion setting should update");
+    assert!(updated_node.can_complete_workflow_run());
+    let layout_with_exit = service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 10,
+                y: 20,
+            }],
+        )
+        .expect("exit position should update");
+    assert!(layout_with_exit.exits.contains_key(node.id()));
+    let updated_node = service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), false)
+        .expect("node completion setting should update");
+    assert!(!updated_node.can_complete_workflow_run());
+    let updated_workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should exist");
+    assert!(updated_workflow
+        .canvas_layout()
+        .is_none_or(|layout| !layout.exits.contains_key(node.id())));
+    let updated_node = service
+        .set_workflow_node_can_emit_intermediate_output(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            true,
+        )
+        .expect("node intermediate output capability should update");
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(!updated_node.can_complete_workflow_run());
+    let updated_node = service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node completion setting should update");
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_emit_intermediate_run_output());
+    let updated_node = service
+        .set_workflow_node_intermediate_output_schema_ref(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("/tmp/node-intermediate-output-schema.json".to_string()),
+        )
+        .expect("node intermediate output schema should update");
+    assert_eq!(
+        updated_node.intermediate_output_schema_ref(),
+        Some("/tmp/node-intermediate-output-schema.json")
+    );
+
+    let updated_node = service
+        .set_workflow_node_max_turns(session.id(), workflow.id(), node.id(), Some(3))
+        .expect("node max turns should update");
+    assert_eq!(updated_node.max_turns(), Some(3));
+}
+
+#[test]
+fn workflow_design_node_update_preserves_independent_output_capabilities() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("node should be added");
+
+    service
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("node completion setting should update");
+    service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 10,
+                y: 20,
+            }],
+        )
+        .expect("exit position should update");
+
+    let intermediate = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: Some(true),
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("intermediate node update should apply");
+    let updated_node = intermediate
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(intermediate
+        .canvas_layout()
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
+
+    service
+        .update_workflow_canvas_layout(
+            session.id(),
+            workflow.id(),
+            vec![WorkflowCanvasLayoutPatch::ExitPosition {
+                node_id: node.id().to_string(),
+                x: 11,
+                y: 21,
+            }],
+        )
+        .expect("exit position should update");
+    let completion = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: Some(true),
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("completion node update should apply");
+    let updated_node = completion
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(completion
+        .canvas_layout()
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
+
+    let both = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeUpdate {
+                workflow_id: workflow.id().to_string(),
+                node_id: node.id().to_string(),
+                patch: crate::local::WorkflowDesignNodePatch {
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: Some(true),
+                    can_emit_intermediate_run_output: Some(true),
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("combined node update should apply");
+    let updated_node = both
+        .node(node.id())
+        .expect("updated workflow should keep the node");
+    assert!(updated_node.can_complete_workflow_run());
+    assert!(updated_node.can_emit_intermediate_run_output());
+    assert!(both
+        .canvas_layout()
+        .is_some_and(|layout| layout.exits.contains_key(node.id())));
+}
+
+#[test]
+fn workflow_design_edge_update_applies_handoff_schema_patch() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let planner = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("planner node should be added");
+    let reviewer = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
+        .expect("reviewer node should be added");
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            None,
+            None,
+        )
+        .expect("edge should be added");
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EdgeUpdate {
+                workflow_id: workflow.id().to_string(),
+                edge_id: edge.id().to_string(),
+                patch: crate::local::WorkflowDesignEdgePatch {
+                    handoff_schema_ref: Some(Some("/tmp/handoff-schema.json".to_string())),
+                    validation_policy: Some(Some(WorkflowHandoffValidationPolicy::Warn)),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("edge update design op should apply");
+
+    let updated_edge = updated
+        .edge(edge.id())
+        .expect("updated workflow should keep the edge");
+    assert_eq!(
+        updated_edge.handoff_schema_ref(),
+        Some("/tmp/handoff-schema.json")
+    );
+    assert_eq!(
+        updated_edge.validation_policy(),
+        Some(WorkflowHandoffValidationPolicy::Warn)
+    );
+
+    let clear_op: crate::local::WorkflowDesignOp = serde_json::from_value(serde_json::json!({
+        "kind": "edge_update",
+        "workflow_id": workflow.id(),
+        "edge_id": edge.id(),
+        "patch": {
+            "handoff_schema_ref": null,
+            "validation_policy": null
+        }
+    }))
+    .expect("explicit null edge patch should deserialize");
+    let cleared = service
+        .apply_workflow_design_op(session.id(), clear_op, DEFAULT_LOCAL_USER_ID.to_string())
+        .expect("edge clear design op should apply");
+
+    let cleared_edge = cleared
+        .edge(edge.id())
+        .expect("cleared workflow should keep the edge");
+    assert_eq!(cleared_edge.handoff_schema_ref(), None);
+    assert_eq!(cleared_edge.validation_policy(), None);
+}
+
+#[test]
+fn workflow_design_schema_ops_add_update_and_remove_embedded_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+
+    let added = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    Some("Draft".to_string()),
+                    Some("Draft payload".to_string()),
+                    serde_json::json!({
+                        "type": "object",
+                        "required": ["summary"],
+                        "properties": {
+                            "summary": { "type": "string" }
+                        }
+                    }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid schema should be added");
+    assert_eq!(added.schemas().len(), 1);
+    assert_eq!(
+        added.schema("schema-1").and_then(|schema| schema.alias()),
+        Some("Draft")
+    );
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaUpdate {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+                patch: crate::local::WorkflowDesignSchemaPatch {
+                    alias: Some(Some("Review".to_string())),
+                    description: Some(None),
+                    schema: Some(serde_json::json!({
+                        "type": "object",
+                        "required": ["verdict"],
+                        "properties": {
+                            "verdict": { "enum": ["approve", "reject"] }
+                        }
+                    })),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid schema update should apply");
+    let schema = updated.schema("schema-1").expect("schema should remain");
+    assert_eq!(schema.alias(), Some("Review"));
+    assert_eq!(schema.description(), None);
+    assert_eq!(
+        schema.schema().pointer("/properties/verdict/enum/0"),
+        Some(&serde_json::json!("approve"))
+    );
+
+    let removed = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaRemove {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("unreferenced schema should be removed");
+    assert!(removed.schema("schema-1").is_none());
+}
+
+#[test]
+fn workflow_design_schema_ops_reject_invalid_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+
+    let error = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    None,
+                    None,
+                    serde_json::json!({ "type": 42 }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("invalid schema should be rejected");
+
+    assert!(matches!(error, DaemonError::LocalTransport { .. }));
+}
+
+#[test]
+fn workflow_design_schema_remove_rejects_referenced_schema() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let planner = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("planner node should be added");
+    let reviewer = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
+        .expect("reviewer node should be added");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaAdd {
+                workflow_id: workflow.id().to_string(),
+                schema: crate::session::WorkflowSchemaDefinition::new(
+                    "schema-1",
+                    None,
+                    None,
+                    serde_json::json!({ "type": "object" }),
+                ),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("schema should be added");
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            Some("schema-1".to_string()),
+            Some(WorkflowHandoffValidationPolicy::Halt),
+        )
+        .expect("edge should be added");
+
+    let error = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::SchemaRemove {
+                workflow_id: workflow.id().to_string(),
+                schema_id: "schema-1".to_string(),
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("referenced schema should not be removed");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(message.contains(&format!("edge.{}.handoff_schema_ref", edge.id())));
+        }
+        other => panic!("expected LocalTransport, got {other:?}"),
+    }
+}
+
+#[test]
+fn manages_workflow_nodes_edges_and_endpoints() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+
+    let planner = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("planner node should be added");
+    let duplicate_node = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect_err("duplicate workflow node should be rejected");
+    assert!(matches!(
+        duplicate_node,
+        DaemonError::WorkflowNodeConflict { .. }
+    ));
+    let reviewer = service
+        .add_workflow_node(session.id(), workflow.id(), "agent-2")
+        .expect("reviewer node should be added");
+
+    let edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            None,
+            None,
+        )
+        .expect("edge should be added");
+    assert_eq!(edge.from_node_id(), planner.id());
+    assert_eq!(edge.to_node_id(), reviewer.id());
+
+    let duplicate_edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            reviewer.id(),
+            None,
+            None,
+        )
+        .expect_err("duplicate edge should be rejected");
+    assert!(matches!(
+        duplicate_edge,
+        DaemonError::WorkflowEdgeConflict { .. }
+    ));
+
+    let self_edge = service
+        .add_workflow_edge(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            planner.id(),
+            None,
+            None,
+        )
+        .expect_err("self edge should be rejected");
+    assert!(matches!(
+        self_edge,
+        DaemonError::InvalidWorkflowGraphReference { .. }
+    ));
+
+    let endpoint = service
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            planner.id(),
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should be created");
+    assert_eq!(endpoint.entry_node_id(), planner.id());
+
+    assert_eq!(
+        service
+            .resolve_workflow_endpoint_ref(session.id(), workflow.id(), "entry")
+            .expect("endpoint alias should resolve")
+            .id(),
+        endpoint.id()
+    );
+
+    let rebound = service
+        .bind_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), reviewer.id())
+        .expect("endpoint should be rebound");
+    assert_eq!(rebound.entry_node_id(), reviewer.id());
+
+    let aliased = service
+        .assign_workflow_endpoint_alias(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            "review-entry".to_string(),
+        )
+        .expect("endpoint alias should be updated");
+    assert_eq!(aliased.alias(), Some("review-entry"));
+
+    let removed_edge = service
+        .remove_workflow_edge(session.id(), workflow.id(), edge.id())
+        .expect("edge should be removed");
+    assert_eq!(removed_edge.id(), edge.id());
+
+    let removed_node = service
+        .remove_workflow_node(session.id(), workflow.id(), planner.id())
+        .expect("node should be removed");
+    assert_eq!(removed_node.id(), planner.id());
+}
+
+#[test]
+fn workflow_design_ops_reject_invalid_or_ambiguous_graph_mutations() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new(
+            "workspace-design-graph",
+            "worktree-design-graph",
+        ))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("design-graph".to_string()))
+        .expect("workflow should be created");
+    let design_node = |id: &str, agent_id: &str| crate::local::WorkflowDesignNode {
+        id: id.to_string(),
+        agent_id: agent_id.to_string(),
+        label: None,
+        instructions: None,
+        can_complete_workflow_run: None,
+        can_emit_intermediate_run_output: None,
+        wait_for_all_inputs: None,
+        intermediate_output_schema_ref: None,
+        max_turns: None,
+    };
+    for (id, agent_id) in [("node-a", "agent-a"), ("node-b", "agent-b")] {
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node(id, agent_id),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect("valid design node should be added");
+    }
+
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node("node-a", "agent-c"),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate design node id should be rejected"),
+        DaemonError::LocalTransport {
+            operation: "apply_workflow_design_op",
+            ..
+        }
+    ));
+
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                crate::local::WorkflowDesignOp::NodeAdd {
+                    workflow_id: workflow.id().to_string(),
+                    node: design_node("node-c", "agent-a"),
+                    position: None,
+                },
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate workflow agent should be rejected"),
+        DaemonError::WorkflowNodeConflict { .. }
+    ));
+
+    for (edge_id, from_node_id, to_node_id) in [
+        ("edge-missing", "node-a", "node-missing"),
+        ("edge-self", "node-a", "node-a"),
+    ] {
+        assert!(matches!(
+            service
+                .apply_workflow_design_op(
+                    session.id(),
+                    crate::local::WorkflowDesignOp::EdgeAdd {
+                        workflow_id: workflow.id().to_string(),
+                        edge: crate::local::WorkflowDesignEdge {
+                            id: edge_id.to_string(),
+                            from_node_id: from_node_id.to_string(),
+                            to_node_id: to_node_id.to_string(),
+                            source_side: None,
+                            target_side: None,
+                            handoff_schema_ref: None,
+                            validation_policy: None,
+                        },
+                    },
+                    DEFAULT_LOCAL_USER_ID.to_string(),
+                )
+                .expect_err("invalid design edge should be rejected"),
+            DaemonError::InvalidWorkflowGraphReference { .. }
+        ));
+    }
+
+    let add_edge = |id: &str| crate::local::WorkflowDesignOp::EdgeAdd {
+        workflow_id: workflow.id().to_string(),
+        edge: crate::local::WorkflowDesignEdge {
+            id: id.to_string(),
+            from_node_id: "node-a".to_string(),
+            to_node_id: "node-b".to_string(),
+            source_side: None,
+            target_side: None,
+            handoff_schema_ref: None,
+            validation_policy: None,
+        },
+    };
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            add_edge("edge-a-b"),
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("valid design edge should be added");
+    assert!(matches!(
+        service
+            .apply_workflow_design_op(
+                session.id(),
+                add_edge("edge-a-b-duplicate"),
+                DEFAULT_LOCAL_USER_ID.to_string(),
+            )
+            .expect_err("duplicate edge endpoints should be rejected"),
+        DaemonError::WorkflowEdgeConflict { .. }
+    ));
+
+    let missing_endpoint = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: "endpoint-missing".to_string(),
+                    entry_node_id: "node-missing".to_string(),
+                    alias: None,
+                    max_instances: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect_err("endpoint entry node must exist");
+    assert!(matches!(
+        missing_endpoint,
+        DaemonError::InvalidWorkflowGraphReference { .. }
+    ));
+
+    let revision_before_rejected_ops = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve")
+        .revision();
+    for op in [
+        crate::local::WorkflowDesignOp::NodeMove {
+            workflow_id: workflow.id().to_string(),
+            node_id: "node-missing".to_string(),
+            position: crate::local::WorkflowDesignPoint { x: 1, y: 2 },
+        },
+        crate::local::WorkflowDesignOp::NodeRemove {
+            workflow_id: workflow.id().to_string(),
+            node_id: "node-missing".to_string(),
+        },
+    ] {
+        assert!(matches!(
+            service
+                .apply_workflow_design_op(session.id(), op, DEFAULT_LOCAL_USER_ID.to_string(),)
+                .expect_err("missing design node should be rejected"),
+            DaemonError::WorkflowNodeNotFound { .. }
+        ));
+    }
+    assert_eq!(
+        service
+            .resolve_workflow_ref(session.id(), workflow.id())
+            .expect("workflow should resolve after rejected ops")
+            .revision(),
+        revision_before_rejected_ops,
+        "rejected design ops must not advance the workflow revision"
+    );
+}

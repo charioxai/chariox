@@ -1,0 +1,722 @@
+//! Workflow completion, cancellation, and failure state transitions.
+//!
+//! This module owns provider-turn settlement for workflow prompts, completion snapshots,
+//! output checks, and failure recording. Downstream dispatch construction stays in
+//! `workflow_dispatch`.
+
+use super::*;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_before_workflow_activity_persistence_hook() {
+    BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(test)]
+pub(super) fn set_before_workflow_activity_persistence_hook(hook: impl FnOnce() + 'static) {
+    BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(hook));
+    });
+}
+
+/// The provider turn a workflow completion settles. The exhaustion fact is
+/// computed once, before the task ledger moves: ending the task as failed makes
+/// it look supervised to a second evaluation.
+pub(super) struct EndedProviderTurn<'a> {
+    pub(super) provider_run_id: Option<&'a str>,
+    pub(super) output_follow_up_exhausted: bool,
+}
+
+impl KernelRuntimeOwnedState {
+    fn restore_workflow_run_after_failed_completion(
+        &self,
+        session_id: &str,
+        workflow_run: crate::session::WorkflowRun,
+    ) {
+        let restore = (|| {
+            let mut session_store = self.session_store.write();
+            let session = session_store.get_session(session_id)?;
+            let mut workflow_runs = session.workflow_runs().to_vec();
+            if let Some(current) = workflow_runs
+                .iter_mut()
+                .find(|current| current.id() == workflow_run.id())
+            {
+                *current = workflow_run;
+            } else {
+                workflow_runs.push(workflow_run);
+            }
+            session_store.restore_active_workflow_runs(session_id, workflow_runs)
+        })();
+        if let Err(error) = restore {
+            crate::logging::error_with_fields(
+                "daemon.workflow",
+                "failed to restore workflow completion after durable append failure",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn publish_workflow_session_after_activity_capture(
+        &self,
+        session: crate::session::RuntimeSession,
+    ) {
+        let projection_sequence = self.session_projection.change_sequence();
+        self.update_session_projection(session);
+        if self.session_projection.change_sequence() != projection_sequence {
+            self.runtime_projection_changes.record_change();
+        }
+    }
+
+    pub(super) fn persist_workflow_runtime_session(
+        &self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            reason,
+            activity_mutation,
+        )
+    }
+
+    pub(super) fn persist_workflow_runtime_session_with_activity_mutation(
+        &self,
+        session_id: &str,
+        reason: &str,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+            session_id,
+            reason,
+            activity_mutation,
+            || {},
+        )
+    }
+
+    /// Restores a caller-owned mutation before releasing the activity boundary when the
+    /// authoritative snapshot or its durable append fails.
+    pub(super) fn persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+        &self,
+        session_id: &str,
+        reason: &str,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        rollback: impl FnOnce(),
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.persist_workflow_runtime_session_with_prompt_and_rollback(
+            session_id,
+            reason,
+            None,
+            activity_mutation,
+            rollback,
+        )
+    }
+
+    fn persist_workflow_runtime_session_with_prompt_and_rollback(
+        &self,
+        session_id: &str,
+        reason: &str,
+        prompt_agent_id: Option<&str>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        rollback: impl FnOnce(),
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let mut rollback = Some(rollback);
+        let (session, hot_session) = self
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let session = match self.session_snapshot_without_projection_update(session_id) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        rollback.take().expect("workflow rollback should run once")();
+                        return Err(error);
+                    }
+                };
+                let persisted = match prompt_agent_id {
+                    Some(agent_id) => self
+                        .durable_state_store
+                        .persist_workflow_prompt_transition(&session, agent_id, reason),
+                    None => self
+                        .durable_state_store
+                        .persist_workflow_runtime_transition(&session, reason),
+                };
+                if let Err(error) = persisted {
+                    rollback.take().expect("workflow rollback should run once")();
+                    return Err(error);
+                }
+                let archived = self
+                    .session_store
+                    .write()
+                    .archive_terminal_workflow_runs(session_id)?;
+                if !archived.is_empty() {
+                    // Terminal runs leave the hot snapshot after this point, so push
+                    // one authoritative update per run before the projection change
+                    // wakes subscribers; otherwise diffing never observes the
+                    // terminal status.
+                    let recipient_attachment_ids = self
+                        .attachment_store
+                        .list_session_attachment_ids(session_id);
+                    for workflow_run in archived {
+                        self.terminal_stream.record_workflow_run_update(
+                            session_id,
+                            recipient_attachment_ids.clone(),
+                            workflow_run,
+                        );
+                    }
+                }
+                // Release the session guard before activity persistence takes its
+                // locks. An if-let scrutinee built from read() retains that guard.
+                let hot_session = self.session_store.get_session(session_id);
+                #[cfg(test)]
+                run_before_workflow_activity_persistence_hook();
+                activity_mutation.record();
+                Ok((session, hot_session.ok()))
+            })?;
+        if let Some(hot_session) = hot_session {
+            self.publish_workflow_session_after_activity_capture(hot_session);
+        }
+        Ok(session)
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn workflow_complete_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let turn = EndedProviderTurn {
+            provider_run_id,
+            output_follow_up_exhausted: self.output_follow_up_exhausted(
+                session_id,
+                prompt,
+                provider_run_id,
+            )?,
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
+        self.workflow_complete_prompt_with_activity_mutation_and_rollback(
+            session_id,
+            prompt,
+            turn,
+            None,
+            activity_mutation,
+            || {},
+        )
+    }
+
+    pub(super) fn output_follow_up_exhausted(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let (Some(run), Some(node), Some(provider)) = (
+            prompt.workflow_run_id(),
+            prompt.workflow_node_run_id(),
+            provider_run_id,
+        ) else {
+            return Ok(false);
+        };
+        crate::app::workflow_output_follow_up::output_follow_up_exhausted(
+            &self.durable_state_store,
+            session_id,
+            prompt,
+            self.workflow_prompt_has_completion_output(session_id, run, node, provider),
+            self.provider_run_terminal_diagnostic(provider).is_some(),
+        )
+    }
+
+    pub(super) fn workflow_complete_prompt_with_activity_mutation_and_rollback(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        turn: EndedProviderTurn<'_>,
+        prompt_agent_id: Option<&str>,
+        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
+        rollback_prompt: impl FnOnce(),
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        let EndedProviderTurn {
+            provider_run_id,
+            output_follow_up_exhausted,
+        } = turn;
+        let mut rollback_prompt = Some(rollback_prompt);
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            rollback_prompt
+                .take()
+                .expect("provider prompt rollback should run once")();
+            return Err(DaemonError::LocalTransport {
+                operation: "complete workflow prompt",
+                message: format!(
+                    "workflow prompt `{}` is missing its run or node-run identity",
+                    prompt.id()
+                ),
+            });
+        };
+        if !output_follow_up_exhausted
+            && self.config_projection.snapshot().room_agent_tools
+            && self
+                .durable_state_store
+                .agent_tasks(Some(session_id), Some(prompt.target_agent_id()))?
+                .iter()
+                .any(|t| {
+                    t.prompt_id == prompt.id()
+                        && !matches!(
+                            t.state,
+                            crate::durable_state::agent_lifecycle::ExecutionState::Done
+                                | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                        )
+                })
+        {
+            // The provider's native turn ended, but its task is still
+            // supervised. Commit prompt removal without completing/archiving
+            // the node; the same run remains addressable for cancellation.
+            self.persist_workflow_runtime_session_with_prompt_and_rollback(
+                session_id,
+                "workflow_task_waiting",
+                prompt_agent_id,
+                activity_mutation,
+                rollback_prompt.take().expect("prompt rollback"),
+            )?;
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let workflow_run_before =
+            match self
+                .session_store
+                .get_session(session_id)
+                .and_then(|session| {
+                    session
+                        .workflow_run(workflow_run_id)
+                        .cloned()
+                        .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                            session_id: session_id.to_string(),
+                            workflow_run_id: workflow_run_id.to_string(),
+                        })
+                }) {
+                Ok(workflow_run) => workflow_run,
+                Err(error) => {
+                    if let Some(released_claims) = self.release_archived_completed_workflow_claims(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    ) {
+                        activity_mutation.record();
+                        let mut dispatches = WorkflowPromptDispatches::default();
+                        if released_claims {
+                            dispatches.extend(self.workflow_retry_blocked_claims());
+                        }
+                        return Ok(dispatches);
+                    }
+                    rollback_prompt
+                        .take()
+                        .expect("provider prompt rollback should run once")();
+                    return Err(error);
+                }
+            };
+        let completion_snapshot = self.workflow_completion_snapshot(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+            provider_run_id,
+        );
+        let has_valid_pending_final_output = self.workflow_node_run_has_valid_pending_final_output(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        if completion_snapshot.is_none() && !has_valid_pending_final_output {
+            if let Some(provider_diagnostic) =
+                provider_run_id.and_then(|run_id| self.provider_run_terminal_diagnostic(run_id))
+            {
+                self.workflow_record_failure(
+                    session_id,
+                    workflow_run_id,
+                    &crate::session::WorkflowFailureEvent::new(
+                        crate::session::WorkflowFailureKind::ProviderFailure,
+                        workflow_node_run_id,
+                        Vec::new(),
+                        provider_diagnostic.clone(),
+                    ),
+                );
+                let failed = self.session_store.write().fail_workflow_node_run(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+                if let Err(error) = failed {
+                    self.restore_workflow_run_after_failed_completion(
+                        session_id,
+                        workflow_run_before,
+                    );
+                    rollback_prompt
+                        .take()
+                        .expect("provider prompt rollback should run once")();
+                    return Err(error);
+                }
+                self.persist_workflow_runtime_session_with_prompt_and_rollback(
+                    session_id,
+                    "workflow_provider_prompt_failed",
+                    prompt_agent_id,
+                    activity_mutation,
+                    || {
+                        self.restore_workflow_run_after_failed_completion(
+                            session_id,
+                            workflow_run_before.clone(),
+                        );
+                        rollback_prompt
+                            .take()
+                            .expect("provider prompt rollback should run once")(
+                        );
+                    },
+                )?;
+                let _ = self.release_workflow_node_workspace_claim(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+                self.record_notice(
+                    session_id,
+                    provider_run_id,
+                    self.attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!(
+                        "Workflow run `{workflow_run_id}` failed after provider turn failure: {provider_diagnostic}"
+                    ),
+                );
+                self.workflow_maybe_start_next_queued_prompt(session_id);
+                return Ok(WorkflowPromptDispatches::default());
+            }
+        }
+        let max_turns = self.workflow_max_turns(session_id);
+        let completion_result = self
+            .session_store
+            .write()
+            .complete_workflow_node_run_after_provider_turn(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                completion_snapshot.clone(),
+                max_turns,
+            );
+        let update = match completion_result {
+            Ok(update) => update,
+            Err(error) => {
+                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                rollback_prompt
+                    .take()
+                    .expect("provider prompt rollback should run once")();
+                return Err(error);
+            }
+        };
+        let mut completion_notices = Vec::new();
+        for warning in &update.validation_warnings {
+            let failure = crate::session::WorkflowFailureEvent::new(
+                crate::session::classify_workflow_failure_kind(
+                    &completion_snapshot,
+                    &warning.message,
+                ),
+                workflow_node_run_id,
+                vec![warning.edge_id.clone()],
+                warning.message.clone(),
+            );
+            self.workflow_record_failure(session_id, workflow_run_id, &failure);
+            completion_notices.push((
+                None,
+                format!(
+                    "Workflow handoff validation warning on edge `{}`: {}",
+                    warning.edge_id, warning.message
+                ),
+            ));
+        }
+        if update.workflow_run.status() == crate::session::WorkflowRunStatus::Stopped
+            && update.workflow_run.final_output().is_none()
+            && update.workflow_run.failure_events().iter().all(|event| {
+                event.kind() != crate::session::WorkflowFailureKind::NodeTurnBudgetExhausted
+            })
+        {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::NodeTurnBudgetExhausted,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    "workflow run stopped after a node exhausted its turn budget",
+                ),
+            );
+        }
+        if let Some(failure) = update.handoff_validation_failure.as_ref() {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::OutputValidationFailed,
+                    workflow_node_run_id,
+                    vec![failure.edge_id.clone()],
+                    failure.message.clone(),
+                ),
+            );
+            completion_notices.push((
+                provider_run_id.map(str::to_string),
+                format!(
+                    "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}`: {}",
+                    failure.edge_id, failure.message
+                ),
+            ));
+        }
+        if let Some(failure) = update.run_output_validation_failure.as_ref() {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::WorkflowRunOutputValidationFailed,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    failure.message.clone(),
+                ),
+            );
+            completion_notices.push((
+                provider_run_id.map(str::to_string),
+                format!(
+                    "Workflow run `{workflow_run_id}` failed final output validation: {}",
+                    failure.message
+                ),
+            ));
+        }
+        if let Some(failure) = update.missing_output_failure.as_ref() {
+            self.workflow_record_failure(
+                session_id,
+                workflow_run_id,
+                &crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::MissingStructuredOutput,
+                    workflow_node_run_id,
+                    Vec::new(),
+                    failure.message.clone(),
+                ),
+            );
+            completion_notices.push((
+                provider_run_id.map(str::to_string),
+                format!(
+                    "Workflow run `{workflow_run_id}` failed because the provider produced no structured output."
+                ),
+            ));
+        }
+        if update.validation_warnings.is_empty()
+            && update.handoff_validation_failure.is_none()
+            && update.missing_output_failure.is_none()
+            && update.run_output_validation_failure.is_none()
+        {
+            let validated = self
+                .session_store
+                .write()
+                .mark_workflow_turn_validated_completed(
+                    session_id,
+                    workflow_run_id,
+                    workflow_node_run_id,
+                );
+            if let Err(error) = validated {
+                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                rollback_prompt
+                    .take()
+                    .expect("provider prompt rollback should run once")();
+                return Err(error);
+            }
+        }
+        self.persist_workflow_runtime_session_with_prompt_and_rollback(
+            session_id,
+            "workflow_prompt_completed",
+            prompt_agent_id,
+            activity_mutation,
+            || {
+                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                rollback_prompt
+                    .take()
+                    .expect("provider prompt rollback should run once")();
+            },
+        )?;
+        let notice_recipient_ids = self
+            .attachment_store
+            .list_session_attachment_ids(session_id);
+        for (notice_provider_run_id, message) in completion_notices {
+            self.record_notice(
+                session_id,
+                notice_provider_run_id.as_deref(),
+                notice_recipient_ids.clone(),
+                message,
+            );
+        }
+        if update.workflow_run.status() == crate::session::WorkflowRunStatus::Completed {
+            self.release_completed_workflow_write_claims(session_id, &update.workflow_run);
+        } else {
+            self.release_workflow_node_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+            );
+        }
+        let mut dispatches =
+            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches)?;
+        // Queue promotion may already have exchanged the completed node's claim for the next
+        // shared-agent node. Retrying is safe in either case: conflicting work remains queued,
+        // while claims released by this completion immediately unblock eligible nodes.
+        dispatches.extend(self.workflow_retry_blocked_claims());
+        let state_suffix = match update.workflow_run.status() {
+            crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+            crate::session::WorkflowRunStatus::Completing => "is completing",
+            crate::session::WorkflowRunStatus::Completed => "completed",
+            crate::session::WorkflowRunStatus::Failed => "failed",
+            crate::session::WorkflowRunStatus::Stopped => "stopped",
+            _ => "updated",
+        };
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!(
+                "Workflow run `{}` {state_suffix}.",
+                update.workflow_run.id()
+            ),
+        );
+        if matches!(
+            update.workflow_run.status(),
+            crate::session::WorkflowRunStatus::Completed
+                | crate::session::WorkflowRunStatus::Failed
+                | crate::session::WorkflowRunStatus::Stopped
+        ) {
+            let event_kind = match update.workflow_run.status() {
+                crate::session::WorkflowRunStatus::Completed => "workflow.run.completed",
+                crate::session::WorkflowRunStatus::Failed => "workflow.run.failed",
+                crate::session::WorkflowRunStatus::Stopped => "workflow.run.cancelled",
+                _ => "workflow.run.updated",
+            };
+            let source_agent_id = update
+                .workflow_run
+                .completed_by_node_run_id()
+                .and_then(|node_run_id| {
+                    update
+                        .workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == node_run_id)
+                })
+                .map(|node_run| node_run.agent_id().to_string());
+            let source_attachment_id =
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id(
+                    update.workflow_run.id(),
+                );
+            dispatches.extend(self.metaagent_workflow_event_prompt_dispatches(
+                session_id,
+                event_kind,
+                source_agent_id.as_deref(),
+                &source_attachment_id,
+                format!(
+                    "Workflow run `{}` {state_suffix}",
+                    update.workflow_run.id()
+                ),
+                format!(
+                    "Workflow run `{}` {state_suffix}.",
+                    update.workflow_run.id()
+                ),
+                serde_json::json!({
+                    "workflow_run_id": update.workflow_run.id(),
+                    "workflow_id": update.workflow_run.workflow_id(),
+                    "endpoint_id": update.workflow_run.endpoint_id(),
+                    "status": format!("{:?}", update.workflow_run.status()),
+                    "final_output": update.workflow_run.final_output().map(|output| output.message()),
+                    "final_output_valid": update.workflow_run.final_output_valid(),
+                    "final_output_warning": update.workflow_run.final_output_warning(),
+                    "failure_events": update.workflow_run.failure_events(),
+                }),
+            ));
+        }
+        if matches!(
+            update.workflow_run.status(),
+            crate::session::WorkflowRunStatus::Completed
+                | crate::session::WorkflowRunStatus::Failed
+                | crate::session::WorkflowRunStatus::Stopped
+        ) {
+            dispatches.extend(self.workflow_maybe_start_next_queued_prompt(session_id));
+        }
+        Ok(dispatches)
+    }
+
+    pub(super) fn workflow_record_failure(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        failure: &crate::session::WorkflowFailureEvent,
+    ) {
+        let _ = self.session_store.write().record_workflow_failure_event(
+            session_id,
+            workflow_run_id,
+            failure.clone(),
+        );
+    }
+}
+
+#[cfg(test)]
+mod lock_order_tests {
+    use super::BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE;
+    use crate::config::DaemonConfig;
+    use crate::runtime::router::CommandRouter;
+    use crate::session::RuntimeSession;
+    use crate::DaemonApp;
+    use std::sync::mpsc;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn workflow_completion_drops_session_read_guard_before_activity_persistence() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime
+            .ensure_managed_activity_tracking("kernel-workflow-lock-order")
+            .expect("managed activity tracking should activate");
+        runtime
+            .owned
+            .session_store
+            .restore_session(RuntimeSession::new(
+                "session-1",
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel-workflow-lock-order",
+            ));
+
+        let session_store = runtime.owned.session_store.clone();
+        BEFORE_WORKFLOW_ACTIVITY_PERSISTENCE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let (writer_acquired_tx, writer_acquired_rx) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let _writer = session_store.write();
+                    let _ = writer_acquired_tx.send(());
+                });
+                writer_acquired_rx
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("session writer must acquire before activity persistence");
+            }));
+        });
+
+        runtime
+            .owned
+            .persist_workflow_runtime_session("session-1", "lock_order_regression")
+            .expect("workflow persistence should not retain a session read guard");
+    }
+}

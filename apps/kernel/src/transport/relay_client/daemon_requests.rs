@@ -1,0 +1,1408 @@
+//! Inbound browser/client relay request dispatch to the kernel command router.
+
+use super::request_errors::map_relay_error;
+#[cfg(test)]
+mod app_tests;
+mod prepare;
+pub(super) mod request_limits;
+pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
+pub(super) mod renewal_refusals;
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity, RelayError};
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::local::LocalDaemonRequest;
+use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+use crate::runtime::router::CommandRouter;
+use crate::runtime_transport::command_cache::{
+    request_is_cacheable, CommandFingerprint, CommandReservation, CommandResultCache,
+};
+use crate::transport::kernel_protocol::{
+    map_kernel_error, BrowserImportRelayResponse, KernelOutgoingFrame, KernelTransportError,
+};
+use crate::transport::relay_crypto;
+
+use super::request_errors::{relay_error, relay_request_kind};
+use super::sender_identity::{
+    is_browser_import_request, require_bound_client_sender, require_browser_import_sender,
+    validate_bound_service_sender, validate_browser_import_sender,
+};
+
+const MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES: usize = 32;
+static ACTIVE_BROWSER_IMPORT_DELIVERIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+struct BrowserImportDeliveryGuard;
+impl Drop for BrowserImportDeliveryGuard {
+    fn drop(&mut self) {
+        ACTIVE_BROWSER_IMPORT_DELIVERIES.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RelayRequestOutcome {
+    pub(super) display_event: Option<(String, u64, EncryptedRelayPayload)>,
+    pub(super) encrypted_response: Option<EncryptedRelayPayload>,
+    pub(super) error: Option<RelayError>,
+}
+
+#[cfg(test)]
+pub(super) async fn handle_daemon_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    caller_identity: Option<RelayCallerIdentity>,
+    encrypted_request: EncryptedRelayPayload,
+    command_result_cache: &Arc<CommandResultCache>,
+    display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
+    local_browser: Option<&Arc<super::LocalBrowserDirect>>,
+) -> RelayRequestOutcome {
+    match prepare_daemon_request(router, caller_identity, encrypted_request) {
+        Ok(prepared) => {
+            handle_prepared_daemon_request(
+                router,
+                command_sequence,
+                prepared,
+                command_result_cache,
+                display_subscriptions,
+                local_browser,
+            )
+            .await
+        }
+        Err(outcome) => *outcome,
+    }
+}
+
+pub(super) async fn handle_prepared_daemon_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    prepared: PreparedDaemonRequest,
+    command_result_cache: &Arc<CommandResultCache>,
+    display_subscriptions: &super::subscriptions::RelaySubscriptionTasks,
+    local_browser: Option<&Arc<super::LocalBrowserDirect>>,
+) -> RelayRequestOutcome {
+    let received_at_ms = crate::session::unix_epoch_ms();
+    let PreparedDaemonRequest {
+        message,
+        client_public_key,
+        daemon_private_key,
+        caller_identity,
+        encrypted_request,
+        request_memory: _request_memory,
+    } = prepared;
+    let (request_kind, command_id, bind_import_response, result) = match message {
+        ParsedRelayClientMessage::Request(request) => {
+            if let Err(error) = validate_cli_relay_sender_key(&request.request, &client_public_key)
+            {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
+            if let Err(error) = validate_browser_import_sender(
+                &request.request,
+                caller_identity.as_ref(),
+                &encrypted_request,
+            ) {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(error),
+                };
+            }
+            let caller = if router.self_host_terminal_pairing_required() {
+                if matches!(&request.request, LocalDaemonRequest::JoinTerminalPairingLink(join) if join.public_key_thumbprint.is_some())
+                {
+                    KernelCaller::for_relay_request(caller_identity)
+                } else {
+                    let grant = match router.admit_self_host_terminal(&client_public_key) {
+                        Ok(Some(grant)) => grant,
+                        _ => {
+                            return RelayRequestOutcome {
+                                display_event: None,
+                                encrypted_response: None,
+                                error: Some(relay_error(
+                                    "authorization_denied",
+                                    "terminal key is unpaired or revoked",
+                                    false,
+                                )),
+                            }
+                        }
+                    };
+                    KernelCaller::from_paired_terminal(grant)
+                }
+            } else {
+                KernelCaller::for_relay_request(caller_identity)
+            };
+            // MP-08/MP-10: protocol 491 acknowledgements stay in the relay
+            // layer: they only gate this sender's own push pump and renew
+            // its delivery lease; the pump's frames take the admitted path.
+            if let LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                command:
+                    crate::local::KernelBrowserCommand::DisplayAck {
+                        subscription_id,
+                        generation,
+                        sequence,
+                        lost,
+                        held_ms,
+                    },
+            }) = &request.request
+            {
+                let status = super::browser_display::acknowledge(
+                    display_subscriptions,
+                    subscription_id,
+                    &client_public_key,
+                    *generation,
+                    *sequence,
+                    *lost,
+                    *held_ms,
+                )
+                .await;
+                return display_ack_outcome(status, &daemon_private_key, &client_public_key);
+            }
+            let poll = match &request.request {
+                LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
+                    command:
+                        crate::local::KernelBrowserCommand::DisplayNext {
+                            subscription_id, ..
+                        },
+                }) => Some(subscription_id.clone()),
+                _ => None,
+            };
+            // A gateway of another kernel is listed with the paired clients; once the owner
+            // revoked it here, its key gets nothing, whether or not it names its origin.
+            let origin = request.on_behalf_of.as_ref().map(|c| {
+                crate::runtime::kernel_gateway::origins::Named {
+                    kernel: c.origin_kernel.as_str(),
+                    name: c.origin_name.as_deref(),
+                }
+            });
+            match router
+                .kernel_gateway()
+                .admit_origin(&client_public_key, origin)
+            {
+                Ok(true) => {}
+                // The one request a revoked gateway may still make: to be paired again with a
+                // link the owner made for it (the executor lifts the revocation).
+                Ok(false)
+                    if matches!(
+                        request.request,
+                        LocalDaemonRequest::JoinTerminalPairingLink(_)
+                    ) => {}
+                Ok(false) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "authorization_denied",
+                            "this machine's owner revoked that gateway (unpaired or revoked)",
+                            false,
+                        )),
+                    }
+                }
+                // An unreadable list must not lock the owner out of their own kernel: only a
+                // gateway, which names its origin, is refused until the list can be read.
+                Err(error) if origin.is_none() => {
+                    tracing::warn!(%error, "gateway origins unreadable; admitting a request that names no origin");
+                }
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "gateway_origins_unavailable",
+                            &error.to_string(),
+                            true,
+                        )),
+                    }
+                }
+            }
+            let request_kind = relay_request_kind(&request.request);
+            let bind_import_response = is_browser_import_request(&request.request);
+            let mut result = match request.on_behalf_of {
+                Some(on_behalf_of) => {
+                    dispatch_on_behalf_of(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                        &on_behalf_of,
+                        &client_public_key,
+                    )
+                    .await
+                }
+                None => {
+                    dispatch_relay_client_request(
+                        router,
+                        command_sequence,
+                        caller,
+                        request.request,
+                        request.command_id.clone(),
+                        command_result_cache,
+                    )
+                    .await
+                }
+            };
+            if let Some(id) = poll {
+                if matches!(&result, RelayDispatchOutcome::Response(_))
+                    && !super::browser_display::refresh_admitted_display_poll(
+                        display_subscriptions,
+                        &id,
+                        &client_public_key,
+                    )
+                    .await
+                {
+                    result = RelayDispatchOutcome::RelayError(relay_error("display_subscription_required", "MD-DISPLAY: register a fresh display subscription with the same sender identity", false));
+                }
+            }
+            (
+                request_kind,
+                request.command_id,
+                bind_import_response,
+                result,
+            )
+        }
+        ParsedRelayClientMessage::BrowserImportDelivery(request) => {
+            if router.admit_self_host_terminal(&client_public_key).is_err() {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "authorization_denied",
+                        "terminal key is unpaired or revoked",
+                        false,
+                    )),
+                };
+            }
+            if ACTIVE_BROWSER_IMPORT_DELIVERIES
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                    (active < MAX_ACTIVE_BROWSER_IMPORT_DELIVERIES).then_some(active + 1)
+                })
+                .is_err()
+            {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "browser_import_busy",
+                        "browser import capacity is exhausted",
+                        true,
+                    )),
+                };
+            }
+            let _delivery_guard = BrowserImportDeliveryGuard;
+            let identity =
+                match require_browser_import_sender(caller_identity.as_ref(), &encrypted_request) {
+                    Ok(identity) => identity.clone(),
+                    Err(error) => {
+                        return RelayRequestOutcome {
+                            display_event: None,
+                            encrypted_response: None,
+                            error: Some(error),
+                        }
+                    }
+                };
+            let command_id = format!(
+                "browser-import-delivery-{}-{}",
+                crate::session::unix_epoch_ms(),
+                command_sequence.fetch_add(1, Ordering::Relaxed)
+            );
+            let selection = request.selection.clone();
+            let metadata_request = LocalDaemonRequest::AuthorizeBrowserImportSource(
+                crate::local::BrowserImportSourceRequest {
+                    request_id: request.request_id.clone(),
+                    selection,
+                },
+            );
+            let command = KernelCommand::from_local_request_with_caller(
+                command_id.clone(),
+                KernelCommandSource::RelayClient,
+                KernelCaller::from_relay_identity(identity),
+                None,
+                None,
+                &metadata_request,
+            );
+            let result = router
+                .runtime_state()
+                .execute_browser_import_delivery(&command, request)
+                .await
+                .map(|results| {
+                    RelayDispatchOutcome::Response(serde_json::json!({
+                        "BrowserImportDelivered": {"results": results}
+                    }))
+                })
+                .unwrap_or_else(|_| {
+                    RelayDispatchOutcome::RelayError(relay_error(
+                        "browser_import_failed",
+                        "browser import failed or requires recovery",
+                        false,
+                    ))
+                });
+            ("browser_import_delivery", Some(command_id), true, result)
+        }
+        ParsedRelayClientMessage::LocalTerminalRenew(request) => {
+            let result = require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local terminal lease renewal",
+            )
+            .and_then(|identity| match local_browser {
+                Some(direct) => {
+                    direct.renew_terminal_lease(identity, &request.grant, request.sequence)
+                }
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local terminal lease renewal requires the relay",
+                    false,
+                )),
+            });
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => {
+                    renewal_refusals::log(&error);
+                    RelayDispatchOutcome::RelayError(error)
+                }
+            };
+            ("local_terminal_renew", None, false, result)
+        }
+        ParsedRelayClientMessage::LocalTerminalConnect(LocalBrowserConnectRequest {}) => {
+            let identity = match require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local terminal connect",
+            ) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            let result = match local_browser {
+                Some(direct) => direct.issue_terminal_grant(identity).await,
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local terminal connect is only issued over the relay",
+                    false,
+                )),
+            };
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => RelayDispatchOutcome::RelayError(error),
+            };
+            ("local_terminal_connect", None, false, result)
+        }
+        ParsedRelayClientMessage::LocalBrowserRenew(request) => {
+            let result = require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local browser lease renewal",
+            )
+            .and_then(|identity| match local_browser {
+                Some(direct) => direct.renew_lease(identity, &request.grant, request.sequence),
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local browser lease renewal requires the relay",
+                    false,
+                )),
+            });
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => {
+                    renewal_refusals::log(&error);
+                    RelayDispatchOutcome::RelayError(error)
+                }
+            };
+            ("local_browser_renew", None, false, result)
+        }
+        ParsedRelayClientMessage::LocalBrowserConnect(LocalBrowserConnectRequest {}) => {
+            let identity = match require_bound_client_sender(
+                caller_identity.as_ref(),
+                &encrypted_request,
+                "local browser connect",
+            ) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            // Only the relay carrier mints grants: a direct session cannot
+            // extend itself beyond the relay-verified identity that admitted it.
+            let result = match local_browser {
+                Some(local_browser) => local_browser.issue_grant(identity).await,
+                None => Err(relay_error(
+                    "local_browser_unavailable",
+                    "local browser connect is only issued over the relay",
+                    false,
+                )),
+            };
+            let result = match result {
+                Ok(response) => RelayDispatchOutcome::Response(response),
+                Err(error) => RelayDispatchOutcome::RelayError(error),
+            };
+            ("local_browser_connect", None, false, result)
+        }
+    };
+    let quiet_success_request =
+        crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
+    if !quiet_success_request {
+        crate::logging::info_with_fields(
+            "daemon.relay_client",
+            "relay daemon request dispatching",
+            serde_json::json!({
+                "request_kind": request_kind,
+                "command_id": command_id,
+            }),
+        );
+    }
+    match result {
+        RelayDispatchOutcome::Response(mut response) => {
+            let display_at = std::time::Instant::now();
+            let display_event = if let Some((id, sequence, event)) =
+                crate::transport::kernel_browser_display::take_display_event(&mut response)
+            {
+                // MP-08/MP-10: protocol 466 binary display plaintext.
+                match crate::transport::kernel_browser_display::encode_display_event(event)
+                    .ok()
+                    .and_then(|bytes| {
+                        relay_crypto::encrypt_payload_for_peer(
+                            &daemon_private_key,
+                            &client_public_key,
+                            &bytes,
+                        )
+                        .ok()
+                    }) {
+                    Some(payload) => Some((id, sequence, payload)),
+                    None => {
+                        return RelayRequestOutcome {
+                            display_event: None,
+                            encrypted_response: None,
+                            error: Some(relay_error(
+                                "display_encode_failed",
+                                "MD-DISPLAY: frame encryption failed",
+                                false,
+                            )),
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+            if display_event.is_some() {
+                crate::transport::kernel_browser_display::timing(
+                    "event_serialize_encrypt",
+                    display_at,
+                );
+            }
+            if !quiet_success_request {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay daemon request dispatched",
+                    serde_json::json!({
+                        "request_kind": request_kind,
+                    }),
+                );
+            }
+            let serialized = if bind_import_response {
+                serde_json::to_vec(&BrowserImportRelayResponse {
+                    request_nonce: encrypted_request.nonce.clone(),
+                    response,
+                })
+            } else {
+                serde_json::to_vec(&response)
+            };
+            let plaintext = match serialized {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(relay_error(
+                            "relay_request_failed",
+                            &format!("failed to serialize relay response: {error}"),
+                            false,
+                        )),
+                    };
+                }
+            };
+            crate::runtime::perf_timing::record_relay_request(
+                request_kind,
+                received_at_ms,
+                plaintext.len(),
+            );
+            if !quiet_success_request {
+                crate::logging::info_with_fields(
+                    "daemon.relay_client",
+                    "relay daemon response serialized",
+                    serde_json::json!({
+                        "request_kind": request_kind,
+                        "byte_len": plaintext.len(),
+                    }),
+                );
+            }
+            match relay_crypto::encrypt_payload_for_peer(
+                &daemon_private_key,
+                &client_public_key,
+                &plaintext,
+            ) {
+                Ok(encrypted_response) => {
+                    if !quiet_success_request {
+                        crate::logging::info_with_fields(
+                            "daemon.relay_client",
+                            "relay daemon response encrypted",
+                            serde_json::json!({
+                                "request_kind": request_kind,
+                                "byte_len": plaintext.len(),
+                            }),
+                        );
+                    }
+                    RelayRequestOutcome {
+                        display_event,
+                        encrypted_response: Some(encrypted_response),
+                        error: None,
+                    }
+                }
+                Err(error) => RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "relay_request_failed",
+                        &format!("failed to encrypt relay response: {error}"),
+                        false,
+                    )),
+                },
+            }
+        }
+        RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(error),
+        },
+    }
+}
+
+fn display_ack_outcome(
+    status: Option<&'static str>,
+    daemon_private_key: &str,
+    client_public_key: &str,
+) -> RelayRequestOutcome {
+    let Some(status) = status else {
+        return RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "display_subscription_required",
+                "MD-DISPLAY: register a fresh display subscription with the same sender identity",
+                false,
+            )),
+        };
+    };
+    let response = crate::local::LocalDaemonResponse::KernelBrowser {
+        result: serde_json::json!({"acknowledged":true,"push":status,"ack_timing":true}),
+    };
+    match serde_json::to_vec(&response).ok().and_then(|plaintext| {
+        relay_crypto::encrypt_payload_for_peer(daemon_private_key, client_public_key, &plaintext)
+            .ok()
+    }) {
+        Some(encrypted_response) => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        },
+        None => RelayRequestOutcome {
+            display_event: None,
+            encrypted_response: None,
+            error: Some(relay_error(
+                "relay_request_failed",
+                "failed to encrypt relay response",
+                false,
+            )),
+        },
+    }
+}
+
+fn validate_cli_relay_sender_key(
+    request: &LocalDaemonRequest,
+    encrypted_sender_public_key: &str,
+) -> Result<(), RelayError> {
+    let claimed_thumbprint = match request {
+        LocalDaemonRequest::JoinTerminalPairingLink(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        LocalDaemonRequest::IssueCloudRelayClientToken(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        LocalDaemonRequest::ResolveKernelClientConnection(request) => {
+            request.public_key_thumbprint.as_deref()
+        }
+        _ => return Ok(()),
+    };
+    let Some(claimed_thumbprint) = claimed_thumbprint else {
+        // Legacy pairing and unbound client-token requests retain non-viewer behavior.
+        return Ok(());
+    };
+    let sender_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(encrypted_sender_public_key);
+    if claimed_thumbprint == sender_thumbprint {
+        return Ok(());
+    }
+    Err(relay_error(
+        "unauthorized",
+        "CLI relay key thumbprint does not match its encrypted relay sender key",
+        false,
+    ))
+}
+
+#[cfg(test)]
+mod cli_relay_sender_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_pairing_join_requires_proof_of_the_claimed_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn key_bound_client_token_request_requires_the_encrypted_cli_key() {
+        let sender_public_key = "Y2xpLXB1YmxpYy1rZXk=";
+        let thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(sender_public_key);
+        let request = LocalDaemonRequest::IssueCloudRelayClientToken(
+            crate::local::IssueCloudRelayClientTokenRequest {
+                target_daemon_alias: "home".to_string(),
+                client_id: "cli-terminal-1".to_string(),
+                session_id: None,
+                public_key_thumbprint: Some(thumbprint),
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, sender_public_key).is_ok());
+        assert!(validate_cli_relay_sender_key(&request, "foreign-public-key").is_err());
+    }
+
+    #[test]
+    fn legacy_terminal_pairing_join_without_thumbprint_remains_non_viewer_compatible() {
+        let request = LocalDaemonRequest::JoinTerminalPairingLink(
+            crate::local::JoinTerminalPairingLinkRequest {
+                pairing_link: "chariox-terminal-pair-v1.test".to_string(),
+                terminal_id: Some("cli-terminal-1".to_string()),
+                terminal_type: Some(crate::local::TerminalType::Cli),
+                alias: None,
+                public_key_thumbprint: None,
+            },
+        );
+
+        assert!(validate_cli_relay_sender_key(&request, "any-key").is_ok());
+    }
+}
+
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Preserve the existing ParsedRelayClientMessage typed actor payload layout"
+)]
+enum ParsedRelayClientMessage {
+    Request(ParsedRelayClientRequest),
+    BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
+    LocalBrowserConnect(LocalBrowserConnectRequest),
+    LocalBrowserRenew(LocalBrowserRenewRequest),
+    LocalTerminalConnect(LocalBrowserConnectRequest),
+    LocalTerminalRenew(LocalBrowserRenewRequest),
+}
+
+/// MP-08/MP-11 protocol 520: terminal admission uses the shared service and
+/// paired Origin, with an explicitly short lease rather than a short token.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalTerminalConnectEnvelope {
+    local_terminal_connect: LocalBrowserConnectRequest,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalTerminalRenewEnvelope {
+    local_terminal_renew: LocalBrowserRenewRequest,
+}
+
+/// Protocol 520: encrypted renewal handle and one-use sequence, relay only.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserRenewRequest {
+    grant: String,
+    sequence: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserRenewEnvelope {
+    local_browser_renew: LocalBrowserRenewRequest,
+}
+
+/// Protocol 520: `{"local_browser_connect":{}}`, encrypted with the browser key
+/// bound into the caller's relay identity.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserConnectRequest {}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalBrowserConnectEnvelope {
+    local_browser_connect: LocalBrowserConnectRequest,
+}
+
+#[derive(Debug)]
+struct ParsedRelayClientRequest {
+    command_id: Option<String>,
+    request: LocalDaemonRequest,
+    /// Protocol 568: set by a kernel gateway forwarding for an external agent.
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelayClientRequestEnvelope {
+    #[serde(default)]
+    command_id: Option<String>,
+    request: LocalDaemonRequest,
+    #[serde(default)]
+    on_behalf_of: Option<crate::local::OnBehalfOf>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserImportDeliveryEnvelope {
+    browser_import_delivery: crate::runtime::browser_import_payload::BrowserImportDeliveryRequest,
+}
+
+fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, serde_json::Error> {
+    if let Ok(envelope) = serde_json::from_slice::<LocalTerminalConnectEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalTerminalConnect(
+            envelope.local_terminal_connect,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalTerminalRenewEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalTerminalRenew(
+            envelope.local_terminal_renew,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<BrowserImportDeliveryEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::BrowserImportDelivery(
+            envelope.browser_import_delivery,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalBrowserRenewEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalBrowserRenew(
+            envelope.local_browser_renew,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<LocalBrowserConnectEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::LocalBrowserConnect(
+            envelope.local_browser_connect,
+        ));
+    }
+    if let Ok(envelope) = serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
+        return Ok(ParsedRelayClientMessage::Request(
+            ParsedRelayClientRequest {
+                command_id: envelope
+                    .command_id
+                    .filter(|command_id| !command_id.trim().is_empty()),
+                request: envelope.request,
+                on_behalf_of: envelope.on_behalf_of,
+            },
+        ));
+    }
+    Ok(ParsedRelayClientMessage::Request(
+        ParsedRelayClientRequest {
+            command_id: None,
+            request: serde_json::from_slice(bytes)?,
+            on_behalf_of: None,
+        },
+    ))
+}
+
+enum RelayDispatchOutcome {
+    Response(Value),
+    RelayError(RelayError),
+}
+
+/// A request a kernel gateway forwarded for an external agent. This kernel
+/// decides for itself from `on_behalf_of`: the human-only set is refused here,
+/// and a state-changing request is reserved durably before it runs so a retry
+/// of an interrupted one is answered "outcome unknown" instead of run again.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "One dispatch seam shared with ordinary requests"
+)]
+async fn dispatch_on_behalf_of(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    caller: KernelCaller,
+    request: LocalDaemonRequest,
+    command_id: Option<String>,
+    command_result_cache: &CommandResultCache,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    gateway_public_key: &str,
+) -> RelayDispatchOutcome {
+    use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
+    if let Err(error) = router
+        .runtime_state()
+        .authorize_on_behalf_of_request(on_behalf_of, &request)
+    {
+        let refusal = crate::runtime::kernel_access::Refusal::of(&error);
+        return RelayDispatchOutcome::RelayError(relay_error(
+            refusal.code(),
+            refusal.message(),
+            false,
+        ));
+    }
+    if crate::runtime::state::is_outside_event_request(&request) {
+        let id = format!(
+            "outside:{}:{}",
+            on_behalf_of.origin_kernel, on_behalf_of.grant_id
+        );
+        let result = match &request {
+            LocalDaemonRequest::WaitEvents(wait) => {
+                router
+                    .runtime_state()
+                    .outside_wait(&id, wait, None, None)
+                    .await
+            }
+            _ => router.runtime_state().outside_part_request(
+                &id,
+                false,
+                caller.user_id.as_deref(),
+                &request,
+            ),
+        };
+        return match result {
+            Ok(response) => RelayDispatchOutcome::Response(
+                serde_json::to_value(response).expect("typed event response serializes"),
+            ),
+            Err(error) => RelayDispatchOutcome::RelayError(map_relay_error(&error)),
+        };
+    }
+    // The origin telling this kernel its grant ended or still lives is idempotent and
+    // only removes or keeps authority this kernel already gave, so it needs neither a
+    // command id nor a ledger entry.
+    if ends_remote_sudo(on_behalf_of, &request)
+        || matches!(request, LocalDaemonRequest::RenewKernelSudoRequester(_))
+    {
+        let command = KernelCommand::from_local_request_with_caller(
+            command_id.unwrap_or_else(|| format!("gw-end-{}", crate::session::unix_epoch_ms())),
+            KernelCommandSource::RelayClient,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        return remote_sudo_outcome(router, &command, on_behalf_of, &request).await;
+    }
+    if !is_repeatable(&request) {
+        router.runtime_state().audit_gateway_request(
+            on_behalf_of,
+            &crate::runtime::kernel_gateway::ledger::variant_name(&request),
+        );
+    }
+    if is_repeatable(&request) {
+        return dispatch_relay_client_request(
+            router,
+            command_sequence,
+            caller,
+            request,
+            command_id,
+            command_result_cache,
+        )
+        .await;
+    }
+    let Some(command_id) = command_id else {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            "command_id_required",
+            "a state-changing request through the gateway needs a command id",
+            false,
+        ));
+    };
+    let command = KernelCommand::from_local_request_with_caller(
+        command_id.clone(),
+        KernelCommandSource::RelayClient,
+        caller.clone(),
+        None,
+        None,
+        &request,
+    );
+    let fingerprint = CommandFingerprint::for_app_control(&command, &request);
+    let key = serde_json::json!([gateway_public_key, &command_id]).to_string();
+    let settled = router
+        .kernel_gateway()
+        .ledger()
+        .run(&key, fingerprint, async {
+            let outcome = if matches!(request, LocalDaemonRequest::RequestKernelSudo(_)) {
+                remote_sudo_outcome(router, &command, on_behalf_of, &request).await
+            } else {
+                dispatch_relay_client_request(
+                    router,
+                    command_sequence,
+                    caller,
+                    request,
+                    Some(command_id.clone()),
+                    command_result_cache,
+                )
+                .await
+            };
+            match outcome {
+                RelayDispatchOutcome::Response(value) => Ok(value),
+                RelayDispatchOutcome::RelayError(error) => Err(Failure {
+                    code: error.code,
+                    message: error.message,
+                    retryable: error.retryable,
+                }),
+            }
+        })
+        .await;
+    match settled {
+        Settled::Done(Ok(value)) => RelayDispatchOutcome::Response(value),
+        Settled::Done(Err(failure)) => RelayDispatchOutcome::RelayError(relay_error(
+            &failure.code,
+            &failure.message,
+            failure.retryable,
+        )),
+        Settled::OutcomeUnknown => RelayDispatchOutcome::RelayError(relay_error(
+            "kernel_outcome_unknown",
+            "This request may or may not have run on that kernel. Check its state (for example list the sessions there) before asking again; it is not run a second time.",
+            false,
+        )),
+        Settled::Conflict => RelayDispatchOutcome::RelayError(relay_error(
+            "duplicate_command_conflict",
+            &format!("command_id `{command_id}` was already used for a different request"),
+            false,
+        )),
+        Settled::Unavailable(reason) => {
+            RelayDispatchOutcome::RelayError(relay_error("ledger_unavailable", &reason, true))
+        }
+    }
+}
+
+/// The origin's grant id as the grant to revoke: the one revoke a forwarded request may make.
+fn ends_remote_sudo(on_behalf_of: &crate::local::OnBehalfOf, request: &LocalDaemonRequest) -> bool {
+    matches!(request, LocalDaemonRequest::RevokeKernelAccessGrant(revoke)
+        if revoke.grant_id.as_deref() == Some(on_behalf_of.grant_id.as_str()))
+}
+
+async fn remote_sudo_outcome(
+    router: &CommandRouter,
+    command: &KernelCommand,
+    on_behalf_of: &crate::local::OnBehalfOf,
+    request: &LocalDaemonRequest,
+) -> RelayDispatchOutcome {
+    match router
+        .dispatch_remote_sudo(command, on_behalf_of, request)
+        .await
+    {
+        Ok(response) => {
+            let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+            crate::local::redact_client_response_value(&mut response);
+            RelayDispatchOutcome::Response(response)
+        }
+        Err(error) => {
+            let error = map_kernel_error(&error);
+            RelayDispatchOutcome::RelayError(relay_error(
+                &error.code,
+                &error.message,
+                error.retryable,
+            ))
+        }
+    }
+}
+
+async fn dispatch_relay_client_request(
+    router: &CommandRouter,
+    command_sequence: &AtomicU64,
+    caller: KernelCaller,
+    request: LocalDaemonRequest,
+    command_id: Option<String>,
+    command_result_cache: &CommandResultCache,
+) -> RelayDispatchOutcome {
+    let sequence = command_sequence.fetch_add(1, Ordering::Relaxed);
+    let command_id = command_id.unwrap_or_else(|| {
+        format!(
+            "relay-client-{}-{sequence}",
+            crate::session::unix_epoch_ms()
+        )
+    });
+    let command = KernelCommand::from_local_request_with_caller(
+        command_id.clone(),
+        KernelCommandSource::RelayClient,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    // MD-3: replay must not bypass current terminal admission. Caller identity
+    // comes from relay authentication, never the request or command ID.
+    if matches!(
+        &request,
+        LocalDaemonRequest::KernelBrowser(_)
+            | LocalDaemonRequest::Notes(_)
+            | LocalDaemonRequest::Dictation(_)
+            | LocalDaemonRequest::RespondToHandoff(_)
+    ) && !command.is_terminal_caller()
+    {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            "unauthorized",
+            "MD-3: authenticated terminal required",
+            false,
+        ));
+    }
+    let browser_revision = match router
+        .runtime_state()
+        .kernel_browser_receipt_revision(&command, &request)
+    {
+        Ok(revision) => revision,
+        Err(error) => {
+            return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error)))
+        }
+    };
+    let fingerprint = (request_is_cacheable(&request)
+        && !(router.self_host_terminal_pairing_required()
+            && matches!(&request, LocalDaemonRequest::JoinTerminalPairingLink(_))))
+    .then(|| {
+        CommandFingerprint::from_command_and_request(&command, &request)
+            .with_browser_protection_revision(browser_revision)
+    });
+    if let Some(fingerprint) = fingerprint.as_ref() {
+        match command_result_cache
+            .reserve(&command.command_id, fingerprint)
+            .await
+        {
+            CommandReservation::Wait(wait_rx) => {
+                return match wait_rx.await {
+                    Ok(cached) => {
+                        if let Err(error) = router
+                            .runtime_state()
+                            .validate_kernel_browser_receipt(&command, &request, browser_revision)
+                            .await
+                        {
+                            return cached_relay_dispatch_outcome(
+                                Box::new(None),
+                                Some(map_kernel_error(&error)),
+                            );
+                        }
+                        cached_relay_dispatch_outcome(cached.response_value(), cached.error)
+                    }
+                    Err(_) => RelayDispatchOutcome::RelayError(relay_error(
+                        "duplicate_command_unavailable",
+                        "original duplicate command result was unavailable",
+                        true,
+                    )),
+                };
+            }
+            CommandReservation::Conflict => {
+                return RelayDispatchOutcome::RelayError(relay_error(
+                    "duplicate_command_conflict",
+                    &format!(
+                        "command_id `{}` was already used for a different request",
+                        command.command_id
+                    ),
+                    false,
+                ));
+            }
+            CommandReservation::Dispatch => {}
+        }
+    }
+    #[cfg(test)]
+    command_result_cache.await_dispatch_for_test().await;
+    let command_id = command.command_id.clone();
+    let result = router.dispatch(command, request).await;
+    let outgoing = match result {
+        Ok(response) => {
+            let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+            crate::local::redact_client_response_value(&mut response);
+            KernelOutgoingFrame::Response {
+                kernel: None,
+                request_id: command_id.clone(),
+                response: Box::new(Some(response)),
+                error: None,
+            }
+        }
+        Err(error) => KernelOutgoingFrame::Response {
+            kernel: None,
+            request_id: command_id.clone(),
+            response: Box::new(None),
+            error: Some(map_kernel_error(&error)),
+        },
+    };
+    if let Some(fingerprint) = fingerprint {
+        command_result_cache
+            .complete(command_id, fingerprint, &outgoing)
+            .await;
+    }
+    let KernelOutgoingFrame::Response {
+        response, error, ..
+    } = outgoing
+    else {
+        unreachable!("relay command dispatch only builds response frames")
+    };
+    cached_relay_dispatch_outcome(response, error)
+}
+
+#[allow(
+    clippy::boxed_local,
+    reason = "Consumes the already boxed response frame without moving a large payload through the caller stack"
+)]
+fn cached_relay_dispatch_outcome(
+    response: Box<Option<Value>>,
+    error: Option<KernelTransportError>,
+) -> RelayDispatchOutcome {
+    if let Some(error) = error {
+        return RelayDispatchOutcome::RelayError(relay_error(
+            &error.code,
+            &error.message,
+            error.retryable,
+        ));
+    }
+    RelayDispatchOutcome::Response((*response).unwrap_or(Value::Null))
+}
+
+#[cfg(test)]
+#[path = "daemon_requests_browser_import_tests.rs"]
+mod browser_import_tests;
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
+    use crate::local::LocalDaemonResponse;
+    use base64::Engine;
+
+    #[test]
+    fn the_largest_machine_file_chunk_fits_one_relayed_request() {
+        let request = crate::local::LocalDaemonRequest::WriteKernelFile(
+            crate::local::WriteKernelFileRequest {
+                path: "p".repeat(4096),
+                offset: u64::MAX,
+                data_base64: base64::engine::general_purpose::STANDARD.encode(vec![
+                    0u8;
+                    crate::local::KERNEL_FILE_MAX_CHUNK_BYTES
+                        as usize
+                ]),
+                total_size: u64::MAX,
+                sha256: Some("a".repeat(64)),
+                overwrite: true,
+            },
+        );
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        assert!(plaintext.len() + 16 <= super::request_limits::SMALL_REQUEST_BYTES);
+    }
+
+    #[test]
+    fn the_largest_app_file_answer_fits_one_relayed_request() {
+        use crate::durable_state::app_file_grants::{MAX_FILES, MAX_TOTAL_BYTES};
+        let share = MAX_TOTAL_BYTES / MAX_FILES;
+        let files = (0..MAX_FILES)
+            .map(|index| crate::local::AppFileContents {
+                name: format!("{index}{}", "n".repeat(254)),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(vec![0u8; share]),
+            })
+            .collect();
+        let request =
+            crate::local::LocalDaemonRequest::GrantAppFile(crate::local::GrantAppFileRequest {
+                session_id: "s".repeat(128),
+                operation_id: "o".repeat(128),
+                files,
+            });
+        let plaintext =
+            serde_json::json!({ "command_id": "c".repeat(128), "request": request }).to_string();
+        // AES-GCM adds a 16-byte tag to the plaintext.
+        assert!(plaintext.len() + 16 <= super::request_limits::SMALL_REQUEST_BYTES);
+    }
+
+    #[test]
+    fn pre_reimage_observation_uses_the_normal_encrypted_daemon_request_envelope() {
+        let payload = serde_json::json!({
+            "command_id": "observe-1",
+            "request": {
+                "ObserveManagedEnvironmentPreReimage": {
+                    "environmentId": "environment-1",
+                    "expectedGeneration": 4
+                }
+            }
+        });
+        let parsed = super::parse_relay_client_request(payload.to_string().as_bytes())
+            .expect("normal relay request");
+        let super::ParsedRelayClientMessage::Request(request) = parsed else {
+            panic!("observation must use the normal daemon request path")
+        };
+        assert_eq!(request.command_id.as_deref(), Some("observe-1"));
+        assert!(matches!(
+            request.request,
+            crate::local::LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(
+                crate::local::ObserveManagedEnvironmentPreReimageRequest {
+                    environment_id,
+                    expected_generation: 4,
+                }
+            ) if environment_id == "environment-1"
+        ));
+    }
+
+    #[test]
+    fn encrypted_delivery_parser_keeps_cookie_payload_out_of_daemon_requests_and_debug() {
+        let generated_value = format!("generated-{}", crate::session::unix_epoch_ms());
+        let payload = serde_json::json!([{
+            "name":"session", "value":generated_value, "domain":"example.test", "path":"/"
+        }])
+        .to_string();
+        let envelope = serde_json::json!({
+            "browser_import_delivery": {
+                "request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "selection": {
+                    "session_id":"room-1", "attachment_id":"attachment-1",
+                    "environment_id":"environment-1", "runtime_generation":1,
+                    "tab_id":"tab-1", "document_revision":1, "source_store_id":"normal",
+                    "domains":["example.test"], "partition_sites":[], "overwrite":false
+                },
+                "payload_base64":base64::engine::general_purpose::STANDARD.encode(payload.as_bytes())
+            }
+        });
+        let parsed = super::parse_relay_client_request(envelope.to_string().as_bytes()).unwrap();
+        let super::ParsedRelayClientMessage::BrowserImportDelivery(delivery) = parsed else {
+            panic!("delivery must not parse as a local daemon request")
+        };
+        assert!(!format!("{delivery:?}").contains(&generated_value));
+        let (_, _, decoded) = delivery.into_parts();
+        assert!(decoded.as_str().contains(&generated_value));
+
+        let mut public_request = envelope["browser_import_delivery"].clone();
+        public_request["selection"]["cookies"] = serde_json::json!([{}]);
+        assert!(super::parse_relay_client_request(
+            serde_json::json!({"request":public_request})
+                .to_string()
+                .as_bytes()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn relay_client_response_projection_redacts_remote_relay_token() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-ref-1",
+            "session-1",
+            Some("reviewer".to_string()),
+            "codex",
+            Some("gpt-5.6-sol".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: "worker-1".to_string(),
+            worker_machine_id: "machine-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: Some("wss://relay.example".to_string()),
+            relay_token: Some("secret-token".to_string()),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        }));
+
+        let mut response = serde_json::to_value(LocalDaemonResponse::AgentMovedToRemote { agent })
+            .expect("response should serialize");
+        crate::local::redact_client_response_value(&mut response);
+
+        assert!(response
+            .pointer("/AgentMovedToRemote/agent/remote_execution/relay_token")
+            .is_none());
+        assert_eq!(
+            response
+                .pointer("/AgentMovedToRemote/agent/remote_execution/relay_url")
+                .and_then(serde_json::Value::as_str),
+            Some("wss://relay.example")
+        );
+        assert_eq!(
+            response
+                .pointer("/AgentMovedToRemote/agent/remote_execution/relay_peer_protocol_version")
+                .and_then(serde_json::Value::as_u64),
+            Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION as u64)
+        );
+    }
+
+    #[test]
+    fn relay_client_response_projection_preserves_issued_client_tokens() {
+        let cloud_token = LocalDaemonResponse::CloudRelayClientTokenIssued {
+            profile: crate::local::CloudRelayProfile {
+                api_url: "https://cloud.example".to_string(),
+                email: "user@example.com".to_string(),
+                account_id: "account-1".to_string(),
+                user_id: "user-1".to_string(),
+                account_slug: "account".to_string(),
+                realm_id: "realm-1".to_string(),
+                relay_url: "wss://relay.example".to_string(),
+                issuer_id: "issuer-1".to_string(),
+                client_id: None,
+                client_alias: None,
+                machine_id: None,
+                machine_alias: None,
+                kernel_id: None,
+                kernel_enrolled: false,
+                token_expires_at_ms: None,
+            },
+            token: crate::local::CloudRelayRuntimeToken {
+                relay_url: "wss://relay.example".to_string(),
+                relay_token: "issued-runtime-token".to_string(),
+                token_expires_at: "2099-01-01T00:00:00Z".to_string(),
+            },
+        };
+        let connection = LocalDaemonResponse::KernelClientConnectionResolved {
+            connection: crate::local::KernelClientConnection {
+                relay_url: "wss://relay.example".to_string(),
+                relay_token: "issued-client-token".to_string(),
+                target_daemon_id: None,
+                target_daemon_alias: None,
+                token_expires_at: None,
+                machine_id: None,
+                kernel_id: None,
+            },
+        };
+
+        for mut response in [
+            serde_json::to_value(cloud_token).expect("cloud token should serialize"),
+            serde_json::to_value(connection).expect("client connection should serialize"),
+        ] {
+            crate::local::redact_client_response_value(&mut response);
+            assert!(
+                response.to_string().contains("issued-runtime-token")
+                    || response.to_string().contains("issued-client-token")
+            );
+        }
+    }
+}

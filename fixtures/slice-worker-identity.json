@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Public deterministic identity vectors; no credentials",
+  "cases": [
+    {
+      "label": "first-machine",
+      "machineId": "machine-a",
+      "ownerKernelId": "kernel-a",
+      "localName": "drill",
+      "creationNonce": "00000000-0000-4000-8000-000000000001",
+      "workerKernelRef": "slice:f9c8c7ddcf3d5f566fd679f65db5dcab4446594cf5d992feead5416cbc13e062:7429ec3f2923310f0478364d98e36f78ed6488a915f586ddb6910223f6b6643d"
+    },
+    {
+      "label": "second-machine-same-name",
+      "machineId": "machine-b",
+      "ownerKernelId": "kernel-b",
+      "localName": "drill",
+      "creationNonce": "00000000-0000-4000-8000-000000000001",
+      "workerKernelRef": "slice:1fb1404a9738d5ed2105851ea039037fb184e6752418489a6474535d44550736:f1093b6fa594264cac20bb79aa33874dd839d876fc9aef061bb69899b2ff81e7"
+    },
+    {
+      "label": "recreated-same-name",
+      "machineId": "machine-a",
+      "ownerKernelId": "kernel-a",
+      "localName": "drill",
+      "creationNonce": "00000000-0000-4000-8000-000000000002",
+      "workerKernelRef": "slice:f9c8c7ddcf3d5f566fd679f65db5dcab4446594cf5d992feead5416cbc13e062:8250322432d68399710f0755fd6bccbab677d0878db8107812d491ff22fa5ca5"
+    },
+    {
+      "label": "same-machine-other-owner",
+      "machineId": "machine-a",
+      "ownerKernelId": "kernel-other",
+      "localName": "drill",
+      "creationNonce": "00000000-0000-4000-8000-000000000001",
+      "workerKernelRef": "slice:f9c8c7ddcf3d5f566fd679f65db5dcab4446594cf5d992feead5416cbc13e062:e71d5b1bb0d74254c8b6dffe107919d10404bc6e32152702a158a2dd3a6d8747"
+    }
+  ]
+}

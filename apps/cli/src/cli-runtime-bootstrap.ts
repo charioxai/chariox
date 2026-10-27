@@ -1,0 +1,446 @@
+import { getClientCatalogRevisions } from "./client-catalog-api.js"
+import { startPairedRelayRenewal } from "./paired-relay-renewal.js"
+import { issueCloudPairingBootstrapToken } from "./cloud-client.js"
+import type { LocalIpcClient } from "./ipc.js"
+import type { RelayClientIdentity } from "./ipc.js"
+import { LocalIpcClient as DefaultLocalIpcClient } from "./ipc.js"
+import type {
+  BootstrapState,
+  CliOptions,
+} from "./cli-types.js"
+import {
+  applyProviderPreferenceDefaults,
+  defaultKernelEndpoint,
+  parseArgs,
+  parseTerminalPairingLink,
+  terminalPairingLinkFromArgs,
+} from "./cli-options.js"
+import { createCliRelayIdentityStore } from "./cli-relay-identity-store.js"
+import { joinKernelTerminalPairingLink } from "./relay-api.js"
+import {
+  attachToSession,
+  attachSessionView,
+  createSession,
+  deleteSessionByRef,
+  getSessionState,
+  listSessions,
+  resolveSession,
+} from "./session-api.js"
+import {
+  catchUpAttachedSession,
+  resizeSessionTerminal,
+} from "./session-runtime-api.js"
+import {
+  getPromptInputHistory,
+  getSessionHistoryOutline,
+} from "./session-history-api.js"
+import {
+  getProviderCatalog,
+  getProviderCommandCatalogs,
+  launchProviderRun,
+  listProviderAccountProfiles,
+  tryGetProviderRun,
+} from "./provider-api.js"
+import { getTerminalCommandCatalog } from "./terminal-command-catalog-api.js"
+import {
+  fallbackProviderCatalog,
+} from "./provider-catalog.js"
+import {
+  fallbackProviderCommandCatalogs,
+} from "./provider-command-catalog.js"
+import {
+  loadPreferences,
+  resolveMaxAgentsPerScreen,
+  type CharioxPreferences,
+} from "./preferences.js"
+import { getCredentialVaultStatus, getUserConfig } from "./config-api.js"
+import {
+  bootstrapSession,
+} from "./session-bootstrap.js"
+import {
+  sessionResponseLayout,
+} from "@chariox/kernel-client/session-config-projection"
+import {
+  sessionFocusedAgentId,
+} from "@chariox/kernel-client/session-runtime-transition"
+import {
+  selectResponsePaneAgents,
+} from "@chariox/kernel-client/response-pane-selection"
+import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
+import { reindexTranscriptEntries } from "@chariox/kernel-client/transcript-entry-state"
+import {
+  inferWorkspaceTargetsFromLaunchDirectory,
+} from "./workspace-launch-targets.js"
+import {
+  isKernelEndpointReachable,
+  isKernelEndpointUnavailableError,
+  isNoArgDefaultKernelLaunch,
+} from "./kernel-endpoint.js"
+import {
+  loadThemeRegistry,
+  type ThemeLoadWarning,
+  type ThemeRegistry,
+} from "./theme-registry.js"
+import {
+  clearWaitingRoomWorktreeInventory,
+} from "./waiting-room-worktrees.js"
+import {
+  describeCliError,
+} from "./runtime.js"
+import type { CharioxLogger } from "./logging.js"
+
+type RelayClientOptions = {
+  relayAuthorizationIssuer?: { endpoint: string; daemonId: string }
+  relayAuthToken?: string
+  targetDaemonId?: string
+  targetDaemonAlias?: string
+  relayIdentity?: RelayClientIdentity
+}
+
+type BootstrapAttachedSession = (
+  client: LocalIpcClient,
+  options: CliOptions,
+  workspace: string,
+  worktree: string,
+  preferences: CharioxPreferences,
+  logger?: CharioxLogger | null,
+) => Promise<BootstrapState>
+
+export type CliRuntimeBootstrapDeps = {
+  parseArgs: (argv: string[]) => CliOptions
+  loadPreferences: () => Promise<CharioxPreferences>
+  applyProviderPreferenceDefaults: (options: CliOptions, preferences: CharioxPreferences) => CliOptions
+  defaultKernelEndpoint: () => string
+  createClient: (endpoint: string, relayOptions?: RelayClientOptions) => LocalIpcClient
+  resolvePairingBootstrapToken?: (relayUrl: string, kernelId: string, identity: RelayClientIdentity) => Promise<string>
+  getRelayIdentity: (createIfMissing: boolean) => RelayClientIdentity | null
+  inferWorkspaceTargetsFromLaunchDirectory: (cwd: string) => Promise<{ workspace: string; worktree: string }>
+  clearWaitingRoomWorktreeInventory: () => void
+  loadThemeRegistry: (options: {
+    workspace?: string
+    onWarning?: (warning: ThemeLoadWarning) => void
+  }) => Promise<ThemeRegistry>
+  deleteSessionByRef: (client: LocalIpcClient, sessionRef: string, workspace: string) => Promise<unknown>
+  isNoArgDefaultKernelLaunch: (argv: string[]) => boolean
+  isKernelEndpointReachable: (endpoint: string) => Promise<boolean>
+  isKernelEndpointUnavailableError: (error: unknown) => boolean
+  bootstrapAttachedSession: BootstrapAttachedSession
+  maybeResize: (client: LocalIpcClient, sessionId: string) => Promise<void>
+}
+
+export type CliRuntimeBootstrapOptions = {
+  argv: string[]
+  cwd: string
+  logger?: CharioxLogger | null
+  onClientReady?: (client: LocalIpcClient, options: CliOptions, preferences: CharioxPreferences) => void
+}
+
+export type CliRuntimeBootstrapResult =
+  | {
+    kind: "deleted_session"
+    client: LocalIpcClient
+    options: CliOptions
+    kernelEndpoint: string
+    workspace: string
+    worktree: string
+  }
+  | {
+    kind: "ready"
+    bootstrap: BootstrapState
+    kernelEndpoint: string
+    workspace: string
+    worktree: string
+  }
+
+export const defaultCliRuntimeBootstrapDeps: CliRuntimeBootstrapDeps = {
+  parseArgs,
+  resolvePairingBootstrapToken: issueCloudPairingBootstrapToken,
+  loadPreferences,
+  applyProviderPreferenceDefaults,
+  defaultKernelEndpoint,
+  createClient(endpoint, relayOptions) {
+    return new DefaultLocalIpcClient(endpoint, relayOptions)
+  },
+  getRelayIdentity(createIfMissing) {
+    const store = createCliRelayIdentityStore()
+    return createIfMissing ? store.getOrCreate() : store.load()
+  },
+  inferWorkspaceTargetsFromLaunchDirectory,
+  clearWaitingRoomWorktreeInventory,
+  loadThemeRegistry,
+  deleteSessionByRef,
+  isNoArgDefaultKernelLaunch,
+  isKernelEndpointReachable,
+  isKernelEndpointUnavailableError,
+  bootstrapAttachedSession: bootstrapAttachedSessionWithRuntimeDeps,
+  maybeResize: resizeSessionTerminal,
+}
+
+export async function bootstrapCliRuntime(
+  options: CliRuntimeBootstrapOptions,
+  deps: CliRuntimeBootstrapDeps = defaultCliRuntimeBootstrapDeps,
+): Promise<CliRuntimeBootstrapResult> {
+  const cliOptions = deps.parseArgs(options.argv)
+  const preferences = await deps.loadPreferences()
+  deps.applyProviderPreferenceDefaults(cliOptions, preferences)
+  let kernelEndpoint = cliOptions.relayUrl
+    ?? cliOptions.kernelUrl
+    ?? cliOptions.socketPath
+    ?? deps.defaultKernelEndpoint()
+  const pairingLink = terminalPairingLinkFromArgs(options.argv)
+  const relayIdentity = cliOptions.relayUrl
+    ? deps.getRelayIdentity(Boolean(pairingLink))
+    : null
+  const receivingClientAuthority = Boolean(pairingLink && parseTerminalPairingLink(pairingLink).relayToken === "cloud-client-token-required")
+  const receivingProfileBootstrap = receivingClientAuthority && cliOptions.relayToken === "cloud-client-token-required"
+  if (receivingClientAuthority) {
+    if (!relayIdentity || !cliOptions.relayUrl || !cliOptions.targetDaemonId) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+    // MP-08 / MP-10 / MP-11: the link labels an invitation, not receiving authority.
+    cliOptions.clientId = `cli:${relayIdentity.publicKeyThumbprint}`
+    if (cliOptions.relayToken === "cloud-client-token-required") {
+      if (!deps.resolvePairingBootstrapToken) throw new Error("Cloud pairing requires the receiving terminal's client credentials and key")
+      cliOptions.relayToken = await deps.resolvePairingBootstrapToken(cliOptions.relayUrl, cliOptions.targetDaemonId, relayIdentity)
+    }
+  }
+  let client = deps.createClient(kernelEndpoint, relayClientOptions(cliOptions, relayIdentity))
+  if (pairingLink && relayIdentity) {
+    const bootstrapClient = client
+    try {
+      const joined = await joinKernelTerminalPairingLink(
+        bootstrapClient,
+        pairingLink,
+        cliOptions.clientId,
+        relayIdentity.publicKeyThumbprint,
+      )
+      if (!joined.kernel_pairing && !joined.relay_token?.trim()) {
+        throw new Error("key-bound terminal pairing returned no fresh relay token; refusing to continue with the unbound bootstrap token")
+      }
+      if (joined.pairing.target_daemon_id !== cliOptions.targetDaemonId || joined.pairing.relay_url !== cliOptions.relayUrl) throw new Error("terminal pairing response targets another kernel or relay")
+      await client.close()
+      client = deps.createClient(
+        kernelEndpoint,
+        relayClientOptions(cliOptions, relayIdentity, joined.relay_token ?? undefined),
+      )
+      if (joined.relay_token) {
+        startPairedRelayRenewal(client, {
+          token: joined.relay_token, subject: joined.pairing.subject_id, endpoint: kernelEndpoint, target: joined.pairing.target_daemon_id,
+          terminalId: cliOptions.clientId, identity: relayIdentity, createClient: deps.createClient,
+          // MP-08 / MP-10 / MP-11: explicit CLIENT grants need no private
+          // login. Renew with the admitted paired grant; the issuer still
+          // checks the receiving identity, key and active Cloud session.
+          ...(receivingProfileBootstrap && deps.resolvePairingBootstrapToken ? {bootstrapToken: () => deps.resolvePairingBootstrapToken!(joined.pairing.relay_url, joined.pairing.target_daemon_id, relayIdentity)} : {}),
+        })
+      }
+    } catch (error) {
+      if (client !== bootstrapClient) await Promise.resolve(client.close()).catch(() => {})
+      await Promise.resolve(bootstrapClient.close()).catch(() => {})
+      throw error
+    }
+  }
+  options.onClientReady?.(client, cliOptions, preferences)
+  // MP-08 / MP-11: keep relay targets on their authenticated carrier. A
+  // discovery record and a matching daemon ID do not authenticate TCP peers.
+  const inferredTargets = await deps.inferWorkspaceTargetsFromLaunchDirectory(options.cwd)
+  const workspace = cliOptions.workspace ?? inferredTargets.workspace
+  const worktree = cliOptions.worktree ?? inferredTargets.worktree
+  deps.clearWaitingRoomWorktreeInventory()
+  const themeRegistry = await deps.loadThemeRegistry({
+    workspace,
+    onWarning: (warning) => {
+      options.logger?.warn("skipping custom theme", warning)
+    },
+  })
+  if (cliOptions.deleteSessionRef) {
+    try {
+      await deps.deleteSessionByRef(client, cliOptions.deleteSessionRef, workspace)
+    } finally {
+      await client.close()
+    }
+    return {
+      kind: "deleted_session",
+      client,
+      options: cliOptions,
+      kernelEndpoint,
+      workspace,
+      worktree,
+    }
+  }
+
+  options.logger?.info("bootstrapping cli session", {
+    kernel_endpoint: kernelEndpoint,
+    workspace_id: workspace,
+    worktree_id: worktree,
+    client_id: cliOptions.clientId,
+  })
+  if (
+    !cliOptions.detached
+    && deps.isNoArgDefaultKernelLaunch(options.argv)
+    && !(await deps.isKernelEndpointReachable(kernelEndpoint))
+  ) {
+    options.logger?.warn("default local kernel unavailable; launching detached waiting room", {
+      kernel_endpoint: kernelEndpoint,
+    })
+    cliOptions.detached = true
+  }
+
+  let bootstrap: BootstrapState
+  if (cliOptions.detached) {
+    bootstrap = buildDetachedBootstrap(client, cliOptions, preferences)
+  } else {
+    try {
+      bootstrap = await deps.bootstrapAttachedSession(
+        client,
+        cliOptions,
+        workspace,
+        worktree,
+        preferences,
+        options.logger,
+      )
+    } catch (error) {
+      if (
+        !deps.isNoArgDefaultKernelLaunch(options.argv)
+        || !deps.isKernelEndpointUnavailableError(error)
+      ) {
+        throw error
+      }
+      options.logger?.warn("default local kernel unavailable; launching detached waiting room", {
+        kernel_endpoint: kernelEndpoint,
+        error: describeCliError(error),
+      })
+      cliOptions.detached = true
+      bootstrap = buildDetachedBootstrap(client, cliOptions, preferences)
+    }
+  }
+  if (cliOptions.detached && !cliOptions.relayUrl) {
+    // MP-08 / MP-10 / MP-11: Cloud login and later kernel pivots must retain
+    // this terminal's receiving CLIENT, including login after TUI startup.
+    const identity = deps.getRelayIdentity(true)
+    if (identity) cliOptions.clientId = `cli:${identity.publicKeyThumbprint}`
+  }
+  bootstrap.themeRegistry = themeRegistry
+  if (bootstrap.binding) {
+    options.logger?.info("bootstrapped cli session", {
+      session_id: bootstrap.binding.session.id,
+      attachment_id: bootstrap.binding.attachment.id,
+      created_session: bootstrap.binding.createdSession,
+      // Kernel requests made to reach the first transcript (PANE-03 "requests on open").
+      kernel_requests: client.requestStats().kinds,
+    })
+    // Sizing is advisory. Send it before mounting, but do not put another
+    // relay round trip between the bundled transcript and the first frame.
+    void deps.maybeResize(client, bootstrap.binding.session.id).catch(() => {})
+  } else {
+    options.logger?.info("starting cli without attached session")
+  }
+  return {
+    kind: "ready",
+    bootstrap,
+    kernelEndpoint,
+    workspace,
+    worktree,
+  }
+}
+
+export function buildDetachedBootstrap(
+  client: LocalIpcClient,
+  options: CliOptions,
+  preferences: CharioxPreferences,
+): BootstrapState {
+  return {
+    client,
+    binding: null,
+    sessions: [],
+    providerCatalog: fallbackProviderCatalog({ source: "local_fallback" }),
+    providerCommandCatalogs: fallbackProviderCommandCatalogs({ catalogSource: "local_fallback" }),
+    terminalCommandCatalog: null,
+    options,
+    preferences,
+  }
+}
+
+async function bootstrapAttachedSessionWithRuntimeDeps(
+  client: LocalIpcClient,
+  options: CliOptions,
+  workspace: string,
+  worktree: string,
+  preferences: CharioxPreferences,
+  logger?: CharioxLogger | null,
+): Promise<BootstrapState> {
+  return bootstrapSession(client, options, workspace, worktree, preferences, {
+    // MP-08 / MP-10: mount before a launch can ask the human for Vault input.
+    deferProviderLaunch: true,
+    listProviderAccountProfiles,
+    logger: logger ?? null,
+    getConfiguredProviderLaunchDefaults: async (ipcClient) => {
+      const { config } = await getUserConfig(ipcClient)
+      const result: { provider?: string, model?: string, effort?: string } = {}
+      if (config.providers?.default) {
+        result.provider = config.providers.default
+      }
+      if (config.providers?.model) {
+        result.model = config.providers.model
+      }
+      if (config.providers?.effort) {
+        result.effort = config.providers.effort
+      }
+      return result
+    },
+    listSessions,
+    getClientCatalogRevisions,
+    getProviderCatalog,
+    getProviderCommandCatalogs,
+    getTerminalCommandCatalog,
+    createSession,
+    resolveSession,
+    attachToSession,
+    attachSessionView,
+    getSessionState,
+    getCredentialVaultStatus,
+    launchProviderRun,
+    tryGetProviderRun,
+    catchUpAttachedSession,
+    getSessionHistoryOutline,
+    getPromptInputHistory,
+    resolveVisibleAgentId: (session, nextPreferences) => {
+      const focusedAgentId = sessionFocusedAgentId(session)
+      return selectResponsePaneAgents(
+        session.agents,
+        focusedAgentId,
+        sessionResponseLayout(session, nextPreferences.ui?.multiAgentResponseLayout) === "split",
+        resolveMaxAgentsPerScreen(nextPreferences.ui?.maxAgentsPerScreen),
+      ).visibleTranscriptAgentId
+    },
+    prepareHistoryOutlineAgent: (agent, _session) => {
+      return reindexTranscriptEntries(
+        hydrateSessionHistoryOutlineAgentEntries(agent),
+        0,
+      )
+    },
+  })
+}
+
+function relayClientOptions(
+  options: CliOptions,
+  relayIdentity: RelayClientIdentity | null,
+  relayAuthTokenOverride?: string,
+): RelayClientOptions | undefined {
+  if (!options.relayUrl) {
+    return undefined
+  }
+  const relayOptions: RelayClientOptions = {}
+  if (options.relayTokenIssuer) relayOptions.relayAuthorizationIssuer = options.relayTokenIssuer
+  const relayAuthToken = relayAuthTokenOverride ?? options.relayToken
+  if (relayAuthToken) {
+    relayOptions.relayAuthToken = relayAuthToken
+  }
+  if (options.targetDaemonId !== undefined) {
+    relayOptions.targetDaemonId = options.targetDaemonId
+  }
+  if (options.targetDaemonAlias !== undefined) {
+    relayOptions.targetDaemonAlias = options.targetDaemonAlias
+  }
+  if (relayIdentity) {
+    relayOptions.relayIdentity = relayIdentity
+  }
+  return relayOptions
+}

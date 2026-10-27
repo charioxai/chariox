@@ -1,0 +1,720 @@
+# M4.5 Kernel Runtime Refactor Plan
+
+## Goal
+
+Move the daemon from a request-handler-owned `DaemonApp` mutex toward an actor/event/projection kernel that can stay responsive while prompts, provider output, workflow scheduling, relay traffic, history reads, capability jobs, and health inspection all run concurrently.
+
+The target is not "more locks." The target is explicit ownership:
+
+- commands enter through a router
+- actors or single-owner services mutate state
+- kernel events record ordered runtime facts
+- projections serve reads
+- background work cannot block interactive commands
+
+## Current Baseline
+
+The current primary CLI path uses the kernel WebSocket transport. The first M4.5 slices now normalize requests through `KernelCommand`, route them through `CommandRouter`, publish bounded replay events through `EventLog`, and keep the responsiveness-critical operations on a bounded `InteractiveCommandLane`.
+
+The daemon is no longer just the old request-handler surface with new names. Provider-run structured submit/cancel/poll now runs through per-run actors, command-id retries fan out instead of double-dispatching, slow consumers and inbound request bursts have bounded handling, session lifecycle/focus/resize behavior is collected under `KernelSessionService`, and prompt submit/cancel/complete/queue-advance lifecycle behavior is collected under `KernelAgentService`. Prompt submit/cancel commands now enter per-agent mailboxes, session attach/detach/focus/cycle/resize/end/delete commands enter per-session mailboxes instead of the generic interactive queue, and the session runtime publishes a focused-agent projection used by agent routing once focus is warm. Agent lifecycle responses that change focus refresh the same projection. The router also has the first projection stores for warmed `GetSessionState`, `ListSessions`, successful `ResolveSession`, `GetSessionHistory`, `GetProviderRun`, `ListProviderProcesses`, and `GetProviderCatalog` reads; list responses hydrate per-session state entries; and prompt lifecycle mutations now publish session snapshots into the shared session projection.
+
+Important caveat: the implementation still has a transitional `DaemonApp` quarantine, and several hot paths still pass through shared app state while they migrate. M4.5 is in progress, not complete.
+
+## Direct-Cutover Direction
+
+As of 2026-04-15, do not spend additional M4.5 work preserving the old facade as a long-lived compatibility layer. The next slices should replace compatibility-backed ports with runtime-owned services and delete the old app-backed surface in the same slice whenever tests prove the owner path covers the behavior.
+
+Rules:
+
+- no new request-shaped facade methods on `DaemonApp`
+- no new compatibility mirrors unless they are wire-format projections with a named deletion path
+- no new app-lock fallback for a hot path after an owned store can answer the same question
+- no broad "keep compatibility working" slice; every slice must move one runtime owner to the new system and remove the matching old app helper
+- `DaemonApp` is allowed as a bootstrap/shutdown/test composition shell while the cutover is in progress, but not as the command-state owner
+- Workspace Live Sync managed mode now owns provider-session file writes; the current coarse `WorkspaceCoordinator` still guards visible file-writing/provider/workflow dispatch work at worktree scope
+
+Current event replay is a bounded in-memory recent-event buffer. It supports reconnect-friendly local behavior, but it is not yet a durable event log.
+
+Current multi-agent reliability work has already established one important invariant: focus is UI state, while prompt execution and provider-run liveness are per-agent. M4.5 must preserve that invariant by treating session-global active prompt/run fields as compatibility projections, not as ownership.
+
+## Implementation Status
+
+Status as of 2026-04-15:
+
+- Landed: `KernelCommand` and `KernelEvent` envelopes with command ids, causation/correlation metadata, and priority classification.
+- Landed: `EventLog` service with daemon-local event ids, stream sequence ids, bounded replay windows, and explicit replay-gap reporting.
+- Landed: `SessionSnapshotProjection` skeleton with projection metadata for client boot/reconciliation.
+- Landed: `CommandRouter` facade and bounded `InteractiveCommandLane` for prompt submit/cancel, focus/cycle, attach/detach, resize, and related session commands.
+- Landed: safe command-id retry handling, including in-flight duplicate fanout and duplicate-conflict rejection when a reused command id carries a different request fingerprint.
+- Landed: CLI typed `replay_gap` handling with a concise user-visible refresh notice.
+- Landed: inbound WebSocket request admission bounds before task spawn.
+- Landed: local IPC compatibility routing through the kernel command normalization path.
+- Landed: provider-run actors for structured provider submit, abort, and output polling, including runtime-slot tombstones/generations that prevent cleanup races from restoring stale provider runtime state.
+- Landed: deterministic provider-run actor race coverage for output-poll cleanup. Runtime integration can delay Codex/OpenCode output polling after the runtime slot has been taken, so the tombstone test proves stale runtime restoration is rejected without depending on mock provider network timing.
+- Landed: provider output polling no longer holds provider-family global locks while performing provider I/O.
+- Landed: reserved-listener WebSocket integration harness startup to remove the observed free-port race.
+- Landed: `KernelSessionService` now owns public session creation/default-agent bootstrap plus attach, detach, end, delete-by-ref, focus/cycle, and terminal resize behavior behind the public `DaemonApp` compatibility methods.
+- Landed: `KernelAgentService` now owns prompt submit, kernel submit acknowledgement/dispatch preparation, cancel, runtime cancel, completion, queue advancement, and cancellation finalization behind the public `DaemonApp` compatibility methods.
+- Landed: `AgentRuntime` per-agent command mailboxes for prompt submit/cancel admission, so agent-scoped prompt commands are not rejected behind unrelated generic interactive work.
+- Landed: `SessionRuntime` command mailboxes for public session creation plus attach/detach/focus/cycle/resize/end/delete admission, so session-scoped UI and lifecycle commands are isolated from the generic interactive queue and from other sessions.
+- Landed: session mailbox cleanup on successful end/delete, so closed session lanes do not stay registered indefinitely.
+- Landed: `SessionRuntime` projection-backed lane resolution. Delete-by-ref and detach-by-attachment can resolve the target session from warmed projected session state before falling back to the compatibility app lock.
+- Landed: Phase 8 `SessionRuntime` missing delete/detach resolution now returns `SessionNotFound`/`AttachmentNotFound` from a warmed session-list projection instead of taking the compatibility app lock just to confirm absence.
+- Landed: `SessionRuntime` now publishes session and agent-runtime projections for attach/detach/focus/cycle/resize command results from inside the session mailbox owner, removing router-side post-command compatibility snapshots for those session UI/lifecycle commands.
+- Landed: `DaemonHealthProjection` with session/agent mailbox queue snapshots, provider runtime operation-lane pressure, session projection counts, active/queued prompt counts, and provider-catalog cache status exposed through `GetDaemonHealth`.
+- Landed: `AgentRuntimeProjectionStore` baseline. Session projection refreshes now materialize per-agent active/queued prompt read models, direct agent/session-scoped projection reads are available, and daemon health uses those agent-runtime prompt counts as the canonical prompt-work health source while mirroring them into legacy session-projection prompt-count fields for wire compatibility.
+- Landed: agent-runtime prompt projections now include the front queued prompt per agent, and local/remote queue advancement uses that projected candidate before falling back to compatibility session queue reads.
+- Landed: detach publishes refreshed session/agent-runtime projections after attachment-owned prompt cleanup, so queue-front projections are not left stale before advancement.
+- Landed: provider idle settlement uses the agent-runtime active-prompt projection before compatibility session inspection when choosing complete/cancel/clear settlement behavior.
+- Landed: `AgentRuntime` mailbox workers now carry the shared agent-runtime projection store and publish per-agent prompt projection updates from prompt submit/cancel execution.
+- Landed: kernel `CompletePrompt` now routes through the per-agent mailbox, resolves the active prompt owner from warmed session projection before falling back to compatibility session state, and updates the agent-runtime projection from the mailbox worker after completion.
+- Landed: `CompletePrompt` owner resolution now uses the agent-runtime active-prompt projection before session snapshots, removing another compatibility-store fallback when the per-agent prompt read model is warm.
+- Landed: kernel `CancelActivePrompt` now uses the same agent-runtime active-prompt owner projection before session snapshots when routing into the per-agent mailbox.
+- Landed: router response refresh no longer double-publishes agent-runtime projection state for `PromptSubmitted`; submit projection publication comes from the agent mailbox worker.
+- Landed: agent mailbox workers now publish both session-state and agent-runtime projections for submit/cancel/complete prompt lifecycle mutations, so prompt submit no longer depends on a router-side session projection refresh.
+- Landed: `AgentRuntimeProjectionStore` is now the single warm prompt-state read model during the compatibility migration. The temporary `AgentRuntimePromptStateStore` shadow was removed after review because it duplicated active/queued prompt ownership and could diverge from session snapshots observed through provider-output or workflow paths.
+- Landed: per-agent prompt mailbox results now refresh the shared agent-runtime projection and session projection from the authoritative session returned by the mutation boundary. Router-observed session/list snapshots still refresh the same projection store for non-agent paths.
+- Landed: prompt submit now enters the per-agent mailbox before lifecycle mutation, but `Start` vs `Queue` admission is decided by `PromptStateOwner`, not by a projection. Warmed agent-runtime projections still provide routing, queue-front previews, and read-model state, but stale projection data cannot force prompt admission.
+- Landed: prompt submit now creates the prepared `PromptQueueItem` in the agent mailbox path before compatibility mutation, including the reserved prompt id, target agent, source attachment, body, and attachments. `KernelAgentService` mirrors that exact prepared prompt into compatibility session state for local and remote agents instead of creating a second prompt object.
+- Landed: `AgentRuntimeProjectionStore` retains the queue front and queued count needed for warmed submit/completion routing. `PromptStateOwner` is now the kernel write owner for full queued-prompt state, and the projection is a read model refreshed from the compatibility mirror after owner mutations.
+- Landed: `PromptStateOwner` is now a cloneable kernel service injected into `AgentRuntime` instead of a private `DaemonApp` sidecar. Warm active-prompt routing and complete queue-front preview can read the owner through the agent runtime when the session projection is available, so stale compatibility session prompt mirrors do not force an app-lock fallback.
+- Landed: agent-mailbox prompt completion now consumes the session projection published by the prompt lifecycle service instead of taking a second compatibility session snapshot under the app lock after completion mutation.
+- Landed: prompt completion now carries an `AgentRuntime` queue-front preview into the agent mailbox and reconciles compatibility advancement against that preview. This keeps queue advancement behavior unchanged while establishing the actor-owned input needed to flip advancement out of compatibility state.
+- Landed: kernel prompt completion now passes the `AgentRuntime` queue-front preview into `KernelAgentService`, and local/remote compatibility queue advancement validates that the compatibility queue front matches the actor-owned preview before dispatching the next prompt.
+- Landed: compatibility prompt queue activation now has an explicit expected-prompt path that removes the started prompt by id and refreshes projected queue-front/count fields, rather than relying on a blind pop-front after a separate pre-check.
+- Landed: compatibility queue advancement now has an expected-prompt activation path. When the agent runtime supplies the queue-front preview, the session mirror validates and activates that exact prompt id atomically instead of doing a blind pop after a separate pre-check.
+- Landed: agent mailbox prompt lifecycle handling now publishes `AgentRuntimeProjection` directly from the authoritative session returned by submit/cancel/complete. Session snapshots from non-agent paths refresh the same projection store, so there is no second prompt-state cache to reconcile.
+- Landed: queue advancement now prefers the agent-runtime expected queued prompt as the dispatch candidate when the mailbox supplies one, using compatibility projection/session reads only as a fallback for legacy/background paths. Compatibility state still validates and mirrors the selected prompt id before activation.
+- Landed: legacy/background queue-drain entrypoints now consult the warmed agent-runtime projection for the expected queued prompt before falling back to compatibility queue state, so provider-run startup and attachment cleanup paths follow the same actor-owned candidate path as prompt completion when projections are warm.
+- Landed: `RuntimeSession` prompt mirror updates are now concentrated behind `PromptRuntimeState`, which maintains per-agent active/queued prompt state plus the legacy session-level active prompt, queued prompt, and scheduler projections for compatibility. The struct is flattened for serialization, so the wire shape stays compatible while prompt mutation authority lives in the kernel prompt owner.
+- Landed: `PromptRuntimeState` now lives in `session/prompt_runtime.rs` as a dedicated compatibility mirror boundary. `RuntimeSession` flattens and forwards it for wire compatibility, while `PromptStateOwner` owns prompt lifecycle mutation.
+- Landed: the unused direct complete-and-auto-advance prompt mutation API was removed from `RuntimeSession`/`PromptRuntimeState`. Prompt completion now stays on the kernel lifecycle path that completes the active prompt, validates the agent-runtime queue-front preview, and then advances the queued prompt explicitly.
+- Landed: direct compatibility complete/cancel paths now resolve the active prompt owner with the same focused-active-or-single-active rule as the agent runtime, so focus no longer has to equal execution ownership when only one non-focused agent is running.
+- Landed: `RuntimeSession` prompt mutators are now session-module-private, and provider dispatch failure cleanup routes through `KernelAgentService` instead of directly mutating `SessionService`. Non-session modules can still inspect compatibility prompt projections, but they can no longer call the underlying `RuntimeSession` prompt mutation helpers directly.
+- Landed: Phase 8 prompt-submit routing can resolve a missing target agent from the single-agent `AgentRuntimeProjection` before falling back to the compatibility app lock. This removes another hot-path lock for warmed single-agent sessions, including sessions whose session projection is not yet warm.
+- Landed: Phase 8 prompt cancel/complete owner resolution now returns `NoActivePrompt` from warmed session/runtime projections instead of taking the compatibility app lock just to confirm there is no active prompt.
+- Landed: Phase 8 prompt submit/cancel/complete routing now returns `SessionNotFound` from a warmed session-list projection for missing sessions instead of taking the compatibility app lock after runtime/session prompt projections are empty.
+- Landed: Phase 8 prompt submit target-agent validation now rejects projected `AgentNotInSession` cases before entering the agent mailbox or compatibility app lock when the session projection is warm.
+- Landed: provider-run exit reconciliation no longer completes/cancels active prompts by mutating session prompt state directly and then separately draining the queue. It now delegates prompt settlement to the kernel prompt lifecycle service, preserving the runtime/projection-guided queue advancement path for unexpected provider exits.
+- Landed: terminal output fanout now enforces a bounded pending-output backlog per attachment. Slow or disconnected output consumers cannot grow the in-memory terminal stream without bound; history remains the durable transcript source.
+- Landed: Phase 8 daemon health reads terminal stream pressure from a cloned terminal health store instead of locking the compatibility app-owned terminal stream.
+- Landed: Phase 8 missing session-scoped inspection/history reads now return `SessionNotFound` from warmed session-list projections instead of falling back to the compatibility app lock.
+- Landed: Phase 8 relay status, remote-machine discovery, remote-kernel discovery, and provider command catalog reads now use router-owned config/projection data instead of taking the compatibility app lock.
+- Landed: Phase 8 provider catalog reads now load and refresh the router-owned provider catalog projection from the config projection instead of taking the compatibility app lock on cold catalog paths.
+- Landed: Phase 8 provider-launch pending guards now clear from session/provider-run projections when a launch has settled, so warmed session-state reads do not fall back to the compatibility app lock only because a stale launch guard remains.
+- Landed: Phase 8 provider-launch pending cleanup no longer waits for the compatibility app lock when projections are cold. Cold cleanup leaves the guard in place for a later projection-backed refresh instead of delaying the current response.
+- Landed: Phase 8 agent spawn/destroy now publish session projections inside the mutation boundary, and router-side agent lifecycle refresh consumes the published projection instead of taking a second compatibility app-lock snapshot.
+- Landed: Phase 8 session config updates now enter the `SessionRuntime` mailbox and publish refreshed session projections from the session-command boundary, so post-update state reads remain projection-first without a compatibility app-lock read.
+- Landed: Phase 8 session-runtime command execution now sits behind a dedicated `SessionRuntimeCommandExecutor` seam. The executor still uses compatibility stores for mutations, but the lane worker no longer inlines projection refresh, terminal cleanup, focus projection, and app-lock fallback behavior, making the next store extraction smaller and explicit. Session lifecycle/config/alias execution first moved behind that runtime boundary instead of re-entering broad `DaemonApp` compatibility helpers or direct session-store mutation; the remaining generic service dispatch has since been replaced by named `SessionRuntimeStore` operations.
+- Landed: Phase 8 session config update validation now rejects warmed missing/mis-scoped attachment cases from session projections before taking the compatibility app lock.
+- Landed: Phase 8 session alias updates now enter the `SessionRuntime` mailbox and publish refreshed session projections, so alias resolution can use the projection immediately after mutation without taking the compatibility app lock.
+- Landed: Phase 8 session mailbox workers now publish session-bearing create/config/alias/end responses directly and remove deleted-session projections at the mailbox boundary, avoiding redundant compatibility snapshots when the response already carries authoritative session state.
+- Landed: Phase 8 runtime notice polling is now classified as an interactive session command and enters the `SessionRuntime` mailbox, keeping notice drains ordered with same-session config/lifecycle commands instead of the generic compatibility path.
+- Landed: Phase 8 terminal output polling now uses warmed session projections for missing-session and missing-attachment rejection before falling back to the compatibility pump path, establishing the first projection-aware seam ahead of provider-runtime/terminal-store ownership extraction.
+- Landed: Phase 8 terminal stream state now sits behind a cloneable `TerminalStreamStore` shared by `DaemonApp` and the router. `PumpTerminalOutput` can drain buffered output without the app lock when the warmed session projection shows no active provider run, while active-run pumping still falls back to compatibility provider I/O.
+- Landed: Phase 8 active-run `PumpTerminalOutput` now enters the provider-run operation lane before invoking the compatibility provider pump, then drains the shared terminal stream store. Provider I/O is still implemented by the compatibility app path, but command admission is now serialized at the provider-run runtime boundary.
+- Landed: Phase 8 `TerminalOutputExecutor` now isolates its remaining app-lock provider-output dependency behind an explicit `TerminalOutputStore`. The store is still compatibility-backed, but the app-lock touch point now has the same store-boundary shape as session, agent, workflow, and provider-launch runtime ownership seams.
+- Landed: Phase 8 introduced `TerminalOutputContext` inside `TerminalOutputStore`, concentrating compatibility-backed terminal-output draining, provider-output pumping, and session projection snapshots behind a narrow terminal-output port.
+- Landed: Phase 8 capability execution context lookup now sits behind an explicit `CapabilityRuntimeStore`. Capability jobs still use compatibility-backed session/attachment authorization to resolve worktree and workspace-claim state, but router execution no longer passes the raw app mutex into the capability executor.
+- Landed: Phase 8 introduced `CapabilityRuntimeContext` inside `CapabilityRuntimeStore`, concentrating compatibility-backed session/attachment/workspace-coordinator lookup behind a narrow capability context port ahead of extracting capability-owned authorization state.
+- Landed: Phase 8 removed the generic `KernelSessionService::execute_request` compatibility facade. `SessionRuntimeCommandExecutor` now dispatches session commands to named `SessionRuntimeStore` methods, which call named session service operations under the current compatibility lock until session state ownership moves fully into the runtime.
+- Landed: Phase 8 session-runtime spawn/destroy agent commands now use named app/service operations directly from `SessionRuntimeStore` instead of re-entering the generic agent service request facade for session-scoped lifecycle work.
+- Landed: Phase 8 deleted the now-unused generic `KernelAgentService::execute_request` facade. Prompt commands enter through `AgentRuntime`/`AgentPromptCommandService`, and session-scoped agent lifecycle enters through named session-runtime store methods.
+- Landed: Phase 8 removed the generic `WorkflowRuntimeStore::execute_request` method. Workflow lanes now enter a store operation boundary, and workflow commands are dispatched to named `WorkflowRuntimeStore` methods instead of a private request-shaped mutation match. The store remains compatibility-backed until workflow state ownership is split out of the app lock.
+- Landed: Phase 8 introduced `KernelWorkflowService` for workflow command mutations. `WorkflowRuntimeStore` now delegates workflow definition, endpoint, node, edge, schema, flush-context, run, queue, watchdog, validation, and ack mutations to the workflow service instead of owning mutation bodies in the kernel actor. The service is still compatibility-backed by `DaemonApp`, but workflow command ownership is now centralized behind the workflow service boundary.
+- Landed: Phase 8 introduced `KernelWorkflowContext` as the narrow app-backed dependency boundary for `KernelWorkflowService`. Direct `DaemonApp` calls for workflow command execution are concentrated in that context while the service consumes explicit session, prompt, workflow, and runtime-tool ports, making the remaining compatibility dependencies visible for later store extraction.
+- Landed: Phase 8 introduced `WorkflowRuntimeContext` at the workflow lane store boundary. `WorkflowRuntimeStore` now enters workflow mutations through an explicit context/service operation port and no longer constructs `KernelWorkflowService` in every command method, keeping app-backed workflow mutation concentrated behind one workflow runtime seam.
+- Landed: Phase 8 removed the app-level `kernel_workflows()` helper. `WorkflowRuntimeStore` now constructs `KernelWorkflowService` directly at its explicit workflow store boundary, so workflow command execution no longer re-enters a facade-shaped `DaemonApp` method.
+- Landed: Phase 8 removed the app-level `kernel_agents()` and `kernel_sessions()` helper facades. Session, agent, prompt, projection, flow-control, and test paths now construct the owning kernel service directly at their explicit boundary instead of re-entering service selection through `DaemonApp`.
+- Landed: Phase 8 introduced `SessionRuntimeContext` as the narrow app-backed dependency boundary for `SessionRuntimeStore`. Session lane execution now consumes explicit session, attachment, terminal-notice, projection-snapshot, and agent lifecycle ports instead of calling broad `DaemonApp` APIs throughout the store body.
+- Landed: Phase 8 moved session runtime reference/attachment lookup and session-scoped agent spawn/destroy through `KernelSessionService` ports. The app-level spawn/destroy methods now delegate to the session service, concentrating local/remote agent lifecycle behavior in the session ownership boundary while old callers still existed.
+- Landed: Phase 8 introduced `KernelSessionReadService` for cold session/list/resolve/state/agent-list responses. Router cold paths and later production/test session snapshot consumers now call the read service directly; the old app-level session snapshot and projection-publish helper shims have been removed.
+- Landed: Phase 8 introduced `AgentRuntimeContext` and `AgentPromptCommandContext` as narrow app-backed dependency boundaries for agent lane routing and prompt command execution. Agent runtime store reads now consume explicit active-prompt/focus ports, and prompt submit/cancel/complete execution is isolated behind a prompt-command context.
+- Landed: Phase 8 moved prompt dispatch/remote-dispatch/abort side effects out of app-level spawn helpers and behind `AgentPromptDispatchContext`. The context still uses compatibility-backed app mutation for enqueue/failure/finalization, but agent prompt side effects now enter through the prompt service boundary instead of `DaemonApp::spawn_kernel_*` helper facades.
+- Landed: Phase 8 removed the remaining `handle_*_request` names from app-backed provider/relay compatibility helpers. `GetProviderRun` now calls a named provider-run response function from the router boundary, and the remaining compatibility helpers use response-oriented names instead of request-facade names.
+- Landed: Phase 8 introduced a `ProviderOutputPump` seam for active provider output polling. `DaemonApp` still supplies compatibility-owned provider, PTY, terminal fanout, and session dependencies, but the pump behavior now sits behind an explicit boundary that can be migrated toward provider-runtime-owned state incrementally.
+- Landed: Phase 8 `ProviderOutputPump` now depends on a compatibility-backed context object instead of storing direct `DaemonApp` access in the pump. The context enumerates the remaining provider, PTY, prompt-settlement, structured-output, and terminal-fanout ports that still need to move under provider-runtime ownership.
+- Landed: Phase 8 structured provider-output polling has moved into the provider-output context boundary. `DaemonApp` no longer owns a separate structured-output pump helper; structured poll job draining, background output buffering, and requested-run polling now stay inside the provider-output seam.
+- Landed: Phase 8 `TerminalOutputExecutor` now invokes `ProviderOutputPump` directly for active-run polling instead of going through the broad `DaemonApp::pump_provider_output` helper. The compatibility app lock is still used to supply the pump context, but terminal-output execution now depends on the explicit provider-output boundary.
+- Landed: Phase 8 pending structured-output records now live behind a cloneable `StructuredOutputRecordStore` instead of a raw `DaemonApp` map. The store remains wired through the compatibility context, but its ownership is now explicit and ready to be injected into provider-output execution independently.
+- Landed: Phase 8 removed the broad `DaemonApp::pump_provider_output` compatibility helper. App-owned background pumps and tests now call the explicit `ProviderOutputPump` boundary directly, leaving `pump_terminal_output` as the only broad terminal compatibility helper for legacy local API paths.
+- Landed: Phase 8 removed the broad `DaemonApp::pump_terminal_output` compatibility helper. Local API, kernel transport watch, leased-runtime projection, and tests now use the provider-output module's explicit terminal-output pump boundary.
+- Landed: Phase 8 local compatibility coverage started moving off the app request facade. The session attach/detach/end local API regression now drives requests through `CommandRouter`, preserving actor admission/projection behavior in the test instead of exercising `DaemonApp::handle_local_request` directly.
+- Landed: Phase 8 local API session and agent lifecycle regressions now use the router-backed local API harness for session resolve/delete, session aliasing, agent spawn/focus/cycle, and agent listing coverage, shrinking the remaining compatibility-dispatch-only test surface.
+- Landed: Phase 8 local API workflow definition/graph-edit coverage now uses the router-backed local API harness for workflow create/list/resolve, node/edge mutation, aliasing, and endpoint binding, keeping workflow management regressions on the same command-routing path as production clients.
+- Landed: Phase 8 local API workflow-run coverage now uses the router-backed local API harness for invoke/list/get/cancel/resume, downstream scheduling, join behavior, workflow turn acknowledgement, validation warning/pass handling, and workspace-claim retry coverage. Compatibility app access remains only for non-request state setup/inspection and direct prompt-output simulation inside those tests.
+- Landed: Phase 8 local API prompt/provider coverage now uses the router-backed local API harness for provider auto-launch, direct complete/cancel owner resolution, invalid adapter rejection, and active prompt cancellation.
+- Landed: Phase 8 local API capability coverage now uses the router-backed local API harness for shell execution, shell/file authorization rejection, directory tree/file/git inspection, transferred-file storage, conflicting workspace write-claim rejection, and screenshot-unavailable behavior. The screenshot path root cause was a test/runtime deadlock from holding `env_lock` while the capability executor ran screenshot capture on `spawn_blocking`; screenshot capture no longer takes the env lock internally, leaving env mutation serialization to tests.
+- Landed: Phase 8 local API relay/remote-machine coverage now uses the router-backed local API harness with custom daemon config, covering live relay-backed remote machine and remote kernel listing without direct facade dispatch.
+- Landed: Phase 8 extracted a shared `LocalRouterTestHarness` for daemon unit tests. The fixture is explicitly router-backed, exposes direct app access only for non-request setup/inspection, and has started migrating non-local-api prompt-owner setup tests off the request facade.
+- Landed: Phase 8 removed direct `DaemonApp::handle_local_request` usage from `local/api/tests.rs`. Remaining local API edge regressions now enter through `LocalRouterTestHarness`, including attachment replacement/detach behavior, active-prompt focus/spawn snapshots, queue config/notices, structured-output pump setup, workflow blocked-claim retry, and screenshot unavailable. Blocked workflow-claim retry now republishes affected session projections after retry so router reads do not return stale workflow state.
+- Landed: Phase 8 recipient attachment lookup for provider-output delivery now sits behind an explicit `ProviderOutputRecipientResolver` boundary. It is still compatibility-backed by `AttachmentService`, but provider-output polling no longer reaches directly through attachment storage at call sites.
+- Landed: Phase 8 structured provider-output batch application moved into the provider-output context boundary, and provider-output terminal fanout now goes through an explicit `ProviderOutputFanout` seam. The fanout seam owns terminal-store delivery while still appending history through the compatibility app during the migration.
+- Landed: Phase 8 provider-output prompt-settlement eligibility and active-prompt resolution now live inside the provider-output context. The pump uses cloneable prompt-activity, provider, and agent-runtime projection stores before falling back to compatibility prompt completion/cancellation side effects; the old flow-control settlement helper is now test-only.
+- Landed: Phase 8 PTY-backed provider-output draining now enters an explicit `ProviderOutputPtyDrain` seam. The seam is still compatibility-backed by the app-owned `PtyManager`, but provider-output polling no longer reaches directly through PTY state from the pump context.
+- Landed: Phase 8 provider-output structured prompt job reaping now enters a named `ProviderOutputStructuredPromptReaper` seam. The underlying submit/abort completion handling remains compatibility-backed, but provider-output polling no longer calls the broad app reaper directly.
+- Landed: Phase 8 background active-prompt output pumping moved out of `DaemonApp` and into the provider-output boundary. The kernel watch loop now calls the provider-output owner directly, and the broad app-level `pump_active_prompt_outputs` helper was removed.
+- Landed: Phase 8 runtime-state structured prompt abort cleanup now enters the provider-output reaper boundary instead of calling the app-level structured prompt job reaper directly.
+- Landed: Phase 8 blocked-workflow retry after prompt-claim release now enters a workflow-runtime function instead of an app-level helper facade. Provider-output, flow-control, and runtime-state callers no longer depend on `DaemonApp::retry_blocked_workflow_claims_from_runtime`.
+- Landed: Phase 8 workflow prompt progression helpers for start/complete/cancel, workflow provider-run ensure, and workflow-run resume moved from app-level `*_from_runtime` methods to workflow-runtime functions. Prompt lifecycle, remote lease, scheduler, and workflow command callers now enter workflow-runtime ownership directly.
+- Landed: Phase 8 workflow-console runtime-tool read/write/clear helpers moved from app-level `*_from_runtime` methods to workflow-runtime functions, keeping runtime tools tied to the workflow owner instead of broad app helper methods.
+- Landed: Phase 8 workflow prompt source classification and watchdog pumping moved from app-level helpers to workflow-runtime functions, keeping kernel watch-loop and prompt advancement callers tied to workflow-runtime ownership.
+- Landed: Phase 8 provider-launch PTY spawn/remove/poll side effects moved behind `ProviderLaunchProcessRuntime`, removing the app-level process helper facades from runtime-state provider launch and liveness paths.
+- Landed: Phase 8 structured prompt I/O in-flight reads moved behind `KernelPromptDispatchRuntime`, removing that app-level prompt-dispatch helper from runtime-state fallback checks.
+- Landed: Phase 8 provider-output liveness checks now enter a `ProviderOutputLiveness` seam instead of calling provider-run exit reconciliation directly from the pump context. The seam is still compatibility-backed, but the liveness dependency is now isolated for the later provider-runtime-owned reconciliation move.
+- Landed: Phase 8 provider-run exit reconciliation moved from prompt lifecycle into `ProviderRunLivenessRuntime`. Prompt lifecycle now delegates the compatibility method to provider-runtime ownership, concentrating provider liveness, PTY observation, ended-run projection, tracked-process cleanup, prompt settlement, and exit notices behind one provider-runtime boundary.
+- Landed: Phase 8 provider-output liveness now calls `ProviderRunLivenessRuntime` directly instead of re-entering the compatibility `DaemonApp::reconcile_provider_run_exit` helper. Provider-output polling is now wired to the provider-runtime liveness owner, with the public app helper retained only for remaining compatibility callers.
+- Landed: Phase 8 provider-run liveness process observation, tracked-process cleanup, and exit-notice recipient lookup now pass through explicit liveness seams inside provider-runtime. The reconciliation owner still delegates to compatibility stores, but the remaining direct PTY/process/attachment dependencies are isolated for later store extraction.
+- Landed: Phase 8 direct provider-run liveness callers now enter `ProviderRunLivenessRuntime` instead of the compatibility `DaemonApp::reconcile_provider_run_exit` helper, and the facade helper was removed. Terminal input, prompt dispatch preparation, and provider terminal resize now depend on the provider-runtime liveness owner directly.
+- Landed: Phase 8 provider terminal input now sits behind an explicit `ProviderTerminalInput` boundary. Prompt dispatch/cancel paths and terminal-input compatibility callers enter the boundary directly; the broad app-level provider-input shim has been removed.
+- Landed: Phase 8 managed provider process tracking now goes through an explicit `ProviderProcessTracker` owner for registration, process listing, teardown, and run cleanup. Session end, provider launch, initialization rollback, process inspection, teardown, workflow stop, and liveness cleanup no longer depend on broad process-tracking helpers on `DaemonApp`.
+- Landed: Phase 8 provider-run liveness exit notices now go through a `ProviderRunLivenessNotices` sink inside provider-runtime. Recipient lookup and notice recording are still compatibility-backed, but unexpected-exit reconciliation no longer inlines terminal notice fanout details.
+- Landed: Phase 8 provider/session liveness mutation now passes through a `ProviderRunLivenessState` seam inside provider-runtime. The seam still delegates to the compatibility provider and session stores, but the coupled `providers.reconcile_run_liveness(&mut sessions, ...)` call is no longer inlined in exit reconciliation.
+- Landed: Phase 8 provider-run liveness reconciliation now has an explicit two-phase boundary: provider-owned reconciliation produces a typed `ProviderRunLivenessOutcome`, then session/prompt effects consume that outcome to settle prompts, advance queues, sync idle focus, and record notices. Provider liveness no longer owns prompt settlement decisions.
+- Landed: Phase 8 provider liveness now exposes provider-only reconciliation on `ProviderProcessService`; session active-run cleanup is retained in the provider-runtime liveness state seam, and the old provider-service compatibility wrapper was removed. This keeps provider run state transitions provider-owned while session pointers remain session-side effects.
+- Landed: Phase 8 provider-only run ending now returns `ProviderRunEndedOutcome` instead of a bare run. The outcome records the ended run plus whether it was already ended, giving callers an explicit event object to feed into session-side cleanup or later actor events without hiding cross-owner side effects; the old session-mutating `mark_run_ended` wrapper was removed.
+- Landed: Phase 8 provider termination now follows the same outcome-first rule. `terminate_run_provider_only` returns `ProviderRunEndedOutcome`, all previous callers consume the outcome and perform explicit session active-run cleanup where needed, and the old session-mutating `terminate_run` wrapper was removed.
+- Landed: Phase 8 session-wide provider termination now follows the same ownership rule. `terminate_session_runs_provider_only` returns `ProviderSessionRunsTerminatedOutcome`; session end consumes each provider outcome and clears session active-run state explicitly before process cleanup.
+- Landed: Phase 8 provider parking now follows the same outcome-first rule. `park_run_provider_only` returns `ProviderRunParkedOutcome`, direct callers consume the outcome and explicitly clear session active-run state where appropriate, and the old session-mutating `park_run` wrapper was removed.
+- Landed: Phase 8 provider resume now follows the same outcome-first rule. `resume_run_provider_only` returns `ProviderRunResumedOutcome`; session active-run activation and any conflicting-run parking are handled by the provider-runtime activation seam instead of being hidden inside provider state mutation.
+- Landed: Phase 8 provider start now has a provider-only entrypoint. `start_run_provider_only` returns `ProviderRunStartedOutcome`; the provider-runtime activation seam handles prior active-run parking/termination and session active-run assignment before PTY/runtime binding continues, and the old session-mutating launch/start wrappers were retired from provider service. Detached provider launches now reuse the same provider-only start path before marking the run running, avoiding a duplicate adapter-connect lifecycle.
+- Landed: Phase 8 runtime notice polling now validates attachment/session ownership inside the `SessionRuntime` boundary but drains notices through the shared `TerminalStreamStore` instead of reaching through `DaemonApp` terminal state.
+- Landed: Phase 8 runtime notice polling now uses warmed session projections inside the `SessionRuntime` worker, so valid notice drains and warmed attachment absence errors no longer wait for the compatibility app lock.
+- Landed: Phase 8 active-run terminal output polling now skips compatibility provider pumping when warmed provider-run projection shows the active run is parked or ended, draining buffered terminal output directly. Compatibility pump paths refresh session/agent projections inside the mutation boundary instead of taking a second post-response app lock.
+- Landed: Phase 8 inactive-run terminal output polling now resolves directly from session/provider-run projections before entering the fallback executor, and provider liveness reconciliation republishes already-ended provider-run projections when the provider pump observes them.
+- Landed: Phase 8 terminal resize now uses warmed session projections inside the `SessionRuntime` worker for missing-session and no-active-provider-run rejection, avoiding compatibility app-lock access for those absence cases.
+- Landed: Phase 8 session attach/focus/cycle validation now rejects warmed missing-session cases, and focus rejects warmed missing-agent-in-session cases, inside the `SessionRuntime` worker without compatibility app-lock access.
+- Landed: Phase 8 direct session-lane resolution now rejects warmed missing attach/focus/cycle/resize/alias/end requests before creating a per-session lane, avoiding orphan lanes for projected-absent sessions.
+- Landed: Phase 8 attachment-scoped session lane resolution now rejects warmed missing/mis-scoped runtime-notice and config-update attachments before creating a per-session lane.
+- Landed: Phase 8 session alias/end validation now rejects warmed missing-session cases inside the `SessionRuntime` worker without compatibility app-lock access.
+- Landed: Phase 8 provider-process teardown now refreshes affected session and agent-runtime projections inside the teardown mutation boundary, so post-teardown session reads observe cleared active provider runs without a second compatibility app-lock refresh.
+- Landed: Phase 8 async provider-launch completion/failure now publishes session projections when active provider-run state changes, so warmed session reads observe accepted-to-running and failed-launch state transitions without a compatibility app-lock refresh.
+- Landed: Phase 8 provider launch command execution now sits behind a dedicated `ProviderLaunchCommandExecutor` seam. The router no longer owns the async start/initialize/finalize/fail choreography inline; it delegates launch admission and deferred runtime binding to one provider-launch boundary while preserving immediate `ProviderRunLaunchAccepted` acknowledgements.
+- Landed: Phase 8 removed the app-level provider runtime binding initialization shim. Provider launch execution and synchronous compatibility launch now call `ProviderProcessService::initialize_runtime_binding` directly, keeping runtime binding ownership in the provider service instead of a `DaemonApp` static helper.
+- Landed: structured provider output polling now drains all finished provider-run actor poll jobs on each pump pass. Non-requested run output is applied into the terminal fanout buffer for its recipients and retained in a per-provider-run return buffer so a later direct `pump_provider_output(run_id)` call still receives that run's records.
+- Landed: multi-run structured output regression coverage now proves a pump for one provider run applies already-finished output jobs from another run into the terminal fanout buffer without returning that background output as requested-run output.
+- Landed: provider-run actor command mailboxes now use bounded per-run queues and non-blocking enqueue. Submit/abort/poll/sync/terminate commands cannot grow an unbounded provider-run worker backlog under repeated polling or lifecycle pressure.
+- Landed: daemon health now includes provider-run actor enqueue counters, including accepted commands and enqueue rejections, so provider runtime pressure is visible separately from the per-run operation-lane occupancy snapshot.
+- Landed: structured provider submit/abort/output-poll/selection-sync enqueue failures now propagate as daemon errors instead of being logged and swallowed. Prompt dispatch cleanup can now run when the provider actor does not actually accept a structured prompt job, and structured output pumps now surface output-poll enqueue failure to callers.
+- Landed: daemon health now includes terminal stream backlog pressure, including pending output/notice/completion record counts, the per-attachment pending-output limit, and trimmed pending-output recipient deliveries.
+- Landed: provider-run exit prompt settlement is isolated behind a dedicated prompt-lifecycle boundary helper. Unexpected provider exits now choose cancellation finalization, completion, or idle sync in one place before Phase 5 moves more liveness ownership into `ProviderRunActor`.
+- Landed: provider-run exit prompt settlement now uses an explicit settlement decision object, separating the active-prompt-status decision from the compatibility mutations it currently triggers.
+- Landed: provider-run liveness reconciliation now lives behind the provider runtime boundary. `DaemonApp` still observes PTY process state during compatibility migration, but provider state transitions, active-run cleanup, runtime cleanup, and ended/external/still-running/newly-ended classification are no longer open-coded in prompt lifecycle handling.
+- Landed: `WorkflowRuntime` baseline with bounded per-session workflow command lanes. Workflow creation/graph/run/watchdog/ack/validation/queue commands now enter a workflow-owned mailbox before hitting compatibility mutation, and daemon health exposes workflow lane pressure separately from session/agent/provider lanes.
+- Landed: workflow command lane cleanup on session end/delete, so per-session workflow mailboxes do not stay registered after their owning session is gone.
+- Landed: workflow command lane resolution now rejects warmed missing-session workflow mutations from `SessionStateProjectionStore` without creating a lane or waiting on the compatibility app lock, and workflow workers refresh projections from session-bearing workflow responses before falling back to a compatibility snapshot.
+- Landed: Phase 8 removed the remaining app-level session/workflow request facade shims. The compatibility local API now enters explicit session/runtime store operations and the explicit workflow runtime request executor, so `DaemonApp::handle_session_request` and `DaemonApp::handle_workflow_request` no longer exist.
+- Landed: workflow runtime-tool projection refresh. Direct MCP/relay runtime-tool calls now republish session and agent-runtime projections after recording tool-call state, so acknowledgements and output submissions do not leave warmed workflow inspection reads stale when they bypass the router workflow lane.
+- Landed: capability executor health counters for submitted/running/completed/failed/rejected/join-error jobs, plus the executor concurrency limit and available permits. `GetDaemonHealth` now exposes capability job pressure separately from actor mailbox pressure.
+- Landed: workflow prompt start/completion/cancellation, workflow provider-run ensure, workflow resume, workflow-console runtime tools, and blocked-claim retry entrypoints are now isolated behind the app workflow-runtime boundary, so prompt lifecycle, transport, runtime-tool, and local API callers no longer invoke scheduler runtime progression functions directly.
+- Landed: `FocusedAgentProjection` shared by `SessionRuntime`, `AgentRuntime`, and router-side agent lifecycle refreshes, so focus changes captured by the session mailbox or local agent spawn/destroy responses let untargeted prompt submit/cancel route to the focused agent without synchronously taking the compatibility app lock for focus lookup.
+- Landed: Phase 8 router-side focus refresh now runs after session projection refresh and reads the warmed session projection first, avoiding a second compatibility app lock after agent lifecycle commands have already refreshed session state.
+- Landed: `SessionStateProjectionStore` for warmed session/list/resolve/prompt-state snapshots. `GetSessionState`, successful `ResolveSession`, and warmed `ListSessions` can return projected session data without taking the compatibility app lock after the projection has been warmed by list responses, prompt/session/agent/workflow responses, prompt lifecycle publications, or transitional post-mutation snapshots. List warm-up now hydrates per-session projection entries, so follow-up state and successful resolve reads can stay projection-first without requiring a separate session-state read.
+- Landed: Phase 8 missing `GetSessionState` and `ResolveSession` reads now return `SessionNotFound`/ambiguity from the warmed session-list projection instead of falling back to the compatibility app lock.
+- Landed: `AgentRuntime` focus fallback through the warmed session projection. Untargeted prompt submit/cancel now checks projected focused-agent state before falling back to the compatibility app lock when the dedicated focus projection is cold.
+- Landed: `SessionHistoryProjectionStore` for warmed transcript history. `GetSessionHistory` can use a warmed session snapshot to load disk history without taking the compatibility app lock, then serve repeated warmed transcript reads from memory while successful appends keep the warmed projection current.
+- Landed: `ProviderRunProjectionStore` for warmed provider-run snapshots. `GetProviderRun` can return without taking the compatibility app lock after launch/read warm-up, and start/finish/fail/park/resume/end lifecycle updates refresh the shared projection.
+- Landed: `ProviderProcessProjectionStore` for warmed process-list snapshots. `ListProviderProcesses` can return without taking the compatibility app lock after warm-up, and provider-run/session lifecycle changes invalidate the snapshot so teardown-safety metadata is recomputed before reuse.
+- Landed: prompt-state projection publication. Prompt submit, completion, cancellation, dispatch failure, and queue advancement now publish updated session snapshots into the shared projection, so warmed `GetSessionState` reflects prompt lifecycle transitions without a compatibility-store read.
+- Landed: prompt complete/cancel projection publication is now authoritative for router refresh. The router no longer takes a redundant post-response session snapshot for those prompt lifecycle commands.
+- Landed: router-side session projection refreshes are trimmed for non-state terminal control commands. `PollRuntimeNotices` and `ResizeTerminal` no longer reacquire the compatibility app store for a session snapshot; `PumpTerminalOutput` still refreshes because output polling can change prompt lifecycle state.
+- Landed: `ProviderCatalogProjectionStore` for TTL-bound warmed provider catalog snapshots. `GetProviderCatalog` can return without taking the compatibility app lock after warm-up, and provider logout/configuration changes invalidate the projection.
+- Landed: projection correctness hardening. Provider-process snapshots are canonical rather than request-scoped, teardown refreshes affected process/run projections, warmed OpenCode provider-run reads preserve selection-sync side effects, relay reconfiguration invalidates provider-catalog projection state, and agent command lanes are cleaned up on agent/session removal.
+- Landed: transport health projection. Kernel websocket slow-consumer closes, outgoing queue overflows, inbound overload rejections, replay gaps, request/event counts, active connections, and active subscriptions are now surfaced through `GetDaemonHealth`.
+- Landed: workspace coordination health baseline. `GetDaemonHealth` now reports active worktree claims and same-workspace worktree collisions from the warmed session projection without taking the compatibility app lock.
+- Landed: projection invariant health. `GetDaemonHealth` now reports checked session/agent projection counts and any mismatch between warmed session prompt state and the agent-runtime prompt read model, making stale projection refresh paths observable instead of latent.
+- Landed: session inspection reads from the warmed session projection. `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowPrompts` can now return from projected session state without taking the compatibility app lock after the session projection is warm.
+- Landed: initial `WorkspaceCoordinator` enforcement. Explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) acquire scoped worktree write claims, reject overlapping writes in the same workspace/worktree with a retryable workspace-claim conflict, expose active operation claims in daemon health, and release claims when the operation completes.
+- Removed: provider prompt lifecycle worktree claims. Provider prompts no longer acquire whole-worktree claims, so independent sessions can dispatch prompts in the same workspace/worktree; explicit write capabilities and workflow node dispatch remain claim-coordinated.
+- Landed: workspace claims as a scheduler primitive. Claims now carry `read`/`write` mode metadata, use normalized real worktree keys where possible, and workflow node dispatch attempts an exclusive `workflow_node_dispatch` write claim before submitting provider work. Workflow nodes that hit a busy worktree move to `BlockedOnWorkspaceClaim` and retry when prompt/workflow claims release instead of failing the workflow.
+- Landed: local prompt submit moves provider prompt writes/enqueues into the spawned provider-run operation dispatch. The agent mailbox can acknowledge the owner-backed prompt mutation without performing PTY writes or provider actor enqueue work inline.
+- Landed: kernel prompt submit now defers user-prompt history appends and remote relay prompt dispatch out of the agent-mailbox acknowledgement path. History appends run through a spawned blocking append that refreshes the warmed history projection after successful persistence, and remote relay prompt failures cancel the acknowledged active prompt, refresh projections, and publish a notice.
+- Landed: session end/delete now clears the shared terminal stream store for that session from the `SessionRuntime` boundary. Pending output, notices, completion records, and recorded terminal input no longer survive after the owning session is gone.
+- Landed: relay-client daemon/workflow requests now enter through `CommandRouter` as `KernelCommandSource::RelayClient` instead of calling `DaemonApp::handle_local_request` directly. Proxied relay clients now share the same actor admission, projection refresh, and overload behavior as local IPC/kernel transport requests, including workflow output validation and acknowledgement requests that previously died at the relay transport gate.
+- Landed: the legacy generic interactive lane no longer falls through to `DaemonApp::handle_local_request`. It now executes only recognized session/agent commands through their explicit runtime handlers and immediately rejects unsupported commands without waiting for the compatibility app lock.
+- Landed: agent lifecycle mutations now route through the session runtime lane. `SpawnAgent` and `DestroyAgent` are interactive session-scoped commands, share the explicit agent request handler with local IPC, publish session/focus projections from the runtime path, and no longer enter the normal local compatibility fallback.
+- Landed: runtime MCP now uses the kernel `CommandRouter` as its transport boundary. The MCP HTTP server binds from the router-owned config projection, authenticated local workflow runtime tools dispatch through the router, and forwarded relay workflow runtime tools also enter through the router instead of locking `DaemonApp` directly from transport handlers.
+- Landed: relay configuration and remote-machine registry mutations now have explicit router handlers. `ConfigureRelay`, `ApproveRemoteMachine`, `ForgetRemoteMachine`, and `RenameRemoteMachine` no longer fall through the generic local compatibility request handler, and provider-catalog projections are invalidated from the router path after those mutations.
+- Landed: the normal/background router path is now exhaustive. Cold session/provider/capability requests are named router branches, and the old generic `execute_local_request_with_async_boundaries` fallback to `DaemonApp::handle_local_request` has been removed.
+- Landed: router cold session/list/resolve/state/agent-list and OpenCode provider-run sync paths now call named compatibility helpers directly instead of re-entering the public local API facade. `CommandRouter` production code no longer calls `DaemonApp::handle_local_request`.
+- Landed: post-slice live drills passed on 2026-04-14. Coverage included the daemon smoke harness, focused-agent multi-agent prompt routing, shared-endpoint multi-agent prompt routing, workflow progression without terminal pumps, downstream workflow scheduling, join-node scheduling, workflow workspace-claim retry, and CLI workflow graph/outline drill catalogs.
+- Landed: `DaemonApp::handle_local_request` has been deleted. The local smoke harness, external daemon integration test, local API tests, router tests, relay/client/runtime-tool tests, and non-local setup tests now enter through `CommandRouter` or explicit service APIs instead of a catch-all app request dispatcher.
+- Landed: Phase 8 introduced a narrow `SessionRuntimeStore` boundary for `SessionRuntime` fallback reads and compatibility mutation. Session lane workers and the command executor now depend on this store instead of carrying `Arc<Mutex<DaemonApp>>` directly, preparing session-owned state extraction without reintroducing a request facade.
+- Landed: Phase 8 introduced a matching `AgentRuntimeStore` boundary for `AgentRuntime` fallback active-prompt/focused-agent reads and prompt-command service creation. Agent lanes no longer carry the app mutex directly; compatibility-backed prompt mutation is isolated behind the store/service seam.
+- Landed: Phase 8 introduced a `WorkflowRuntimeStore` boundary for workflow-lane compatibility mutation and projection refresh. Workflow lanes and their command executor no longer carry the app mutex directly, matching the session and agent runtime store seams.
+- Landed: Phase 8 introduced a `ProviderLaunchStore` boundary for provider-launch admission and async runtime-binding completion/failure. The provider launch command executor now owns orchestration while app-backed launch mutation is isolated behind the store seam.
+- Landed: the last generic interactive router mailbox has been removed. Interactive commands now dispatch only to the session runtime or agent runtime lanes; unsupported interactive requests are rejected at the explicit router boundary instead of entering a legacy app-lock worker.
+- Landed: the session-runtime worker no longer calls the compatibility `DaemonApp::handle_session_request` / `handle_agent_request` dispatchers for normal session-lane mutation. It now executes an explicit runtime-owned request match while the underlying state stores are still being split out of `DaemonApp`.
+- Landed: the workflow-runtime worker no longer calls the compatibility `DaemonApp::handle_workflow_request` dispatcher for workflow-lane mutation. Workflow commands now execute through an explicit workflow-runtime request match, keeping facade deletion blocked only by remaining store ownership and service extraction work.
+- Landed: Phase 8 workflow-runtime command execution now sits behind a dedicated `WorkflowRuntimeCommandExecutor` seam. The workflow lane worker no longer inlines app-lock fallback and projection publication, matching the session/agent executor shape ahead of extracting workflow-owned stores.
+- Landed: agent prompt command execution now goes through an explicit `AgentRuntimeCommandExecutor` boundary. The executor depends on a narrow `AgentPromptCommandService` for submit/cancel/complete mutation and provider/remote dispatch side effects instead of owning provider lanes or calling app-static dispatch helpers directly. The service still uses compatibility-backed stores internally, but the mailbox executor now has a durable seam for moving prompt admission onto runtime-owned stores.
+- Landed: Phase 8 removed `DaemonApp::handle_agent_request`; prompt execution now enters through `AgentRuntime` and the prompt command service, while session-scoped agent spawn/destroy routes through named `SessionRuntimeStore` lifecycle operations. The later generic `KernelAgentService::execute_request` facade deletion keeps these paths explicit instead of carrying a request-shaped compatibility match.
+- Landed: prompt id allocation is now a cloneable `PromptIdAllocator` shared by `SessionService` and `AgentRuntimeCommandExecutor`. Prompt submit no longer has to enter the session service/app lock just to reserve a prompt id; remaining submit locking is now tied to validation, claim/mirror mutation, provider dispatch preparation, and projection snapshots.
+- Landed: kernel prompt submit admission is now split into explicit validation/admission, history append scheduling, prompt-owner mutation, and local/remote dispatch-effect preparation steps. The steps still execute against compatibility-backed stores, but the ownership seam is now clear enough to move admission state and mirror publication behind runtime-owned services without changing the mailbox API.
+- Landed: kernel prompt cancellation is now split into explicit admission, already-cancelling, remote cancellation, local owner mutation, abort-dispatch preparation, notice, and projection steps. The behavior still uses compatibility-backed stores, but cancel now follows the same ownership-seam shape as submit.
+- Landed: kernel prompt completion is now split into explicit admission, remote leased completion, local owner completion, assistant-history/workflow/flow-control effects, queue advancement, and projection publication steps. Submit, cancel, and complete now share the same admission/owner/effect seam shape before moving stores out of the compatibility app.
+- Landed: prompt lifecycle command phases now live in `app/kernel_agent/prompt_commands.rs` instead of the broad agent service file. `KernelAgentService` remains the orchestration boundary, while submit/cancel/complete phase structs and phase methods are isolated for the next runtime-owned service extraction.
+- Landed: remaining prompt lifecycle helpers for dispatch-failure cleanup, local/remote queue advancement, active-cancel routing, and cancellation finalization now live with the prompt command phases in `app/kernel_agent/prompt_commands.rs`.
+- Landed: the legacy direct-submit compatibility path now builds a prepared prompt and runs through the same prompt command phases as the agent mailbox path. `kernel_agent.rs` is reduced to the shared agent request orchestration boundary and queue-candidate test helper.
+- Landed: public `DaemonApp` prompt facade methods for submit/complete/cancel are now crate-private compatibility shims. External integration tests continue to enter prompt lifecycle through the transport/router-facing surfaces instead of the app facade.
+- Landed: the remaining `TransportService` workflow-prompt dispatch facade was removed. Workflow prompt dispatch now lives at the scheduler workflow-dispatch boundary, and provider-output pumping uses the explicit provider-output functions rather than transport/app facade helpers.
+- Landed: terminal output pumping now enters through a dedicated `TerminalOutputExecutor` boundary instead of embedding provider-output pumping inside `CommandRouter`. The executor still uses compatibility-backed provider/session stores, but it isolates the active `PumpTerminalOutput` ownership split target.
+- Landed: non-local-api actor/projection/scheduler/router/transport setup tests no longer use `DaemonApp::handle_local_request` as a convenience facade for agent/session/projection/flow-control/relay-client/MCP/workflow-runtime/router setup. They now use explicit app/service APIs or router-facing request surfaces, and the catch-all dispatcher no longer exists.
+- Landed: Phase 8 production session snapshot consumers in prompt lifecycle, workflow-runtime fallback, terminal-output refresh, terminal history fanout, session service ports, and provider-process teardown now enter through `KernelSessionReadService`; the remaining test fixtures were migrated too, and the `DaemonApp::local_api_session_snapshot` compatibility shim was removed.
+- Landed: Phase 8 removed the `DaemonApp::publish_session_projection` shim. Projection publication callers now use `KernelSessionReadService::session_snapshot` directly, keeping session read/projection refresh semantics behind one explicit read-service boundary instead of a generic app helper.
+- Landed: Phase 8 removed the app-level attachment/session and provider-run/session authorization shims. Attachment authorization now enters `KernelSessionReadService`, and provider-run ownership checks enter `ProviderRunReadService`, leaving callers tied to explicit read-service boundaries instead of broad `DaemonApp` helpers.
+- Landed: Phase 8 removed the app-level provider prompt dispatch shim. Local and workflow prompt dispatch now enter `ProviderPromptDispatcher`, concentrating provider liveness checks, structured prompt enqueue, and terminal-input fallback behind a named prompt-dispatch boundary.
+- Landed: Phase 8 removed the app-level remote workflow-turn context shim. Remote workflow prompt dispatch now resolves delivery context through `RemoteWorkflowTurnContextResolver` instead of a broad `DaemonApp` helper.
+- Landed: Phase 8 removed app-level direct capability execution helpers. Capability authorization now resolves through `KernelSessionReadService::capability_context`, and shell/tree/file/git/screenshot/transfer execution enters through the capability runtime boundary or concrete capability services instead of `DaemonApp` facade methods.
+- Landed: Phase 8 removed app-level session-history, agent-list, terminal-input, and terminal-resize convenience helpers. History reads now enter through `KernelSessionReadService`, terminal input enters through `ProviderTerminalInput`, terminal resize stays on `KernelSessionService`, and tests use explicit service boundaries instead of `DaemonApp` facade methods.
+- Landed: Phase 8 removed app-level session/agent lifecycle convenience helpers for create/spawn/destroy/focus/cycle/config/resolve paths. Production code and tests now enter those mutations through `KernelSessionService`, `SessionRuntimeContext`, or concrete stores instead of `DaemonApp` facade methods.
+- Landed: Phase 8 removed the remaining app-level attach/detach/end/delete session lifecycle convenience helpers. Shutdown cleanup, relay tests, local API tests, and runtime setup helpers now call `KernelSessionService` directly for those lifecycle mutations instead of re-entering `DaemonApp` facade methods.
+- Landed: Phase 8 introduced `SessionStateOwner`/`SessionStateReader` as the first explicit owner boundary around pure `SessionService` state. `KernelSessionService` now routes session create/resolve/list/get/alias/config/end/delete/active-provider-run state changes through that boundary, while side-effect-heavy attachment, agent, provider, prompt, and projection work remains in the kernel session service until those stores are split.
+
+- Landed: Phase 8 moved remote execution lease, leased-agent, leased-prompt, runtime-tool binding, and leased projection handling behind `RemoteLeaseRuntime`. Relay peer handling and runtime-tool lookup now enter this explicit remote-lease boundary instead of `DaemonApp` facade methods.
+- Landed: Phase 8 introduced `CompatibilityRuntimeState` as the explicit quarantine boundary for the remaining app-backed session, agent, workflow, and prompt-command runtime workers. `SessionRuntimeStore`, `AgentRuntimeStore`, and `WorkflowRuntimeStore` no longer own `Arc<Mutex<DaemonApp>>` directly; the remaining compatibility lock is centralized behind the runtime-state port so the next extraction can move owned stores behind that port without changing worker APIs again.
+- Landed: Phase 8 moved the session, agent-resolution, and workflow compatibility contexts into `CompatibilityRuntimeState`. Runtime stores now call named session/agent/workflow ports on the runtime state boundary instead of owning local app-context wrappers, reducing the next owned-state extraction to replacing that boundary internals.
+- Landed: Phase 8 moved the agent prompt-command compatibility context into `CompatibilityRuntimeState` too. `AgentPromptCommandService` now calls named prompt ports on the runtime-state boundary instead of carrying its own local app-context wrapper.
+- Landed: Phase 8 moved prompt dispatch, remote prompt dispatch, and prompt abort background operations behind `CompatibilityRuntimeState` prompt-dispatch ports. `AgentPromptCommandService` no longer pulls out the compatibility app handle directly for those spawned side effects.
+- Landed: Phase 8 removed the raw app-handle getter from `CompatibilityRuntimeState`. Agent prompt command service creation now passes the runtime-state boundary itself, so prompt code cannot bypass the quarantine by re-cloning `Arc<Mutex<DaemonApp>>`.
+- Landed: Phase 8 moved provider-launch admission, completion, and failure mutation behind `CompatibilityRuntimeState` provider-launch ports. `ProviderLaunchStore` no longer carries its own raw app mutex, keeping provider-launch compatibility access behind the same quarantine boundary as session/agent/workflow runtime workers.
+- Landed: Phase 8 moved terminal-output compatibility pumping and provider-output pumping behind `CompatibilityRuntimeState` terminal-output ports. `TerminalOutputStore` now receives refreshed session snapshots from that boundary instead of owning a separate raw app mutex.
+- Landed: Phase 8 moved capability authorization lookup behind `CompatibilityRuntimeState` capability-runtime ports. `CapabilityRuntimeStore` no longer owns a separate raw app mutex; it consumes an explicit capability context snapshot before spawning bounded capability work.
+- Landed: Phase 8 made the remaining raw app-lock helper inside `CompatibilityRuntimeState` private. Runtime callers must enter through named compatibility ports instead of using a generic app mutation escape hatch.
+- Landed: Phase 8 gave `CommandRouter` an explicit `CompatibilityRuntimeState` boundary for remaining app-backed runtime-tool and provider-launch side effects. Authenticated/forwarded runtime-tool calls and provider-launch dispatch no longer lock `DaemonApp` directly from router code.
+- Landed: Phase 8 changed session, agent, workflow, terminal-output, and capability runtime constructors to receive the router-owned `CompatibilityRuntimeState` directly. Router bootstrap now creates one runtime-state boundary and shares it with runtime workers/executors instead of each component re-wrapping `Arc<Mutex<DaemonApp>>`.
+- Landed: Phase 8 moved the first owned runtime stores behind `CompatibilityRuntimeState`: router bootstrap now injects the shared `TerminalStreamStore` and `WorkspaceCoordinator`, and the session notice and capability authorization ports consume those owned handles instead of re-reading them through `DaemonApp`.
+- Landed: Phase 8 expanded router-owned runtime-state inputs to include config/session/provider-run projections and `PromptStateOwner`. Agent runtime fallback reads now resolve active/focused agents from owned projections without taking the app lock when warm, prompt completion resolves provider-run identity from the provider-run projection before compatibility fallback, and provider-launch request shaping uses the session projection before entering the app-backed launch mutation. Workflow and terminal-output post-mutation snapshots intentionally still use authoritative compatibility reads until their stores own mutation state, avoiding stale projection publication.
+- Landed: Phase 8 removed the provider-launch, workflow-runtime, terminal-output, and capability runtime compatibility context wrappers. Those stores now call named `CompatibilityRuntimeState` ports directly; terminal-output and workflow still take authoritative compatibility snapshots after mutation, but no longer carry separate context wrapper types around the app lock.
+- Landed: Phase 8 removed the remaining session-runtime and agent-prompt compatibility context wrappers. `SessionRuntimeStore`, `AgentPromptCommandService`, and prompt dispatch/abort background work now call named `CompatibilityRuntimeState` ports directly; compatibility app-lock access remains quarantined inside runtime state until the underlying owned session and prompt stores are extracted.
+- Landed: Phase 8 promoted pure session state into a cloneable `SessionStateStore` owned through the session boundary. `DaemonApp` now carries the shared store handle instead of a bare `SessionService`, `SessionStateOwner`/`SessionStateReader` operate on that handle, remote lease and session/agent lifecycle call sites take scoped session-service guards for mutation, and `CompatibilityRuntimeState` receives the same store for owned session reference/focus reads instead of re-entering the app lock.
+- Landed: Phase 8 promoted agent and attachment services into cloneable shared service stores. `DaemonApp` now holds `AgentServiceStore` and `AttachmentServiceStore`, session lifecycle/remote lease paths mutate them through short scoped locks, and `CompatibilityRuntimeState` receives those handles for owned attachment lookup and provider-launch focused-agent fallback reads.
+- Landed: Phase 8 moved provider process tracking and prompt-activity state behind cloneable stores. Managed provider process/run ownership maps and active prompt activity records no longer live as bare `DaemonApp` maps, reducing provider launch/liveness/prompt-settlement extraction to injecting those stores through runtime boundaries.
+- Landed: Phase 8 promoted `ProviderProcessService` and provider catalog caching into cloneable stores. Provider run registry/runtime mailbox operations now sit behind `ProviderProcessServiceStore`, `CompatibilityRuntimeState` receives the provider store for structured prompt I/O checks, and provider catalog cache invalidation is no longer a bare mutable app field.
+- Landed: Phase 8 moved compatibility runtime session snapshots, attachment/session authorization, and capability context lookup onto the owned session/agent/attachment/provider/terminal/workspace stores. Capability execution and session-state refresh can now avoid the compatibility app lock for their read-side authorization and projection refresh paths.
+- Landed: Phase 8 switched runtime post-effect session refreshes for workflow operations and terminal-output pumping to the owned session snapshot path. The remaining compatibility app lock calls in those paths now perform only the legacy mutation/pump effect, then release before refreshing session projections from owned stores.
+- Landed: Phase 8 moved provider launch activation, request shaping, runtime binding application, launch failure cleanup, previous-run resume, and provider-run/session/projection state updates onto owned runtime stores. The remaining compatibility app lock during launch is now limited to PTY process spawn/tracking, launch-failure notice emission/history append, and queued-prompt advancement.
+- Landed: Phase 8 moved prompt-completion provider-run fallback resolution to the owned provider run projection/store before entering the remaining prompt-completion compatibility mutation.
+- Landed: Phase 8 moved prompt dispatch/remote-dispatch failure prompt-owner cleanup, prompt-activity clearing, workflow-claim release, and session refresh onto owned runtime stores. The remaining app-lock work in those failure paths is notice/history emission and blocked-workflow retry execution after a workflow-claim release.
+- Landed: Phase 8 moved prompt dispatch and abort enqueue success paths onto owned runtime stores. Prompt echo fanout, provider-run/session validation, structured prompt submit/abort enqueue, prompt activity start records, terminal input record storage, remote prompt success echo fanout, and prompt dispatch/abort failure notice recording, and provider-launch failure/switch notice recording now use owned stores; the remaining app-lock work is provider liveness reconciliation, PTY writes, provider process spawn, PTY process removal, structured-job reap, and blocked-workflow retry execution until those process/scheduler seams are isolated.
+- Landed: Phase 8 split prompt-dispatch/abort provider liveness so provider-state reconciliation, session active-run pointer clearing, provider-run projection updates, provider-process tracking cleanup, and unexpected-exit notice recording now use owned runtime stores. The remaining app-lock work in this path is PTY process poll/removal plus prompt/session settlement.
+- Landed: Phase 8 routes the initial active-run terminal-output liveness check through `CompatibilityRuntimeState` before entering the compatibility provider-output pump. The provider-output pump still owns deeper output-drain reconciliation, but warmed active-run terminal polling can now short-circuit ended/exited runs through owned provider/session/projection/process-tracking state.
+- Landed: Phase 8 moved provider-output fanout history/terminal writes onto cloneable terminal, session, provider, history, and history-projection stores inside the provider-output seam instead of calling the broad app-level history append helper. The pump still runs under the compatibility app boundary, but fanout persistence now has the same owned-store shape as terminal-output and history projections.
+- Landed: Phase 8 moved provider-output pump provider-run reads, structured-output poll enqueue/drain/metadata application, and pending structured-output record buffering onto cloneable provider/pending-record stores inside the provider-output seam. PTY drain, prompt settlement, and remaining lifecycle side effects still use compatibility state until those seams are split.
+- Landed: Phase 8 moved structured provider-output notice fanout/history persistence onto the same store-backed provider-output terminal/history sink. Prompt settlement, assistant-completion recording, PTY drain, and remaining lifecycle side effects still use compatibility state until those seams are split.
+- Landed: Phase 8 moved provider-output prompt-activity updates and assistant-message completion fanout onto cloneable prompt-activity, provider, and terminal stores inside the provider-output seam. Prompt settlement and PTY drain still use compatibility state until those seams are split.
+- Landed: Phase 8 removed the app-level assistant-message completion fanout helper by routing prompt-command completions directly through the terminal/provider stores at the owning command seam.
+- Landed: Phase 8 trimmed unused transport prompt facade methods and removed the obsolete production session-mirror direct-cancel mutation path; the remaining mirror corruption path is test-only. Workflow dispatch failure cleanup now uses the prompt owner directly and clears prompt activity through the flow-control seam.
+
+Current closure status:
+
+- Closed: the seven ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion all route command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
+- Closed: the M4.5 dead-code purge removed the now-unused app-backed helper surfaces, obsolete runtime-tool dispatcher, workflow console app wrappers, remote-lease helper, projection-removal helper, and stale test-only compatibility calls left behind by the direct cutover.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Workspace Live Sync managed mode now owns artifact writes for Chariox-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
+
+## Cutover Completion Plan
+
+The bar is not more compatibility with cleaner names. The kernel runtime should have single ownership for mutable state, projection-first reads, explicit overload behavior, and enough health signal to debug stalls without reading code.
+
+Order of work:
+
+1. **Done.** Lock the current direct-cutover baseline: keep daemon tests green, keep `handle_local_request`/generic request facades deleted, and reject any new request-shaped `DaemonApp` helper during review.
+2. **Done.** Cut over session ownership: make `SessionRuntime` own create/attach/detach/focus/cycle/resize/config/alias/spawn/destroy/end/delete through owned stores and explicit side-effect ports, then delete the matching `KernelSessionService<&mut DaemonApp>` mutation paths.
+3. **Done.** Cut over prompt ownership: move submit/cancel/complete mirror mutation, settlement, queue advancement, provider-claim cleanup, and failure cleanup into `AgentRuntime`/prompt-owned services, then delete the matching `KernelAgentService<&mut DaemonApp>` prompt paths.
+4. **Done.** Cut over provider process/output ownership: move PTY spawn/remove/poll/drain, structured-job reaping, active-output pumping, provider-output prompt settlement, and post-launch queue advancement behind provider/process/output runtimes, then delete the app-backed provider-output and launch-process mutation paths.
+5. **Done.** Cut over workflow and runtime tools: make workflow command mutation, queued prompt progression, watchdog pumping, blocked-claim retry, and MCP runtime tools enter workflow-owned commands instead of `&mut DaemonApp` service calls.
+6. **Done.** Cut over transport and relay state: move subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, and encrypted peer prompt settlement behind owned transport/relay runtimes.
+7. **Done.** Delete the compatibility quarantine: remove production `CompatibilityRuntimeState::with_app_mut`, remove `Arc<Mutex<DaemonApp>>` from command/runtime constructors, and leave `DaemonApp` as bootstrap/shutdown/test composition only.
+8. **Done.** Purge M4.5 dead code: delete now-unused app-backed helper surfaces and test-only compatibility helpers exposed by the direct cutover, then rerun the daemon suites and refresh status docs.
+9. Formalize projection correctness: centralize projection refresh helpers, define which authoritative mutation refreshes which projection, and add stale-state regression tests for provider output, provider teardown, workflow progression, session delete, agent destroy, prompt cancel, prompt complete, and daemon-health projection invariant drift.
+10. Return to post-M4.6 coordination last: decide port resource scopes, optional integration/mergeability checks, unsafe-mode policy commands, and artifact-specific region models beyond v1 opaque whole-file locking after the workspace live sync v1 path stays stable.
+
+### Current Hot-Path Lock Audit
+
+Status as of 2026-04-15:
+
+Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>` fallback ports. Remaining app access is limited to bootstrap/shutdown/test composition and explicit side-effect ports that the dead-code cleanup will either keep named or delete if unused.
+
+| Area | Current use | M4.5 treatment |
+|------|-------------|----------------|
+| `runtime/router.rs` | no generic local compatibility fallback remains, router code no longer calls `DaemonApp::handle_local_request`, and provider launch/runtime-tool side effects enter owned runtime-state ports | closed; keep router independence locked |
+| `runtime/session_actor.rs` | per-session mailboxes serialize requests and publish projections through runtime-owned session operations | closed; unused app-backed session helper surfaces were purged |
+| `runtime/agent_actor.rs` | per-agent mailboxes serialize prompt submit/cancel/complete with owned prompt settlement, queue advancement, provider-claim cleanup, and failure cleanup | closed |
+| provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
+| `runtime_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
+| `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued prompt state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
+| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Chariox-managed provider-session writes are enforced by M4.6 workspace live sync | keep bounded/background behavior for M4.5 and route provider writes through workspace live sync |
+
+New regression coverage locks in the current responsiveness contract while ownership continues moving:
+
+- slow session history reads must not delay prompt submission
+- slow provider catalog discovery must not delay focus, terminal resize, or prompt cancellation
+
+These tests do not prove actor ownership is complete. They specifically prevent backsliding on the M4.5 exit criterion that user-visible interactive commands must stay responsive while slow read/background work is running.
+
+### Compatibility Facade Retirement Checklist
+
+Retiring the facade is separate from Workspace Live Sync. The goal here is to remove `DaemonApp` as the public/local request facade and then shrink it into bootstrap plus explicit runtime services. Keep the existing coarse `WorkspaceCoordinator` behavior in place; Workspace Live Sync managed mode owns provider-session artifact writes.
+
+Work the retirement in this order:
+
+1. Retire `DaemonApp::handle_local_request` as a public/local facade API. **Done.**
+   - Router-backed local daemon client/harnesses accept `LocalDaemonRequest`, build a `KernelCommand`, and dispatch through `CommandRouter`.
+   - External integration tests, public smoke harnesses, local API tests, router tests, relay/client/runtime-tool tests, and non-local setup tests no longer call the app request dispatcher.
+   - The crate-private compatibility dispatcher has been deleted.
+   - Exit check: `cargo test --manifest-path apps/kernel/Cargo.toml --lib` passes, and `rg "handle_local_request\\(" apps/kernel/src apps/kernel/tests --glob '!target'` returns no matches.
+
+2. Keep router independence locked. **Done.**
+   - Production `CommandRouter` code does not call `DaemonApp::handle_local_request` and has no generic normal/background compatibility fallback.
+   - Named cold compatibility branches remain explicit while moving them behind service-owned stores one at a time.
+   - Exit check: `rg "handle_local_request\\(" apps/kernel/src/runtime/router.rs` returns no matches, and every production router arm is explicit.
+
+3. Move actor workers off the compatibility mutation container by direct replacement. **Done.**
+   - Replace `CompatibilityRuntimeState::with_app_mut` mutation in `SessionRuntime`, `AgentRuntime`, and `WorkflowRuntime` with injected service handles and runtime-owned stores.
+   - Delete the corresponding app-backed mutation path in the same slice. Do not keep a second compatibility path after the owner path is covered by tests.
+   - Exit check: actor workers do not use `Arc<Mutex<DaemonApp>>`, `CompatibilityRuntimeState::with_app_mut`, or app-backed `Kernel*Service<&mut DaemonApp>` paths for normal command mutation.
+
+4. Split runtime-owned services out of `DaemonApp` by deletion, not preservation. **Done.**
+   - Extract session, agent, prompt, provider process/output, terminal, workflow, relay, capability-context, history, and projection ownership into explicit runtime services.
+   - Make `DaemonApp` bootstrap those services instead of owning mutable command state directly.
+   - Exit check: remaining `Arc<Mutex<DaemonApp>>` uses are bootstrap/shutdown/tests only, not command admission, command mutation, projection refresh, provider output, workflow progression, or runtime tools.
+
+5. Delete remaining facade-shaped compatibility handlers. **Done.**
+   - The catch-all local request dispatcher is gone; what remains is narrower handler debt where router/runtime branches still use app-backed stores or app-level provider/session/capability helpers.
+   - Move each remaining helper behind its owning service/runtime and remove the old app helper name once there is a single authority for that mutation.
+   - Run the full daemon suite plus multi-agent and workflow live drills before declaring the compatibility-facade milestone complete.
+   - Exit check: `rg "handle_.*_request|handle_local_request|with_app_mut|Arc<Mutex<DaemonApp>>" apps/kernel/src/app.rs apps/kernel/src/local apps/kernel/src/runtime apps/kernel/src/scheduler apps/kernel/src/transport` shows no production command/runtime ownership path through the app facade.
+
+The seven ownership points and the M4.5 dead-code purge are closed. Managed artifact I/O is owned by M4.6, not M4.5.
+
+## Non-Goals
+
+- Do not rewrite provider adapters for every provider family.
+- Do not make relay a workspace authority.
+- Do not introduce a generic agent endpoint transport before the OpenCode-first path is stable.
+- Do not move workflow mailboxing into the interactive control subsystem.
+- Do not require daemon restart recovery beyond the persistence guarantees that already exist, unless this plan explicitly adds a persisted store in a later slice.
+
+## Terminology
+
+Use these terms consistently:
+
+- `InteractiveCommandLane`: the priority kernel lane for user-visible operations that must remain responsive, including prompt submit, cancel, focus, attach, detach, resize, and subscription resume.
+- `ControlService`: the provider/runtime control subsystem described in `docs/CONTROL_CHANNEL_PLAN.md`, including provider-run cancellation/interrupt, workflow runtime tools, attachment, memory update, and compaction operations.
+- `EventLog`: the ordered stream of kernel facts used for live replay, projection updates, client reconciliation, and later relay resume.
+- `ProjectionStore`: materialized read models derived from actor state and kernel events.
+
+Do not call the `InteractiveCommandLane` the "control lane." That name is reserved for provider/runtime control operations.
+
+## Kernel Command Contract
+
+Every mutating request that enters the kernel should be normalized to a `KernelCommand`.
+
+Minimum envelope:
+
+```text
+KernelCommand
+  command_id: string
+  command_type: string
+  submitted_at_ms: u64
+  source: local_cli | local_ipc | relay_client | relay_peer | daemon_background
+  session_id?: string
+  attachment_id?: string
+  agent_id?: string
+  provider_run_id?: string
+  workflow_run_id?: string
+  node_run_id?: string
+  idempotency_key?: string
+  causation_id?: string
+  correlation_id: string
+  priority: interactive | normal | background
+  payload: object
+```
+
+Rules:
+
+- `command_id` is stable for one submitted command and is echoed in accepted/rejected/completed events.
+- `correlation_id` groups all work caused by one user action, workflow trigger, or relay request.
+- `causation_id` points to the command or event that directly caused this command.
+- Duplicate `command_id` handling must be idempotent for commands that may be retried by reconnecting clients.
+- Commands validate before actor dispatch. Invalid commands emit or return a structured rejection and must not partially mutate state.
+
+First commands to migrate:
+
+1. `prompt.submit`
+2. `prompt.cancel`
+3. `agent.focus`
+4. `terminal.resize`
+5. `session.attach`
+6. `session.detach`
+7. `event.subscribe`
+8. `event.resume`
+
+These are the responsiveness-critical path.
+
+## Kernel Event Contract
+
+Every runtime fact that clients, projections, replay, or relay resume need should be represented as a `KernelEvent`.
+
+Minimum envelope:
+
+```text
+KernelEvent
+  event_id: u64
+  stream_id: string
+  stream_seq: u64
+  event_type: string
+  recorded_at_ms: u64
+  command_id?: string
+  causation_id?: string
+  correlation_id: string
+  session_id?: string
+  attachment_id?: string
+  agent_id?: string
+  provider_run_id?: string
+  workflow_run_id?: string
+  node_run_id?: string
+  payload: object
+```
+
+Rules:
+
+- `event_id` is daemon-local and monotonically increasing within one daemon process.
+- `stream_id` scopes replay. Use `session:<session_id>` for session events and `daemon` for daemon-wide status events.
+- `stream_seq` is monotonic within one `stream_id`.
+- Events must be append-only. Corrections are new events, not in-place mutation.
+- Projections record the last applied `event_id` and `stream_seq`.
+- Client reconciliation keys are `command_id`, `event_id`, `agent_id`, and prompt text where prompt echo compatibility is still needed.
+
+M4.5 replay policy:
+
+- The first slice may keep the event log in memory, but the buffer must be modeled as an `EventLog` service rather than transport-local storage.
+- Replay windows must be explicit per stream.
+- If a client resumes from a cursor older than the retained replay window, the kernel must return a replay-gap response and send a fresh projection snapshot.
+- The docs and wire types must not call events durable until they survive daemon restart.
+
+Durable replay policy, later slice:
+
+- Persist event streams or persist enough projection checkpoints plus tail events to reconstruct client state after daemon restart.
+- The relay milestone may depend on live reconnect/replay, but must not assume daemon-restart durability unless that slice has landed.
+
+## Projection Store
+
+Clients should read projections for boot, refresh, inspection, and reconnect recovery. Events keep those projections fresh.
+
+Minimum projections:
+
+| Projection | Scope | Required Fields |
+|------------|-------|-----------------|
+| `SessionListProjection` | daemon | sessions, aliases, status, focused agent summary, last activity, last applied event id |
+| `SessionSnapshotProjection` | session | session metadata, attachments, focused agent, prompt states, compatibility active prompt/run fields, config state |
+| `AgentRuntimeProjection` | session + agent | agent metadata, provider run binding, prompt work state, liveness, activity label, queue depth |
+| `TranscriptPageProjection` | session + agent | cursor, ordered transcript entries, merge keys, source provider run ids |
+| `WorkflowInspectionProjection` | session + workflow/run | definitions, endpoints, run status, node states, mailbox/handoff summaries, failure/audit state |
+| `ProviderLedgerProjection` | daemon/session | provider processes, provider runs, pid/endpoint mode, owner run ids, teardown state |
+| `DaemonHealthProjection` | daemon | active requests, actor queue depths, background jobs, slow consumers, provider discovery state, relay state |
+
+Projection rules:
+
+- Every projection includes `projection_version`, `last_event_id`, and `generated_at_ms`.
+- Projection reads must not require whole-session refreshes on the interactive path.
+- A command response may include an updated projection when that avoids a round trip, but the event stream remains the reconciliation path.
+- Optimistic CLI state is allowed only when it can be reconciled by `command_id` or by a matching event/projection version.
+
+## Actor Ownership Matrix
+
+| Operation or State | Owner | Notes |
+|--------------------|-------|-------|
+| session lifecycle, attachments, focused agent | `SessionActor` | Focus changes must not mutate provider-run liveness in multi-agent sessions. |
+| prompt queues and prompt state | `AgentActor` for agent-scoped work, coordinated by `SessionActor` | Session-global active/queued fields are compatibility projections. |
+| provider process/run integration | `ProviderRunActor` | Normalizes OpenCode/Codex/native provider events into kernel events. |
+| terminal output fanout | `AgentActor` + transport gateway | Fanout must not block provider event ingestion. |
+| workflow run progression | `WorkflowRunActor` | Owns mailbox delivery, barriers, node activation, failure state, watchdog interaction. |
+| capability jobs | `CapabilityExecutor` | Bounded queues. Reports progress/results through events. |
+| coarse worktree claims | `WorkspaceCoordinator` | Enforces visible collision prevention before file-writing capability/provider/workflow dispatch work; M4.6 workspace live sync owns provider-session artifact writes. |
+| relay connection state | `RelayRuntime` | Owns registration, remote subscriptions, and relay I/O without becoming workspace authority. |
+| provider catalogs/history scans/health reads | background executors + projections | Never run on the interactive command lane. |
+
+## Interactive Command Lane
+
+The `InteractiveCommandLane` handles operations where the user expects immediate feedback.
+
+Interactive commands:
+
+- prompt submit
+- prompt cancel
+- focus/cycle
+- terminal resize
+- session attach/detach
+- event subscribe/resume
+- session delete acknowledgement, before teardown continues in background
+
+Policy:
+
+- Interactive commands use bounded queues with a small, explicit limit.
+- If the lane is full, reject new commands with a retryable overload error rather than waiting behind background work.
+- Background jobs must not hold actor access needed by interactive commands while doing I/O.
+- Cancellation should preempt normal prompt work for the same agent where provider semantics allow it.
+- Resize and focus commands may coalesce; prompt submit and cancel must not.
+
+## Backpressure and Slow Consumers
+
+Required policies:
+
+- Each subscription has an outbound queue limit.
+- A slow subscriber is disconnected with a structured retryable reason.
+- Disconnecting one subscriber must not block provider output ingestion or other subscribers.
+- Recent-event retention is per stream and bounded.
+- A replay gap triggers projection resync, not silent success.
+- Background executors have separate queue limits and health projection counters.
+
+## Worktree and Collision Coordination
+
+M4.5 introduces the runtime boundary for workspace coordination. Workspace Live Sync managed mode builds on it for Chariox-managed provider sessions.
+
+The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Chariox can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Workspace Live Sync managed mode is the conflict-control architecture for supported Chariox-launched provider sessions; independent external processes remain outside that guarantee.
+
+Minimum `WorkspaceCoordinator` responsibilities:
+
+- allocate or validate `WorktreeAssignment`
+- track active worktree claims now and leave port scopes for future coordination work
+- reject concurrent code-writing work in the same active worktree when claims conflict
+- expose claim state in `DaemonHealthProjection` or a dedicated coordination projection
+- release stale claims on provider-run settlement, cancellation, session delete, or explicit recovery
+
+Current implementation:
+
+- active session/worktree collisions are visible in `DaemonHealthProjection`
+- explicit file-writing capability operations acquire scoped worktree write claims and reject overlapping writes in the same workspace/worktree
+- active local provider prompts do not acquire whole-worktree claims; explicit write capabilities and workflow node dispatch remain claim-coordinated
+- workflow node dispatch is claim-aware scheduler work: busy worktrees move nodes to `BlockedOnWorkspaceClaim`, preserve the prepared turn prompt, and retry after claim release
+- claims carry explicit `read`/`write` mode metadata; current filesystem-mutating operations and provider/workflow prompt execution use write claims
+- active operation claims are visible in `DaemonHealthProjection`
+- file capability claims are released by scoped guards when the capability operation completes; workflow-node claims are held by the prompt lifecycle until the workflow prompt settles
+
+Closed by M4.6:
+
+- final workspace live sync coordination model for Chariox-managed provider sessions
+- enforced mutation control for supported providers through provider permission gates and Chariox-owned MCP/runtime tools
+- fine-grained text conflict detection plus opaque whole-file locking for non-text artifacts
+- local and remote workspace live sync coordination for matching repo/branch workspaces
+
+Still open beyond M4.6:
+
+- port claim scopes
+- a user-facing command to intentionally relax/disable workspace live sync in a future unsafe/uncoordinated mode
+- type-specific non-text artifact region models beyond v1 opaque whole-file locking
+
+Rules:
+
+- Workflow node dispatch consults the coordinator before starting a code-writing node.
+- Capability jobs that mutate files consult the coordinator.
+- Provider-run placement records the assigned worktree in runtime state.
+- Shared-session worktree mode remains allowed for single-agent or explicitly serialized work.
+- Same-worktree independent sessions must remain a product-supported collaboration mode. Provider prompts are intentionally not whole-worktree claims; deeper I/O policy needs a separate design review.
+- Keep worktree claims coarse. Use M4.6 workspace live sync for provider-session artifact writes, and treat port-level enforcement as future coordination work.
+
+## Migration Plan
+
+### Phase 0. Contract Freeze
+
+- Add `KernelCommand` and `KernelEvent` Rust types behind conversion adapters.
+- Add `command_id`, `correlation_id`, and optional `causation_id` to WebSocket request handling.
+- Keep existing `LocalDaemonRequest` shapes externally while normalizing internally.
+
+### Phase 1. EventLog Service
+
+- Move recent-event storage out of `runtime_transport.rs` into an `EventLog` service.
+- Add stream ids, per-stream sequence ids, replay-window metadata, and replay-gap responses.
+- Keep current WebSocket event frames compatible.
+
+### Phase 2. ProjectionStore Skeleton
+
+- Introduce projection structs for session snapshot, agent runtime, transcript page, workflow inspection, provider ledger, and health.
+- Populate projections from existing `DaemonApp` state first.
+- Add projection version and last-applied event metadata.
+
+### Phase 3. CommandRouter Facade
+
+- Route the first migrated commands through `CommandRouter`.
+- The router may call existing `DaemonApp` methods during this phase, but request handlers no longer decide mutation ownership directly.
+- Command accept/reject events must be emitted consistently.
+
+### Phase 4. SessionActor and AgentActor
+
+- Move session lifecycle/focus/attachment ownership into `SessionActor`.
+- Keep `PromptStateOwner` as the prompt lifecycle authority, continue moving prompt side effects behind `AgentRuntime`, and move provider-run binding out of compatibility session fields.
+- Preserve the multi-agent invariant that focus does not park/resume/terminate another live run.
+
+Current status: Phase 4 migration slices are complete for the M4.5 boundary. Public session creation/default-agent bootstrap and session lifecycle/focus/resize/end/delete behavior are consolidated behind `KernelSessionService`, and prompt submit/cancel/complete/queue-advance behavior is consolidated behind `KernelAgentService`. `SessionRuntime` and `AgentRuntime` provide bounded session/per-agent mailboxes for responsiveness-critical command admission, session mailboxes are deregistered after successful end/delete, focused-agent routing is projection-backed, queue-front previews are read from `PromptStateOwner` or the shared agent-runtime projection, and provider/background settlement paths route through the kernel prompt lifecycle service instead of directly mutating prompt queues. `PromptStateOwner` is now the shared write owner for per-agent active/queued prompt state; `PromptRuntimeState` remains the flattened compatibility mirror in `session/prompt_runtime.rs`.
+
+### Phase 5. ProviderRunActor and Output Fanout
+
+- Move provider event ingestion and provider-run liveness into `ProviderRunActor`.
+- Make output fanout asynchronous and bounded.
+- Ensure provider output can continue while a client is slow or disconnected.
+
+Current status: Phase 5 is complete for the M4.5 boundary. Provider-run structured submit/abort/poll commands enter bounded per-run actor mailboxes, runtime-slot tombstones prevent stale runtime restoration after cleanup, finished structured output jobs are drained globally on each pump, terminal fanout is bounded per recipient, and daemon health exposes both provider-run actor enqueue pressure and terminal stream backlog pressure. Provider-run liveness reconciliation is now a provider-runtime boundary concern, while prompt settlement remains intentionally delegated to the kernel prompt lifecycle service so queue advancement still follows the agent-runtime projection path.
+
+Provider-run worker decision: keep the current thread-per-provider-run mailbox worker for M4.5. This is intentionally conservative because Codex/OpenCode runtime calls can block and own non-`Send`/process-local state; moving to bounded Tokio workers would require auditing every provider runtime operation for async cancellation, blocking behavior, and runtime-state ownership. The professionalization requirement for M4.5 is bounded admission, health visibility, cleanup correctness, and tests around multi-run output fairness. A Tokio worker pool remains a post-M4.5 optimization only after provider runtime calls are wrapped behind explicit blocking boundaries.
+
+### Phase 6. WorkflowRunActor and CapabilityExecutor
+
+- Move workflow run progression out of shared app mutation and into `WorkflowRunActor`.
+- Move file/tree/screenshot/shell/MCP capability jobs behind `CapabilityExecutor`.
+- Connect capability progress/results to events and projections.
+
+Current status: Phase 6 is complete for the M4.5 boundary. Workflow commands are admitted through bounded per-session `WorkflowRuntime` lanes and publish session/agent-runtime projections from the lane worker after compatibility mutation. Capability jobs execute behind `CapabilityExecutor`; health reports executor job pressure and the executor enforces a bounded concurrency limit with explicit overload rejections. Workflow prompt start/completion/cancellation, workflow provider-run ensure, workflow resume, workflow-console runtime tools, and blocked-claim retry callers now enter through app workflow-runtime methods instead of calling scheduler progression directly. The scheduler implementation still mutates compatibility session state internally; removing that compatibility store is part of Phase 8 hot-path ownership, not an additional Phase 6 gate.
+
+### Phase 7. WorkspaceCoordinator and RelayRuntime
+
+- Add coarse worktree claim enforcement as a kernel-owned boundary for visible mutating work.
+- Keep port claims and post-v1 artifact-specific region models outside M4.5; M4.6 owns managed provider-session artifact writes.
+- Move relay registration, remote subscriptions, and relay background I/O behind `RelayRuntime`.
+- Validate that relay remains a transport/runtime member, not a workspace authority.
+
+### Phase 8. Remove Hot-Path `DaemonApp` Mutex
+
+- Block new hot-path handlers from taking `Arc<Mutex<DaemonApp>>`.
+- Keep `DaemonApp` only as bootstrap/test compatibility until callers are migrated.
+- Keep the deleted catch-all local request facade from returning; continue shrinking app-backed helper seams into runtime-owned services.
+
+Current status: Phase 8 is in progress. Warmed prompt submit/cancel/complete routing, target validation, and missing-session rejection, prompt lifecycle mutation ownership, prompt-completion consumption of lifecycle-published projections, prompt-submit user-history append deferral, cloneable prompt id allocation, narrow agent prompt command service seam, split prompt submit/cancel/complete admission and effect preparation, isolated prompt command phase module, remote relay prompt dispatch deferral, relay-client daemon/workflow request routing through `CommandRouter`, session read/resolve/inspection/history paths, delete/detach lane resolution, direct session-lane absence rejection, attachment-scoped lane validation, workflow-lane missing-session rejection, explicit session/agent/workflow request handling through their runtime boundaries, closure and removal of the legacy generic interactive fallback, exhaustive normal/background router dispatch without `execute_local_request_with_async_boundaries`, session-scoped agent lifecycle routing through `SessionRuntime`, session attach/focus/cycle/alias/end absence validation, session response-borne projection refresh/removal, provider-process teardown projection refresh, async provider-launch session projection refresh, provider launch executor seam with isolated `ProviderLaunchStore`, daemon health terminal pressure and projection-invariant drift reporting, relay status/discovery reads, provider catalog/command catalog reads, settled provider-launch guards, non-blocking cold provider-launch cleanup, agent lifecycle refresh, session config/alias updates, the dedicated SessionRuntimeCommandExecutor seam with named `SessionRuntimeStore` execution for session commands and no generic session service request facade, the dedicated WorkflowRuntimeCommandExecutor seam with no generic workflow store request method, deleted generic `KernelAgentService::execute_request` facade, projected session-config attachment validation, runtime notice polling through the terminal store and warmed session projection, terminal output store boundary for compatibility-backed provider-output pumping, capability runtime store boundary for compatibility-backed capability context lookup, terminal output absence/no-active-run/inactive-run projection draining, terminal resize absence handling, active-run provider-lane pumping, provider liveness projection refresh from the provider pump, the provider output pump seam, terminal output executor seam, workflow response-borne projection refresh, workflow runtime-tool projection refresh, and router-side focus refresh now prefer actor/runtime/session/config projections and avoid compatibility app-lock fallback in the covered success and absence cases. Session command logic now uses named store methods instead of a generic service request facade, and session-scoped agent spawn/destroy no longer re-enters the generic agent service facade; agent prompt commands now enter through the prompt command service while workflow command logic dispatches to named `WorkflowRuntimeStore` methods behind the workflow store operation boundary, and workflow command mutations now live in `KernelWorkflowService`; the session worker uses a narrow `SessionRuntimeStore` fallback boundary, the agent worker uses a matching `AgentRuntimeStore` fallback/service boundary plus an explicit prompt command executor, and the workflow worker uses a named `WorkflowRuntimeStore` operation boundary until prompt/session/provider/workflow ownership is split out. Post-slice multi-agent and workflow live drills passed on 2026-04-14. The remaining Phase 8 work is compatibility-facade debt beyond the deleted catch-all dispatcher: command workers still use `DaemonApp` as the mutation mirror, and named provider/capability/runtime side-effect paths still use compatibility state until their runtime-owned stores are separated. Do not reintroduce a catch-all local request facade while doing that ownership flip.
+
+## Required Tests and Drills
+
+Unit and integration tests:
+
+- duplicate `command_id` is idempotent
+- invalid commands reject without mutation
+- command ordering is preserved within one agent
+- prompt submit and cancel do not wait behind history reads
+- focus changes do not disturb another agent's live provider run
+- provider output fanout does not block provider ingestion
+- projection `last_event_id` advances with applied events
+- replay from retained cursor returns missing events
+- replay from expired cursor returns replay gap plus fresh projection
+- slow subscriber disconnects without blocking other subscribers
+- background capability queue applies backpressure
+- worktree collision rejects concurrent code-writing claims
+
+Live drills:
+
+- slow `GetSessionHistory` while prompt submit still acknowledges immediately
+- provider catalog discovery hangs while focus/cancel/resize still work
+- one subscriber stops reading while another keeps streaming output
+- reconnect during active streaming catches up without duplicate transcript lines
+- reconnect after replay gap triggers projection resync
+- multi-agent focus cycling while both agents are working preserves both liveness states
+- workflow node dispatch refuses conflicting worktree claims
+- relay background disconnect does not affect local session commands
+
+## Exit Criteria
+
+- Interactive commands do not wait behind history reads, capability jobs, provider discovery, provider output fanout, relay background work, or slow subscribers.
+- The CLI can boot from projections and reconcile pushed events without synchronous whole-session refreshes on the hot path.
+- Event replay has explicit retained-window and replay-gap behavior.
+- Actor ownership is enforced by APIs, not convention.
+- Worktree/collision coordination exists as a kernel-owned boundary.
+- `Arc<Mutex<DaemonApp>>` is gone from hot request paths.
+- Relay can build on the same command/event/projection model without becoming workspace authority.

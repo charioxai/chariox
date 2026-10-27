@@ -1,0 +1,15 @@
+{
+  "input": {
+    "id": "tool-bash-1",
+    "tool": "bash",
+    "status": "completed",
+    "input": {
+      "command": "git status --short"
+    },
+    "output": " M src/app.ts\n"
+  },
+  "expect": {
+    "summary": "$ git status --short",
+    "blocks": ["code", "code"]
+  }
+}

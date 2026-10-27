@@ -1,0 +1,322 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+  RuntimeSession,
+  WorkflowRun,
+} from "./cli-types.js"
+import { createKernelSessionSnapshotController } from "./kernel-session-snapshot-controller.js"
+
+test("kernel session snapshot refreshes changed provider run and panes after turn completion", async () => {
+  const nextRun = providerRun("run-2")
+  const harness = createHarness({
+    session: session({
+      prompt_states: {
+        "agent-1": {
+          active_prompt: activePrompt(),
+          queued_prompts: [],
+        },
+      },
+    }),
+    providerRun: providerRun("run-1"),
+    shouldRefreshAgentPanesForSessionChange: () => false,
+  })
+
+  await harness.controller.apply(session(), nextRun)
+
+  assert.equal(harness.providerRun?.id, "run-2")
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "providerDebug:kernel event refreshed provider run:run-2:run-1",
+    "setProviderRun:run-2",
+    "updateSessionChrome",
+    "refreshAgentPanes:session-1",
+  ])
+})
+
+test("kernel session snapshot detects turn completion from projected prompt states", async () => {
+  const harness = createHarness({
+    session: session({
+      agents: [agent()],
+      active_prompt: {
+        ...activePrompt(),
+        id: "prompt-stale",
+        target_agent_id: "agent-1",
+      },
+      prompt_states: {
+        "agent-1": {
+          active_prompt: {
+            ...activePrompt(),
+            target_agent_id: "agent-1",
+          },
+          queued_prompts: [],
+        },
+      },
+    }),
+    shouldRefreshAgentPanesForSessionChange: () => false,
+  })
+
+  await harness.controller.apply(session({
+    agents: [agent()],
+    active_prompt: {
+      ...activePrompt(),
+      id: "prompt-stale",
+      target_agent_id: "agent-1",
+    },
+    prompt_states: {},
+  }), null)
+
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "refreshAgentPanes:session-1",
+  ])
+})
+
+test("kernel session snapshot clears missing provider run and recovers polling transport", async () => {
+  const harness = createHarness({
+    providerRun: providerRun("run-1"),
+    supportsKernelEventStream: false,
+  })
+
+  await harness.controller.apply(session({
+    prompt_states: {
+      "agent-1": {
+        active_prompt: activePrompt(),
+        queued_prompts: [],
+      },
+    },
+  }), null)
+
+  assert.equal(harness.providerRun, null)
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "providerDebug:kernel event cleared provider run:run-1:",
+    "setProviderRun:null",
+    "updateSessionChrome",
+    "recoverProviderRun:missing active provider run",
+  ])
+})
+
+test("kernel session snapshot does not recover missing provider run for queued-only prompts", async () => {
+  const harness = createHarness({
+    providerRun: providerRun("run-1"),
+    supportsKernelEventStream: false,
+  })
+
+  await harness.controller.apply(session({
+    agents: [agent()],
+    prompt_states: {
+      "agent-1": {
+        active_prompt: null,
+        queued_prompts: [{
+          ...activePrompt(),
+          id: "queued-1",
+          status: "Queued",
+        }],
+      },
+    },
+  }), null)
+
+  assert.equal(harness.providerRun, null)
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "providerDebug:kernel event cleared provider run:run-1:",
+    "setProviderRun:null",
+    "updateSessionChrome",
+  ])
+})
+
+test("kernel session snapshot refreshes panes when session shape changes", async () => {
+  const harness = createHarness({
+    shouldRefreshAgentPanesForSessionChange: () => true,
+  })
+
+  await harness.controller.apply(session(), null)
+
+  assert.deepEqual(harness.calls, [
+    "applySessionState:session-1",
+    "refreshAgentPanes:session-1",
+  ])
+})
+
+test("kernel session snapshot preserves an observed terminal workflow run", async () => {
+  const harness = createHarness({
+    session: session({
+      workflow_runs: [workflowRun("completed", "Completed"), workflowRun("active", "Running")],
+    }),
+  })
+
+  await harness.controller.apply(session({
+    workflow_runs: [workflowRun("active", "Running")],
+  }), null)
+
+  assert.deepEqual(harness.session.workflow_runs?.map((run) => run.id), ["active", "completed"])
+})
+
+test("kernel session snapshot does not resurrect an omitted non-terminal workflow run", async () => {
+  const harness = createHarness({
+    session: session({ workflow_runs: [workflowRun("stale-active", "Running")] }),
+  })
+
+  await harness.controller.apply(session({ workflow_runs: [] }), null)
+
+  assert.deepEqual(harness.session.workflow_runs, [])
+})
+
+test("kernel session snapshot uses its own terminal run without duplication", async () => {
+  const harness = createHarness({
+    session: session({ workflow_runs: [workflowRun("completed", "Completed")] }),
+  })
+
+  await harness.controller.apply(session({
+    workflow_runs: [workflowRun("completed", "Completed", { completed_at_ms: 20 })],
+  }), null)
+
+  assert.equal(harness.session.workflow_runs?.length, 1)
+  assert.equal(harness.session.workflow_runs?.[0]?.completed_at_ms, 20)
+})
+
+function createHarness(options: {
+  session?: RuntimeSession
+  providerRun?: RuntimeProviderRun | null
+  supportsKernelEventStream?: boolean
+  shouldRefreshAgentPanesForSessionChange?: (session: RuntimeSession) => boolean
+} = {}) {
+  const calls: string[] = []
+  const harness = {
+    calls,
+    session: options.session ?? session(),
+    providerRun: options.providerRun ?? null,
+    controller: null as ReturnType<typeof createKernelSessionSnapshotController> | null,
+  }
+  harness.controller = createKernelSessionSnapshotController({
+    getSession: () => harness.session,
+    getProviderRun: () => harness.providerRun,
+    projectSession: (nextSession) => nextSession,
+    shouldRefreshAgentPanesForSessionChange: options.shouldRefreshAgentPanesForSessionChange ?? (() => false),
+    applySessionState: (nextSession) => {
+      calls.push(`applySessionState:${nextSession.id}`)
+      harness.session = nextSession
+    },
+    sameProviderRun: (left, right) => left.id === right.id,
+    logProviderRunDebug: (message, run, fields) => {
+      calls.push(`providerDebug:${message}:${run?.id ?? "null"}:${fields?.previous_provider_run_id ?? ""}`)
+    },
+    setProviderRun: (run) => {
+      calls.push(`setProviderRun:${run?.id ?? "null"}`)
+      harness.providerRun = run
+    },
+    updateSessionChrome: () => {
+      calls.push("updateSessionChrome")
+    },
+    supportsKernelEventStream: () => options.supportsKernelEventStream ?? true,
+    recoverProviderRun: (reason) => {
+      calls.push(`recoverProviderRun:${reason}`)
+    },
+    refreshAgentPanes: async (nextSession) => {
+      calls.push(`refreshAgentPanes:${nextSession.id}`)
+    },
+  })
+  return harness as typeof harness & {
+    controller: ReturnType<typeof createKernelSessionSnapshotController>
+  }
+}
+
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    project_id: "project-default",
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    status: "Created",
+    active_provider_run_id: null,
+    attachment_ids: [],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: null,
+    max_agents: 1,
+    agents: [agent()],
+    config_state: { values: {} } as RuntimeSession["config_state"],
+    ...overrides,
+  }
+}
+
+function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "model",
+    effort: null,
+    worktree_id: "/workspace",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 1,
+    last_activity_at_ms: 1,
+    ...overrides,
+  }
+}
+
+function activePrompt() {
+  return {
+    id: "prompt-1",
+    source_attachment_id: "attachment-1",
+    target_agent_id: "agent-1",
+    prompt: "build",
+    status: "running",
+  }
+}
+
+function workflowRun(
+  id: string,
+  status: WorkflowRun["status"],
+  overrides: Partial<WorkflowRun> = {},
+): WorkflowRun {
+  return {
+    id,
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    entry_node_id: "node-1",
+    status,
+    invocation_prompt: null,
+    active_node_run_id: null,
+    node_runs: [],
+    messages: [],
+    created_at_ms: 10,
+    started_at_ms: null,
+    completed_at_ms: status === "Running" ? null : 11,
+    ...overrides,
+  }
+}
+
+function providerRun(id: string): RuntimeProviderRun {
+  return {
+    id,
+    session_id: "session-1",
+    agent_instance_id: null,
+    adapter_key: "opencode",
+    provider: "opencode",
+    account_profile: "default",
+    model: "model",
+    variant: null,
+    usage_tokens_total: null,
+    state: "running",
+  }
+}
+
+test("MP-08 / MP-10 / MP-11 G03 ignores a late snapshot from the previously selected room", async () => {
+  const harness = createHarness({session: session({id: "session-2"}), providerRun: providerRun("run-2")})
+  await harness.controller.apply(session(), providerRun("run-1"))
+  assert.equal(harness.session.id, "session-2")
+  assert.equal(harness.providerRun?.id, "run-2")
+  assert.deepEqual(harness.calls, [])
+})

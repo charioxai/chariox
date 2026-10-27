@@ -1,0 +1,805 @@
+pub(crate) use account_credential::provider_account_credential_uses_vault;
+use std::time::Duration;
+
+mod utility_admission;
+pub(crate) use utility_admission::ProviderUtilityAdmission;
+mod account_credential;
+mod claude;
+mod claude_runtime;
+pub(crate) use claude_runtime::usage::{
+    claude_status_line_context_usage, claude_status_line_usage_snapshot,
+};
+mod account_handoff;
+mod codex;
+mod codex_client;
+mod codex_runtime;
+mod command_catalog;
+mod credential_environment;
+#[cfg(test)]
+pub(crate) use credential_environment::{
+    record_provider_credential_delivery_for_test, take_provider_lifecycle_failure_for_test,
+    ProviderCredentialDeliveryProbe, ProviderLifecycleFailureInjection,
+    ProviderLifecycleFailureStage,
+};
+mod executable_resolution;
+mod external_observation;
+pub(crate) use account_handoff::encode_account_handoff;
+mod launch_contract;
+mod managed_isolation;
+mod mcp_proxy;
+mod opencode;
+mod opencode_binding;
+mod opencode_client;
+mod opencode_runtime;
+pub(crate) mod output_ready;
+mod process_info;
+mod prompt_signals;
+mod public_run;
+mod registry;
+pub(crate) mod renewal_failure;
+mod reported_transcript_file;
+mod run_actor;
+mod runtime_run;
+pub use public_run::PublicProviderRun;
+mod service;
+pub(crate) mod startup_diagnostic;
+mod termination;
+mod types;
+mod workspace_live_sync_policy;
+mod workspace_write_fence;
+
+pub(crate) use account_credential::{
+    launch_uses_vault_credential, provider_account_credential_id,
+    provider_account_credential_registered, resolve_provider_account_credentials,
+    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
+    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
+};
+pub(crate) use claude::claude_provider_catalog_with_environment;
+pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
+
+/// Names the launching kernel's pid in every process it starts for a provider run, and so in the
+/// tool processes that run starts. A restored kernel ends those of a kernel that is gone.
+pub(crate) const PROVIDER_OWNER_PID_ENV: &str = "CHARIOX_PROVIDER_OWNER_PID";
+pub(crate) use claude::{
+    claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
+    fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
+    CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
+};
+pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
+pub(crate) use claude::{
+    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
+    ClaudeCredentialCheckError,
+};
+#[cfg(test)]
+pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
+pub(crate) use claude_runtime::ClaudeRuntimeState;
+pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
+#[cfg(test)]
+pub(crate) use claude_runtime::{
+    drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
+};
+pub use codex::{
+    codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
+};
+pub(crate) use codex::{
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    shutdown_codex_account_endpoints,
+};
+pub use codex_client::{
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
+    CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
+};
+pub use codex_runtime::CodexRuntimeState;
+pub use command_catalog::{
+    default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
+    ProviderCommandCatalogSource, ProviderCommandDescriptor,
+};
+pub(crate) use credential_environment::ProviderCredentialEnvironment;
+pub(crate) use external_observation::{
+    claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
+    normalized_observed_prompt_text, observed_role, text_from_content,
+    ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
+    ObservedExternalProviderTurnRole,
+};
+pub(crate) use launch_contract::TurnSubstitute;
+pub use launch_contract::{
+    canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
+    default_provider_control_capabilities, external_provider_import_model,
+    external_provider_session_providers, normalize_provider_resume_model,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
+    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
+    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
+    RuntimeMcpBinding,
+};
+pub(crate) use managed_isolation::{
+    apply_managed_provider_isolation, command_from_provider_launch,
+    managed_isolated_utility_command, managed_isolated_utility_launch,
+    managed_provider_control_env_remove, managed_provider_isolation_env_remove,
+    managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
+    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
+    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
+};
+#[cfg(test)]
+pub(crate) use managed_isolation::{
+    MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
+};
+pub(crate) use mcp_proxy::{
+    dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
+};
+pub(crate) use opencode::{
+    apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
+    invalidate_opencode_account_endpoint, isolate_opencode_discovery_configuration,
+    shutdown_opencode_account_endpoints, OpenCodeDiscoveryConfigDirectory,
+};
+pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
+pub use opencode_client::{
+    OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
+    OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,
+    OpenCodePart, OpenCodePartTime, OpenCodeProviderCatalog, OpenCodeProviderInfo,
+    OpenCodeProviderModel, OpenCodeProviderModelLimit, OpenCodeSelectedModel,
+    OpenCodeSessionSnapshot, OpenCodeToolState,
+};
+pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
+pub(crate) use prompt_signals::{
+    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
+    classify_provider_terminal_failure_text, claude_native_stop_failure,
+    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
+    PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+};
+pub use prompt_signals::{
+    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+};
+pub use registry::{AgentEndpointAdapter, ProviderRegistry};
+pub(crate) use run_actor::{
+    FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
+    ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
+    ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
+    ProviderRunOperationLanes,
+};
+pub(crate) use runtime_run::{
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+};
+pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
+pub use service::{ProviderProcessService, ProviderProcessServiceStore};
+pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
+pub(crate) use termination::{
+    provider_exit_before_delivery_message, provider_launch_failure_diagnostic,
+    redact_provider_diagnostic, sanitize_provider_diagnostic,
+};
+pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
+pub(crate) use types::provider_workspace_live_sync_mode_for_session;
+pub use types::{
+    AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
+    ProviderClientInterface, ProviderRunState,
+};
+pub(crate) use workspace_live_sync_policy::{
+    native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
+    NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
+};
+
+pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
+    match provider {
+        "default" => "opencode",
+        "claude-headless" | "claude-p" => "claude",
+        value => value,
+    }
+}
+
+pub(crate) fn provider_id_for_launch(provider: &str) -> &str {
+    match provider {
+        "default" => "opencode",
+        value => value,
+    }
+}
+
+pub(crate) fn canonical_provider_family(provider: &str) -> Option<&'static str> {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => Some("codex"),
+        "opencode" => Some("opencode"),
+        "claude" | "claude-headless" | "claude-p" => Some("claude"),
+        _ => None,
+    }
+}
+
+/// First-party harness windows: Codex's effective 258,400-token window and
+/// current Claude Code defaults. Claude `/context` and the official model
+/// configuration docs verify the alias and explicit-ID table below.
+pub(crate) fn model_context_window_tokens(provider: &str, model: &str) -> u64 {
+    match canonical_provider_family(provider) {
+        Some("codex") => 258_400,
+        Some("claude") => {
+            let normalized = model.trim().to_ascii_lowercase();
+            let model = match normalized.split_once('/') {
+                Some((namespace, model))
+                    if canonical_provider_family(namespace) == Some("claude") =>
+                {
+                    model
+                }
+                _ => normalized.as_str(),
+            };
+            // Current first-party Claude Code defaults, verified with `/context`.
+            // Older explicit IDs stay 200k unless extended context is selected.
+            if model.ends_with("[1m]")
+                || matches!(model, "default" | "sonnet" | "opus" | "opusplan" | "fable")
+                || [
+                    "claude-sonnet-5",
+                    "claude-opus-4-7",
+                    "claude-opus-4-8",
+                    "claude-opus-5",
+                    "claude-fable-5",
+                ]
+                .iter()
+                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
+            {
+                1_000_000
+            } else {
+                200_000
+            }
+        }
+        _ => 128_000,
+    }
+}
+
+/// Apply the account's native CLI cap to both the switch guard and its packet.
+pub(crate) fn effective_model_context_window_tokens(
+    provider: &str,
+    model: &str,
+    disable_1m: bool,
+) -> u64 {
+    let window = model_context_window_tokens(provider, model);
+    if disable_1m && canonical_provider_family(provider) == Some("claude") {
+        window.min(200_000)
+    } else {
+        window
+    }
+}
+
+pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
+    run.pty_env()
+        .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
+        .cloned()
+        .or_else(|| {
+            (!run
+                .pty_env_remove()
+                .iter()
+                .any(|key| key == "CLAUDE_CODE_DISABLE_1M_CONTEXT"))
+            .then(|| std::env::var("CLAUDE_CODE_DISABLE_1M_CONTEXT").ok())
+            .flatten()
+        })
+        .as_deref()
+        == Some("1")
+}
+
+pub(crate) fn provider_run_is_claude_headless(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude" && run.provider() == "claude-headless"
+}
+
+pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
+}
+
+/// Claude `-p` runs in Build mode with the `Required` level route tool
+/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// their launch flags say; native TUI runs use the hook instead. Other runs
+/// neither list nor answer it.
+pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "claude"
+        && provider_run_uses_structured_prompt_io(run)
+        && run.execution_mode() == AgentExecutionMode::Build
+        && run.permission_level() == AgentPermissionLevel::Required
+}
+
+pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "codex"
+        || (run.adapter_key() == "claude"
+            && run.client_interface().is_chariox()
+            && !provider_run_uses_claude_native_bridge(run))
+        || run.adapter_key() == "opencode"
+        || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+}
+
+pub(crate) fn provider_run_requires_authoritative_turn_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    ProviderRegistry::new()
+        .resolve(run.adapter_key())
+        .is_some_and(|adapter| adapter.requires_authoritative_turn_completion())
+}
+
+pub(crate) fn provider_run_supports_selection_sync(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "opencode"
+}
+
+pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun) -> bool {
+    provider_run_supports_selection_sync(run) && run.client_interface().is_chariox()
+}
+
+pub(crate) fn provider_run_waits_for_workflow_publication_completion(
+    run: &RuntimeProviderRun,
+) -> bool {
+    matches!(run.adapter_key(), "codex" | "claude")
+}
+
+// A notification handler alone does not guarantee visibility in an active turn.
+// Codex logs changes; OpenCode refreshes asynchronously. Until live immediate
+// turn visibility is verified, both use the official reload/resume fallback.
+pub(crate) fn provider_runtime_catalog_requires_reload(provider: &str) -> bool {
+    provider != "dev-stub"
+}
+
+pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "opencode"
+}
+
+pub(crate) fn provider_adapter_supports_policy_reload(adapter_key: &str) -> bool {
+    matches!(adapter_key, "claude" | "codex" | "opencode")
+}
+
+pub(crate) fn provider_batch_launch_concurrency_limit(
+    adapter_key: &str,
+    provider: &str,
+    default_limit: usize,
+) -> usize {
+    if adapter_key == "dev-stub" || provider == "dev-stub" {
+        return 64;
+    }
+    if matches!(adapter_key, "codex" | "opencode" | "claude" | "claude-code")
+        || matches!(provider, "codex" | "opencode" | "claude" | "claude-code")
+    {
+        return 16;
+    }
+    default_limit
+}
+
+pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
+    retain_public_inventory_providers_with_dev_stub_policy(
+        providers,
+        dev_stub_public_inventory_enabled(),
+    );
+}
+
+pub(crate) fn dev_stub_public_inventory_enabled() -> bool {
+    std::env::var("CHARIOX_PROVIDER_DEV_STUB")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+}
+
+fn retain_public_inventory_providers_with_dev_stub_policy(
+    providers: &mut Vec<String>,
+    include_dev_stub: bool,
+) {
+    if !include_dev_stub {
+        providers.retain(|provider| provider != "dev-stub");
+    }
+}
+
+pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> bool {
+    provider_adapter_supports_policy_reload(run.adapter_key())
+}
+
+pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
+    run: &RuntimeProviderRun,
+) -> bool {
+    run.adapter_key() == "claude" && run.client_interface().is_chariox()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderUtilityExecutionPolicy {
+    ExistingRun,
+    ReadOnlyDiscovery,
+    /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
+    MetadataOnlyDiscovery,
+    /// A provider command on the run's own session, such as Claude's
+    /// `/compact`: sent bare, and it answers with no assistant text.
+    SessionCommand,
+}
+
+impl ProviderUtilityExecutionPolicy {
+    pub(crate) fn is_metadata_only(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery)
+    }
+
+    pub(crate) fn is_read_only_discovery(self) -> bool {
+        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+    }
+
+    /// The prompt goes out as given, without the kernel's turn context.
+    pub(crate) fn sends_bare_prompt(self) -> bool {
+        matches!(self, Self::MetadataOnlyDiscovery | Self::SessionCommand)
+    }
+}
+
+pub(crate) fn run_blocking_provider_utility_prompt(
+    run: &RuntimeProviderRun,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+) -> Result<String, crate::error::DaemonError> {
+    run_blocking_provider_utility_prompt_with_admission(
+        run,
+        visible_user_prompt,
+        hidden_system_context,
+        timeout,
+        operation,
+        policy,
+        None,
+    )
+}
+
+pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
+    run: &RuntimeProviderRun,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    admission: Option<ProviderUtilityAdmission>,
+) -> Result<String, crate::error::DaemonError> {
+    match run.adapter_key() {
+        "codex" => match admission {
+            Some(admission) => codex_runtime::run_codex_utility_prompt_with_admission(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+                Some(admission),
+            ),
+            None => codex_runtime::run_codex_utility_prompt(
+                run,
+                visible_user_prompt,
+                hidden_system_context,
+                timeout,
+                policy,
+            ),
+        },
+        "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
+            operation,
+            message: "protected utility submission is unavailable for the OpenCode adapter".into(),
+        }),
+        "opencode" => opencode_binding::run_opencode_utility_prompt(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+        ),
+        adapter_key => Err(crate::error::DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "agent utility prompts are not supported for provider adapter `{adapter_key}`"
+            ),
+        }),
+    }
+}
+#[cfg(test)]
+pub(crate) use opencode_binding::permission_tests::assert_archived_opencode_resume_contract;
+pub(crate) use workspace_write_fence::{
+    apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
+    workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        adapter_key_for_provider, canonical_provider_family,
+        provider_adapter_supports_policy_reload, provider_batch_launch_concurrency_limit,
+        provider_id_for_launch, provider_run_is_claude_headless,
+        provider_run_refreshes_selection_on_read,
+        provider_run_reuses_run_for_mcp_continuation_reload, provider_run_supports_policy_reload,
+        provider_run_supports_selection_sync, provider_run_uses_claude_native_bridge,
+        provider_run_uses_runtime_structured_utility_prompt,
+        provider_run_waits_for_workflow_publication_completion, retain_public_inventory_providers,
+        retain_public_inventory_providers_with_dev_stub_policy,
+        run_blocking_provider_utility_prompt, AgentEndpointMode, LaunchProviderRequest,
+        ProviderClientInterface, ProviderLaunchResult, ProviderUtilityExecutionPolicy,
+        RuntimeProviderRun,
+    };
+
+    #[test]
+    fn claude_provider_mode_namespaces_keep_the_same_context_window() {
+        for provider in ["claude", "claude-p", "claude-headless"] {
+            for model in ["sonnet", "claude-sonnet-5-5", "haiku"] {
+                let qualified = format!("{provider}/{model}");
+                assert_eq!(
+                    super::model_context_window_tokens(provider, &qualified),
+                    super::model_context_window_tokens(provider, model),
+                    "MP-08 MP-10 MP-11 {qualified} must retain its native window"
+                );
+            }
+        }
+        assert_eq!(
+            super::model_context_window_tokens("claude", "codex/sonnet"),
+            200_000
+        );
+    }
+
+    #[test]
+    fn claude_context_windows_match_official_cli_context_probes() {
+        for model in [
+            "sonnet",
+            "opus",
+            "claude-sonnet-5-5",
+            "claude-opus-5-5",
+            "claude-opus-4-7",
+            "claude/sonnet[1m]",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                1_000_000,
+                "{model}"
+            );
+        }
+        for model in [
+            "haiku",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+        ] {
+            assert_eq!(
+                super::model_context_window_tokens("claude", model),
+                200_000,
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_headless_provider_mode_is_provider_policy() {
+        let headless = provider_run("claude", "claude-headless");
+        let regular = provider_run("claude", "claude");
+
+        assert!(provider_run_is_claude_headless(&headless));
+        assert!(provider_run_uses_claude_native_bridge(&headless));
+        assert!(!provider_run_is_claude_headless(&regular));
+        assert!(!provider_run_uses_claude_native_bridge(&regular));
+    }
+
+    #[test]
+    fn provider_launch_identity_normalization_is_provider_policy() {
+        assert_eq!(adapter_key_for_provider("default"), "opencode");
+        assert_eq!(provider_id_for_launch("default"), "opencode");
+        assert_eq!(adapter_key_for_provider("claude-headless"), "claude");
+        assert_eq!(provider_id_for_launch("claude-headless"), "claude-headless");
+        assert_eq!(adapter_key_for_provider("codex"), "codex");
+        assert_eq!(provider_id_for_launch("codex"), "codex");
+    }
+
+    #[test]
+    fn canonical_provider_family_normalizes_provider_modes() {
+        assert_eq!(canonical_provider_family(" CODEX "), Some("codex"));
+        assert_eq!(canonical_provider_family("opencode"), Some("opencode"));
+        assert_eq!(canonical_provider_family("claude-headless"), Some("claude"));
+        assert_eq!(canonical_provider_family("claude-p"), Some("claude"));
+        assert_eq!(canonical_provider_family("unknown"), None);
+    }
+
+    #[test]
+    fn opencode_selection_refresh_is_provider_policy() {
+        let chariox_opencode = provider_run("opencode", "opencode");
+        let native_opencode = provider_run_with_client_interface(
+            "opencode",
+            "opencode",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+
+        assert!(provider_run_supports_selection_sync(&chariox_opencode));
+        assert!(provider_run_supports_selection_sync(&native_opencode));
+        assert!(!provider_run_supports_selection_sync(&codex));
+
+        assert!(provider_run_refreshes_selection_on_read(&chariox_opencode));
+        assert!(!provider_run_refreshes_selection_on_read(&native_opencode));
+        assert!(!provider_run_refreshes_selection_on_read(&codex));
+    }
+
+    #[test]
+    fn workflow_publication_completion_wait_is_provider_policy() {
+        let structured_claude = provider_run("claude", "claude");
+        let headless_claude = provider_run("claude", "claude-headless");
+        let native_claude = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+        let opencode = provider_run("opencode", "opencode");
+
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &structured_claude
+        ));
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &headless_claude
+        ));
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &native_claude
+        ));
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &codex
+        ));
+        assert!(!provider_run_waits_for_workflow_publication_completion(
+            &opencode
+        ));
+    }
+
+    #[test]
+    fn runtime_catalog_refresh_uses_official_provider_policy() {
+        assert!(!super::provider_runtime_catalog_requires_reload("dev-stub"));
+        for provider in ["codex", "opencode", "claude", "claude-headless", "unknown"] {
+            assert!(
+                super::provider_runtime_catalog_requires_reload(provider),
+                "MP-08/MP-10 {provider} must use the documented resume fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_continuation_reload_run_reuse_is_provider_policy() {
+        let opencode = provider_run("opencode", "opencode");
+        let codex = provider_run("codex", "codex");
+        let claude = provider_run("claude", "claude");
+
+        assert!(provider_run_reuses_run_for_mcp_continuation_reload(
+            &opencode
+        ));
+        assert!(!provider_run_reuses_run_for_mcp_continuation_reload(&codex));
+        assert!(!provider_run_reuses_run_for_mcp_continuation_reload(
+            &claude
+        ));
+    }
+
+    #[test]
+    fn provider_policy_reload_support_is_provider_policy() {
+        for adapter in ["claude", "codex", "opencode"] {
+            assert!(
+                provider_adapter_supports_policy_reload(adapter),
+                "{adapter} should relaunch when launch-time runtime config changes"
+            );
+            assert!(
+                provider_run_supports_policy_reload(&provider_run(adapter, adapter)),
+                "{adapter} runs should relaunch when launch-time runtime config changes"
+            );
+        }
+        for adapter in ["dev-stub", "unknown"] {
+            assert!(
+                !provider_adapter_supports_policy_reload(adapter),
+                "{adapter} should not use provider relaunch policy"
+            );
+            assert!(
+                !provider_run_supports_policy_reload(&provider_run(adapter, adapter)),
+                "{adapter} runs should not use provider relaunch policy"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_batch_launch_concurrency_limit_is_provider_policy() {
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("codex", "codex", 99),
+            16
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("default-adapter", "opencode", 99),
+            16
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("dev-stub", "codex", 99),
+            64
+        );
+        assert_eq!(
+            provider_batch_launch_concurrency_limit("custom", "custom", 99),
+            99
+        );
+    }
+
+    #[test]
+    fn public_inventory_provider_visibility_is_provider_policy() {
+        let mut providers = vec![
+            "codex".to_string(),
+            "dev-stub".to_string(),
+            "opencode".to_string(),
+        ];
+
+        retain_public_inventory_providers(&mut providers);
+
+        assert_eq!(providers, vec!["codex", "opencode"]);
+    }
+
+    #[test]
+    fn public_inventory_provider_visibility_can_include_dev_stub_for_drills() {
+        let mut providers = vec![
+            "codex".to_string(),
+            "dev-stub".to_string(),
+            "opencode".to_string(),
+        ];
+
+        retain_public_inventory_providers_with_dev_stub_policy(&mut providers, true);
+
+        assert_eq!(providers, vec!["codex", "dev-stub", "opencode"]);
+    }
+
+    #[test]
+    fn runtime_structured_utility_prompt_is_provider_policy() {
+        let structured_claude = provider_run("claude", "claude");
+        let native_claude = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
+        let codex = provider_run("codex", "codex");
+        let opencode = provider_run("opencode", "opencode");
+
+        assert!(provider_run_uses_runtime_structured_utility_prompt(
+            &structured_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &native_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(&codex));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &opencode
+        ));
+    }
+
+    #[test]
+    fn blocking_utility_prompt_reports_unsupported_adapter() {
+        let run = provider_run("dev-stub", "utility-unsupported");
+        let error = run_blocking_provider_utility_prompt(
+            &run,
+            "visible",
+            "hidden",
+            std::time::Duration::from_secs(1),
+            "test utility",
+            ProviderUtilityExecutionPolicy::ExistingRun,
+        )
+        .expect_err("unsupported adapter should fail before provider I/O");
+
+        match error {
+            crate::error::DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, "test utility");
+                assert!(message.contains("dev-stub"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    fn provider_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
+        provider_run_with_client_interface(adapter_key, provider, ProviderClientInterface::Chariox)
+    }
+
+    fn provider_run_with_client_interface(
+        adapter_key: &str,
+        provider: &str,
+        client_interface: ProviderClientInterface,
+    ) -> RuntimeProviderRun {
+        let request =
+            LaunchProviderRequest::new("session-1", adapter_key, provider, "default", "model")
+                .with_client_interface(client_interface);
+        RuntimeProviderRun::new(
+            format!("provider-run-{adapter_key}-{provider}"),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: provider.to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+}

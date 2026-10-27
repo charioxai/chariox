@@ -1,0 +1,352 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  diagnosticMetadataForValidationGateAggregate,
+  diagnosticMetadataForValidationGateReport,
+  runtimeSignalMetadataForValidationGateAggregate,
+  runtimeSignalMetadataForValidationGateReport,
+} from "./drill-validation-gate-runtime-signal-metadata.mjs"
+
+test("builds runtime signal metadata for validation gate reports", () => {
+  const metadata = runtimeSignalMetadataForValidationGateReport({
+    checks: {
+      platformBundle: {
+        requiredRuntimeSignals: ["session-authority", "relay-target-freshness", "runtime-transition-audit"],
+        missingRuntimeSignals: ["relay-target-freshness"],
+      },
+      artifacts: {
+        requiredArtifactRuntimeSignals: ["workspace-live-sync-state"],
+        missingArtifactRuntimeSignals: ["lease-health"],
+        aggregate: {
+          classifications: { "cloud-validation-suite": 1 },
+          coverageAreas: { "distributed-observability": 1 },
+          owners: { "validation-platform": 1 },
+          exitCriterionStatuses: { "dry-run": 1 },
+          incompleteExitCriterionStatuses: { "dry-run": 1 },
+          providerAccountAliases: { "codex=work": 1 },
+          requiredRuntimeSignals: { "provider-run-lifecycle": 1 },
+          missingRuntimeSignals: { "client-projection-health": 1 },
+          runtimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
+          runtimeSignalOwners: { "kernel-authority": 1 },
+        },
+      },
+      failures: { aggregate: { runtimeSignals: { "relay-target-freshness": 1 } } },
+      matrices: {
+        requiredMatrixRuntimeSignals: ["runtime-projection-health"],
+        missingMatrixRuntimeSignals: ["slice-auth-state"],
+        aggregate: {
+          runtimeSignals: { "provider-run-lifecycle": 2 },
+          runtimeSignalScenarios: { "workspace-live-sync-state": [] },
+        },
+      },
+    },
+  })
+
+  assert.deepEqual(metadata, {
+    missingRuntimeSignals: "client-projection-health,lease-health,relay-target-freshness,slice-auth-state",
+    missingRuntimeSignalOwners: "kernel-authority,provider-account,runtime-network,ui-client",
+    requiredRuntimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-projection-health,runtime-transition-audit,session-authority,workspace-live-sync-state",
+    requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority,workspace-live-sync-state",
+  })
+})
+
+test("builds owner and classification metadata for validation gate reports", () => {
+  const metadata = diagnosticMetadataForValidationGateReport({
+    checks: {
+      platformBundle: {
+        requiredRuntimeSignals: ["client-projection-health"],
+        missingRuntimeSignals: ["lease-health"],
+        requiredFailureClassifications: ["kernel-authority"],
+        missingFailureClassifications: ["kernel-authority"],
+        validationSuite: {
+          coverageAreas: [{ id: "matrix-validation", testCount: 4 }],
+        },
+        runtimeSignals: [
+          { id: "client-projection-health", owner: "ui-client" },
+        ],
+        failureTaxonomy: {
+          drill: ["ui-client-projection"],
+          scenario: ["kernel-authority"],
+        },
+      },
+      artifacts: {
+        requiredArtifactRuntimeSignals: ["session-authority"],
+        missingArtifactRuntimeSignals: ["workspace-live-sync-state"],
+        requiredArtifactFailureClassifications: ["workspace-live-sync-conflict"],
+        missingArtifactFailureClassifications: ["remote-extension-sync"],
+        aggregate: {
+          classifications: { "cloud-validation-suite": 1 },
+          coverageAreas: { "distributed-observability": 1 },
+          owners: { "validation-platform": 1 },
+          requiredFailureClassifications: { "workspace-live-sync-conflict": 1 },
+          exitCriterionStatuses: { "dry-run": 1 },
+          incompleteExitCriterionStatuses: { "dry-run": 1 },
+          providerAccountAliases: { "codex=work": 1 },
+          requiredRuntimeSignals: { "relay-target-freshness": 1 },
+          missingRuntimeSignals: { "permission-interaction": 1 },
+          runtimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
+          runtimeSignalOwners: { "kernel-authority": 1 },
+        },
+      },
+      failures: {
+        aggregate: {
+          owners: { "runtime-network": 1 },
+          classifications: { "relay-runtime": 1 },
+          runtimeSignals: { "relay-target-freshness": 1 },
+        },
+      },
+      matrices: {
+        requiredMatrixRuntimeSignals: ["provider-run-lifecycle"],
+        missingMatrixRuntimeSignals: ["slice-auth-state"],
+        requiredMatrixClassifications: ["provider-auth"],
+        missingMatrixClassifications: ["provider-auth"],
+        aggregate: {
+          owners: { "provider-account": 1 },
+          classifications: { "provider-auth": 1, "slice-runtime": 2 },
+          runtimeSignals: { "provider-run-lifecycle": 2 },
+        },
+      },
+    },
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports",
+    }],
+    generatedEvidence: {
+      kinds: ["matrix-report"],
+      validationSuites: {
+        enabled: true,
+        artifactIndexes: ["/tmp/generated-suite/chariox-drill-artifacts.json"],
+        failureRoots: ["/tmp/generated-suite/failed-run"],
+        outputRoots: ["/tmp/generated-suite"],
+      },
+      matrixReports: {
+        enabled: true,
+        artifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+        roots: ["/tmp/generated-matrix"],
+        dryRun: true,
+        continueOnFailure: true,
+        limitations: [{
+          kind: "dry-run-classification-coverage",
+          owner: "validation-harness",
+          nextAction: "rerun generated matrix reports without --matrix-dry-run",
+        }],
+        commands: [{
+          artifactIndexPath: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+          args: ["--matrix-dry-run"],
+          cwd: "/tmp/chariox",
+          reportPath: "/tmp/generated-matrix/workspace-live-sync-matrix.json",
+          scriptPath: "/tmp/chariox/apps/cli/scripts/live-workspace-live-sync-matrix-drill.mjs",
+        }],
+      },
+    },
+  })
+
+  assert.deepEqual(metadata, {
+    classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,relay-runtime,slice-runtime,ui-client-projection",
+    coverageAreas: "distributed-observability,matrix-validation",
+    exitCriterionStatuses: "dry-run",
+    generatedEvidenceKinds: "matrix-report,validation-suite-run",
+    generatedMatrixArtifactIndexes: "/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+    generatedMatrixLimitations: "dry-run-classification-coverage",
+    generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/chariox-drill-artifacts.json",
+    generatedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
+    incompleteExitCriterionStatuses: "dry-run",
+    missingRuntimeSignals: "lease-health,permission-interaction,slice-auth-state,workspace-live-sync-state",
+    missingRuntimeSignalOwners: "kernel-authority,provider-account,runtime-state",
+    missingFailureClassifications: "kernel-authority,provider-auth,remote-extension-sync",
+    owners: "kernel-authority,provider-account,runtime-network,ui-client,validation-harness,validation-platform",
+    providerAccountAliases: "codex=work",
+    requiredFailureClassifications: "kernel-authority,provider-auth,workspace-live-sync-conflict",
+    requiredRuntimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,session-authority",
+    requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,ui-client",
+    runtimeSignals: "client-projection-health,provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority",
+  })
+})
+
+test("builds runtime signal metadata for validation gate aggregates", () => {
+  const metadata = runtimeSignalMetadataForValidationGateAggregate({
+    coverage: {
+      artifactRuntimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
+      artifactRuntimeSignalOwners: { "kernel-authority": 1 },
+      artifactCoverageAreas: { "distributed-observability": 1 },
+      artifactOwners: { "validation-platform": 1 },
+      artifactClassifications: { "cloud-validation-suite": 1 },
+      artifactFailureClassifications: { "workspace-live-sync-conflict": 1 },
+      artifactExitCriterionStatuses: { "dry-run": 1 },
+      artifactIncompleteExitCriterionStatuses: { "dry-run": 1 },
+      artifactProviderAccountAliases: { "codex=work": 1 },
+      requiredArtifactProviderAccountAliases: { "codex=work": 1 },
+      missingArtifactProviderAccountAliases: { "opencode=zen": 1 },
+      requiredArtifactRuntimeSignals: { "workspace-live-sync-state": 1 },
+      missingArtifactRuntimeSignals: { "relay-target-freshness": 1 },
+      requiredRuntimeSignals: { "session-authority": 1 },
+      missingRuntimeSignals: { "lease-health": 1 },
+      failureRuntimeSignals: { "relay-target-freshness": 1 },
+      failureRuntimeSignalOwners: { "runtime-network": 1 },
+      matrixRuntimeSignals: { "workspace-live-sync-state": 1 },
+      matrixRuntimeSignalOwners: { "runtime-state": 1 },
+      requiredMatrixRuntimeSignals: { "provider-run-lifecycle": 1 },
+      missingMatrixRuntimeSignals: { "slice-auth-state": 1 },
+    },
+    requiredRuntimeSignals: ["runtime-projection-health"],
+    missingRuntimeSignals: ["client-projection-health"],
+    requiredArtifactRuntimeSignals: ["home-extension-manifest-sync"],
+    missingArtifactRuntimeSignals: ["permission-interaction"],
+    requiredMatrixRuntimeSignals: ["slice-runtime-state"],
+    missingMatrixRuntimeSignals: ["agent-lifecycle"],
+    matrixRuntimeSignalSources: {
+      "provider-run-lifecycle": [],
+    },
+  })
+
+  assert.deepEqual(metadata, {
+    missingRuntimeSignals: "agent-lifecycle,client-projection-health,lease-health,permission-interaction,relay-target-freshness,slice-auth-state",
+    missingRuntimeSignalOwners: "kernel-authority,provider-account,runtime-network,ui-client",
+    requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
+    requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-state,worker-kernel",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network,runtime-state",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority,workspace-live-sync-state",
+  })
+})
+
+test("builds owner and classification metadata for validation gate aggregates", () => {
+  const metadata = diagnosticMetadataForValidationGateAggregate({
+    coverage: {
+      artifactRuntimeSignals: { "runtime-transition-audit": 1, "session-authority": 1 },
+      artifactRuntimeSignalOwners: { "kernel-authority": 1 },
+      artifactCoverageAreas: { "distributed-observability": 1 },
+      artifactOwners: { "validation-platform": 1 },
+      artifactClassifications: { "cloud-validation-suite": 1 },
+      artifactExitCriterionStatuses: { "dry-run": 1 },
+      artifactIncompleteExitCriterionStatuses: { "dry-run": 1 },
+      artifactProviderAccountAliases: { "codex=work": 1 },
+      requiredArtifactProviderAccountAliases: { "codex=work": 1 },
+      missingArtifactProviderAccountAliases: { "opencode=zen": 1 },
+      requiredArtifactRuntimeSignals: { "workspace-live-sync-state": 1 },
+      missingArtifactRuntimeSignals: { "client-projection-health": 1 },
+      requiredRuntimeSignals: { "session-authority": 1 },
+      missingRuntimeSignals: { "lease-health": 1 },
+      failureRuntimeSignals: { "relay-target-freshness": 1 },
+      failureRuntimeSignalOwners: { "runtime-network": 1 },
+      failureOwners: { "runtime-network": 1 },
+      failureClassifications: { "relay-runtime": 1 },
+      matrixRuntimeSignals: { "provider-run-lifecycle": 2 },
+      matrixRuntimeSignalOwners: { "provider-runtime": 1 },
+      matrixOwners: { "provider-account": 1 },
+      matrixClassifications: { "provider-auth": 1 },
+      requiredMatrixRuntimeSignals: { "provider-run-lifecycle": 1 },
+      missingMatrixRuntimeSignals: { "slice-auth-state": 1 },
+      requiredFailureClassifications: { "kernel-authority": 1 },
+      missingFailureClassifications: { "remote-extension-sync": 1 },
+      requiredArtifactFailureClassifications: { "workspace-live-sync-conflict": 1 },
+      missingArtifactFailureClassifications: { "remote-extension-sync": 1 },
+      requiredMatrixClassifications: { "workspace-live-sync-conflict": 2 },
+      missingMatrixClassifications: { "provider-auth": 1 },
+      generatedEvidenceKinds: { "matrix-report": 1, "validation-suite-run": 1 },
+      artifactGeneratedMatrixArtifactIndexes: { "/tmp/artifact-input/generated-matrix-artifacts.json": 1 },
+      generatedMatrixLimitations: { "dry-run-classification-coverage": 1 },
+      generatedValidationSuiteArtifactIndexes: { "/tmp/generated-suite/coverage-artifacts.json": 1 },
+      generatedValidationSuiteFailureRoots: { "/tmp/generated-suite/coverage-failed-run": 1 },
+      artifactGeneratedValidationSuiteFailureRoots: { "/tmp/generated-suite/artifact-input-failed-run": 1 },
+      requiredGeneratedEvidenceKinds: { "matrix-report": 1, "validation-suite-run": 1 },
+      missingGeneratedEvidenceKinds: { "matrix-report": 1 },
+      requiredGeneratedMatrixLimitations: { "dry-run-classification-coverage": 1 },
+      missingGeneratedMatrixLimitations: { "dry-run-classification-coverage": 1 },
+      requiredGeneratedValidationSuiteArtifactIndexes: { "/tmp/generated-suite/required-artifacts.json": 1 },
+      missingGeneratedValidationSuiteArtifactIndexes: { "/tmp/generated-suite/missing-artifacts.json": 1 },
+      requiredGeneratedValidationSuiteFailureRoots: { "/tmp/generated-suite/failed-run": 1 },
+      missingGeneratedValidationSuiteFailureRoots: { "/tmp/generated-suite/missing-run": 1 },
+      artifactCoverageInputSources: { "artifact metadata inputs": 1 },
+    },
+    matrixRuntimeSignalSources: {
+      "provider-run-lifecycle": [],
+    },
+    requiredFailureClassifications: ["kernel-authority"],
+    missingFailureClassifications: ["remote-extension-sync"],
+    requiredRuntimeSignals: ["runtime-projection-health"],
+    missingRuntimeSignals: ["permission-interaction"],
+    requiredArtifactRuntimeSignals: ["home-extension-manifest-sync"],
+    missingArtifactRuntimeSignals: ["relay-target-freshness"],
+    requiredMatrixRuntimeSignals: ["slice-runtime-state"],
+    missingMatrixRuntimeSignals: ["agent-lifecycle"],
+    requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+    missingMatrixClassifications: ["provider-auth"],
+    requiredGeneratedEvidenceKinds: ["matrix-report", "validation-suite-run"],
+    missingGeneratedEvidenceKinds: ["matrix-report"],
+    requiredGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    missingGeneratedMatrixLimitations: ["dry-run-classification-coverage"],
+    requiredGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/required-artifacts.json"],
+    missingGeneratedValidationSuiteArtifactIndexes: ["/tmp/generated-suite/missing-artifacts.json"],
+    requiredGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/failed-run"],
+    missingGeneratedValidationSuiteFailureRoots: ["/tmp/generated-suite/missing-run"],
+    requiredArtifactProviderAccountAliases: ["codex=work"],
+    missingArtifactProviderAccountAliases: ["opencode=zen"],
+    artifactCoverageInputs: [
+      { source: "z-artifacts.json" },
+      { source: "a-artifacts.json" },
+    ],
+    reports: [{
+      generatedEvidence: {
+        validationSuites: {
+          enabled: true,
+          commands: [{
+            artifactIndexPath: "/tmp/generated-suite/report-artifacts.json",
+            failureRoot: "/tmp/generated-suite/failed-run",
+          }],
+        },
+        matrixReports: {
+          artifactIndexes: ["/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json"],
+        },
+      },
+    }],
+    nextActions: [{
+      owner: "validation-harness",
+      classification: "matrix-coverage",
+      nextAction: "run matrix reports",
+    }],
+  })
+
+  assert.deepEqual(metadata, {
+    artifactCoverageInputCount: "2",
+    artifactCoverageInputSources: "a-artifacts.json,artifact metadata inputs,z-artifacts.json",
+    classifications: "cloud-validation-suite,kernel-authority,matrix-coverage,provider-auth,relay-runtime,remote-extension-sync,workspace-live-sync-conflict",
+    coverageAreas: "distributed-observability",
+    exitCriterionStatuses: "dry-run",
+    generatedEvidenceKinds: "matrix-report,validation-suite-run",
+    generatedMatrixArtifactIndexes: "/tmp/artifact-input/generated-matrix-artifacts.json,/tmp/generated-matrix/workspace-live-sync-matrix-artifacts.json",
+    generatedMatrixLimitations: "dry-run-classification-coverage",
+    generatedValidationSuiteArtifactIndexes: "/tmp/generated-suite/coverage-artifacts.json,/tmp/generated-suite/report-artifacts.json",
+    generatedValidationSuiteFailureRoots: "/tmp/generated-suite/artifact-input-failed-run,/tmp/generated-suite/coverage-failed-run,/tmp/generated-suite/failed-run",
+    incompleteExitCriterionStatuses: "dry-run",
+    missingGeneratedEvidenceKinds: "matrix-report",
+    missingGeneratedMatrixLimitations: "dry-run-classification-coverage",
+    missingGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/missing-artifacts.json",
+    missingGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/missing-run",
+    missingFailureClassifications: "provider-auth,remote-extension-sync",
+    missingProviderAccountAliases: "opencode=zen",
+    missingRuntimeSignals: "agent-lifecycle,client-projection-health,lease-health,permission-interaction,relay-target-freshness,slice-auth-state",
+    missingRuntimeSignalOwners: "kernel-authority,provider-account,runtime-network,ui-client",
+    owners: "kernel-authority,provider-account,provider-runtime,runtime-network,validation-harness,validation-platform",
+    providerAccountAliases: "codex=work",
+    requiredProviderAccountAliases: "codex=work",
+    requiredGeneratedEvidenceKinds: "matrix-report,validation-suite-run",
+    requiredGeneratedMatrixLimitations: "dry-run-classification-coverage",
+    requiredGeneratedValidationSuiteArtifactIndexes: "/tmp/generated-suite/required-artifacts.json",
+    requiredGeneratedValidationSuiteFailureRoots: "/tmp/generated-suite/failed-run",
+    requiredFailureClassifications: "kernel-authority,workspace-live-sync-conflict",
+    requiredRuntimeSignals: "home-extension-manifest-sync,provider-run-lifecycle,runtime-projection-health,session-authority,slice-runtime-state,workspace-live-sync-state",
+    requiredRuntimeSignalOwners: "kernel-authority,provider-runtime,runtime-state,worker-kernel",
+    runtimeSignalOwners: "kernel-authority,provider-runtime,runtime-network",
+    runtimeSignals: "provider-run-lifecycle,relay-target-freshness,runtime-transition-audit,session-authority",
+  })
+})
+
+test("omits runtime signal metadata when no signal evidence is present", () => {
+  assert.deepEqual(runtimeSignalMetadataForValidationGateReport({ checks: {} }), {})
+  assert.deepEqual(runtimeSignalMetadataForValidationGateAggregate({ coverage: {} }), {})
+})

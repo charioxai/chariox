@@ -1,0 +1,1235 @@
+use super::*;
+
+#[test]
+fn mp08_mp10_active_prompt_steering_protocol_483_shape_and_hash() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::SteerActivePrompt(crate::local::SteerActivePromptRequest {
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        target_agent_id: "agent".into(),
+        expected_active_prompt_id: "home-prompt".into(),
+        prompt: "change direction".into(),
+        attachments: vec![],
+    });
+    let expected = serde_json::json!({ "SteerActivePrompt": {
+        "session_id": "session", "attachment_id": "attachment", "target_agent_id": "agent",
+        "expected_active_prompt_id": "home-prompt", "prompt": "change direction", "attachments": [],
+    } });
+    let snapshot = serde_json::to_value(request).unwrap();
+    assert_eq!(snapshot, expected);
+    let hash = Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "98c8cd14cd20061709d76b8aa2e2094b715e96044df6842a40189ca978f915b1"
+    );
+    let prompt: crate::session::PromptQueueItem = serde_json::from_value(serde_json::json!({
+        "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
+        "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
+        "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
+    })).unwrap();
+    assert_eq!(
+        serde_json::to_value(LocalDaemonResponse::ActivePromptSteered { prompt }).unwrap(),
+        serde_json::json!({
+            "ActivePromptSteered": { "prompt": {
+                "id": "steer", "source_attachment_id": "attachment", "target_agent_id": "agent",
+                "prompt": "change direction", "attachments": [], "created_at_ms": 1, "updated_at_ms": 2,
+                "status": "Running", "prompt_origin": "chariox", "workflow_run_id": null, "workflow_node_run_id": null,
+            } }
+        })
+    );
+    let mut missing_expected = expected;
+    missing_expected["SteerActivePrompt"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_active_prompt_id");
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(missing_expected).is_err(),
+        "target identity must be required"
+    );
+}
+use crate::local::{RelayStatus, WaitingRoomGitCredentialSummary, WaitingRoomInventorySnapshot};
+
+#[test]
+fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let response = LocalDaemonResponse::WaitingRoomInventory {
+        snapshot: WaitingRoomInventorySnapshot {
+            inventory_version: "inventory-1".to_string(),
+            structural_version: "structural-1".to_string(),
+            activity_revision: "activity-1".to_string(),
+            sessions: Vec::new(),
+            sessions_total: 0,
+            sessions_next_cursor: None,
+            projects: Vec::new(),
+            external_provider_sessions: Vec::new(),
+            external_provider_sessions_has_more: false,
+            external_provider_sessions_next_cursor: None,
+            relay_status: RelayStatus {
+                runtime_process_identity: None,
+                capabilities: Vec::new(),
+                configured: true,
+                connected: true,
+                relay_url: Some("wss://relay.example.test".to_string()),
+                relay_token_configured: true,
+                daemon_id: "kernel-1".to_string(),
+                daemon_alias: Some("Source kernel".to_string()),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("Source machine".to_string()),
+            },
+            remote_machines: Vec::new(),
+            remote_kernels: Vec::new(),
+            terminals: Vec::new(),
+            launch_target: None,
+            provider_accounts: Vec::new(),
+            git_credentials: vec![WaitingRoomGitCredentialSummary {
+                credential_id: "github".to_string(),
+                hostname: "github.com".to_string(),
+                label: "GitHub".to_string(),
+            }],
+        },
+    };
+    let snapshot = serde_json::to_value(response).expect("Waiting Room inventory should encode");
+    assert_eq!(
+        snapshot.pointer("/WaitingRoomInventory/snapshot/git_credentials/0"),
+        Some(&serde_json::json!({
+            "credentialId": "github",
+            "hostname": "github.com",
+            "label": "GitHub"
+        }))
+    );
+}
+
+#[test]
+fn local_daemon_protocol_workflow_run_pagination_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let request = LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+        session_id: "session-1".to_string(),
+        workflow_ref: Some("workflow-1".to_string()),
+        cursor: Some("v1:20:run-2".to_string()),
+        limit: Some(25),
+    });
+    assert_eq!(
+        serde_json::to_value(request).expect("workflow run page request should encode"),
+        serde_json::json!({
+            "ListWorkflowRuns": {
+                "session_id": "session-1",
+                "workflow_ref": "workflow-1",
+                "cursor": "v1:20:run-2",
+                "limit": 25
+            }
+        })
+    );
+
+    let response = LocalDaemonResponse::WorkflowRunsListed {
+        workflow_runs: Vec::new(),
+        next_cursor: Some("v1:10:run-1".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("workflow run page response should encode"),
+        serde_json::json!({
+            "WorkflowRunsListed": {
+                "workflow_runs": [],
+                "next_cursor": "v1:10:run-1"
+            }
+        })
+    );
+}
+
+#[test]
+fn local_daemon_protocol_project_management_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let create = LocalDaemonRequest::CreateSession(
+        crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+            .with_project_selection(crate::session::SessionProjectSelection::Existing {
+                project_id: "project-1".to_string(),
+            }),
+    );
+    assert_eq!(
+        serde_json::to_value(create)
+            .expect("project-selecting session create request should encode")
+            .pointer("/CreateSession/project_selection"),
+        Some(&serde_json::json!({
+            "kind": "existing",
+            "project_id": "project-1"
+        }))
+    );
+
+    let requests = [
+        LocalDaemonRequest::ListProjects(ListProjectsRequest {
+            include_archived: true,
+        }),
+        LocalDaemonRequest::RenameProject(RenameProjectRequest {
+            project_id: "project-1".to_string(),
+            name: "Renamed".to_string(),
+        }),
+        LocalDaemonRequest::UpdateProjectWorkspaces(UpdateProjectWorkspacesRequest {
+            project_id: "project-1".to_string(),
+            workspace_ids: vec!["workspace-1".to_string(), "workspace-2".to_string()],
+        }),
+        LocalDaemonRequest::ArchiveProject(ArchiveProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+        LocalDaemonRequest::DeleteProject(crate::local::DeleteProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+        LocalDaemonRequest::RestoreProject(RestoreProjectRequest {
+            project_id: "project-1".to_string(),
+        }),
+    ];
+    assert_eq!(
+        requests
+            .into_iter()
+            .map(|request| serde_json::to_value(request).expect("project request should encode"))
+            .collect::<Vec<_>>(),
+        vec![
+            serde_json::json!({ "ListProjects": { "include_archived": true } }),
+            serde_json::json!({ "RenameProject": { "project_id": "project-1", "name": "Renamed" } }),
+            serde_json::json!({
+                "UpdateProjectWorkspaces": {
+                    "project_id": "project-1",
+                    "workspace_ids": ["workspace-1", "workspace-2"]
+                }
+            }),
+            serde_json::json!({ "ArchiveProject": { "project_id": "project-1" } }),
+            serde_json::json!({ "DeleteProject": { "project_id": "project-1" } }),
+            serde_json::json!({ "RestoreProject": { "project_id": "project-1" } }),
+        ]
+    );
+
+    let project: crate::session::RuntimeProject = serde_json::from_value(serde_json::json!({
+        "id": "project-1",
+        "owner_user_id": "owner-1",
+        "workspace_id": "workspace-1",
+        "name": "Owner/repo",
+        "kind": "default",
+        "status": "archived",
+        "created_at_ms": 10,
+        "updated_at_ms": 20,
+        "archived_at_ms": 20
+    }))
+    .expect("runtime project should decode");
+    let response = LocalDaemonResponse::ProjectArchived {
+        project,
+        sessions: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("project response should encode"),
+        serde_json::json!({
+            "ProjectArchived": {
+                "project": {
+                    "id": "project-1",
+                    "owner_user_id": "owner-1",
+                    "workspace_id": "workspace-1",
+                    "name": "Owner/repo",
+                    "kind": "default",
+                    "status": "archived",
+                    "created_at_ms": 10,
+                    "updated_at_ms": 20,
+                    "archived_at_ms": 20
+                },
+                "sessions": []
+            }
+        })
+    );
+
+    let updated_project: crate::session::RuntimeProject =
+        serde_json::from_value(serde_json::json!({
+            "id": "project-1",
+            "owner_user_id": "owner-1",
+            "workspace_id": "workspace-1",
+            "workspace_ids": ["workspace-1", "workspace-2"],
+            "name": "Owner/repo",
+            "kind": "default",
+            "status": "active",
+            "created_at_ms": 10,
+            "updated_at_ms": 30
+        }))
+        .expect("multi-Workspace project should decode");
+    assert_eq!(
+        serde_json::to_value(LocalDaemonResponse::ProjectWorkspacesUpdated {
+            project: updated_project,
+        })
+        .expect("project Workspace response should encode"),
+        serde_json::json!({
+            "ProjectWorkspacesUpdated": {
+                "project": {
+                    "id": "project-1",
+                    "owner_user_id": "owner-1",
+                    "workspace_id": "workspace-1",
+                    "workspace_ids": ["workspace-1", "workspace-2"],
+                    "name": "Owner/repo",
+                    "kind": "default",
+                    "status": "active",
+                    "created_at_ms": 10,
+                    "updated_at_ms": 30
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let create = LocalDaemonRequest::CreateAgentPromptSchedule(
+        crate::local::CreateAgentPromptScheduleRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            kind: crate::session::AgentPromptScheduleKind::Recurring,
+            interval_seconds: 300,
+            prompt: Some("Continue the audit.".to_string()),
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(create).expect("agent prompt schedule request should encode"),
+        serde_json::json!({
+            "CreateAgentPromptSchedule": {
+                "session_id": "session-1",
+                "agent_id": "agent-1",
+                "kind": "recurring",
+                "interval_seconds": 300,
+                "prompt": "Continue the audit."
+            }
+        })
+    );
+
+    let cancel = LocalDaemonRequest::CancelAgentPromptSchedule(
+        crate::local::CancelAgentPromptScheduleRequest {
+            session_id: "session-1".to_string(),
+            schedule_id: "schedule-1".to_string(),
+        },
+    );
+    assert_eq!(
+        serde_json::to_value(cancel).expect("agent prompt schedule cancellation should encode"),
+        serde_json::json!({
+            "CancelAgentPromptSchedule": {
+                "session_id": "session-1",
+                "schedule_id": "schedule-1"
+            }
+        })
+    );
+
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    let schedule = crate::session::AgentPromptSchedule::new(
+        "schedule-1",
+        "agent-1",
+        crate::session::AgentPromptScheduleKind::Once,
+        60,
+        "Continue from where you left off.",
+        1_000,
+    );
+    session.add_agent_prompt_schedule(schedule.clone());
+    let response = LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session };
+    let snapshot =
+        serde_json::to_value(response).expect("agent prompt schedule response should encode");
+    assert_eq!(
+        snapshot.pointer("/AgentPromptScheduleCreated/schedule/next_run_at_ms"),
+        Some(&serde_json::json!(61_000))
+    );
+    assert_eq!(
+        snapshot.pointer("/AgentPromptScheduleCreated/session/agent_prompt_schedules/0/id"),
+        Some(&serde_json::json!("schedule-1"))
+    );
+}
+
+#[test]
+fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    session.enqueue_metaagent_task(crate::session::QueuedMetaagentTask::new(
+        "session-task:prompt-2",
+        "agent-1",
+        "attachment-1",
+        "coordinate the queued work",
+        Vec::new(),
+    ));
+    let snapshot = serde_json::to_value(session).expect("queued Meta task should encode");
+    assert_eq!(
+        snapshot.pointer("/queued_metaagent_tasks/0/id"),
+        Some(&serde_json::json!("session-task:prompt-2")),
+    );
+    assert_eq!(
+        snapshot.pointer("/queued_metaagent_tasks/0/task_markdown"),
+        Some(&serde_json::json!("coordinate the queued work")),
+    );
+}
+
+#[test]
+fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let request = LocalDaemonRequest::PauseWorkflowRun(PauseWorkflowRunRequest {
+        session_id: "session-1".to_string(),
+        workflow_run_ref: "run-1".to_string(),
+    });
+    assert_eq!(
+        serde_json::to_value(request).expect("pause workflow run request should encode"),
+        serde_json::json!({
+            "PauseWorkflowRun": {
+                "session_id": "session-1",
+                "workflow_run_ref": "run-1"
+            }
+        })
+    );
+
+    let response = LocalDaemonResponse::WorkflowRunPaused {
+        workflow_run: crate::session::WorkflowRun::new(
+            "run-1",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("pause this run".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        ),
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+    let snapshot =
+        serde_json::to_value(response).expect("pause workflow run response should encode");
+    assert_eq!(
+        snapshot.pointer("/WorkflowRunPaused/workflow_run/id"),
+        Some(&serde_json::json!("run-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/WorkflowRunPaused/session/id"),
+        Some(&serde_json::json!("session-1"))
+    );
+}
+
+#[test]
+fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
+        session_id: "session-1".to_string(),
+        provider_run_id: Some("provider-run-2".to_string()),
+        cols: 80,
+        rows: 24,
+    });
+    assert_eq!(
+        serde_json::to_value(request).expect("provider-targeted terminal resize should encode"),
+        serde_json::json!({
+            "ResizeTerminal": {
+                "session_id": "session-1",
+                "provider_run_id": "provider-run-2",
+                "cols": 80,
+                "rows": 24
+            }
+        })
+    );
+
+    let legacy: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "ResizeTerminal": {
+            "session_id": "session-1",
+            "cols": 120,
+            "rows": 40
+        }
+    }))
+    .expect("legacy active-provider resize should still decode");
+    assert!(matches!(
+        legacy,
+        LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
+            provider_run_id: None,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
+    assert_eq!(
+        serde_json::to_value(request).expect("terminal command catalog request should encode"),
+        serde_json::json!({ "GetTerminalCommandCatalog": null })
+    );
+
+    let response = LocalDaemonResponse::TerminalCommandCatalog {
+        catalog: TerminalCommandCatalog {
+            revision: "sha256:catalog".to_string(),
+            nodes: vec![TerminalCommandCatalogNode {
+                id: "meta".to_string(),
+                label: "/meta".to_string(),
+                description: "Start a temporary Meta mode task".to_string(),
+                value: "/meta ".to_string(),
+                kind: TerminalCommandCatalogNodeKind::PromptPrefix,
+                execution_target: TerminalCommandCatalogExecutionTarget::PromptPrefix,
+                surfaces: vec![TerminalCommandCatalogSurface::Session],
+                search_aliases: vec!["delegate".to_string()],
+                intents: vec!["coordinate workers".to_string()],
+                examples: vec!["/meta Build this through workers".to_string()],
+                dynamic_source: None,
+                children: vec![TerminalCommandCatalogNode {
+                    id: "meta-child".to_string(),
+                    label: "child".to_string(),
+                    description: "Child command".to_string(),
+                    value: "/meta child".to_string(),
+                    kind: TerminalCommandCatalogNodeKind::Command,
+                    execution_target: TerminalCommandCatalogExecutionTarget::Kernel,
+                    surfaces: vec![TerminalCommandCatalogSurface::Session],
+                    search_aliases: Vec::new(),
+                    intents: Vec::new(),
+                    examples: Vec::new(),
+                    dynamic_source: Some("test.dynamic".to_string()),
+                    children: Vec::new(),
+                }],
+            }],
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(response).expect("terminal command catalog response should encode"),
+        serde_json::json!({
+            "TerminalCommandCatalog": {
+                "catalog": {
+                    "revision": "sha256:catalog",
+                    "nodes": [{
+                        "id": "meta",
+                        "label": "/meta",
+                        "description": "Start a temporary Meta mode task",
+                        "value": "/meta ",
+                        "kind": "prompt_prefix",
+                        "execution_target": "prompt_prefix",
+                        "surfaces": ["session"],
+                        "search_aliases": ["delegate"],
+                        "intents": ["coordinate workers"],
+                        "examples": ["/meta Build this through workers"],
+                        "children": [{
+                            "id": "meta-child",
+                            "label": "child",
+                            "description": "Child command",
+                            "value": "/meta child",
+                            "kind": "command",
+                            "execution_target": "kernel",
+                            "surfaces": ["session"],
+                            "dynamic_source": "test.dynamic"
+                        }]
+                    }]
+                }
+            }
+        })
+    );
+}
+
+#[test]
+fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let summary = crate::local::WaitingRoomSessionActivitySummary {
+        pending_interaction_count: 2,
+        agent_count: 4,
+        working_agent_count: 1,
+        active_prompt_count: 1,
+        queued_prompt_count: 2,
+        error_agent_count: 1,
+        remote_agent_count: 3,
+        missing_worker_provider_run_count: 1,
+        home_proxy_agent_count: 2,
+        remote_extension_sync_issue_count: 1,
+        remote_extension_pending_revoke_count: 1,
+        unread_idle_agent_count: 1,
+    };
+
+    assert_eq!(
+        serde_json::to_value(summary).expect("waiting-room activity summary should encode"),
+        serde_json::json!({
+            "pending_interaction_count": 2,
+            "agent_count": 4,
+            "working_agent_count": 1,
+            "active_prompt_count": 1,
+            "queued_prompt_count": 2,
+            "error_agent_count": 1,
+            "remote_agent_count": 3,
+            "missing_worker_provider_run_count": 1,
+            "home_proxy_agent_count": 2,
+            "remote_extension_sync_issue_count": 1,
+            "remote_extension_pending_revoke_count": 1,
+            "unread_idle_agent_count": 1
+        })
+    );
+}
+
+#[test]
+fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let snapshot = crate::runtime::projection::TransportHealthSnapshot {
+        active_connections: 1,
+        active_subscriptions: 2,
+        retained_event_limit: 256,
+        command_result_cache_limit: 512,
+        inbound_request_limit: 8,
+        incoming_requests: 3,
+        emitted_events: 4,
+        replay_gaps: 5,
+        inbound_overload_rejections: 6,
+        duplicate_command_conflicts: 7,
+        outgoing_queue_overflows: 8,
+        slow_consumer_closes: 9,
+        relay_reconnect_attempts: 10,
+        relay_last_reconnect_reason: Some("relay heartbeat send failed".to_string()),
+        relay_last_reconnect_delay_ms: Some(750),
+        relay_last_reconnect_url: Some("wss://relay-b.example.test".to_string()),
+        relay_last_connected_url: Some("wss://relay-a.example.test".to_string()),
+    };
+
+    assert_eq!(
+        serde_json::to_value(snapshot).expect("transport health snapshot should encode"),
+        serde_json::json!({
+            "active_connections": 1,
+            "active_subscriptions": 2,
+            "retained_event_limit": 256,
+            "command_result_cache_limit": 512,
+            "inbound_request_limit": 8,
+            "incoming_requests": 3,
+            "emitted_events": 4,
+            "replay_gaps": 5,
+            "inbound_overload_rejections": 6,
+            "duplicate_command_conflicts": 7,
+            "outgoing_queue_overflows": 8,
+            "slow_consumer_closes": 9,
+            "relay_reconnect_attempts": 10,
+            "relay_last_reconnect_reason": "relay heartbeat send failed",
+            "relay_last_reconnect_delay_ms": 750,
+            "relay_last_reconnect_url": "wss://relay-b.example.test",
+            "relay_last_connected_url": "wss://relay-a.example.test"
+        })
+    );
+}
+
+#[test]
+fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let active_cancel_request =
+        LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            target_agent_id: Some("agent-1".to_string()),
+            expected_prompt_id: None,
+        });
+    let active_cancel_snapshot =
+        serde_json::to_value(active_cancel_request).expect("active cancel request should encode");
+    assert_eq!(
+        active_cancel_snapshot.pointer("/CancelActivePrompt/target_agent_id"),
+        Some(&serde_json::json!("agent-1"))
+    );
+
+    assert!(active_cancel_snapshot
+        .pointer("/CancelActivePrompt/expected_prompt_id")
+        .is_none());
+    let conditional =
+        LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: "session-1".into(),
+            attachment_id: "attachment-1".into(),
+            target_agent_id: Some("agent-1".into()),
+            expected_prompt_id: Some("prompt-A".into()),
+        });
+    assert_eq!(
+        serde_json::to_value(conditional).unwrap(),
+        serde_json::json!({
+            "CancelActivePrompt": {"session_id":"session-1", "attachment_id":"attachment-1",
+                "target_agent_id":"agent-1", "expected_prompt_id":"prompt-A"}
+        })
+    );
+    let legacy: crate::local::CancelActivePromptRequest =
+        serde_json::from_value(serde_json::json!({
+            "session_id":"session-1", "attachment_id":"attachment-1", "target_agent_id":"agent-1"
+        }))
+        .unwrap();
+    assert_eq!(legacy.expected_prompt_id, None);
+
+    let steer_request =
+        LocalDaemonRequest::SteerQueuedPrompt(crate::local::SteerQueuedPromptRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            target_agent_id: "agent-1".to_string(),
+            prompt_id: "prompt-queued".to_string(),
+        });
+    let steer_snapshot = serde_json::to_value(steer_request).expect("steer request should encode");
+    assert_eq!(
+        steer_snapshot.pointer("/SteerQueuedPrompt/prompt_id"),
+        Some(&serde_json::json!("prompt-queued"))
+    );
+
+    let cancel_request =
+        LocalDaemonRequest::CancelQueuedPrompt(crate::local::CancelQueuedPromptRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            target_agent_id: "agent-1".to_string(),
+            prompt_id: "prompt-queued".to_string(),
+        });
+    let cancel_snapshot =
+        serde_json::to_value(cancel_request).expect("cancel request should encode");
+    assert_eq!(
+        cancel_snapshot.pointer("/CancelQueuedPrompt/target_agent_id"),
+        Some(&serde_json::json!("agent-1"))
+    );
+
+    let update_request =
+        LocalDaemonRequest::UpdateQueuedPrompt(crate::local::UpdateQueuedPromptRequest {
+            session_id: "session-1".to_string(),
+            attachment_id: "attachment-1".to_string(),
+            target_agent_id: "agent-1".to_string(),
+            prompt_id: "prompt-queued".to_string(),
+            prompt: "updated queued text".to_string(),
+        });
+    let update_snapshot =
+        serde_json::to_value(update_request).expect("update request should encode");
+    assert_eq!(
+        update_snapshot.pointer("/UpdateQueuedPrompt/prompt"),
+        Some(&serde_json::json!("updated queued text"))
+    );
+
+    let external_prompt = crate::session::PromptQueueItem::external_observed_running(
+        "codex",
+        "thread-1",
+        "user-1",
+        "agent-1",
+        "external text",
+    );
+    let external_prompt_snapshot =
+        serde_json::to_value(external_prompt).expect("external prompt should encode");
+    assert_eq!(
+        external_prompt_snapshot.pointer("/prompt_origin"),
+        Some(&serde_json::json!("external"))
+    );
+    assert_eq!(
+        external_prompt_snapshot.pointer("/external_provider"),
+        Some(&serde_json::json!("codex"))
+    );
+    assert_eq!(
+        external_prompt_snapshot.pointer("/external_provider_session_id"),
+        Some(&serde_json::json!("thread-1"))
+    );
+    assert_eq!(
+        external_prompt_snapshot.pointer("/external_provider_turn_id"),
+        Some(&serde_json::json!("user-1"))
+    );
+
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-queued",
+        "attachment-1",
+        "agent-1",
+        "queued text",
+        crate::session::PromptStatus::Queued,
+    );
+    let session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    let steer_response = LocalDaemonResponse::QueuedPromptSteered {
+        prompt: prompt.clone(),
+        session: session.clone(),
+        agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 7,
+    };
+    let steer_response_snapshot =
+        serde_json::to_value(steer_response).expect("steer response should encode");
+    assert_eq!(
+        steer_response_snapshot.pointer("/QueuedPromptSteered/prompt/id"),
+        Some(&serde_json::json!("prompt-queued"))
+    );
+    assert_eq!(
+        steer_response_snapshot.pointer("/QueuedPromptSteered/prompt/prompt_origin"),
+        Some(&serde_json::json!("chariox"))
+    );
+    assert_eq!(
+        steer_response_snapshot.pointer("/QueuedPromptSteered/agent_activity_revision"),
+        Some(&serde_json::json!(7))
+    );
+
+    let cancel_response = LocalDaemonResponse::QueuedPromptCancelled {
+        prompt: prompt.clone(),
+        session: session.clone(),
+        agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 8,
+    };
+    let cancel_response_snapshot =
+        serde_json::to_value(cancel_response).expect("cancel response should encode");
+    assert_eq!(
+        cancel_response_snapshot.pointer("/QueuedPromptCancelled/session/id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        cancel_response_snapshot.pointer("/QueuedPromptCancelled/agent_activity_revision"),
+        Some(&serde_json::json!(8))
+    );
+
+    let update_response = LocalDaemonResponse::QueuedPromptUpdated {
+        prompt,
+        session,
+        agent_activity: std::collections::BTreeMap::new(),
+        agent_activity_revision: 9,
+    };
+    let update_response_snapshot =
+        serde_json::to_value(update_response).expect("update response should encode");
+    assert_eq!(
+        update_response_snapshot.pointer("/QueuedPromptUpdated/prompt/prompt"),
+        Some(&serde_json::json!("queued text"))
+    );
+    assert_eq!(
+        update_response_snapshot.pointer("/QueuedPromptUpdated/agent_activity_revision"),
+        Some(&serde_json::json!(9))
+    );
+}
+
+#[test]
+fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
+        max_concurrency: Some(8),
+        launches: vec![
+            LaunchProviderRunRequest {
+                session_id: "session-1".to_string(),
+                agent_id: Some("agent-1".to_string()),
+                adapter_key: "codex".to_string(),
+                provider: "codex".to_string(),
+                account_profile: "default".to_string(),
+                model: "gpt-5".to_string(),
+                variant: Some("medium".to_string()),
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+            LaunchProviderRunRequest {
+                session_id: "session-1".to_string(),
+                agent_id: Some("agent-2".to_string()),
+                adapter_key: "opencode".to_string(),
+                provider: "opencode".to_string(),
+                account_profile: "work".to_string(),
+                model: "gpt-5.1".to_string(),
+                variant: None,
+                structured_endpoint: Some("http://127.0.0.1:4567".to_string()),
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ],
+    });
+    let prompt_request = LocalDaemonRequest::SubmitPrompts(SubmitPromptsRequest {
+        session_id: "session-1".to_string(),
+        attachment_id: "attachment-1".to_string(),
+        max_concurrency: Some(4),
+        prompts: vec![
+            SubmitPromptsRequestItem {
+                session_id: None,
+                attachment_id: None,
+                target_agent_id: "agent-1".to_string(),
+                prompt: "review shard 1".to_string(),
+                attachments: Vec::new(),
+            },
+            SubmitPromptsRequestItem {
+                session_id: Some("session-2".to_string()),
+                attachment_id: Some("attachment-2".to_string()),
+                target_agent_id: "agent-2".to_string(),
+                prompt: "review shard 2".to_string(),
+                attachments: Vec::new(),
+            },
+        ],
+    });
+    let snapshot = serde_json::json!([launch_request, prompt_request]);
+    assert_eq!(
+        snapshot.pointer("/0/LaunchProviderRuns/max_concurrency"),
+        Some(&serde_json::json!(8))
+    );
+    assert_eq!(
+        snapshot.pointer("/0/LaunchProviderRuns/launches/1/structured_endpoint"),
+        Some(&serde_json::json!("http://127.0.0.1:4567"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/SubmitPrompts/prompts/0/target_agent_id"),
+        Some(&serde_json::json!("agent-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/SubmitPrompts/prompts/1/session_id"),
+        Some(&serde_json::json!("session-2"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/SubmitPrompts/prompts/1/attachment_id"),
+        Some(&serde_json::json!("attachment-2"))
+    );
+    let serialized =
+        serde_json::to_string(&snapshot).expect("batch launch/prompt snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "baedf3e025266833349aeecb0c03c1e2daf959b6c42adc75dfa5baea591b2fe8"
+    );
+}
+
+#[test]
+fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
+        session_id: "session-1".to_string(),
+        agent_ref: "agent-1".to_string(),
+    });
+    let mut agent_value = serde_json::to_value(crate::agent::AgentInstance::new(
+        "agent-1",
+        "agent-ref-1",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    ))
+    .expect("agent snapshot should encode");
+    agent_value["created_at_ms"] = serde_json::json!(1_000);
+    agent_value["last_activity_at_ms"] = serde_json::json!(1_000);
+    let response = LocalDaemonResponse::AgentMovedToLocal {
+        agent: serde_json::from_value(agent_value).expect("agent snapshot should decode"),
+    };
+
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/MoveAgentToLocal/session_id"),
+        Some(&serde_json::json!("session-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/AgentMovedToLocal/agent/id"),
+        Some(&serde_json::json!("agent-1"))
+    );
+    assert_eq!(snapshot[1]["AgentMovedToLocal"]["agent"]["archived"], false);
+    let serialized =
+        serde_json::to_string(&snapshot).expect("move agent to local snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "f47e346ad1148080babf36dcab538325e16521357594585f36ac7d9128b43acf"
+    );
+}
+
+/// Protocol 393: an agent's dropped failed requests, until a provider accepted
+/// the turn that carried the one-time note about them.
+#[test]
+fn local_daemon_protocol_agent_failed_requests_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let mut agent = crate::agent::AgentInstance::new(
+        "agent-failed-request",
+        "agent-ref-failed-request",
+        "session-1",
+        None,
+        "claude",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    let without = serde_json::to_value(&agent).expect("agent should encode");
+    assert_eq!(without.get("failed_requests"), None);
+    agent.set_failed_requests(vec![crate::agent::FailedRequest {
+        prompt_id: "prompt-1".to_string(),
+        excerpt: "record r372-mcp-1, then r372-mcp-2".to_string(),
+        reason: "usage limit reached".to_string(),
+    }]);
+    let with = serde_json::to_value(&agent).expect("agent should encode");
+    assert_eq!(
+        with["failed_requests"],
+        serde_json::json!([{
+            "prompt_id": "prompt-1",
+            "excerpt": "record r372-mcp-1, then r372-mcp-2",
+            "reason": "usage limit reached",
+        }])
+    );
+    let decoded: crate::agent::AgentInstance =
+        serde_json::from_value(with).expect("agent should decode");
+    assert_eq!(decoded.failed_requests(), agent.failed_requests());
+}
+
+#[test]
+fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+
+    let mut agent = crate::agent::AgentInstance::new(
+        "agent-remote",
+        "agent-ref-remote",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        execution_lease_id: "lease-1".to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        active_worker_provider_run_id: Some("worker-run-1".to_string()),
+        relay_url: Some("wss://relay.example.test".to_string()),
+        relay_token: Some("secret-token".to_string()),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    }));
+    let mut agent_value = serde_json::to_value(agent).expect("remote agent snapshot should encode");
+    agent_value["created_at_ms"] = serde_json::json!(1_000);
+    agent_value["last_activity_at_ms"] = serde_json::json!(1_000);
+    let response = LocalDaemonResponse::AgentMovedToRemote {
+        agent: serde_json::from_value(agent_value).expect("remote agent snapshot should decode"),
+    };
+    let mut snapshot = serde_json::json!(response);
+    snapshot
+        .pointer_mut("/AgentMovedToRemote/agent/remote_execution")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("remote binding should be present")
+        .remove("relay_token");
+    assert_eq!(
+        snapshot.pointer("/AgentMovedToRemote/agent/remote_execution/relay_token"),
+        None
+    );
+    assert_eq!(
+        snapshot.pointer("/AgentMovedToRemote/agent/remote_execution/relay_peer_protocol_version"),
+        Some(&serde_json::json!(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        ))
+    );
+    // Keep this full-agent hash stable across peer version bumps; the current
+    // advertised peer version is pinned explicitly above.
+    snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
+        serde_json::json!(57);
+    assert_eq!(snapshot["AgentMovedToRemote"]["agent"]["archived"], false);
+    let serialized = serde_json::to_string(&snapshot).expect("remote agent snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "c6e98271507ef722a9bb56e0e697a4dbb139cb2978762bbcd8d15a1f0abf7120"
+    );
+    // MP-11: historical bindings predate creator lineage and archive state. Compare their frozen
+    // projection; the protocol-450 full-agent hash above guards the added field.
+    snapshot["AgentMovedToRemote"]["agent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("spawned_by_agent_id");
+    snapshot["AgentMovedToRemote"]["agent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("archived");
+    // Only the advertised peer version differs from these historical bindings.
+    snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
+        serde_json::json!(46);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
+        ),
+        "7b756e3eb67f1d580dbd31a4bed1ef9ec852c519565e8ac8ae8ef9c481f6396c"
+    );
+    snapshot["AgentMovedToRemote"]["agent"]["remote_execution"]["relay_peer_protocol_version"] =
+        serde_json::json!(45);
+    let previous = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(previous.as_bytes())),
+        "637abb74695e5c45c4a510bf3c82a96e01e293016fa4a9335e0890a840226add"
+    );
+}
+
+// MP-08/MP-10/MP-11: socket-local framing is part of the versioned contract.
+#[test]
+fn relay_chunk_transport_490_100_schema_and_wire_hashes() {
+    use chariox_relay::frame_transport::TransportFrame;
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../relay/src/frame_transport.rs"
+    ));
+    let schema = source
+        .split("#[derive(Serialize, Deserialize)]")
+        .nth(1)
+        .unwrap()
+        .split("pub fn transport_url")
+        .next()
+        .unwrap();
+    let schema = format!("#[derive(Serialize, Deserialize)]{schema}")
+        .split_whitespace()
+        .collect::<String>();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(schema.as_bytes())),
+        "f08f89c438e3abf2131fe639821e3d0c4372bbc30ce347c0b34cda56375a32ac"
+    );
+    let wire = serde_json::json!([
+        {"kind":"transport_chunk","transfer_id":1,"offset":0,"total_bytes":32768,"payload":"opaque"},
+        {"kind":"transport_ack","transfer_id":1,"offset":6}
+    ]);
+    for frame in wire.as_array().unwrap() {
+        let typed: TransportFrame = serde_json::from_value(frame.clone()).unwrap();
+        assert_eq!(&serde_json::to_value(typed).unwrap(), frame);
+    }
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "79e18ecc6745ceb6cc51771e23f053fbce62777c5ca3889f05cccb85a12e1f5b"
+    );
+    assert!(serde_json::from_value::<TransportFrame>(serde_json::json!(
+        {"kind":"transport_ack","transfer_id":1,"offset":6,"allowed_targets":["other-kernel"]}
+    ))
+    .is_err());
+}
+
+// MP-08/MP-10/MP-11: allocated cancellation admission contract.
+#[test]
+fn mp08_exact_prompt_cancellation_shape_requires_a_new_protocol() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        target_agent_id: Some("agent".into()),
+        expected_prompt_id: Some("home-prompt".into()),
+    });
+    let expected = serde_json::json!({"CancelActivePrompt": {
+        "session_id":"session", "attachment_id":"attachment", "target_agent_id":"agent", "expected_prompt_id":"home-prompt",
+    }});
+    let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value, expected);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&value).unwrap().as_bytes())
+        ),
+        "f60f7c3fbab2cbca12072695315f88cc1085316f257810ec61ff45cba8633e5a"
+    );
+    let mut legacy = value;
+    legacy["CancelActivePrompt"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_prompt_id");
+    let decoded: LocalDaemonRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+}
+
+// MP-08 / MP-10 / MP-11: paged inventories share provisional local 569 / peer 177.
+#[test]
+fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
+    use crate::local::{ListWaitingRoomSessionsRequest, WaitingRoomSessionPage};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request = LocalDaemonRequest::ListWaitingRoomSessions(ListWaitingRoomSessionsRequest {
+        cursor: Some("after-session".into()),
+        limit: Some(500),
+    });
+    let response = LocalDaemonResponse::WaitingRoomSessionsListed {
+        page: WaitingRoomSessionPage {
+            sessions: vec![],
+            total: 20_000,
+            next_cursor: Some("next-page".into()),
+        },
+    };
+    let snapshot = serde_json::json!({
+        "request": request, "response": response,
+        "inventory_fields": ["sessions_total", "sessions_next_cursor"],
+        "event_fields": ["sessions_total", "sessions_next_cursor"],
+    });
+    assert_eq!(
+        snapshot["request"],
+        serde_json::json!({"ListWaitingRoomSessions":{"cursor":"after-session","limit":500}})
+    );
+    assert_eq!(
+        snapshot["response"]["WaitingRoomSessionsListed"]["page"]["total"],
+        20_000
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "6e6c7820650983eb841ef1d97325bd16484a0a9e1d0692e6b56db81ef69ee842"
+    );
+}

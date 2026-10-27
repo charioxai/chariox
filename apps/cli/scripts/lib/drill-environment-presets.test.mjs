@@ -1,0 +1,99 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  DRILL_DEPLOYMENT_PRESETS,
+  appendHetznerPassthrough,
+  drillDeploymentPresetMetadata,
+  hetznerPassthroughMetadata,
+  isKnownDrillDeploymentPreset,
+  parseHetznerPassthroughArg,
+  validateDrillDeploymentPreset,
+  validateDrillDeploymentPresets,
+} from "./drill-environment-presets.mjs"
+
+test("parses Hetzner passthrough flags", () => {
+  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-host", "root@example"], 0), {
+    args: ["--hetzner-host", "root@example"],
+    nextIndex: 1,
+  })
+  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-repo=/tmp/chariox"], 0), {
+    args: ["--hetzner-repo", "/tmp/chariox"],
+    nextIndex: 0,
+  })
+  assert.equal(parseHetznerPassthroughArg(["--include-hetzner"], 0), null)
+  assert.throws(() => parseHetznerPassthroughArg(["--hetzner-key"], 0), /requires a value/)
+})
+
+test("appends Hetzner passthrough only for Hetzner scenarios", () => {
+  const passthrough = ["--hetzner-host", "root@example"]
+
+  assert.deepEqual(
+    appendHetznerPassthrough(["drill.mjs"], { requires: ["hetzner"] }, passthrough),
+    ["drill.mjs", "--hetzner-host", "root@example"],
+  )
+  assert.deepEqual(
+    appendHetznerPassthrough(["drill.mjs"], { requires: ["remote"] }, passthrough),
+    ["drill.mjs"],
+  )
+})
+
+test("summarizes Hetzner passthrough without leaking values", () => {
+  assert.deepEqual(
+    hetznerPassthroughMetadata(["--hetzner-host", "root@example", "--hetzner-key", "/tmp/key"]),
+    {
+      hasHetznerHostOverride: true,
+      hasHetznerSshIdentityOverride: true,
+      hasHetznerRepoOverride: false,
+    },
+  )
+})
+
+test("summarizes deployment presets without leaking machine details", () => {
+  assert.deepEqual(DRILL_DEPLOYMENT_PRESETS, [
+    "hetzner",
+    "hosted-cloud",
+    "local",
+    "same-host-remote",
+    "self-hosted-relay",
+  ])
+  assert.equal(isKnownDrillDeploymentPreset("local"), true)
+  assert.equal(isKnownDrillDeploymentPreset("same-host-remtoe"), false)
+  assert.doesNotThrow(() => validateDrillDeploymentPreset("same-host-remote", "preset"))
+  assert.throws(
+    () => validateDrillDeploymentPreset("same-host-remtoe", "preset"),
+    /preset has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.throws(
+    () => validateDrillDeploymentPreset("same-host-remtoe", "required deployment presets", {
+      message: (preset) => `unknown required deployment preset: ${preset}`,
+    }),
+    /unknown required deployment preset: same-host-remtoe/,
+  )
+  assert.doesNotThrow(() => validateDrillDeploymentPresets(["local", "same-host-remote"], "test presets"))
+  assert.throws(
+    () => validateDrillDeploymentPresets(["same-host-remtoe"], "test presets"),
+    /test presets\[0\] has unknown deployment preset "same-host-remtoe"/,
+  )
+  assert.deepEqual(
+    drillDeploymentPresetMetadata(["local", "self-hosted-relay", "hetzner", "local"], {
+      hetznerPassthrough: ["--hetzner-host", "root@example", "--hetzner-repo", "/tmp/private"],
+    }),
+    {
+      deploymentPresetCount: 3,
+      deploymentPresets: "hetzner,local,self-hosted-relay",
+      includesHetzner: true,
+      includesHostedCloud: false,
+      includesLocal: true,
+      includesSameHostRemote: false,
+      includesSelfHostedRelay: true,
+      hasHetznerHostOverride: true,
+      hasHetznerSshIdentityOverride: false,
+      hasHetznerRepoOverride: true,
+    },
+  )
+  assert.throws(
+    () => drillDeploymentPresetMetadata(["unknown"]),
+    /drill deployment presets\[0\] has unknown deployment preset "unknown"/,
+  )
+})

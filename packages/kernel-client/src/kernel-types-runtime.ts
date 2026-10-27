@@ -1,0 +1,516 @@
+import type { ProjectEnvironmentReview } from "./project-environment-review.js"
+import type { ExtensionGrant } from "./kernel-types-extensions.js"
+import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
+import type { PromptAttachmentPart, RuntimeProviderRun } from "./kernel-types-provider.js"
+
+export type SessionMember = {
+  user_id: string
+  joined_at_ms: number
+  invited_by_user_id?: string | null
+  collaboration_level?: CollaborationLevel
+}
+
+export type SessionInvite = {
+  invite_id: string
+  session_id: string
+  created_by_user_id: string
+  created_at_ms: number
+  expires_at_ms?: number | null
+  max_uses?: number | null
+  used_count: number
+  revoked_at_ms?: number | null
+  collaboration_level?: CollaborationLevel
+}
+
+export type CollaborationLevel = "private" | "transparent" | "full"
+
+export type AgentPromptState = {
+  active_prompt: PromptQueueItem | null
+  queued_prompts: PromptQueueItem[]
+}
+
+export type AgentRuntimeActivity = {
+  status: "idle" | "working" | "error"
+  prompt_status: "none" | "queued" | "dispatching" | "running" | "cancelling" | "settling"
+  busy: boolean
+  active_prompt_count?: number
+  queued_prompt_count?: number
+  unread_idle_output: boolean
+  queued_prompt_controls?: Record<string, AgentQueuedPromptControl>
+  active_turn?: AgentActiveTurn | null
+  last_completed_turn?: CompletedGitTurnActionProjection | null
+}
+
+export type AgentQueuedPromptControl = {
+  prompt_id: string
+  status: string
+  can_steer: boolean
+  can_cancel: boolean
+  steer_disabled_reason?: string | null
+  cancel_disabled_reason?: string | null
+}
+
+export type AgentActiveTurn = {
+  prompt_id: string
+  provider_run_id?: string | null
+  source_attachment_id?: string | null
+  prompt_origin?: "chariox" | "external" | string | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
+  status: "none" | "queued" | "running" | "cancelling" | "settling"
+  phase: "accepted" | "awaiting_first_output" | "streaming" | "settling"
+  started_at_ms?: number | null
+}
+
+export type CompletedGitTurnActionProjection = {
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  agent_id: string
+  source_attachment_id?: string | null
+  prompt_origin?: "chariox" | "external" | string | null
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
+  completed_at_ms: number
+  settlement_status: "completed" | "cancelled" | "failed"
+  provider_termination?: ProviderRunTermination | null
+  duration_ms?: number | null
+  changed_paths: string[]
+  undo_available: boolean
+  undo_unavailable_reason?: string | null
+}
+
+export type ProviderRunTermination = {
+  category:
+    | "process_exit"
+    | "signal"
+    | "explicit_provider_error"
+    | "runtime_failure"
+    | "transport_failure"
+    | "unknown"
+  reason: string
+  timestamp_ms: number
+}
+
+export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
+
+export type WorkspaceLiveSyncPathApplyResult = {
+  path: string
+  status: WorkspaceLiveSyncApplyStatus
+  message: string
+}
+
+export type TurnUndoResult = {
+  session_id: string
+  agent_id: string
+  turn_id: string
+  prompt_id: string
+  provider_run_id: string
+  reverted_paths: string[]
+  path_results: WorkspaceLiveSyncPathApplyResult[]
+}
+
+export type AgentForkPayload = {
+  source_agent_id: string
+  agent: AgentInstance
+  provider_run: RuntimeProviderRun
+  session: RuntimeSession
+}
+
+export type RuntimeInteractionSubject =
+  | { agent_id: string; kernel_operation_id?: never }
+  | { kernel_operation_id: string; agent_id?: never }
+
+export type NativeInteractionOrigin =
+  | { scope: "prompt"; provider_run_id: string; prompt_id: string }
+  | { scope: "native_turn"; provider_run_id: string; native_turn_id: string }
+  | { scope: "provider_startup"; provider_run_id: string }
+
+export type RuntimeInteraction = RuntimeInteractionSubject & {
+  requester?: KernelAccessRequester | null
+  provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
+  project_environment_review?: ProjectEnvironmentReview | null
+  id: string
+  kind: "choice" | "permission"
+  level: "info" | "warning" | "critical"
+  title?: string | null
+  message: string
+  choices: RuntimeInteractionChoice[]
+  custom_choice?: RuntimeInteractionCustomChoice | null
+  timeout_sec?: number | null
+  default_on_timeout?: string | null
+  native_origin?: NativeInteractionOrigin | null
+  requested_at_ms: number
+  /** Protocol 477: a protected owner hand-off (safe metadata only). */
+  handoff?: import("./owner-handoff.js").RuntimeHandoff | null
+}
+
+export type RuntimeInteractionChoice = {
+  id: string
+  label: string
+  reply: string
+  style?: "primary" | "secondary" | "danger" | null
+  /** Protocol 392: answering with this choice needs the Chariox passkey. */
+  requires_passkey?: boolean
+}
+
+/** Protocol 403: a kernel-owned pending interaction that needs the Chariox
+ * passkey, projected as a popup to every terminal connected as its owner.
+ * Every field is what the kernel established. It is answered with
+ * `RespondToInteraction`: the approve choice with the passkey, or the refuse
+ * choice without it. */
+/** Protocol 470: OS-established grant holder, never parsed from display text.
+ * The start identity is an opaque decimal string (Linux start ticks or macOS
+ * process unique ID). Harness is informational, not vendor/signature attestation. */
+export type KernelAccessRequester = {
+  executable: string
+  pid: number
+  process_start_id: string
+  process_exec_version: number
+  provider_harness?: "codex" | "claude" | "opencode" | null
+}
+
+/** Protocol 568: how long an access grant lasts. `until_holder_exits` has no deadline;
+ * it ends with the approved harness process, a revoke or a kernel restart. */
+export type KernelAccessTerm = { minutes: number } | "until_holder_exits"
+
+/** MP-08 / MP-11 protocol 538: kernel-authored presentation, never authority. */
+export type SudoRequestPresentation = {
+  requester_name: string
+  agent_name: string
+  session_name: string
+  task_summary: string
+  task: string
+  grant_id?: string | null
+  terminal_id: string
+}
+export type PasskeyPromptClosure = {
+  session_id: string
+  interaction_id: string
+  kind: PasskeyPrompt["kind"]
+  expires_at_ms: number
+  reason: "expired" | "answered" | "revoked"
+}
+
+export type PasskeyPrompt = {
+  sudo_request?: SudoRequestPresentation | null
+  requester?: KernelAccessRequester | null
+  kind: "critical_approval" | "access_grant" | "access_extension" | "sudo"
+  /** Protocol 568: the term an access popup starts on; absent for sudo and critical approvals. */
+  term?: KernelAccessTerm | null
+  /** Sudo windows only since protocol 568. */
+  lifetime_minutes?: number | null
+  max_lifetime_minutes?: number | null
+  /** Protocol 451: access decisions use the kernel-wide routing id `kernel-access`. */
+  session_id: string
+  session_alias?: string | null
+  interaction_id: string
+  title: string
+  message: string
+  approve_choice_id: string
+  refuse_choice_id: string
+  requested_at_ms: number
+  expires_at_ms: number
+}
+
+export type RuntimeInteractionCustomChoice = {
+  id: string
+  label: string
+  placeholder?: string | null
+  min_length?: number | null
+  max_length?: number | null
+  input_kind?: "text" | "secret" | null
+}
+
+export type RequestNativeProviderTurnInteractionRequest = {
+  origin: NativeInteractionOrigin
+  session_id: string
+  agent_id: string
+  interaction_id: string
+  level: "info" | "warning" | "critical"
+  title?: string | null
+  message: string
+  choices: RuntimeInteractionChoice[]
+  custom_choice?: RuntimeInteractionCustomChoice | null
+  timeout_sec?: number | null
+  default_on_timeout?: string | null
+}
+
+export type ArmDeploymentCredentialEnrollmentRequest = {
+  session_id: string
+  attachment_id: string
+  agent_id: string
+  enrollment_id: string
+  profile_id: string
+  target_version: number
+}
+
+export type RequestCredentialEnrollmentInteractionRequest = {
+  session_id: string
+  agent_id: string
+  enrollment_id: string
+  profile_id: string
+  target_version: number
+  provider_authorization_url: string
+  timeout_sec?: number | null
+}
+
+export type CredentialEnrollmentInteractionStatus = "submitted" | "canceled" | "timed_out"
+
+export type DeploymentCredentialEnrollmentArmedResponse = {
+  DeploymentCredentialEnrollmentArmed: {
+    enrollment_id: string
+    profile_id: string
+    target_version: number
+    session_id: string
+    agent_id: string
+    expires_at_ms: number
+  }
+}
+
+export type CredentialEnrollmentInteractionResolvedResponse = {
+  CredentialEnrollmentInteractionResolved: {
+    status: CredentialEnrollmentInteractionStatus
+    callback?: string | null
+  }
+}
+
+export type NativeProviderInteractionResolution = {
+  status: string
+  choice_id?: string | null
+  reply?: string | null
+}
+
+export type SessionConfigState = {
+  version: number
+  values: Record<string, string>
+  updated_by_attachment_id?: string | null
+}
+
+export type CharioxUserConfig = {
+  version: number
+  slices?: {
+    linux?: {
+      disk_layer_mb?: number
+      disk_home_mb?: number
+    }
+  }
+  providers?: {
+    default?: string
+    model?: string
+    effort?: string
+    workspace_live_sync?: "off" | "managed" | "tracked" | "unrestricted"
+  }
+  history?: {
+    handoff?: {
+      codex_brief_model?: string
+      claude_brief_model?: string
+    }
+    operational?: {
+      backend?: "sqlite"
+      path?: string
+      retention_days?: number
+      max_size_mb?: number
+      keep_pinned_sessions?: boolean
+      archive_inactive_after_days?: number
+      archive_deleted_agents?: boolean
+    }
+    archive?: {
+      mode?: "disabled" | "external"
+      url?: string
+      token_env?: string
+      archive_deleted_agents?: boolean
+      archive_before_delete?: boolean
+      delete_operational_after_verified_archive?: boolean
+      require_durable_acceptance?: boolean
+    }
+  }
+  state?: {
+    backend?: "sqlite"
+    path?: string
+    snapshot_interval_events?: number
+  }
+  ui?: Record<string, unknown>
+  relay?: Record<string, unknown>
+  kernel?: Record<string, unknown>
+  kernel_access?: {
+    grant_default_minutes: number
+    grant_max_minutes: number
+    grant_extend_notice_minutes: number
+    request_timeout_minutes: number
+  }
+  workflow?: {
+    max_queues_per_workflow?: number
+    session_default_max_agents?: number
+    code?: {
+      max_concurrent?: number
+      max_nodes?: number
+      max_agents?: number
+      max_edges?: number
+      max_queues?: number
+      max_watchdogs?: number
+      max_schema_bytes?: number
+      max_generated_prompt_bytes?: number
+      script_timeout_ms?: number
+      script_memory_bytes?: number
+    }
+  }
+  credential_vault?: {
+    backend?: "chariox_encrypted" | "process_memory"
+    service?: string
+    path?: string
+    unlock_policy?: "kernel_init" | "ttl" | "always"
+    default_ttl_minutes?: number
+    max_ttl_minutes?: number
+  }
+}
+
+export type CharioxUserConfigPayload = {
+  path: string
+  config: CharioxUserConfig
+  effects?: UserConfigMutationEffect[]
+}
+
+export type CharioxUserConfigSchemaPayload = {
+  entries: UserConfigSchemaEntry[]
+}
+
+export type UserConfigSchemaEntry = {
+  path: string
+  value_type: string
+  allowed_values?: string[]
+  settable: boolean
+  unsettable: boolean
+  effect: string
+  status: string
+  description: string
+}
+
+export type UserConfigMutationEffect = {
+  kind: string
+  path: string
+  message: string
+  provider_reload?: {
+    reloaded: number
+    deferred: number
+    unaffected: number
+  } | null
+}
+
+export type AgentInstance = {
+  /** Unknown legacy lineage is never inferred from controller links. */
+  spawned_by_agent_id?: string | null
+  id: string
+  agent_ref: string
+  session_id: string
+  role?: "standard" | "meta" | string
+  meta_mode?: {
+    task_id?: string | null
+    activated_at_ms: number
+    baseline_execution_mode_override?: "build" | "plan" | null
+    baseline_permission_level_override?: "required" | "yolo" | null
+  } | null
+  alias: string | null
+  provider: string
+  model: string | null
+  effort?: string | null
+  account_profile?: string | null
+  execution_mode_override?: "build" | "plan" | null
+  permission_level_override?: "required" | "yolo" | null
+  workspace_id?: string | null
+  worktree_id: string | null
+  remote_execution?: {
+    worker_kernel_id: string
+    worker_machine_id: string
+    execution_lease_id: string
+    leased_agent_id: string
+    active_worker_provider_run_id?: string | null
+    relay_peer_protocol_version?: number | null
+  } | null
+  extension_grants?: ExtensionGrant[]
+  remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
+  /** Tried in order, each for one turn whose provider failed (protocol 397). */
+  substitutes?: AgentSubstituteProfile[]
+  substitution_timeout_ms?: number | null
+  archived?: boolean
+  visible_in_freeform?: boolean
+  external_provider_import?: ExternalProviderImportMetadata | null
+  state: "Idle" | "Working" | "Focused" | "Error"
+  is_processing: boolean
+  grid_row: number
+  grid_col: number
+  grid_row_span: number
+  grid_col_span: number
+  created_at_ms: number
+  last_activity_at_ms: number
+}
+
+export type RemoteExtensionManifestSyncStatus = {
+  state: "synced" | "syncing" | "pending" | "failed" | "stale"
+  manifest_hash?: string | null
+  last_attempted_at_ms?: number | null
+  last_synced_at_ms?: number | null
+  last_error?: string | null
+  pending_revoke?: boolean | null
+}
+
+export type AgentSubstituteProfile = {
+  provider: string
+  model: string
+  variant?: string | null
+  account_profile?: string | null
+  kernel_id?: string | null
+  worktree_id?: string | null
+}
+
+export type PromptQueueItem = {
+  id: string
+  pending_prompt_id?: string | null
+  source_attachment_id: string
+  target_agent_id?: string | null
+  prompt: string
+  attachments?: PromptAttachmentPart[]
+  created_at_ms?: number
+  updated_at_ms?: number
+  status: string
+  prompt_origin?: "chariox" | "external" | string
+  external_provider?: string | null
+  external_provider_session_id?: string | null
+  external_provider_turn_id?: string | null
+}
+
+export type RuntimeAttachment = {
+  id: string
+  session_id: string
+}
+
+export type KernelAccessGrant = {
+  grant_id: string
+  owner_user_id: string
+  holder_pid: number
+  holder_executable: string
+  /** Which provider's harness the kernel recognised the holder as; display only. */
+  holder_harness?: "codex" | "claude" | "opencode"
+  /** Protocol 568: replaces `lifetime_minutes`. */
+  term: KernelAccessTerm
+  /** Absent for `until_holder_exits`. */
+  expires_at_ms?: number | null
+}
+export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
+export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
+export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
+export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }
+
+export type KernelSudoTurn = {
+  entry_id: string; session_id: string; agent_id: string; owner_user_id: string; terminal_id: string
+  requester?: KernelAccessGrant; prompt_id: string | null; provider_run_id: string | null
+  // Protocol 460: an hour-scale window bound to one owner-authorized task.
+  task_id?: string | null; duration_minutes?: number; expires_at_ms?: number | null; revision?: number; warning_sent?: boolean
+}
+export type ExtendKernelSudoRequest = { session_id: string; attachment_id: string; entry_id: string; revision: number }
+export type KernelSudoExtendedResponse = { KernelSudoExtended: { turn: KernelSudoTurn } }
+
+export type RequestKernelSudoRequest = { agent_id: string; prompt: string }
+export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: string } }

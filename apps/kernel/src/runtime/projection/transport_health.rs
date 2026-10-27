@@ -1,0 +1,214 @@
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TransportHealthSnapshot {
+    pub active_connections: usize,
+    pub active_subscriptions: usize,
+    pub retained_event_limit: usize,
+    pub command_result_cache_limit: usize,
+    pub inbound_request_limit: usize,
+    pub incoming_requests: u64,
+    pub emitted_events: u64,
+    pub replay_gaps: u64,
+    pub inbound_overload_rejections: u64,
+    pub duplicate_command_conflicts: u64,
+    pub outgoing_queue_overflows: u64,
+    pub slow_consumer_closes: u64,
+    pub relay_reconnect_attempts: u64,
+    pub relay_last_reconnect_reason: Option<String>,
+    pub relay_last_reconnect_delay_ms: Option<u64>,
+    pub relay_last_reconnect_url: Option<String>,
+    pub relay_last_connected_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TransportHealthStore {
+    state: Arc<TransportHealthState>,
+}
+
+#[derive(Debug, Default)]
+struct TransportHealthState {
+    active_connections: AtomicUsize,
+    active_subscriptions: AtomicUsize,
+    incoming_requests: AtomicU64,
+    emitted_events: AtomicU64,
+    replay_gaps: AtomicU64,
+    inbound_overload_rejections: AtomicU64,
+    duplicate_command_conflicts: AtomicU64,
+    outgoing_queue_overflows: AtomicU64,
+    slow_consumer_closes: AtomicU64,
+    relay_reconnect_attempts: AtomicU64,
+    relay_health: Mutex<RelayTransportHealth>,
+}
+
+impl TransportHealthStore {
+    pub(crate) fn record_connection_opened(&self) {
+        self.state
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_connection_closed(&self) {
+        decrement_saturating(&self.state.active_connections);
+    }
+
+    pub(crate) fn record_subscription_opened(&self) {
+        self.state
+            .active_subscriptions
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_subscription_closed(&self) {
+        decrement_saturating(&self.state.active_subscriptions);
+    }
+
+    pub(crate) fn record_incoming_request(&self) {
+        self.state.incoming_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_emitted_event(&self) {
+        self.state.emitted_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_replay_gap(&self) {
+        self.state.replay_gaps.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_inbound_overload_rejection(&self) {
+        self.state
+            .inbound_overload_rejections
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_duplicate_command_conflict(&self) {
+        self.state
+            .duplicate_command_conflicts
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_outgoing_queue_overflow(&self) {
+        self.state
+            .outgoing_queue_overflows
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_slow_consumer_close(&self) {
+        self.state
+            .slow_consumer_closes
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_relay_connected(&self, relay_url: &str) {
+        let mut relay_health = lock_relay_health(&self.state.relay_health);
+        relay_health.last_connected_url = Some(relay_url.to_string());
+    }
+
+    pub(crate) fn record_relay_reconnect_attempt(
+        &self,
+        relay_url: &str,
+        reason: &str,
+        delay: Duration,
+    ) {
+        self.state
+            .relay_reconnect_attempts
+            .fetch_add(1, Ordering::Relaxed);
+        let mut relay_health = lock_relay_health(&self.state.relay_health);
+        relay_health.last_reconnect_reason = Some(reason.to_string());
+        relay_health.last_reconnect_delay_ms =
+            Some(delay.as_millis().min(u128::from(u64::MAX)) as u64);
+        relay_health.last_reconnect_url = Some(relay_url.to_string());
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        retained_event_limit: usize,
+        command_result_cache_limit: usize,
+        inbound_request_limit: usize,
+    ) -> TransportHealthSnapshot {
+        let relay_health = lock_relay_health(&self.state.relay_health);
+        TransportHealthSnapshot {
+            active_connections: self.state.active_connections.load(Ordering::Relaxed),
+            active_subscriptions: self.state.active_subscriptions.load(Ordering::Relaxed),
+            retained_event_limit,
+            command_result_cache_limit,
+            inbound_request_limit,
+            incoming_requests: self.state.incoming_requests.load(Ordering::Relaxed),
+            emitted_events: self.state.emitted_events.load(Ordering::Relaxed),
+            replay_gaps: self.state.replay_gaps.load(Ordering::Relaxed),
+            inbound_overload_rejections: self
+                .state
+                .inbound_overload_rejections
+                .load(Ordering::Relaxed),
+            duplicate_command_conflicts: self
+                .state
+                .duplicate_command_conflicts
+                .load(Ordering::Relaxed),
+            outgoing_queue_overflows: self.state.outgoing_queue_overflows.load(Ordering::Relaxed),
+            slow_consumer_closes: self.state.slow_consumer_closes.load(Ordering::Relaxed),
+            relay_reconnect_attempts: self.state.relay_reconnect_attempts.load(Ordering::Relaxed),
+            relay_last_reconnect_reason: relay_health.last_reconnect_reason.clone(),
+            relay_last_reconnect_delay_ms: relay_health.last_reconnect_delay_ms,
+            relay_last_reconnect_url: relay_health.last_reconnect_url.clone(),
+            relay_last_connected_url: relay_health.last_connected_url.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RelayTransportHealth {
+    last_reconnect_reason: Option<String>,
+    last_reconnect_delay_ms: Option<u64>,
+    last_reconnect_url: Option<String>,
+    last_connected_url: Option<String>,
+}
+
+fn lock_relay_health(
+    relay_health: &Mutex<RelayTransportHealth>,
+) -> std::sync::MutexGuard<'_, RelayTransportHealth> {
+    relay_health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn decrement_saturating(value: &AtomicUsize) {
+    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_sub(1)
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_health_records_relay_reconnect_details() {
+        let store = TransportHealthStore::default();
+
+        store.record_relay_connected("wss://relay-a.example.test");
+        store.record_relay_reconnect_attempt(
+            "wss://relay-b.example.test",
+            "relay heartbeat send failed",
+            Duration::from_millis(750),
+        );
+
+        let snapshot = store.snapshot(256, 512, 8);
+        assert_eq!(snapshot.relay_reconnect_attempts, 1);
+        assert_eq!(
+            snapshot.relay_last_reconnect_reason.as_deref(),
+            Some("relay heartbeat send failed")
+        );
+        assert_eq!(snapshot.relay_last_reconnect_delay_ms, Some(750));
+        assert_eq!(
+            snapshot.relay_last_reconnect_url.as_deref(),
+            Some("wss://relay-b.example.test")
+        );
+        assert_eq!(
+            snapshot.relay_last_connected_url.as_deref(),
+            Some("wss://relay-a.example.test")
+        );
+    }
+}

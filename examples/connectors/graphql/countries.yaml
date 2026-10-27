@@ -1,0 +1,30 @@
+kind: connector
+name: countries_graphql
+description: Public Countries GraphQL connector.
+adapter: graphql
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: country
+    description: Read basic country metadata by ISO country code.
+    safety: read
+    input_schema:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+      additionalProperties: false
+    config:
+      endpoint: https://countries.trevorblades.com/
+      query: |
+        query Country($code: ID!) {
+          country(code: $code) {
+            code
+            name
+            capital
+            currency
+          }
+        }
+      variables:
+        code: "{{code}}"

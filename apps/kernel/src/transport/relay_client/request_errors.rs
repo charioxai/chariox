@@ -1,0 +1,723 @@
+//! Relay request classification and error projection.
+
+use chariox_relay::protocol::RelayError;
+
+use crate::error::DaemonError;
+use crate::local::LocalDaemonRequest;
+
+pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
+    match error {
+        DaemonError::UserDomainRefused { reason } => {
+            relay_error(reason.code(), &error.to_string(), false)
+        }
+        DaemonError::AgentWorkerCleanup { source, .. } => {
+            let mut mapped = map_relay_error(source);
+            mapped.message = error.to_string();
+            mapped
+        }
+        DaemonError::MachineRequest { code, .. } => {
+            relay_error(code.as_str(), &error.to_string(), code == "exec_input_busy")
+        }
+        DaemonError::SteerDeliveredEventUnrecorded { .. } => {
+            relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
+        }
+        DaemonError::ProviderProfileRefused { .. }
+        | DaemonError::ExternalRequestFailed { .. }
+        | DaemonError::AgentNotInSession { .. }
+        | DaemonError::AgentNotFound { .. }
+        | DaemonError::NoActivePrompt { .. }
+        | DaemonError::ProviderPromptSteerRejected { .. }
+        | DaemonError::LocalTransport {
+            operation: "steer active prompt" | "resolve account profile",
+            ..
+        } => {
+            let mapped = crate::transport::kernel_protocol::map_kernel_error(error);
+            relay_error(
+                &mapped.code,
+                crate::error::external_request_failure_message(&mapped.code),
+                mapped.retryable,
+            )
+        }
+        DaemonError::SessionNotFound { .. } => {
+            relay_error("session_not_found", &error.to_string(), false)
+        }
+        DaemonError::GatewayKeyRevoked => {
+            relay_error("authorization_denied", &error.to_string(), false)
+        }
+        DaemonError::SessionAliasConflict { .. } => {
+            relay_error("session_alias_conflict", &error.to_string(), false)
+        }
+        DaemonError::InvalidSessionAlias { .. } => {
+            relay_error("invalid_session_alias", &error.to_string(), false)
+        }
+        DaemonError::AttachmentNotFound { .. } => {
+            relay_error("attachment_not_found", &error.to_string(), false)
+        }
+        DaemonError::AttachmentNotInSession { .. } => {
+            relay_error("attachment_not_in_session", &error.to_string(), false)
+        }
+        DaemonError::NoActiveProviderRun { .. } => {
+            relay_error("no_active_provider_run", &error.to_string(), false)
+        }
+        DaemonError::LocalTransport { operation, message }
+            if operation.starts_with("environment.") =>
+        {
+            let code = message
+                .split_once(':')
+                .map_or(message.as_str(), |(code, _)| code);
+            relay_error(code, &error.to_string(), false)
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "launch remote provider without credential" =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
+                == crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, message }
+            if *operation == "project environment setup" =>
+        {
+            let code = if message == "setup operation was not found" {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_NOT_FOUND_CODE
+            } else {
+                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE
+            };
+            relay_error(code, &error.to_string(), false)
+        }
+        DaemonError::LocalTransport { .. } => {
+            relay_error("transport_error", &error.to_string(), true)
+        }
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } => relay_error(code, message, *retryable),
+        DaemonError::RelayPeerCleanupAbsent { code, .. } => {
+            relay_error(code, &error.to_string(), false)
+        }
+        DaemonError::ProviderAccountCopy {
+            code, retryable, ..
+        } => relay_error(
+            code,
+            crate::provider_account_copy::failure_message(code),
+            *retryable,
+        ),
+        DaemonError::ManagedContext {
+            code, retryable, ..
+        } => relay_error(code, &error.to_string(), *retryable),
+        DaemonError::KernelRuntimeRoleDenied { .. } => {
+            relay_error("kernel_runtime_role_denied", &error.to_string(), false)
+        }
+        DaemonError::LeaseCallerUnauthorized { .. } => {
+            relay_error("unauthorized", &error.to_string(), false)
+        }
+        DaemonError::RemoteLeasesDisabled { .. } => {
+            relay_error("remote_leases_disabled", &error.to_string(), false)
+        }
+        DaemonError::ExecutionLeaseNotFound { .. } => {
+            relay_error("execution_lease_not_found", &error.to_string(), false)
+        }
+        DaemonError::LeasedAgentNotFound { .. } => {
+            relay_error("leased_agent_not_found", &error.to_string(), false)
+        }
+        _ => relay_error("relay_request_failed", &error.to_string(), false),
+    }
+}
+
+pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {
+    RelayError {
+        code: code.to_string(),
+        message: message.to_string(),
+        retryable,
+    }
+}
+
+pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
+    match request {
+        LocalDaemonRequest::ListWaitingRoomSessions(_) => "waiting_room.sessions.list",
+        LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
+        LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
+        LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
+        LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
+        LocalDaemonRequest::GetProviderCatalog(_) => "provider.catalog.get",
+        LocalDaemonRequest::SearchRecall(_) => "recall.search",
+        LocalDaemonRequest::SemanticSearchRecall(_) => "recall.semantic_search",
+        LocalDaemonRequest::ListSessions(_) => "session.list",
+        LocalDaemonRequest::CreateSession(_) => "session.create",
+        LocalDaemonRequest::AttachToSession(_) => "session.attach",
+        LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
+        LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
+        LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
+        LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
+        LocalDaemonRequest::GetRoomEnvironmentResourceInventory(_) => {
+            "environment.resource_inventory.get"
+        }
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(_) => {
+            "environment.tab.accessibility.get"
+        }
+        LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
+        LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(_) => "environment.pointer.update",
+        LocalDaemonRequest::SetRoomBrowserBar(_) => "environment.browser_bar.set",
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(_) => "environment.action.submit",
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_) => {
+            "environment.browser_action.submit"
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(_) => "environment.clipboard.read",
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
+        LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
+        LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
+        LocalDaemonRequest::GetSessionHistoryBlobContents(_) => "session.history.blobs.get",
+        LocalDaemonRequest::ListSlices(_) => "slice.list",
+        LocalDaemonRequest::CreateSlice(_) => "slice.create",
+        LocalDaemonRequest::GetSlice(_) => "slice.get",
+        LocalDaemonRequest::StartSlice(_) => "slice.start",
+        LocalDaemonRequest::StopSlice(_) => "slice.stop",
+        LocalDaemonRequest::DeleteSlice(_) => "slice.delete",
+        LocalDaemonRequest::ImportSliceProviderAuth(_) => "slice.auth.import",
+        LocalDaemonRequest::RemoveSliceProviderAuth(_) => "slice.auth.remove",
+        LocalDaemonRequest::StartSliceProviderLogin(_) => "slice.auth.login",
+        LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
+        LocalDaemonRequest::GetSliceLogs(_) => "slice.logs.get",
+        LocalDaemonRequest::ListSliceAudit(_) => "slice.audit.list",
+        LocalDaemonRequest::SaveSliceState(_) => "slice.state.save",
+        LocalDaemonRequest::GetSliceStateStatus(_) => "slice.state.status",
+        LocalDaemonRequest::ResetSliceState(_) => "slice.state.reset",
+        LocalDaemonRequest::CreateSliceBackup(_) => "slice.backup.create",
+        LocalDaemonRequest::RestoreSliceBackup(_) => "slice.backup.restore",
+        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
+        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
+            "project.environment_setup.status"
+        }
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
+        LocalDaemonRequest::LaunchProviderRun(_) => "provider.run.launch",
+        LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider.run.selection.update",
+        LocalDaemonRequest::CreateWorkspaceDirectory(_) => "workspace.directory.create",
+        LocalDaemonRequest::CreateWorkspaceWorktree(_) => "workspace.worktree.create",
+        LocalDaemonRequest::GetWorkspaceGitOverview(_) => "workspace.git.overview",
+        LocalDaemonRequest::ListWorkspaceFiles(_) => "workspace.files.list",
+        LocalDaemonRequest::GetWorkspaceFileContent(_) => "workspace.file.content",
+        LocalDaemonRequest::RunAgentUtility(_) => "agent.utility.run",
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(_) => {
+            "workspace.commit_message.generate"
+        }
+        LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
+        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
+        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
+        let mapped = map_relay_error(&DaemonError::NoActivePrompt {
+            session_id: "settled-room".to_string(),
+        });
+        assert_eq!(mapped.code, "no_active_prompt");
+        assert!(!mapped.message.contains("no active prompt"));
+        let received = DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: mapped.code,
+            message: mapped.message,
+            retryable: mapped.retryable,
+        };
+        assert!(received.is_no_active_prompt());
+        for message in ["no active prompt", "NoActivePrompt", "no_active_prompt"] {
+            assert!(DaemonError::RelayTransport {
+                operation: "settle remote prompt",
+                code: "transport_error".to_string(),
+                message: message.to_string(),
+                retryable: false,
+            }
+            .is_no_active_prompt());
+        }
+        assert!(!DaemonError::RelayTransport {
+            operation: "settle remote prompt",
+            code: "prompt_steer_rejected".to_string(),
+            message: "active prompt changed".to_string(),
+            retryable: false,
+        }
+        .is_no_active_prompt());
+    }
+
+    #[test]
+    fn local_profile_refusal_names_account_but_relay_uses_static_remedy() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("local-account-refusal");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "Review account")
+            .unwrap();
+        let error = registry
+            .require_authenticated("local", "codex", &profile.profile_id, None, "submit prompt")
+            .unwrap_err();
+        let local = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert!(local.message.contains(&profile.label), "{}", local.message);
+        assert!(
+            local.message.contains("Provider Accounts"),
+            "{}",
+            local.message
+        );
+        assert!(!local.message.contains(&profile.profile_id));
+        let external = map_relay_error(&error);
+        assert_eq!(external.code, "provider_profile_unverified");
+        assert!(external.message.contains("RefreshProviderAccountProfile"));
+        assert!(!external.message.contains(&profile.label));
+        assert!(!external.message.contains(&profile.profile_id));
+    }
+
+    #[test]
+    fn ensure_remote_account_unverified_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::Unknown,
+            "provider_profile_unverified",
+        );
+    }
+
+    #[test]
+    fn ensure_remote_account_unauthenticated_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::NotConfigured,
+            "provider_profile_unauthenticated",
+        );
+    }
+
+    #[test]
+    fn ensure_remote_account_usage_refusal_is_not_retryable() {
+        assert_ensure_remote_account_refusal(
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            "provider_profile_usage_exhausted",
+        );
+    }
+
+    fn assert_ensure_remote_account_refusal(
+        auth_state: crate::account_profile::ProviderAccountAuthState,
+        expected_code: &str,
+    ) {
+        use crate::account_profile::{
+            ProviderAccountProfileRegistry, ProviderAccountUsageSnapshot,
+        };
+
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("ensure-account-refusal");
+        let registry =
+            ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "private-label-canary")
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let usage: ProviderAccountUsageSnapshot = serde_json::from_value(serde_json::json!({
+            "profile_id": profile.profile_id,
+            "provider": "codex",
+            "availability": "available",
+            "source": "regression",
+            "observed_at_ms": now,
+            "meters": (["rolling_limit", "credit_balance"].map(|kind| serde_json::json!({
+                "meter_id": kind,
+                "label": kind,
+                "kind": kind,
+                "scope": "account",
+                "state": "exhausted",
+                "source": "regression",
+                "observed_at_ms": now,
+            }))),
+        }))
+        .unwrap();
+        registry
+            .update_observation(
+                "local",
+                "codex",
+                &profile.profile_id,
+                auth_state,
+                None,
+                None,
+                None,
+                Some(usage),
+            )
+            .unwrap();
+        let error = registry
+            .require_authenticated(
+                "local",
+                "codex",
+                &profile.profile_id,
+                None,
+                crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
+            )
+            .unwrap_err();
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, expected_code);
+        assert!(!mapped.retryable);
+        assert_eq!(
+            mapped.message,
+            crate::error::external_request_failure_message(expected_code),
+        );
+        assert!(!mapped.message.contains(&profile.label));
+        assert!(!mapped.message.contains(&profile.profile_id));
+        let home =
+            crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+                operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
+                code: mapped.code,
+                message: mapped.message,
+                retryable: mapped.retryable,
+            });
+        assert_eq!(home.code, expected_code);
+        assert!(!home.retryable);
+        assert_eq!(
+            home.message,
+            crate::error::external_request_failure_message(expected_code)
+        );
+    }
+
+    #[test]
+    fn typed_profile_refusal_keeps_the_existing_leased_admission_code() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("lane-leased-account-refusal");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .create_managed("local", "codex", "private-label-canary")
+            .unwrap();
+        let error = registry
+            .require_authenticated(
+                "local",
+                "codex",
+                &profile.profile_id,
+                None,
+                crate::transport::relay_peer::ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION,
+            )
+            .unwrap_err();
+        let mapped = map_relay_error(&error);
+        assert_eq!(
+            mapped.code,
+            crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+        );
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains("RefreshProviderAccountProfile"));
+        assert!(!mapped.message.contains("private-label-canary"));
+    }
+    use crate::local::{
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
+        GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,
+        ReleaseRoomEnvironmentInputRequest, RequestRoomEnvironmentInputTakeoverRequest,
+        RetryRoomEnvironmentRequest, RoomEnvironmentPointerPositionRequest,
+        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+        UpdateRoomEnvironmentPointerRequest, UpdateRoomEnvironmentViewportRequest,
+    };
+
+    #[test]
+    fn missing_account_resolution_is_definitive_on_relay() {
+        let error = DaemonError::LocalTransport {
+            operation: "resolve account profile",
+            message: "account is absent on this kernel; copy login or sign in".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "provider_profile_unavailable");
+        assert!(!mapped.retryable);
+        assert!(mapped.message.contains("ListProviderAccountProfiles"));
+        let transient = DaemonError::LocalTransport {
+            operation: "read account profile registry",
+            message: "temporary read failure".into(),
+        };
+        assert!(map_relay_error(&transient).retryable);
+    }
+
+    #[test]
+    fn a_leased_prompt_account_refusal_is_a_definitive_pre_admission_code() {
+        let error = DaemonError::LocalTransport {
+            operation: "admit leased prompt account",
+            message: "selected claude account `work` is not authenticated".into(),
+        };
+        let mapped = map_relay_error(&error);
+        assert_eq!(mapped.code, "provider_account_unusable");
+        assert!(!mapped.retryable);
+        assert_eq!(mapped.message, error.to_string());
+    }
+
+    #[test]
+    fn room_environment_state_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.state.get");
+    }
+
+    #[test]
+    fn room_environment_events_use_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+                session_id: "session-1".to_string(),
+                cursor: 12,
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.events.get");
+    }
+
+    #[test]
+    fn room_environment_history_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+            ListRoomEnvironmentActionHistoryRequest {
+                session_id: "session-1".to_string(),
+                before_sequence: Some(12),
+                limit: Some(25),
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.history.list");
+    }
+
+    #[test]
+    fn room_environment_start_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+            viewport: RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.start");
+    }
+
+    #[test]
+    fn room_environment_stop_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.stop");
+    }
+
+    #[test]
+    fn room_environment_retry_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.retry");
+    }
+
+    #[test]
+    fn room_environment_control_errors_keep_stable_relay_codes() {
+        let error = DaemonError::LocalTransport {
+            operation: "environment.start",
+            message: "environment_invalid_lifecycle_transition: invalid transition".to_string(),
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
+        assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn structured_relay_errors_preserve_code_and_retryability() {
+        let error = DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_disconnected".to_string(),
+            message: "target daemon disconnected from relay".to_string(),
+            retryable: true,
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "target_disconnected");
+        assert_eq!(relay_error.message, "target daemon disconnected from relay");
+        assert!(relay_error.retryable);
+    }
+
+    #[test]
+    fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
+        use crate::error::UserDomainRefusalReason;
+        for reason in [
+            UserDomainRefusalReason::NotFocusedAgent,
+            UserDomainRefusalReason::ForeignOwner,
+            UserDomainRefusalReason::StaleEpoch,
+            UserDomainRefusalReason::StaleReference,
+            UserDomainRefusalReason::NotGranted,
+            UserDomainRefusalReason::SensitiveRequiresFocus,
+        ] {
+            let mapped = map_relay_error(&DaemonError::UserDomainRefused { reason });
+            assert_eq!(mapped.code, reason.code());
+            assert_eq!(mapped.message, "User-domain request refused");
+            assert!(!mapped.retryable);
+        }
+        let untrusted = map_relay_error(&DaemonError::LocalTransport {
+            operation: "controller.fixture",
+            message: "user_domain_not_granted: untrusted text".into(),
+        });
+        assert_eq!(untrusted.code, "transport_error");
+    }
+
+    #[test]
+    fn missing_project_environment_setup_is_an_authenticated_business_error() {
+        let error = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "setup operation was not found".to_string(),
+        };
+
+        let relay_error = map_relay_error(&error);
+        assert_eq!(relay_error.code, "project_environment_setup_not_found");
+        assert!(!relay_error.retryable);
+
+        let rejected = DaemonError::LocalTransport {
+            operation: "project environment setup",
+            message: "requested platform does not match this worker".to_string(),
+        };
+        let rejected_relay_error = map_relay_error(&rejected);
+        assert_eq!(
+            rejected_relay_error.code,
+            "project_environment_setup_rejected"
+        );
+        assert!(!rejected_relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_cleanup_errors_preserve_cause_classification() {
+        for (source, code, retryable) in [
+            (
+                DaemonError::LocalTransport {
+                    operation: "connect relay",
+                    message: "offline".to_string(),
+                },
+                "transport_error",
+                true,
+            ),
+            (
+                DaemonError::ExecutionLeaseNotFound {
+                    lease_id: "lease-1".to_string(),
+                },
+                "execution_lease_not_found",
+                false,
+            ),
+        ] {
+            let error = DaemonError::AgentWorkerCleanup {
+                agent_id: "agent-1".to_string(),
+                source: Box::new(source),
+            };
+            let mapped = map_relay_error(&error);
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.retryable, retryable);
+            assert!(mapped.message.contains("agent retained"));
+        }
+        let invariant = DaemonError::InternalInvariant {
+            operation: "agent.spawn",
+            message: "slice admission target count mismatch".to_string(),
+        };
+        let mapped = map_relay_error(&invariant);
+        assert_eq!(mapped.code, "relay_request_failed");
+        assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn room_environment_placement_errors_keep_stable_relay_codes() {
+        let error = DaemonError::LocalTransport {
+            operation: "environment.slice.bind",
+            message: "environment_slice_binding_rejected: slice belongs to another Room"
+                .to_string(),
+        };
+        assert_eq!(
+            map_relay_error(&error).code,
+            "environment_slice_binding_rejected"
+        );
+    }
+
+    #[test]
+    fn room_environment_viewport_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::UpdateRoomEnvironmentViewport(
+            UpdateRoomEnvironmentViewportRequest {
+                session_id: "session-1".to_string(),
+                expected_revision: 1,
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.viewport.update");
+    }
+
+    #[test]
+    fn room_environment_pointer_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::UpdateRoomEnvironmentPointer(UpdateRoomEnvironmentPointerRequest {
+                session_id: "session-1".to_string(),
+                runtime_generation: 1,
+                viewport_revision: 2,
+                pointer: Some(RoomEnvironmentPointerPositionRequest { x: 320, y: 180 }),
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.pointer.update");
+    }
+
+    #[test]
+    fn room_environment_takeover_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.input.takeover");
+    }
+
+    #[test]
+    fn room_environment_input_release_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+                session_id: "session-1".to_string(),
+                target: crate::session::InputTarget::Desktop,
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.input.release");
+    }
+
+    #[test]
+    fn room_environment_action_cancel_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-1".to_string(),
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.action.cancel");
+    }
+}

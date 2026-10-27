@@ -1,0 +1,979 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import {
+  applyWorkflowCodeRequest,
+  cancelWorkflowRunRequest,
+  controlWorkflowPublicationRuntimeRequest,
+  createSessionRequest,
+  createWorkflowPublicationRequest,
+  getProviderAuthStatusRequest,
+  getProviderCatalogRequest,
+  getWorkflowPublicationRequest,
+  getWorkflowRunRequest,
+  listWorkflowRunsRequest,
+  listWorkflowWatchdogsRequest,
+} from "@chariox/kernel-client/ipc-requests"
+import { createPublicationTraceProtocol } from "./lib/live-publication-trace-protocol.mjs"
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
+const kernelUrl = process.env.CHARIOX_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
+const workflowCodeNodePath = process.env.CHARIOX_WORKFLOW_CODE_NODE ?? process.execPath
+const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-")
+const artifactsDir = resolve(process.env.CHARIOX_TRACE_DRILL_ARTIFACTS_DIR ?? join(repoRoot, ".artifacts", `live-publication-traces-${stamp}`))
+const preflightOnly = process.argv.includes("--preflight-only")
+const continueOnPreflightFailure = process.argv.includes("--continue-on-preflight-failure")
+const skipPreflight = process.env.CHARIOX_TRACE_DRILL_SKIP_PREFLIGHT === "1"
+const requestedProviders = csvArg("--providers")
+const requestedTransports = csvArg("--transports")
+const requestedPolicies = csvArg("--policies")
+const activeRuntimeStops = []
+const runtimeStartTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
+const protocolTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
+const scheduleOnlyObservationTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
+const {
+  freePort,
+  invokeTransport,
+  waitForGatewayReady,
+  waitForPublicationStatus,
+} = createPublicationTraceProtocol({ protocolTimeoutMs, runtimeStartTimeoutMs })
+const allowPartialTraceEvidence = process.env.CHARIOX_TRACE_DRILL_ALLOW_PARTIAL_TRACE_EVIDENCE !== "0"
+const modelOverrideForProvider = (provider) => process.env[`CHARIOX_TRACE_DRILL_MODEL_${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`] ?? null
+const requestedModelForProvider = (provider, requestedModel) => modelOverrideForProvider(provider) ?? requestedModel
+const acceptableModelIdsForProvider = (provider, acceptableModelIds) => modelOverrideForProvider(provider) ? [modelOverrideForProvider(provider)] : acceptableModelIds
+const providerSpecs = [
+  {
+    provider: "opencode",
+    requestedModel: requestedModelForProvider("opencode", "Kimi K2.6"),
+    acceptableModelIds: acceptableModelIdsForProvider("opencode", ["kimi-k2.6"]),
+    authMode: "cli_catalog",
+  },
+  {
+    provider: "claude-headless",
+    requestedModel: requestedModelForProvider("claude-headless", "Sonnet 3.6"),
+    acceptableModelIds: acceptableModelIdsForProvider("claude-headless", ["claude-sonnet-3-6", "claude-sonnet-3.6"]),
+    authMode: "kernel",
+  },
+  {
+    provider: "codex",
+    requestedModel: requestedModelForProvider("codex", "gpt-5.5"),
+    acceptableModelIds: acceptableModelIdsForProvider("codex", ["gpt-5.5"]),
+    authMode: "kernel",
+  },
+]
+const transports = [
+  { id: "human_http", route: "/prompt/*", methods: ["GET", "POST"], transport: { kind: "human_http" }, parser: { kind: "path_template", template: "/prompt/:prompt" }, mode: "sync" },
+  { id: "schedule_only", route: null, methods: [], transport: { kind: "schedule_only" }, parser: null, mode: "async", kind: "schedule_only" },
+]
+const policies = [
+  { id: "none", levels: null },
+  { id: "output_summary", levels: ["output_summary"] },
+  { id: "assistant_messages", levels: ["assistant_messages"] },
+  { id: "thinking", levels: ["thinking"] },
+  { id: "tool_use", levels: ["tool_use"] },
+  { id: "all", levels: ["output_summary", "assistant_messages", "thinking", "tool_use"] },
+  { id: "mixed", mixed: true },
+]
+const markerNames = {
+  output_summary: "TRACE_SUMMARY",
+  assistant_messages: "TRACE_ASSISTANT",
+  thinking: "TRACE_THINKING",
+  tool_use: "TRACE_TOOL",
+  final: "TRACE_FINAL",
+}
+
+await mkdir(artifactsDir, { recursive: true })
+const client = new LocalIpcClient(kernelUrl)
+let shuttingDown = false
+const report = {
+  generated_at: new Date().toISOString(),
+  kernel_url: kernelUrl,
+  workflow_code_node_path: workflowCodeNodePath,
+  artifacts_dir: artifactsDir,
+  preflight: null,
+  allow_partial_trace_evidence: allowPartialTraceEvidence,
+  matrix: [],
+  screenshots: {},
+}
+for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.once(signal, () => {
+    void cleanupAndExit(exitCode)
+  })
+}
+
+try {
+  try {
+    report.preflight = skipPreflight ? skippedPreflight() : await preflight(client)
+  } catch (error) {
+    report.preflight = {
+      ok: false,
+      error: error instanceof Error ? error.stack ?? error.message : String(error),
+      cli: {},
+      providers: [],
+    }
+  }
+  await writeArtifact("preflight.json", report.preflight)
+  if (preflightOnly) {
+    await writeReport()
+    process.exit(report.preflight.ok ? 0 : 2)
+  }
+  if (!report.preflight.ok && !continueOnPreflightFailure) {
+    await writeReport()
+    console.error(`live publication trace drill preflight failed; see ${join(artifactsDir, "report.json")}`)
+    process.exit(2)
+  }
+  for (const provider of report.preflight.providers.filter((entry) => entry.ok && selected(requestedProviders, entry.provider))) {
+    await runProviderMatrix(client, provider)
+  }
+  await writeReport()
+  const failures = report.matrix.filter((entry) => entry.status !== "pass")
+  process.exit(failures.length === 0 ? 0 : 1)
+} finally {
+  await stopActiveRuntimes(client)
+  await client.close().catch(() => {})
+}
+
+async function preflight(client) {
+  const cli = {
+    codex: await commandVersion("codex", ["--version"]),
+    claude: await commandVersion("claude", ["--version"]),
+    opencode: await commandVersion("opencode", ["--version"]),
+  }
+  const catalogResponse = await withTimeout(
+    client.send(getProviderCatalogRequest()),
+    runtimeStartTimeoutMs,
+    "loading provider catalog",
+  )
+  const catalog = catalogResponse?.ProviderCatalog?.catalog
+  const providers = []
+  for (const spec of providerSpecs) {
+    const providerCatalog = catalog?.all?.find((provider) => provider.id === spec.provider) ?? null
+    const modelResolution = resolveRequestedModel(providerCatalog, spec)
+    const model = modelResolution.model
+    const auth = await providerAuth(client, spec)
+    providers.push({
+      provider: spec.provider,
+      requested_model: spec.requestedModel,
+      requested_model_available: modelResolution.requestedAvailable,
+      resolved_model: model?.id ?? null,
+      resolved_model_name: model?.name ?? null,
+      model_status: model?.status ?? null,
+      model_resolution: modelResolution.reason,
+      catalog_provider_present: Boolean(providerCatalog),
+      auth,
+      ok: Boolean(providerCatalog && model && auth.ok),
+      unavailable_reason: providerCatalog
+        ? model
+          ? auth.ok ? null : auth.reason
+          : `requested model ${spec.requestedModel} was not found in provider catalog`
+        : "provider was not found in provider catalog",
+      available_models: providerCatalog ? Object.values(providerCatalog.models ?? {}).map((model) => ({ id: model.id, name: model.name, status: model.status })) : [],
+    })
+  }
+  return {
+    ok: providers.every((provider) => provider.ok),
+    cli,
+    providers,
+  }
+}
+
+function skippedPreflight() {
+  const providers = providerSpecs
+    .filter((spec) => selected(requestedProviders, spec.provider))
+    .map((spec) => ({
+      provider: spec.provider,
+      requested_model: spec.requestedModel,
+      requested_model_available: true,
+      resolved_model: spec.acceptableModelIds[0] ?? spec.requestedModel,
+      resolved_model_name: spec.requestedModel,
+      model_status: "skipped_preflight",
+      model_resolution: "skipped_preflight",
+      catalog_provider_present: true,
+      auth: { ok: true, mode: "skipped_preflight", reason: null },
+      ok: true,
+      unavailable_reason: null,
+      available_models: [],
+    }))
+  return {
+    ok: true,
+    skipped: true,
+    cli: {},
+    providers,
+  }
+}
+
+async function providerAuth(client, spec) {
+  if (spec.authMode === "cli_catalog") {
+    return { ok: true, mode: "cli_catalog", reason: null }
+  }
+  try {
+    const response = await withTimeout(
+      client.send(getProviderAuthStatusRequest(spec.provider)),
+      runtimeStartTimeoutMs,
+      `checking ${spec.provider} auth status`,
+    )
+    const status = response?.ProviderAuthStatus?.status
+    const ok = status?.auth_state === "authenticated"
+    return { ok, mode: "kernel", status, reason: ok ? null : `auth_state=${status?.auth_state ?? "unknown"}` }
+  } catch (error) {
+    return { ok: false, mode: "kernel", reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function resolveRequestedModel(providerCatalog, spec) {
+  const models = Object.values(providerCatalog?.models ?? {})
+  const requested = models.find((model) => spec.acceptableModelIds.includes(model.id))
+    ?? models.find((model) => normalizeModelToken(model.id) === normalizeModelToken(spec.requestedModel))
+    ?? models.find((model) => normalizeModelToken(model.name) === normalizeModelToken(spec.requestedModel))
+  if (requested) {
+    return { model: requested, requestedAvailable: true, reason: "requested" }
+  }
+  const fallback = models.find((model) => isUsableFallbackModel(model) && matchesRequestedModelFamily(model, spec))
+    ?? models.find(isUsableFallbackModel)
+    ?? models[0]
+    ?? null
+  return {
+    model: fallback,
+    requestedAvailable: false,
+    reason: fallback
+      ? `fallback: requested model ${spec.requestedModel} was not found`
+      : `missing: requested model ${spec.requestedModel} was not found and provider has no catalog models`,
+  }
+}
+
+function isUsableFallbackModel(model) {
+  const status = String(model?.status ?? "").toLowerCase()
+  if (!status) return true
+  return !/(unavailable|disabled|deprecated|unauth|missing|error)/.test(status)
+}
+
+function matchesRequestedModelFamily(model, spec) {
+  const requested = normalizeModelToken(spec.requestedModel)
+  const candidate = normalizeModelToken(`${model?.id ?? ""} ${model?.name ?? ""}`)
+  const families = ["sonnet", "opus", "haiku", "fable", "gpt", "kimi"]
+  return families.some((family) => requested.includes(family) && candidate.includes(family))
+}
+
+function normalizeModelToken(value) {
+  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "")
+}
+
+async function runProviderMatrix(client, provider) {
+  const sessionAlias = `trace-${provider.provider}-${Date.now()}`
+  const workspaceRoot = await mkdtemp(join(tmpdir(), `${sessionAlias}-`))
+  const session = await unwrap(
+    withTimeout(
+      client.send(createSessionRequest(workspaceRoot, workspaceRoot, sessionAlias)),
+      runtimeStartTimeoutMs,
+      `creating session for ${provider.provider}`,
+    ),
+    "SessionCreated",
+  )
+  const sessionId = session.session.id
+  const appliedByTransport = new Map()
+
+  for (const policy of policies.filter((policy) => selected(requestedPolicies, policy.id))) {
+    for (const transport of transports.filter((transport) => selected(requestedTransports, transport.id))) {
+      const { workflowId, endpointId, nodeIds } = await workflowForTransport(client, sessionId, provider, transport, appliedByTransport)
+      const matrixEntry = {
+        provider: provider.provider,
+        model: provider.resolved_model,
+        transport: transport.id,
+        policy: policy.id,
+        status: "pending",
+        thinking_emitted: null,
+        tool_use_emitted: null,
+        artifacts: {},
+        error: null,
+      }
+      report.matrix.push(matrixEntry)
+      const prefix = `${provider.provider}/${policy.id}/${transport.id}`
+      let rawResponseWritten = false
+      try {
+        const publication = await createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix)
+        await writeArtifact(`${prefix}/publication.json`, publication)
+        const runtime = transport.id === "schedule_only"
+          ? scheduleOnlyObservationRuntime(publication)
+          : await startPublicationRuntime(client, sessionId, publication.id, transport, prefix)
+        if (transport.id !== "schedule_only") {
+          activeRuntimeStops.push({ sessionId, publicationId: publication.id })
+        }
+        await writeArtifact(`${prefix}/runtime.json`, runtime)
+        const raw = await withTimeout(
+          invokeTransport(runtime.local_url ?? runtime.open_url ?? runtime.viewer_url, transport, provider, policy),
+          protocolTimeoutMs + 5_000,
+          `invoking ${transport.id} publication ${publication.id}`,
+        )
+        await writeArtifact(`${prefix}/raw-response.json`, raw)
+        rawResponseWritten = true
+        let statusPayload = runtime.local_url
+          ? await waitForPublicationStatus(runtime.local_url, transport)
+          : transport.id === "schedule_only"
+            ? await waitForScheduleOnlyPublicationStatus(client, sessionId, publication.id)
+            : null
+        if (transport.id === "schedule_only" && !latestRunIdFromStatus(statusPayload)) {
+          const stopped = await stopRuntime(client, sessionId, matrixEntry, prefix)
+          if (stopped) statusPayload = statusPayloadFromRuntimeControl(stopped, statusPayload)
+        }
+        await writeArtifact(`${prefix}/publication-status.json`, statusPayload)
+        const latestRunId = latestRunIdFromStatus(statusPayload) ?? raw.workflow_run_id ?? null
+        const workflowRunSessionId = statusPayload?.runtime_session_id ?? statusPayload?.inspect?.publication?.session_id ?? sessionId
+        const workflowRun = latestRunId ? await workflowRunSnapshot(client, workflowRunSessionId, latestRunId) : null
+        await writeArtifact(`${prefix}/workflow-run.json`, workflowRun)
+        const visibleWorkflowRun = workflowRun ? visibleWorkflowRunForPublication(publication, workflowRun) : null
+        const assertions = assertExposure({
+          raw,
+          statusPayload,
+          visible: JSON.stringify([raw, statusPayload, visibleWorkflowRun]),
+          workflowRun,
+          policy,
+          transport,
+          nodeIds,
+        })
+        await writeArtifact(`${prefix}/assertions.json`, assertions)
+        await cancelNonTerminalWorkflowRun(client, workflowRunSessionId, workflowRun, `${prefix}/workflow-run-cancelled.json`)
+        matrixEntry.thinking_emitted = assertions.provider_emitted.thinking
+        matrixEntry.tool_use_emitted = assertions.provider_emitted.tool_use
+        matrixEntry.artifacts = {
+          publication: `${prefix}/publication.json`,
+          raw_response: `${prefix}/raw-response.json`,
+          status: `${prefix}/publication-status.json`,
+          workflow_run: `${prefix}/workflow-run.json`,
+          assertions: `${prefix}/assertions.json`,
+        }
+        matrixEntry.status = assertions.ok ? "pass" : "fail"
+        if (!assertions.ok) matrixEntry.error = assertions.failures.join("; ")
+      } catch (error) {
+        matrixEntry.status = "fail"
+        matrixEntry.error = error instanceof Error ? error.stack ?? error.message : String(error)
+        if (!rawResponseWritten) {
+          await writeArtifact(`${prefix}/raw-response.json`, {
+            transport: transport.id,
+            timed_out: /timed out/i.test(matrixEntry.error),
+            error: matrixEntry.error,
+          })
+        }
+        await writeArtifact(`${prefix}/error.txt`, matrixEntry.error)
+      } finally {
+        await stopRuntime(client, sessionId, matrixEntry, prefix)
+      }
+    }
+  }
+}
+
+async function workflowForTransport(client, sessionId, provider, transport, appliedByTransport) {
+  const cacheKey = transport.id === "schedule_only"
+    ? null
+    : transport.id
+  const cached = cacheKey ? appliedByTransport.get(cacheKey) : null
+  if (cached) return cached
+  const workflowSource = workflowCodeSource(provider, transport)
+  const applied = await unwrap(
+    withTimeout(
+      client.send(applyWorkflowCodeRequest(sessionId, workflowCodeNodePath, workflowSource)),
+      runtimeStartTimeoutMs,
+      `applying ${transport.id} workflow code for ${provider.provider}`,
+    ),
+    "WorkflowCodeApplied",
+  )
+  await writeArtifact(`${provider.provider}/${transport.id}/workflow-applied.json`, applied)
+  const compiled = {
+    workflowId: applied.result.apply.workflow_id,
+    endpointId: applied.result.apply.endpoint_ids.entry,
+    nodeIds: applied.result.apply.node_ids,
+  }
+  if (cacheKey) appliedByTransport.set(cacheKey, compiled)
+  return compiled
+}
+
+async function createPublication(client, sessionId, workflowId, endpointId, nodeIds, policy, transport, prefix) {
+  const traceExposure = traceExposureForPolicy(policy, nodeIds)
+  const publicationOptions = {
+    alias: `${prefix}`.replaceAll("/", "-").slice(0, 60),
+    queueRef: "default",
+    kind: transport.kind ?? "ingress",
+    route: transport.route,
+    methods: transport.methods,
+    transport: transport.transport,
+    parser: transport.parser,
+    traceExposure,
+    syncTimeoutMs: 240_000,
+    pollMs: 500,
+  }
+  if (transport.id !== "schedule_only") publicationOptions.mode = transport.mode
+  const response = await unwrap(
+    withTimeout(
+      client.send(createWorkflowPublicationRequest(sessionId, workflowId, endpointId, publicationOptions)),
+      runtimeStartTimeoutMs,
+      `creating ${transport.id} publication for ${prefix}`,
+    ),
+    "WorkflowPublicationCreated",
+  )
+  return response.publication
+}
+
+function scheduleOnlyObservationRuntime(publication) {
+  return {
+    action: "observe",
+    local_url: null,
+    open_url: null,
+    viewer_url: null,
+    process_id: null,
+    publication,
+    status: "observing",
+    message: "schedule-only publication has no ingress runtime; observing kernel-owned schedules",
+  }
+}
+
+function traceExposureForPolicy(policy, nodeIds) {
+  if (policy.levels == null && !policy.mixed) return null
+  if (policy.mixed) {
+    const nodes = {
+      [nodeIds.planner]: ["output_summary", "assistant_messages", "thinking", "tool_use"],
+    }
+    if (nodeIds.worker) nodes[nodeIds.worker] = ["output_summary"]
+    if (nodeIds.finalizer) nodes[nodeIds.finalizer] = []
+    return { nodes }
+  }
+  return {
+    nodes: Object.fromEntries(Object.values(nodeIds).map((nodeId) => [nodeId, policy.levels])),
+  }
+}
+
+async function startPublicationRuntime(client, sessionId, publicationId, transport, prefix) {
+  const failures = []
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const port = await freePort()
+    const response = await unwrap(
+      withTimeout(client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "start", {
+        host: "127.0.0.1",
+        port,
+        kernelUrl,
+      })), runtimeStartTimeoutMs, `starting publication runtime ${publicationId}`),
+      "WorkflowPublicationRuntimeControlled",
+    )
+    await writeArtifact(`${prefix}/runtime-start-attempt-${attempt}.json`, response)
+    await writeArtifact(`${prefix}/runtime-start.json`, response)
+    try {
+      if (transport.id !== "schedule_only" && !response.local_url) throw new Error("publication runtime did not return a local_url")
+      if (response.local_url) await waitForGatewayReady(response.local_url)
+      return response
+    } catch (error) {
+      const message = error instanceof Error ? error.stack ?? error.message : String(error)
+      failures.push(message)
+      await writeArtifact(`${prefix}/runtime-start-attempt-${attempt}-error.txt`, message)
+      await client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "stop")).catch(() => {})
+      if (attempt === 2) throw new Error(failures.join("\n--- retry ---\n"))
+    }
+  }
+  throw new Error("publication runtime did not start")
+}
+
+
+
+async function stopRuntime(client, sessionId, matrixEntry, prefix) {
+  const stop = activeRuntimeStops.pop()
+  if (!stop) return
+  try {
+    const stopped = await stopPublicationRuntime(client, stop.sessionId ?? sessionId, stop.publicationId)
+    await writeArtifact(`${prefix}/runtime-stopped.json`, stopped)
+    return stopped
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error)
+    matrixEntry.runtime_stop_error = message
+    await writeArtifact(`${prefix}/runtime-stop-error.txt`, message)
+    return null
+  }
+}
+
+async function stopActiveRuntimes(client) {
+  while (activeRuntimeStops.length > 0) {
+    const stop = activeRuntimeStops.pop()
+    try {
+      const stopped = await stopPublicationRuntime(client, stop.sessionId, stop.publicationId)
+      const publication = stopped?.publication ?? null
+      const runId = latestRunIdFromStatus({ publication })
+      const runtimeSessionId = publication?.session_id ?? stop.sessionId
+      if (runId) {
+        const workflowRun = await workflowRunSnapshot(client, runtimeSessionId, runId).catch(() => null)
+        await cancelNonTerminalWorkflowRun(
+          client,
+          runtimeSessionId,
+          workflowRun,
+          `cleanup/${stop.publicationId}-workflow-run-cancelled.json`,
+        )
+      }
+    } catch {
+      // Best-effort cleanup during process shutdown.
+    }
+  }
+}
+
+async function stopPublicationRuntime(client, sessionId, publicationId) {
+  return await unwrap(
+    withTimeout(
+      client.send(controlWorkflowPublicationRuntimeRequest(sessionId, publicationId, "stop")),
+      runtimeStartTimeoutMs,
+      `stopping publication runtime ${publicationId}`,
+    ),
+    "WorkflowPublicationRuntimeControlled",
+  )
+}
+
+async function cleanupAndExit(exitCode) {
+  if (shuttingDown) return
+  shuttingDown = true
+  await stopActiveRuntimes(client)
+  await client.close().catch(() => {})
+  process.exit(exitCode)
+}
+
+
+
+async function waitForScheduleOnlyPublicationStatus(client, sessionId, publicationId) {
+  const deadline = Date.now() + scheduleOnlyObservationTimeoutMs
+  let last = null
+  let lastError = null
+  while (Date.now() < deadline) {
+    try {
+      const publicationResponse = await unwrap(
+        withTimeout(
+          client.send(getWorkflowPublicationRequest(sessionId, publicationId)),
+          Math.min(runtimeStartTimeoutMs, 10_000),
+          `loading schedule-only publication ${publicationId}`,
+        ),
+        "WorkflowPublication",
+      )
+      const publication = publicationResponse.publication
+      const observed = await scheduleOnlyObservedRun(client, sessionId, publication)
+      last = {
+        publication,
+        watchdogs: observed.watchdogs,
+        recent_runs: observed.runs,
+        latest_run: publication?.latest_run ?? observed.latestRun ?? null,
+        last_run: publication?.last_run ?? observed.latestRun ?? null,
+        latest_output: publication?.latest_output ?? observed.latestOutput ?? null,
+        runtime_session_id: publication?.session_id ?? sessionId,
+      }
+      const latestRunId = latestRunIdFromStatus(last)
+      if (latestRunId) {
+        const workflowRun = await workflowRunSnapshot(client, last.runtime_session_id, latestRunId).catch(() => null)
+        if (workflowRun) {
+          const visibleRun = visibleWorkflowRunForPublication(last.publication, workflowRun)
+          last.latest_run = visibleRun
+          last.last_run = visibleRun
+          last.latest_output = workflowRun.final_output
+            ? { kind: "final", message: workflowRun.final_output.message, artifacts: workflowRun.final_output.artifacts ?? [] }
+            : last.latest_output
+        }
+        if (workflowRun?.status && isTerminalStatus(workflowRun.status)) return last
+      }
+    } catch (error) {
+      lastError = error
+    }
+    await sleep(1_000)
+  }
+  if (last) last.observation_error = lastError instanceof Error ? lastError.message : lastError ? String(lastError) : null
+  return last
+}
+
+async function scheduleOnlyObservedRun(client, sessionId, publication) {
+  if (!publication?.workflow_id || !publication?.endpoint_id) {
+    return { watchdogs: [], runs: [], latestRun: null, latestOutput: null }
+  }
+  const watchdogResponse = await unwrap(
+    withTimeout(
+      client.send(listWorkflowWatchdogsRequest(sessionId, publication.workflow_id)),
+      Math.min(runtimeStartTimeoutMs, 10_000),
+      `listing schedule-only watchdogs for ${publication.id}`,
+    ),
+    "WorkflowWatchdogsListed",
+  )
+  const runResponse = await unwrap(
+    withTimeout(
+      client.send(listWorkflowRunsRequest(sessionId, publication.workflow_id)),
+      Math.min(runtimeStartTimeoutMs, 10_000),
+      `listing schedule-only workflow runs for ${publication.id}`,
+    ),
+    "WorkflowRunsListed",
+  )
+  const watchdogRunIds = new Set(
+    (watchdogResponse.watchdogs ?? [])
+      .filter((watchdog) => watchdog.endpoint_id === publication.endpoint_id)
+      .map((watchdog) => watchdog.last_workflow_run_id)
+      .filter(Boolean),
+  )
+  const runs = (runResponse.workflow_runs ?? [])
+    .filter((run) => run.endpoint_id === publication.endpoint_id || watchdogRunIds.has(run.id))
+    .sort((left, right) => (right.created_at_ms ?? 0) - (left.created_at_ms ?? 0))
+  const latestRun = runs.find((run) => run.status === "Completed") ?? runs[0] ?? null
+  const visibleRuns = runs.map((run) => visibleWorkflowRunForPublication(publication, run))
+  const visibleLatestRun = latestRun ? visibleWorkflowRunForPublication(publication, latestRun) : null
+  return {
+    watchdogs: watchdogResponse.watchdogs ?? [],
+    runs: visibleRuns,
+    latestRun: visibleLatestRun,
+    latestOutput: latestRun?.final_output
+      ? { kind: "final", message: latestRun.final_output.message, artifacts: latestRun.final_output.artifacts ?? [] }
+      : null,
+  }
+}
+
+function visibleWorkflowRunForPublication(publication, workflowRun) {
+  const policy = publication?.trace_exposure?.nodes ?? {}
+  const visible = {
+    id: workflowRun.id,
+    status: workflowRun.status,
+    workflow_id: workflowRun.workflow_id ?? null,
+    endpoint_id: workflowRun.endpoint_id ?? null,
+    created_at_ms: workflowRun.created_at_ms ?? null,
+    completed_at_ms: workflowRun.completed_at_ms ?? null,
+    final_output: workflowRun.final_output ?? null,
+  }
+  visible.node_runs = (workflowRun.node_runs ?? []).map((nodeRun) => {
+    const levels = new Set(policy[nodeRun.node_id] ?? [])
+    const entry = {
+      id: nodeRun.id,
+      node_id: nodeRun.node_id,
+      agent_id: nodeRun.agent_id,
+      status: nodeRun.status,
+      completed_at_ms: nodeRun.completed_at_ms ?? null,
+    }
+    if (levels.has("output_summary")) {
+      if (nodeRun.summary !== undefined) entry.summary = nodeRun.summary
+      if (nodeRun.completion?.summary !== undefined) {
+        entry.completion = { ...(entry.completion ?? {}), summary: nodeRun.completion.summary }
+      }
+    }
+    if (levels.has("assistant_messages") && nodeRun.completion?.output !== undefined) {
+      entry.completion = { ...(entry.completion ?? {}), output: nodeRun.completion.output }
+    }
+    if (levels.has("thinking") && nodeRun.thinking_traces !== undefined) {
+      entry.thinking_traces = nodeRun.thinking_traces
+    }
+    if (levels.has("tool_use") && nodeRun.turn_envelope?.runtime_tool_calls !== undefined) {
+      entry.turn_envelope = { runtime_tool_calls: nodeRun.turn_envelope.runtime_tool_calls }
+    }
+    return entry
+  })
+  return visible
+}
+
+function isTerminalStatus(status) {
+  return ["Completed", "Failed", "Stopped"].includes(status)
+}
+
+function latestRunIdFromStatus(statusPayload) {
+  return statusPayload?.latest_run?.id
+    ?? statusPayload?.last_run?.id
+    ?? statusPayload?.publication?.latest_run?.id
+    ?? statusPayload?.publication?.last_run?.id
+    ?? statusPayload?.inspect?.publication?.latest_run?.id
+    ?? statusPayload?.inspect?.publication?.last_run?.id
+    ?? null
+}
+
+function statusPayloadFromRuntimeControl(controlResponse, previousStatus) {
+  const publication = controlResponse?.publication ?? null
+  return {
+    ...(previousStatus ?? {}),
+    runtime_control: controlResponse,
+    publication,
+    latest_run: publication?.latest_run ?? previousStatus?.latest_run ?? null,
+    last_run: publication?.last_run ?? previousStatus?.last_run ?? null,
+    latest_output: publication?.latest_output ?? previousStatus?.latest_output ?? null,
+    runtime_session_id: publication?.session_id ?? previousStatus?.runtime_session_id ?? null,
+  }
+}
+
+
+
+function workflowCodeSource(provider, transport) {
+  const model = JSON.stringify(provider.resolved_model)
+  const providerId = JSON.stringify(provider.provider)
+  const outputSummaryMarker = markerNames.output_summary
+  const assistantMarker = markerNames.assistant_messages
+  const toolMarker = markerNames.tool_use
+  const finalMarker = markerNames.final
+  const workflowAlias = JSON.stringify(`live-trace-${provider.provider}-${transport.id}`)
+  const scheduledInvocationPrompt = JSON.stringify([
+    "Run live publication trace validation for scheduled_publication.",
+    "Follow the workflow node instructions exactly and keep channel-specific marker text in the channel requested by each node.",
+    "The final workflow output should only contain the final-output marker requested by the finalizer node.",
+  ].join("\n"))
+  const watchdog = transport.id === "schedule_only"
+    ? `workflow.watchdog(entry, { handle: "schedule", queue: "default", enabled: true, intervalSeconds: 1, invocationPrompt: ${scheduledInvocationPrompt}, policy: "queue", maxWakeups: 1 });`
+    : ""
+  return `
+workflow.define({ alias: ${workflowAlias}, maxConcurrent: 4 });
+const finalOutput = workflow.schema({
+  handle: "final",
+  alias: "Trace final",
+  schema: { type: "object", additionalProperties: true }
+});
+workflow.define({ runOutputSchema: finalOutput });
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "trace-planner", provider: ${providerId}, model: ${model} }),
+  publicLabel: "Planner",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. After acknowledging the workflow turn, your first required action is to call workflow_console_write exactly once with content equal to the literal string ${toolMarker}. Do not finish the turn until that workflow_console_write call has completed. Set your node summary to exactly the literal string ${outputSummaryMarker}. Send the Finalizer a compact JSON handoff message exactly {\\\"message\\\":\\\"${assistantMarker}\\\"}. Do not include ${assistantMarker}, ${toolMarker}, or ${finalMarker} in your summary. ${assistantMarker} is literal; do not replace it. If no handoff_schema_ref is present, finish by returning the required fenced JSON block directly; do not call validate_workflow_handoff.",
+  canCompleteWorkflowRun: false,
+  maxTurns: 2,
+  canvas: { x: 0, y: 120 },
+});
+const finalizer = workflow.node({
+  handle: "finalizer",
+  agent: workflow.newAgent({ alias: "trace-finalizer", provider: ${providerId}, model: ${model} }),
+  publicLabel: "Finalizer",
+  instructions: "TRACE_SUMMARY, TRACE_ASSISTANT, TRACE_TOOL, and TRACE_FINAL are literal validation sentinel strings. Do not rename, paraphrase, translate, or replace TRACE_ sentinels. First call ack_workflow_turn with the delivery token from the system prompt. Then call validate_and_submit_workflow_run_output with that same delivery token and workflow_output_json exactly equal to {\\\"message\\\":\\\"${finalMarker}\\\"}. Do not finish the turn until validate_and_submit_workflow_run_output returns valid true with no warning. Set your node summary to exactly final_done. After the final output tool succeeds, return exactly one fenced JSON block and no prose before or after it. The JSON block content must be exactly {\\\"summary\\\":\\\"final_done\\\",\\\"output\\\":{\\\"message\\\":\\\"${finalMarker}\\\"}}. ${finalMarker} is literal; do not replace it. Do not include ${outputSummaryMarker}, ${assistantMarker}, or ${toolMarker} in the final workflow output.",
+  canCompleteWorkflowRun: true,
+  maxTurns: 2,
+  canvas: { x: 360, y: 120 },
+});
+workflow.edge(planner, finalizer, { handle: "planner_finalizer" });
+const entry = workflow.endpoint(planner, { handle: "entry", alias: "entry", canvas: { x: -220, y: 120 } });
+${watchdog}
+`
+}
+
+function assertExposure({ raw, statusPayload, visible, workflowRun, policy, transport, nodeIds }) {
+  const serializedRun = JSON.stringify(workflowRun ?? {})
+  const providerEmitted = {
+    output_summary: serializedRun.includes(markerNames.output_summary),
+    assistant_messages: serializedRun.includes(markerNames.assistant_messages),
+    thinking: /thinking_traces":\s*\[/.test(serializedRun) && !/thinking_traces":\s*\[\s*\]/.test(serializedRun),
+    tool_use: /runtime_tool_calls":\s*\[/.test(serializedRun) && !/runtime_tool_calls":\s*\[\s*\]/.test(serializedRun),
+  }
+  const enabled = new Set(policy.levels ?? [])
+  const failures = []
+  for (const failure of protocolFailures(raw, statusPayload, workflowRun, transport, policy, providerEmitted)) {
+    failures.push(failure)
+  }
+  for (const level of ["output_summary", "assistant_messages", "thinking", "tool_use"]) {
+    const marker = markerNames[level]
+    const structuralPresent = structurallyExposesLevel(visible, level)
+    const markerPresent = visible.includes(marker)
+    const present = markerPresent || structuralPresent
+    if (!policy.mixed && level !== "thinking" && enabled.has(level) && !providerEmitted[level]) {
+      failures.push(`${level} was requested but not emitted by provider`)
+    }
+    if (!policy.mixed && enabled.has(level) && providerEmitted[level] && !present) {
+      failures.push(`${level} was emitted by provider but absent from exposed output`)
+    }
+    if (!policy.mixed && !enabled.has(level)) {
+      if (structuralPresent) {
+        failures.push(`${level} structural data leaked while disabled`)
+      } else if (!(enabled.has("thinking") && level !== "thinking") && markerPresent) {
+        failures.push(`${level} marker leaked while disabled`)
+      }
+    }
+  }
+  if (policy.mixed) {
+    const plannerSummaryVisible = visible.includes(markerNames.output_summary)
+    const plannerAssistantVisible = visible.includes(markerNames.assistant_messages)
+    if (providerEmitted.output_summary && !plannerSummaryVisible) {
+      failures.push("mixed per-node policy hid planner output_summary")
+    }
+    if (providerEmitted.assistant_messages && !plannerAssistantVisible) {
+      failures.push("mixed per-node policy hid planner assistant_messages")
+    }
+    if (!providerEmitted.output_summary) {
+      failures.push("mixed per-node policy did not emit planner output_summary")
+    }
+    if (!providerEmitted.assistant_messages) {
+      failures.push("mixed per-node policy did not emit planner assistant_messages")
+    }
+    if (!providerEmitted.tool_use) {
+      failures.push("mixed per-node policy did not emit planner tool_use")
+    }
+    if (nodeDetailLeaks([raw, statusPayload], nodeIds.worker, ["assistant_messages", "thinking", "tool_use"])) {
+      failures.push("mixed per-node policy leaked worker detail beyond output_summary")
+    }
+    if (nodeDetailLeaks([raw, statusPayload], nodeIds.finalizer, ["output_summary", "assistant_messages", "thinking", "tool_use"])) {
+      failures.push("mixed per-node policy leaked hidden finalizer detail")
+    }
+  }
+  return { ok: failures.length === 0, failures, provider_emitted: providerEmitted }
+}
+
+function nodeDetailLeaks(value, nodeId, disallowedLevels) {
+  if (!nodeId || value == null) return false
+  if (Array.isArray(value)) return value.some((entry) => nodeDetailLeaks(entry, nodeId, disallowedLevels))
+  if (typeof value !== "object") return false
+  const record = value
+  if (record.node_id === nodeId) {
+    if (typeof record.level === "string" && disallowedLevels.includes(record.level)) return true
+    if (disallowedLevels.includes("output_summary")) {
+      if (record.summary !== undefined || record.completion_summary !== undefined) return true
+      if (record.completion && typeof record.completion === "object" && record.completion.summary !== undefined) return true
+    }
+    if (disallowedLevels.includes("assistant_messages")) {
+      if (record.handoff_payload !== undefined || record.message_type === "handoff") return true
+      if (record.completion && typeof record.completion === "object" && record.completion.output !== undefined) return true
+    }
+    if (disallowedLevels.includes("thinking") && record.thinking_traces !== undefined) return true
+    if (disallowedLevels.includes("tool_use") && record.turn_envelope !== undefined) return true
+  }
+  return Object.values(record).some((entry) => nodeDetailLeaks(entry, nodeId, disallowedLevels))
+}
+
+function structurallyExposesLevel(visible, level) {
+  if (level === "output_summary") {
+    return visible.includes('"level":"output_summary"')
+      || visible.includes('"completion_summary"')
+  }
+  if (level === "assistant_messages") {
+    return visible.includes('"level":"assistant_messages"')
+      || visible.includes('"handoff_payload"')
+      || visible.includes('"message_type":"handoff"')
+  }
+  if (level === "thinking") {
+    return visible.includes("thinking_traces") || visible.includes('"level":"thinking"')
+  }
+  if (level === "tool_use") {
+    return visible.includes("runtime_tool_calls") || visible.includes('"level":"tool_use"')
+  }
+  return false
+}
+
+function protocolFailures(raw, statusPayload, workflowRun, transport, policy, providerEmitted) {
+  const failures = []
+  const hasPartialTraceEvidence = allowPartialTraceEvidence
+    && Boolean(workflowRun?.id)
+    && traceEvidenceSatisfied(policy, providerEmitted)
+  if (transport.id === "schedule_only") {
+    if (!workflowRun?.id && !statusPayload?.latest_run?.id && !statusPayload?.last_run?.id) failures.push("schedule-only publication did not produce an observable run")
+    if (!hasPartialTraceEvidence && workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+    if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
+    return failures
+  }
+  if (!hasPartialTraceEvidence && raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
+  if (!hasPartialTraceEvidence && raw?.error && raw.status == null) failures.push(`${transport.id} protocol invocation error: ${raw.error}`)
+  if (!hasPartialTraceEvidence && transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
+  if (!hasPartialTraceEvidence && workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
+  if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")
+  return failures
+}
+
+function traceEvidenceSatisfied(policy, providerEmitted) {
+  if (policy.mixed) {
+    return providerEmitted.output_summary && providerEmitted.assistant_messages && providerEmitted.tool_use
+  }
+  if (policy.levels == null) return true
+  return policy.levels.every((level) => level === "thinking" || providerEmitted[level])
+}
+
+async function workflowRunSnapshot(client, sessionId, runId) {
+  const response = await withTimeout(
+    client.send(getWorkflowRunRequest(sessionId, runId)),
+    runtimeStartTimeoutMs,
+    `loading workflow run ${runId}`,
+  )
+  return response?.WorkflowRun?.workflow_run ?? response
+}
+
+async function cancelNonTerminalWorkflowRun(client, sessionId, workflowRun, artifactPath) {
+  if (!workflowRun?.id || isTerminalStatus(workflowRun.status)) return
+  try {
+    const response = await unwrap(
+      withTimeout(
+        client.send(cancelWorkflowRunRequest(sessionId, workflowRun.id)),
+        runtimeStartTimeoutMs,
+        `cancelling workflow run ${workflowRun.id}`,
+      ),
+      "WorkflowRunCancelled",
+    )
+    await writeArtifact(artifactPath, response.workflow_run ?? response)
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error)
+    await writeArtifact(artifactPath.replace(/\.json$/, "-error.txt"), message)
+  }
+}
+
+
+
+async function unwrap(promise, variant) {
+  const response = await promise
+  const payload = response?.[variant]
+  if (!payload) throw new Error(`kernel response missing ${variant}: ${JSON.stringify(response)}`)
+  return payload
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeout
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs} ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function commandVersion(command, args) {
+  return await new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] })
+    let output = ""
+    child.stdout.on("data", (chunk) => output += String(chunk))
+    child.stderr.on("data", (chunk) => output += String(chunk))
+    child.on("error", (error) => resolve({ ok: false, command, error: error.message }))
+    child.on("close", (code) => resolve({ ok: code === 0, command, code, output: output.trim() }))
+  })
+}
+
+async function writeArtifact(relativePath, value) {
+  const path = join(artifactsDir, relativePath)
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, typeof value === "string" ? value : JSON.stringify(value, null, 2))
+  return path
+}
+
+function csvArg(name) {
+  const prefix = `${name}=`
+  const arg = process.argv.find((entry) => entry.startsWith(prefix))
+  if (!arg) return null
+  const values = arg.slice(prefix.length).split(",").map((entry) => entry.trim()).filter(Boolean)
+  return values.length > 0 ? new Set(values) : null
+}
+
+function selected(set, value) {
+  return !set || set.has(value)
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function writeReport() {
+  await writeArtifact("report.json", report)
+  const lines = [
+    "# Live Publication Trace Drill",
+    "",
+    `Generated: ${report.generated_at}`,
+    `Kernel: ${report.kernel_url}`,
+    `Workflow-code Node: ${report.workflow_code_node_path}`,
+    `Artifacts: ${report.artifacts_dir}`,
+    "",
+    "## Preflight",
+    "",
+    "| Provider | Requested model | Resolved model | Model resolution | Auth | Status |",
+    "|---|---|---|---|---|---|",
+    ...(report.preflight?.providers ?? []).map((provider) => `| ${provider.provider} | ${provider.requested_model} | ${provider.resolved_model ?? "missing"} | ${provider.model_resolution ?? ""} | ${provider.auth?.ok ? "ok" : "failed"} | ${provider.ok ? "ok" : provider.unavailable_reason} |`),
+    "",
+    "## Matrix",
+    "",
+    "| Provider | Model | Transport | Policy | Status | Thinking | Tool use | Error |",
+    "|---|---|---|---|---|---|---|---|",
+    ...report.matrix.map((entry) => `| ${entry.provider} | ${entry.model ?? ""} | ${entry.transport} | ${entry.policy} | ${entry.status} | ${entry.thinking_emitted ?? ""} | ${entry.tool_use_emitted ?? ""} | ${(entry.error ?? "").replaceAll("|", "\\|")} |`),
+    "",
+  ]
+  await writeArtifact("report.md", lines.join("\n"))
+}

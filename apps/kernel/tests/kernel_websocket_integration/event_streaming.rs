@@ -1,0 +1,492 @@
+use crate::support::kernel_websocket::*;
+use chariox_kernel::agent::CreateAgentRequest;
+use chariox_kernel::attachment::ClientCapabilityLevel;
+use chariox_kernel::local::{
+    AddWorkflowNodeRequest, AttachToSessionRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowRequest, DeleteSessionRequest, GetWorkflowRunRequest,
+    InvokeWorkflowEndpointRequest, LocalDaemonRequest, SpawnAgentRequest,
+};
+use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use chariox_kernel::{DaemonApp, DaemonConfig};
+use serde_json::json;
+use std::time::Duration;
+use tokio::sync::oneshot;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_streams_session_snapshot_and_unavailable_events() {
+    let workspace = ExecutionWorkspace::directory("kernel-ws");
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session",
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
+    )
+    .await;
+    let session_id = response_variant(&create_response, "SessionCreated")["session"]["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-test-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-session",
+            "session_id": session_id,
+            "attachment_id": attachment_id,
+        }),
+    )
+    .await;
+    let subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
+    assert_eq!(subscribe_response["response"]["ok"].as_bool(), Some(true));
+    assert!(subscribe_response["response"]["resumed_from_event_id"].is_null());
+
+    // The first heartbeat is emitted on subscribe and can precede the snapshot.
+    let mut events = wait_for_events(&mut socket, &["session_snapshot", "heartbeat"]).await;
+    let snapshot_event = events
+        .remove("session_snapshot")
+        .expect("session snapshot event should arrive");
+    assert_eq!(
+        snapshot_event["event"]["session"]["id"].as_str(),
+        Some(session_id.as_str())
+    );
+    let heartbeat_event = events
+        .remove("heartbeat")
+        .expect("heartbeat event should arrive");
+    assert_eq!(
+        heartbeat_event["event"]["session_id"].as_str(),
+        Some(session_id.as_str())
+    );
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "delete-session",
+            "request": LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: session_id,
+                workspace_id: Some(workspace.path().to_string()),
+            }),
+        }),
+    )
+    .await;
+    let (_delete_response, unavailable_event) =
+        wait_for_response_and_event(&mut socket, "delete-session", "session_unavailable").await;
+    assert_eq!(
+        unavailable_event["event"]["message"].as_str(),
+        Some("Current session is no longer available.")
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_streams_workflow_run_updates() {
+    let workspace = ExecutionWorkspace::new();
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let create_response = send_request(
+        &mut socket,
+        "create-session-workflow-run-events",
+        LocalDaemonRequest::CreateSession(workspace.session_request()),
+    )
+    .await;
+    let session = &response_variant(&create_response, "SessionCreated")["session"];
+    let session_id = session["id"]
+        .as_str()
+        .expect("session id should be present")
+        .to_string();
+    let spawn_response = send_request(
+        &mut socket,
+        "spawn-workflow-agent",
+        LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            no_subscribe: false,
+            session_id: session_id.clone(),
+            alias: Some("node-a".to_string()),
+            provider: Some("dev-stub".to_string()),
+            account_profile: None,
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }),
+    )
+    .await;
+    let agent_id = response_variant(&spawn_response, "AgentSpawned")["agent"]["id"]
+        .as_str()
+        .expect("spawned agent id should be present")
+        .to_string();
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-session-workflow-run-events",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.clone(),
+            client_id: "ws-workflow-run-event-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-workflow-run-events",
+            "session_id": session_id,
+            "attachment_id": attachment_id,
+        }),
+    )
+    .await;
+    let _subscribe_response = wait_for_response(&mut socket, "subscribe-workflow-run-events").await;
+
+    let workflow_response = send_request(
+        &mut socket,
+        "create-workflow",
+        LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+            session_id: session_id.clone(),
+            alias: Some("run-events".to_string()),
+        }),
+    )
+    .await;
+    let workflow_id = response_variant(&workflow_response, "WorkflowCreated")["workflow"]["id"]
+        .as_str()
+        .expect("workflow id should be present")
+        .to_string();
+    let node_response = send_request(
+        &mut socket,
+        "add-workflow-node",
+        LocalDaemonRequest::AddWorkflowNode(AddWorkflowNodeRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            agent_id,
+            expected_workflow_revision: None,
+        }),
+    )
+    .await;
+    let node_id = response_variant(&node_response, "WorkflowNodeAdded")["node"]["id"]
+        .as_str()
+        .expect("node id should be present")
+        .to_string();
+    let endpoint_response = send_request(
+        &mut socket,
+        "create-workflow-endpoint",
+        LocalDaemonRequest::CreateWorkflowEndpoint(CreateWorkflowEndpointRequest {
+            session_id: session_id.clone(),
+            workflow_ref: workflow_id.clone(),
+            entry_node_id: node_id,
+            alias: Some("entry".to_string()),
+            expected_workflow_revision: None,
+        }),
+    )
+    .await;
+    let endpoint_id = response_variant(&endpoint_response, "WorkflowEndpointCreated")["endpoint"]
+        ["id"]
+        .as_str()
+        .expect("endpoint id should be present")
+        .to_string();
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "invoke-workflow-endpoint",
+            "request": LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
+                session_id: session_id.clone(),
+                workflow_ref: workflow_id.clone(),
+                endpoint_ref: endpoint_id,
+                prompt: Some("stream workflow run update".to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            }),
+        }),
+    )
+    .await;
+    let (invoke_response, run_update_event) = wait_for_response_and_event(
+        &mut socket,
+        "invoke-workflow-endpoint",
+        "workflow_run_updated",
+    )
+    .await;
+    let expected_run_id = response_variant(&invoke_response, "WorkflowRunInvoked")["workflow_run"]
+        ["id"]
+        .as_str()
+        .expect("workflow run id should be present")
+        .to_string();
+
+    assert_eq!(
+        run_update_event["event"]["session_id"].as_str(),
+        Some(session_id.as_str())
+    );
+    assert_eq!(
+        run_update_event["event"]["workflow_run"]["id"].as_str(),
+        Some(expected_run_id.as_str())
+    );
+    assert_eq!(
+        run_update_event["event"]["workflow_run"]["workflow_id"].as_str(),
+        Some(workflow_id.as_str())
+    );
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+// A subscribed browser must observe the Running -> Completed transition live:
+// archiving the terminal run out of the hot session snapshot must not hide the
+// terminal status from snapshot diffing, so the kernel pushes one authoritative
+// `workflow_run_updated` per terminal transition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn kernel_websocket_delivers_terminal_workflow_run_update_without_reload() {
+    let workspace = ExecutionWorkspace::new();
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+
+    let session = app
+        .sessions_mut()
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let agent = app
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("terminal-run-node")
+                .with_model("workflow-delayed-output"),
+        )
+        .expect("agent should spawn");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("terminal-run-events".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("workflow node should be allowed to complete");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            kernel_websocket_listener,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let attach_response = send_request(
+        &mut socket,
+        "attach-terminal-run-events",
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session.id().to_string(),
+            client_id: "ws-terminal-run-event-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    let attachment_id = response_variant(&attach_response, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .expect("attachment id should be present")
+        .to_string();
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "subscribe",
+            "request_id": "subscribe-terminal-run-events",
+            "session_id": session.id(),
+            "attachment_id": attachment_id,
+        }),
+    )
+    .await;
+    let _subscribe_response = wait_for_response(&mut socket, "subscribe-terminal-run-events").await;
+
+    send_frame(
+        &mut socket,
+        json!({
+            "type": "request",
+            "request_id": "invoke-terminal-run-events",
+            "request": LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow.id().to_string(),
+                endpoint_ref: endpoint.id().to_string(),
+                prompt: Some("stream terminal workflow run update".to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            }),
+        }),
+    )
+    .await;
+    let invoke_response = wait_for_response(&mut socket, "invoke-terminal-run-events").await;
+    let expected_run_id = response_variant(&invoke_response, "WorkflowRunInvoked")["workflow_run"]
+        ["id"]
+        .as_str()
+        .expect("workflow run id should be present")
+        .to_string();
+
+    let running_event = wait_for_event(&mut socket, "workflow_run_updated").await;
+    assert_eq!(
+        running_event["event"]["workflow_run"]["id"].as_str(),
+        Some(expected_run_id.as_str())
+    );
+    assert_eq!(
+        running_event["event"]["workflow_run"]["status"].as_str(),
+        Some("Running")
+    );
+
+    // MP-08/MP-10: launch and delivery (for example the node's provider
+    // starting) can publish additional Running updates before the terminal
+    // one. Reject any unexpected run or status.
+    let completed_event = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let event = wait_for_event(&mut socket, "workflow_run_updated").await;
+            assert_eq!(
+                event["event"]["workflow_run"]["id"].as_str(),
+                Some(expected_run_id.as_str())
+            );
+            if event["event"]["workflow_run"]["status"].as_str() == Some("Completed") {
+                break event;
+            }
+            assert_eq!(
+                event["event"]["workflow_run"]["status"].as_str(),
+                Some("Running")
+            );
+        }
+    })
+    .await
+    .expect("terminal workflow update should arrive within the event budget");
+    assert_eq!(
+        completed_event["event"]["workflow_run"]["id"].as_str(),
+        Some(expected_run_id.as_str())
+    );
+    assert_eq!(
+        completed_event["event"]["workflow_run"]["status"].as_str(),
+        Some("Completed")
+    );
+
+    // Exactly one authoritative terminal update: no duplicates may follow.
+    // Later session snapshots intentionally contain only hot workflow runs, so
+    // clients preserve terminal runs they already observed instead of treating
+    // an omitted archived run as a deletion.
+    let duplicate_window = tokio::time::timeout(Duration::from_millis(700), async {
+        loop {
+            let frame = next_json_frame(&mut socket).await;
+            if frame["type"] == "event"
+                && frame["event"]["event"] == "workflow_run_updated"
+                && frame["event"]["workflow_run"]["id"].as_str() == Some(expected_run_id.as_str())
+                && frame["event"]["workflow_run"]["status"].as_str() == Some("Completed")
+            {
+                panic!("duplicate terminal workflow_run_updated event: {frame}");
+            }
+        }
+    })
+    .await;
+    assert!(
+        duplicate_window.is_err(),
+        "expected no further terminal workflow_run_updated events"
+    );
+    // The run is durably completed even though it was archived from the hot
+    // session snapshot.
+    let run_response = send_request(
+        &mut socket,
+        "get-terminal-run-events-run",
+        LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+            session_id: session.id().to_string(),
+            workflow_run_ref: expected_run_id,
+        }),
+    )
+    .await;
+    let persisted_status = response_variant(&run_response, "WorkflowRun")["workflow_run"]["status"]
+        .as_str()
+        .expect("workflow run status should be present");
+    assert_eq!(persisted_status, "Completed");
+
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}

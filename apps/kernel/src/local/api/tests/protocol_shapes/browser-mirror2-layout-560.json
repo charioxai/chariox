@@ -1,0 +1,16 @@
+{
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "tab-2",
+        "generation": 7,
+        "device_scale_factor": 2,
+        "wire": 2,
+        "font_requirements": true,
+        "layout_width": 400,
+        "layout_height": 760
+      }
+    }
+  }
+}

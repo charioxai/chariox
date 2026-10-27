@@ -1,0 +1,115 @@
+import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import path from "node:path"
+import test from "node:test"
+import { fileURLToPath } from "node:url"
+
+const dockerRoot = path.resolve(fileURLToPath(new URL("./docker/", import.meta.url)))
+const controllerEntry = path.join(dockerRoot, "browser-controller.mjs")
+const dockerfilePath = path.join(dockerRoot, "Dockerfile")
+const provisionerPath = fileURLToPath(new URL("./provision-linux-docker-slice.sh", import.meta.url))
+
+test("slice packaging installs every browser controller runtime module", async () => {
+  const [modules, dockerfile, provisioner] = await Promise.all([
+    reachableControllerModules(controllerEntry),
+    readFile(dockerfilePath, "utf8"),
+    readFile(provisionerPath, "utf8"),
+  ])
+
+  assert.ok(modules.size > 1, "fixture should discover browser controller dependencies")
+  for (const modulePath of modules) {
+    const name = path.basename(modulePath)
+    const installed = [...dockerfile.replace(/\\\r?\n\s*/g, " ").matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/\S*)$/gm)]
+      .some(([, sources, destination]) => sources.split(/\s+/).some(source =>
+        path.basename(source) === name && (destination === `/opt/chariox-slice/${name}` || destination === "/opt/chariox-slice/")))
+    assert.ok(installed, `Dockerfile should install ${name}`)
+    const namedRefresh = new RegExp(`docker/${escapeRegExp(name)}["']?\\s+[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`).test(provisioner)
+    const sharedRefresh = (name.startsWith("kernel-") || name === "room-shared-display.mjs")
+      && /for shared_display_asset in [^\n]*kernel-\*\.mjs[^\n]*room-shared-display\.mjs; do/.test(provisioner)
+      && provisioner.includes('copy_required_slice_overlay "$shared_display_asset" "$SLICE_NAME:/opt/chariox-slice/$(basename "$shared_display_asset")"')
+    assert.ok(namedRefresh || sharedRefresh, `live slice refresh should install ${name}`)
+  }
+})
+
+test("slice packaging installs the Computer text finder", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(provisionerPath, "utf8"),
+  ])
+
+  assert.match(
+    dockerfile,
+    /docker\/slice-text-finder\.py\s+\/opt\/chariox-slice\/slice-text-finder\.py/,
+  )
+  assert.match(
+    provisioner,
+    /docker\/slice-text-finder\.py["']?\s+[^\n]*\/opt\/chariox-slice\/slice-text-finder\.py/,
+  )
+})
+
+test("slice packaging installs the private browser import destination runtime", async () => {
+  const [dockerfile, provisioner,controller] = await Promise.all([
+    readFile(dockerfilePath, "utf8"),
+    readFile(provisionerPath, "utf8"),
+    readFile(controllerEntry,"utf8"),
+  ])
+  for (const name of ["chrome-cookie-batch.mjs", "controller-cookie-import.mjs",
+    "cookie-import-completion.mjs", "cookie-import-journal.mjs",
+    "cookie-import-transaction.mjs", "production-destination.mjs"]) {
+    assert.match(dockerfile,new RegExp(`apps/browser-session-import/${escapeRegExp(name)}\\s+`))
+    assert.match(provisioner,new RegExp(escapeRegExp(name)))
+  }
+  assert.match(controller,/request\.method === "browser\.cookies\.recover"/)
+  assert.match(controller,/recoverProductionBrowserImport/)
+})
+
+async function reachableControllerModules(entry) {
+  const pending = [entry]
+  const modules = new Set()
+  while (pending.length > 0) {
+    const modulePath = pending.pop()
+    if (modules.has(modulePath)) continue
+    modules.add(modulePath)
+    const source = await readFile(modulePath, "utf8")
+    for (const match of source.matchAll(/from\s+["'](\.\/[^"]+?\.mjs)["']/g)) {
+      const dependency = path.resolve(path.dirname(modulePath), match[1])
+      assert.equal(path.dirname(dependency), dockerRoot, `controller import escaped ${dockerRoot}`)
+      pending.push(dependency)
+    }
+  }
+  return modules
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+
+test("physical display and capture dependencies are required recovery overlays", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"), readFile(provisionerPath, "utf8"),
+  ])
+  for (const name of ["canonical-display.py", "canonical_vnc.py", "xorg-dummy.conf", "selkies-capture.py"]) {
+    assert.match(dockerfile, new RegExp(`docker/${escapeRegExp(name)}\\s+/opt/chariox-slice/${escapeRegExp(name)}`))
+    assert.match(provisioner, new RegExp(`copy_required_slice_overlay[^\\n]*docker/${escapeRegExp(name)}[^\\n]*/opt/chariox-slice/${escapeRegExp(name)}`))
+  }
+})
+
+// MP-08 / MP-11: fail closed on refreshed images missing the target guard.
+test("slice packaging installs the physical keyboard and Computer secret target guard", async () => {
+  const [dockerfile, provisioner] = await Promise.all([
+    readFile(dockerfilePath, "utf8"), readFile(provisionerPath, "utf8"),
+  ])
+  assert.match(dockerfile, /docker\/slice-keyboard\.py\s+\/opt\/chariox-slice\/slice-keyboard\.py/)
+  assert.match(provisioner, /copy_required_slice_overlay[^\n]*docker\/slice-keyboard\.py[^\n]*\/opt\/chariox-slice\/slice-keyboard\.py/)
+})
+
+// MP-08 / MP-10 / MP-11: recovery must install the same native closure as fresh images.
+test("preserved slices refresh the native Python dependency closure and distro bindings", async () => {
+  const provisioner = await readFile(provisionerPath, "utf8")
+  const refresh = provisioner.slice(provisioner.indexOf("refresh_slice_support_files() {"), provisioner.indexOf("\nwait_for_container_running()"))
+  for (const name of ["native-x11.py", "native-computer.py", "native-accessibility.py", "native-fill-targets.py", "native-clipboard.py", "room-native-protection.py", "browser-desktop-protection.py", "x11-text-keyboard.py", "x11-keymap-fence.py", "slice-observation-mask.py", "linux-desktop-session.py"]) {
+    assert.ok(refresh.includes(name), `preserved slice refresh omits ${name}`)
+  }
+  for (const packageName of ["python3-xlib", "python3-gi", "python3-pyatspi", "python3-pil"]) assert.ok(refresh.includes(packageName), `preserved slice misses ${packageName}`)
+})

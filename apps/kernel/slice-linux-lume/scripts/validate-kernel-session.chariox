@@ -1,0 +1,5 @@
+set provider codex
+set model default
+session new --dir /workspace as slice_session
+agent spawn probe default --dir /workspace as probe
+prompt $probe "Reply with exactly: slice kernel ok" --wait --show-reply

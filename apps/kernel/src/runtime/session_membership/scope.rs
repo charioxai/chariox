@@ -1,0 +1,1078 @@
+use std::collections::HashSet;
+
+use crate::local::{LocalDaemonRequest, QueryRecallRequest};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionMembershipScope {
+    AllSessions,
+    SessionId(String),
+    SessionIds(Vec<String>),
+    SessionRef {
+        session_ref: String,
+        workspace_id: Option<String>,
+    },
+    DeleteSessionRef {
+        session_ref: String,
+        workspace_id: Option<String>,
+    },
+    AttachmentId(String),
+}
+
+pub(crate) fn request_session_scope(
+    request: &LocalDaemonRequest,
+) -> Option<SessionMembershipScope> {
+    match request {
+        LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
+        LocalDaemonRequest::PrepareBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClaimBrowserImportSource(request)
+        | LocalDaemonRequest::AuthorizeBrowserImportSource(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::ApproveBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.selection.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelBrowserImport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SetAppViewPanel(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListSessions(_) => Some(SessionMembershipScope::AllSessions),
+        LocalDaemonRequest::ResolveSession(request) => Some(SessionMembershipScope::SessionRef {
+            session_ref: request.session_ref.clone(),
+            workspace_id: request.workspace_id.clone(),
+        }),
+        LocalDaemonRequest::DeleteSession(request) => {
+            Some(SessionMembershipScope::DeleteSessionRef {
+                session_ref: request.session_ref.clone(),
+                workspace_id: request.workspace_id.clone(),
+            })
+        }
+        LocalDaemonRequest::DetachFromSession(request) => Some(
+            SessionMembershipScope::AttachmentId(request.attachment_id.clone()),
+        ),
+        LocalDaemonRequest::QueryRecall(request) => optional_session_scope(request),
+        LocalDaemonRequest::SearchRecall(request) => request
+            .session_id
+            .as_ref()
+            .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
+        LocalDaemonRequest::SemanticSearchRecall(request) => request
+            .session_id
+            .as_ref()
+            .map(|session_id| SessionMembershipScope::SessionId(session_id.clone())),
+        LocalDaemonRequest::AttachToSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AttachSessionView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::LaunchProviderRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::LaunchProviderRuns(request) => unique_session_scope(
+            request
+                .launches
+                .iter()
+                .map(|launch| launch.session_id.as_str()),
+        ),
+        LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateSessionInvite(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RevokeSessionInvite(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CreateWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkspaceLinks(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ShowWorkspaceLink(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AttachWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::DetachWorkspaceLink(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetWorkspaceLiveSyncStatus(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SubmitPrompts(request) => unique_session_scope(
+            std::iter::once(request.session_id.as_str()).chain(
+                request
+                    .prompts
+                    .iter()
+                    .filter_map(|prompt| prompt.session_id.as_deref()),
+            ),
+        ),
+        LocalDaemonRequest::CreateAgentPromptSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelAgentPromptSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SteerQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateQueuedPrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateSessionConfig(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateAgentConfig(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentSubstitutes(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ArmDeploymentCredentialEnrollment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RespondToInteraction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RespondToHandoff(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentResourceInventory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RoomTerminal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CaptureVisibleRegion(request) => match &request.surface {
+            crate::local::ScreenshotSurface::Room { session_id, .. } => {
+                Some(SessionMembershipScope::SessionId(session_id.clone()))
+            }
+            _ => None,
+        },
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StartRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StopRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RetryRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetRoomBrowserBar(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateRoomEnvironmentPointer(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitRoomEnvironmentAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ReadRoomEnvironmentClipboard(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CancelRoomEnvironmentAction(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateMetaagentTask(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::PauseMetaagentTask(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResumeMetaagentTask(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AbortMetaagentTask(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ExportDebugBundle(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AliasSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetSessionHistoryOutline(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionHistoryBlobContent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetSessionHistoryBlobContents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetPromptInputHistory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RecordPromptInputHistory(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetRoomPinned(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::PollRuntimeNotices(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResizeTerminal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SendTerminalInput(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::PumpTerminalOutput(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AppendNativeProviderOutput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AppendNativeProviderOutputBatch(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RunShellCommand(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ReadDirectoryTree(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ReadFile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::EditFile(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InspectGit(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CaptureScreenshot(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::StoreTransferredFile(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SpawnAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SpawnAgents(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ImportExternalProviderAgent(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::MoveAgentToRemote(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::FocusAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListArchivedAgents(request)
+        | LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::AttachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::DetachWorkflowNotification(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::ListWorkflowNotifications(r) => {
+            Some(SessionMembershipScope::SessionId(r.session_id.clone()))
+        }
+        LocalDaemonRequest::CreateWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateAgentWorkflow(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ValidateWorkflowCode(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ApplyWorkflowCode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RunWorkflowCode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowCodeArtifacts(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::DeleteWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ExportWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ImportWorkflowCodeArtifact(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ExportWorkflowCodePackage(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ImportWorkflowCodePackage(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ExportWorkflowCodeSource(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ApplyWorkflowDesignOp(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AliasWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ListWorkflows(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResolveWorkflow(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowPublications(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ExportWorkflowPublicationPackage(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::DisableWorkflowPublication(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ControlWorkflowPublicationRuntime(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::BindWorkflowPublicationDeployment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RegisterWorkflowPublicationEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CreateWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AliasWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::BindWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AddWorkflowNode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RemoveWorkflowNode(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateWorkflowNodeInstructions(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeCanCompleteRun(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeCanEmitIntermediateOutput(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeWaitForAllInputs(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeIntermediateOutputSchema(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowNodeMaxTurns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AddWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ValidateWorkflowHandoff(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::AckWorkflowTurn(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::RemoveWorkflowEdge(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateWorkflowCanvasLayout(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::InvokeWorkflowEndpoint(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowRuns(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ControlRoomWorkflowRuns(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::PauseWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResumeWorkflowRun(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CreateWorkflowWatchdog(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowWatchdogs(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowWatchdogEnabled(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveWorkflowWatchdog(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CreateWorkflowSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowSchedules(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowScheduleEnabled(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveWorkflowSchedule(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::PreviewWorkflowSchedule(_) => None,
+        LocalDaemonRequest::SetWorkflowFlushContext(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::SetWorkflowRunOutputSchema(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListWorkflowPromptQueues(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::CreateWorkflowPromptQueue(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateWorkflowPromptQueue(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveWorkflowPromptQueue(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ListQueuedWorkflowPrompts(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::UpdateQueuedWorkflowPrompt(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RemoveQueuedWorkflowPrompt(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::ClearWorkflowPromptQueue(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        // MD-stack: user-domain admission lives in each authenticated service.
+        LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::Dictation(_)
+        | LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::OpenUserAppView(_)
+        | LocalDaemonRequest::ListUserAppViews(_)
+        | LocalDaemonRequest::CloseUserAppView(_)
+        | LocalDaemonRequest::GetUserAppViewFrontend(_)
+        | LocalDaemonRequest::CallUserAppView(_)
+        | LocalDaemonRequest::SubscribeUserAppViews(_)
+        | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+        | LocalDaemonRequest::AcceptAppHostAction(_)
+        | LocalDaemonRequest::AdjustProjectEnvironment(_)
+        | LocalDaemonRequest::CreateDisposableWorker(_)
+        | LocalDaemonRequest::GetDisposableWorker(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::DetectProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentDiff(_)
+        | LocalDaemonRequest::SaveProjectEnvironmentRevision(_)
+        | LocalDaemonRequest::PlanProjectEnvironment(_)
+        | LocalDaemonRequest::ApplyProjectEnvironment(_)
+        | LocalDaemonRequest::CheckProjectEnvironment(_)
+        | LocalDaemonRequest::GetEnvironmentOperation(_)
+        | LocalDaemonRequest::CancelEnvironmentOperation(_)
+        | LocalDaemonRequest::RetryEnvironmentOperation(_)
+        | LocalDaemonRequest::ExportProjectEnvironment(_)
+        | LocalDaemonRequest::PreviewEnvironmentImport(_)
+        | LocalDaemonRequest::CommitEnvironmentImport(_)
+        | LocalDaemonRequest::GetProjectEnvironment(_)
+        | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
+        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
+        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
+        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
+        | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
+        | LocalDaemonRequest::ReleaseDisposableWorker(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
+        | LocalDaemonRequest::RestoreAppDataSnapshot(_)
+        | LocalDaemonRequest::RevokeAppFileGrants(_)
+        | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
+        | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::ListKernelAccessGrants(_)
+        | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+        | LocalDaemonRequest::SubscribeEvents(_)
+        | LocalDaemonRequest::UnsubscribeEvents(_)
+        | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListEvents(_)
+        | LocalDaemonRequest::WaitEvents(_)
+        | LocalDaemonRequest::AckEvents(_)
+        | LocalDaemonRequest::ListGatewayKernels(_)
+        | LocalDaemonRequest::HeartbeatAttachments(_)
+        | LocalDaemonRequest::JoinKernelLink(_)
+        | LocalDaemonRequest::ForgetGatewayKernel(_)
+        | LocalDaemonRequest::StatKernelFile(_)
+        | LocalDaemonRequest::ListKernelDirectory(_)
+        | LocalDaemonRequest::ReadKernelFile(_)
+        | LocalDaemonRequest::WriteKernelFile(_)
+        | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
+        | LocalDaemonRequest::GetAppPublisherEnrollment(_)
+        | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
+        | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppUpdate(_)
+        | LocalDaemonRequest::GetAppInstallOperation(_)
+        | LocalDaemonRequest::CancelAppInstallOperation(_)
+        | LocalDaemonRequest::BeginAppPackageUpload(_)
+        | LocalDaemonRequest::PutAppPackageUploadChunk(_)
+        | LocalDaemonRequest::GetAppPackageUpload(_)
+        | LocalDaemonRequest::AbortAppPackageUpload(_)
+        | LocalDaemonRequest::ListAppInstallations(_)
+        | LocalDaemonRequest::GetAppInstallation(_)
+        | LocalDaemonRequest::GetAppInstallationJournal(_)
+        | LocalDaemonRequest::GetAppWorker(_)
+        | LocalDaemonRequest::ControlAppWorker(_)
+        | LocalDaemonRequest::ListAppAutomations(_)
+        | LocalDaemonRequest::ConfigureAppAutomation(_)
+        | LocalDaemonRequest::DisableAppAutomation(_)
+        | LocalDaemonRequest::UninstallApp(_)
+        | LocalDaemonRequest::GetAppLogs(_)
+        | LocalDaemonRequest::CreateAppInboxRoute(_)
+        | LocalDaemonRequest::RemoveAppInboxRoute(_)
+        | LocalDaemonRequest::ListAppInboxRoutes(_)
+        | LocalDaemonRequest::TestAppInboxRoute(_)
+        | LocalDaemonRequest::GrantAppConnection(_)
+        | LocalDaemonRequest::GetAppSet(_)
+        | LocalDaemonRequest::PreviewDeploymentApps(_)
+        | LocalDaemonRequest::PrepareDeploymentApps(_)
+        | LocalDaemonRequest::RevokeAppConnection(_)
+        | LocalDaemonRequest::ListAppConnections(_)
+        | LocalDaemonRequest::GrantAppFile(_)
+        | LocalDaemonRequest::SaveAppFileExport(_)
+        | LocalDaemonRequest::CreateSession(_)
+        | LocalDaemonRequest::JoinSessionInvite(_)
+        | LocalDaemonRequest::ListProjects(_)
+        | LocalDaemonRequest::SetProjectPinned(_)
+        | LocalDaemonRequest::RenameProject(_)
+        | LocalDaemonRequest::UpdateProjectWorkspaces(_)
+        | LocalDaemonRequest::ArchiveProject(_)
+        | LocalDaemonRequest::DeleteProject(_)
+        | LocalDaemonRequest::RestoreProject(_)
+        | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
+        | LocalDaemonRequest::SearchMetaagentCommands(_)
+        | LocalDaemonRequest::GetMetaagentTurnOverview(_)
+        | LocalDaemonRequest::GetMetaagentTurnBlob(_)
+        | LocalDaemonRequest::ListMetaagentEvents(_)
+        | LocalDaemonRequest::ReadMetaagentEvent(_)
+        | LocalDaemonRequest::AckMetaagentEvents(_)
+        | LocalDaemonRequest::GetTerminalCommandCatalog(_)
+        | LocalDaemonRequest::GetDaemonHealth(_)
+        | LocalDaemonRequest::GetKernelResourceTelemetry(_)
+        | LocalDaemonRequest::GetProviderRun(_)
+        | LocalDaemonRequest::GetProviderCatalog(_)
+        | LocalDaemonRequest::GetClientCatalogSnapshot(_)
+        | LocalDaemonRequest::GetClientCatalogRevisions(_)
+        | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+        | LocalDaemonRequest::GetProviderUsageSnapshot(_)
+        | LocalDaemonRequest::ListProviderAccountProfiles(_)
+        | LocalDaemonRequest::GetProviderAccountProfile(_)
+        | LocalDaemonRequest::CreateProviderAccountProfile(_)
+        | LocalDaemonRequest::LinkProviderAccountProfile(_)
+        | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
+        | LocalDaemonRequest::RenameProviderAccountProfile(_)
+        | LocalDaemonRequest::SetDefaultProviderAccountProfile(_)
+        | LocalDaemonRequest::RefreshProviderAccountProfile(_)
+        | LocalDaemonRequest::RemoveProviderAccountProfile(_)
+        | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
+        | LocalDaemonRequest::CopyProviderAccountToKernel(_)
+        | LocalDaemonRequest::SetProviderAccountCredential(_)
+        | LocalDaemonRequest::InstallMcpServer(_)
+        | LocalDaemonRequest::UpdateMcpServer(_)
+        | LocalDaemonRequest::UninstallMcpServer(_)
+        | LocalDaemonRequest::ImportMcpServers(_)
+        | LocalDaemonRequest::ImportProviderCapabilities(_)
+        | LocalDaemonRequest::GetMcpServer(_)
+        | LocalDaemonRequest::ListMcpServers(_)
+        | LocalDaemonRequest::RegisterEnvironment(_)
+        | LocalDaemonRequest::RemoveEnvironment(_)
+        | LocalDaemonRequest::GetEnvironment(_)
+        | LocalDaemonRequest::ListEnvironments(_)
+        | LocalDaemonRequest::ValidateScript(_)
+        | LocalDaemonRequest::RegisterScript(_)
+        | LocalDaemonRequest::RemoveScript(_)
+        | LocalDaemonRequest::GetScript(_)
+        | LocalDaemonRequest::ListScripts(_)
+        | LocalDaemonRequest::RegisterCredential(_)
+        | LocalDaemonRequest::UpsertCredential(_)
+        | LocalDaemonRequest::RemoveCredential(_)
+        | LocalDaemonRequest::GetCredential(_)
+        | LocalDaemonRequest::ListCredentials(_)
+        | LocalDaemonRequest::RegisterConnector(_)
+        | LocalDaemonRequest::UpsertConnector(_)
+        | LocalDaemonRequest::RegisterConnectorAdapter(_)
+        | LocalDaemonRequest::RemoveConnectorAdapter(_)
+        | LocalDaemonRequest::GetConnectorAdapter(_)
+        | LocalDaemonRequest::ListConnectorAdapters(_)
+        | LocalDaemonRequest::RemoveConnector(_)
+        | LocalDaemonRequest::GetConnector(_)
+        | LocalDaemonRequest::ListConnectors(_)
+        | LocalDaemonRequest::TestConnector(_)
+        | LocalDaemonRequest::UpsertSkill(_)
+        | LocalDaemonRequest::InstallSkill(_)
+        | LocalDaemonRequest::UpdateSkill(_)
+        | LocalDaemonRequest::UninstallSkill(_)
+        | LocalDaemonRequest::ImportSkills(_)
+        | LocalDaemonRequest::GetSkill(_)
+        | LocalDaemonRequest::ListSkills(_)
+        | LocalDaemonRequest::RelayStatus(_)
+        | LocalDaemonRequest::ConfigureRelay(_)
+        | LocalDaemonRequest::CloudRelayStatus(_)
+        | LocalDaemonRequest::StartCloudRelayLogin(_)
+        | LocalDaemonRequest::PollCloudRelayLogin(_)
+        | LocalDaemonRequest::LogoutCloudRelay(_)
+        | LocalDaemonRequest::PairCloudRelayClient(_)
+        | LocalDaemonRequest::PairCloudRelayMachine(_)
+        | LocalDaemonRequest::ConnectCloudRelay(_)
+        | LocalDaemonRequest::IssueCloudRelayClientToken(_)
+        | LocalDaemonRequest::ResolveKernelClientConnection(_)
+        | LocalDaemonRequest::CreateCloudSessionInvite(_)
+        | LocalDaemonRequest::ShowCloudSessionInvite(_)
+        | LocalDaemonRequest::AcceptCloudSessionInvite(_)
+        | LocalDaemonRequest::RevokeCloudSessionInvite(_)
+        | LocalDaemonRequest::ListCloudSessionMembers(_)
+        | LocalDaemonRequest::ListCloudCollaborators(_)
+        | LocalDaemonRequest::GetUserConfig(_)
+        | LocalDaemonRequest::GetUserConfigSchema(_)
+        | LocalDaemonRequest::SetUserConfigValue(_)
+        | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
+        | LocalDaemonRequest::UnsetUserConfigValue(_)
+        | LocalDaemonRequest::SetCredentialSecret(_)
+        | LocalDaemonRequest::DeleteCredentialSecret(_)
+        | LocalDaemonRequest::GetCredentialVaultStatus(_)
+        | LocalDaemonRequest::LockCredentialVault(_)
+        | LocalDaemonRequest::ManageCredentialVault(_)
+        | LocalDaemonRequest::PreflightProviderAccountPortability(_)
+        | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
+        | LocalDaemonRequest::GetManagedEnvironment(_)
+        | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
+        | LocalDaemonRequest::CreateManagedEnvironment(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
+        | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
+        | LocalDaemonRequest::StartManagedContextTransfer(_)
+        | LocalDaemonRequest::GetManagedContextTransferStatus(_)
+        | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
+        | LocalDaemonRequest::ListSlices(_)
+        | LocalDaemonRequest::CreateSlice(_)
+        | LocalDaemonRequest::GetSlice(_)
+        | LocalDaemonRequest::StartSlice(_)
+        | LocalDaemonRequest::StopSlice(_)
+        | LocalDaemonRequest::DeleteSlice(_)
+        | LocalDaemonRequest::ImportSliceProviderAuth(_)
+        | LocalDaemonRequest::RemoveSliceProviderAuth(_)
+        | LocalDaemonRequest::StartSliceProviderLogin(_)
+        | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
+        | LocalDaemonRequest::GetSliceLogs(_)
+        | LocalDaemonRequest::ListSliceAudit(_)
+        | LocalDaemonRequest::SaveSliceState(_)
+        | LocalDaemonRequest::GetSliceStateStatus(_)
+        | LocalDaemonRequest::ResetSliceState(_)
+        | LocalDaemonRequest::CreateSliceBackup(_)
+        | LocalDaemonRequest::RestoreSliceBackup(_)
+        | LocalDaemonRequest::ListRemoteMachines(_)
+        | LocalDaemonRequest::ListRemoteMachineKernels(_)
+        | LocalDaemonRequest::GetWaitingRoomInventory(_)
+        | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+        | LocalDaemonRequest::ListWaitingRoomSessions(_)
+        | LocalDaemonRequest::ListExternalProviderSessions(_)
+        | LocalDaemonRequest::RefreshExternalProviderSessions(_)
+        | LocalDaemonRequest::ImportExternalProviderSession(_)
+        | LocalDaemonRequest::SearchWorkspaceDirectories(_)
+        | LocalDaemonRequest::CreateWorkspaceDirectory(_)
+        | LocalDaemonRequest::ListWorkspaceWorktrees(_)
+        | LocalDaemonRequest::CreateWorkspaceWorktree(_)
+        | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
+        | LocalDaemonRequest::CreateWorkspacePullRequest(_)
+        | LocalDaemonRequest::GetWorkspaceGitOverview(_)
+        | LocalDaemonRequest::ListWorkspaceFiles(_)
+        | LocalDaemonRequest::GetWorkspaceFileContent(_)
+        | LocalDaemonRequest::RunAgentUtility(_)
+        | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)
+        | LocalDaemonRequest::CommitWorkspaceChanges(_)
+        | LocalDaemonRequest::PushWorkspaceBranch(_)
+        | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)
+        | LocalDaemonRequest::ApproveRemoteMachine(_)
+        | LocalDaemonRequest::ForgetRemoteMachine(_)
+        | LocalDaemonRequest::RenameRemoteMachine(_)
+        | LocalDaemonRequest::CreatePairingInvite(_)
+        | LocalDaemonRequest::JoinPairingInvite(_)
+        | LocalDaemonRequest::CreateTerminalPairingLink(_)
+        | LocalDaemonRequest::JoinTerminalPairingLink(_)
+        | LocalDaemonRequest::ListTerminals(_)
+        | LocalDaemonRequest::ListPairedClients(_)
+        | LocalDaemonRequest::RecordPairedClient(_)
+        | LocalDaemonRequest::RevokePairedClient(_)
+        | LocalDaemonRequest::GetProviderAuthStatus(_)
+        | LocalDaemonRequest::StartProviderLogin(_)
+        | LocalDaemonRequest::GetProviderLoginStatus(_)
+        | LocalDaemonRequest::SendProviderLoginInput(_)
+        | LocalDaemonRequest::CancelProviderLogin(_)
+        | LocalDaemonRequest::LogoutProvider(_)
+        | LocalDaemonRequest::ListProviderProcesses(_)
+        | LocalDaemonRequest::TeardownProviderProcesses(_)
+        | LocalDaemonRequest::ListPromptSettings(_)
+        | LocalDaemonRequest::GetPromptSetting(_)
+        | LocalDaemonRequest::UpdatePromptSetting(_)
+        | LocalDaemonRequest::PreviewPromptSetting(_)
+        | LocalDaemonRequest::ResetPromptSetting(_)
+        | LocalDaemonRequest::ResetAllPromptSettings(_)
+        | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
+        | LocalDaemonRequest::DeleteKernel(_)
+        | LocalDaemonRequest::UndoTurn(_)
+        | LocalDaemonRequest::ForkAgent(_)
+        | LocalDaemonRequest::SyncRemoteExtensionManifest(_)
+        | LocalDaemonRequest::ListHomeExtensionAudit(_)
+        | LocalDaemonRequest::GrantAgentExtension(_)
+        | LocalDaemonRequest::RevokeAgentExtension(_)
+        | LocalDaemonRequest::ApplyWorkflowCodeArtifact(_)
+        | LocalDaemonRequest::RunWorkflowCodeArtifact(_)
+        | LocalDaemonRequest::ListWorkflowRegistry(_)
+        | LocalDaemonRequest::GetWorkflowRegistryEntry(_)
+        | LocalDaemonRequest::AddWorkflowRegistryEntry(_)
+        | LocalDaemonRequest::AddWorkflowRegistryEntryFromWorkflow(_)
+        | LocalDaemonRequest::DeleteWorkflowRegistryEntry(_)
+        | LocalDaemonRequest::LoadWorkflowRegistryEntry(_)
+        | LocalDaemonRequest::RunWorkflowRegistryEntry(_)
+        | LocalDaemonRequest::BindWorkflowCodeSource(_)
+        | LocalDaemonRequest::RebuildWorkflowCodeSource(_)
+        | LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(_)
+        | LocalDaemonRequest::GetEventGeneratorCatalogLanding(_)
+        | LocalDaemonRequest::SearchEventGeneratorCatalog(_)
+        | LocalDaemonRequest::BrowseEventGeneratorCategory(_)
+        | LocalDaemonRequest::GetEventGeneratorDetail(_)
+        | LocalDaemonRequest::BrowseEventGeneratorEvents(_)
+        | LocalDaemonRequest::StartEventGeneratorAuthorization(_)
+        | LocalDaemonRequest::ListEventGeneratorResources(_)
+        | LocalDaemonRequest::ListEventConnections(_)
+        | LocalDaemonRequest::GetEventConnection(_)
+        | LocalDaemonRequest::InstallEventConnection(_)
+        | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
+        | LocalDaemonRequest::RefreshEventConnection(_)
+        | LocalDaemonRequest::TestEventConnection(_)
+        | LocalDaemonRequest::ReconnectEventConnection(_)
+        | LocalDaemonRequest::ListEventConnectionResources(_)
+        | LocalDaemonRequest::ListEventConnectionDependencies(_)
+        | LocalDaemonRequest::RemoveEventConnection(_)
+        | LocalDaemonRequest::GetEventDeliveryStatus(_)
+        | LocalDaemonRequest::MaterializeWorkflowPublication(_)
+        | LocalDaemonRequest::ActivateWorkflowPublicationRuntime(_) => None,
+    }
+}
+
+fn optional_session_scope(request: &QueryRecallRequest) -> Option<SessionMembershipScope> {
+    request
+        .session_id
+        .as_ref()
+        .map(|session_id| SessionMembershipScope::SessionId(session_id.clone()))
+}
+
+fn unique_session_scope<'a>(
+    session_ids: impl IntoIterator<Item = &'a str>,
+) -> Option<SessionMembershipScope> {
+    let mut seen = HashSet::new();
+    let mut unique = Vec::new();
+    for session_id in session_ids {
+        if seen.insert(session_id) {
+            unique.push(session_id.to_string());
+        }
+    }
+    match unique.len() {
+        0 => None,
+        1 => unique.pop().map(SessionMembershipScope::SessionId),
+        _ => Some(SessionMembershipScope::SessionIds(unique)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::attachment::ClientCapabilityLevel;
+    use crate::local::{
+        ArmDeploymentCredentialEnrollmentRequest, AttachToSessionRequest, DeleteSessionRequest,
+        DetachFromSessionRequest, LaunchProviderRunRequest, LaunchProviderRunsRequest,
+        ListSessionsRequest, QueryRecallRequest, RelayStatusRequest, ResolveSessionRequest,
+        RespondToInteractionRequest,
+    };
+
+    #[test]
+    fn request_session_scope_maps_session_and_attachment_requests() {
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::ListSessions(ListSessionsRequest)),
+            Some(SessionMembershipScope::AllSessions)
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::ResolveSession(ResolveSessionRequest {
+                session_ref: "session-alias".to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            })),
+            Some(SessionMembershipScope::SessionRef {
+                session_ref: "session-alias".to_string(),
+                workspace_id: Some("workspace-1".to_string()),
+            })
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: "session-id".to_string(),
+                workspace_id: None,
+            })),
+            Some(SessionMembershipScope::DeleteSessionRef {
+                session_ref: "session-id".to_string(),
+                workspace_id: None,
+            })
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::AttachToSession(
+                AttachToSessionRequest {
+                    session_id: "session-1".to_string(),
+                    client_id: "client-1".to_string(),
+                    capability_level: ClientCapabilityLevel::FullTerminal,
+                }
+            )),
+            Some(SessionMembershipScope::SessionId("session-1".to_string()))
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::DetachFromSession(
+                DetachFromSessionRequest {
+                    attachment_id: "attachment-1".to_string(),
+                },
+            )),
+            Some(SessionMembershipScope::AttachmentId(
+                "attachment-1".to_string()
+            ))
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::RespondToInteraction(
+                RespondToInteractionRequest {
+                    session_id: "session-1".to_string(),
+                    interaction_id: "interaction-1".to_string(),
+                    choice_id: "cancel".to_string(),
+                    custom_reply: None,
+                    passkey: None,
+                    passkey_remember_minutes: None,
+                },
+            )),
+            Some(SessionMembershipScope::SessionId("session-1".to_string()))
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::ArmDeploymentCredentialEnrollment(
+                ArmDeploymentCredentialEnrollmentRequest {
+                    session_id: "session-1".to_string(),
+                    attachment_id: "attachment-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    enrollment_id: "enrollment-1".to_string(),
+                    profile_id: "profile-1".to_string(),
+                    target_version: 1,
+                },
+            )),
+            Some(SessionMembershipScope::SessionId("session-1".to_string()))
+        );
+    }
+
+    #[test]
+    fn request_session_scope_keeps_global_queries_unscoped() {
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::QueryRecall(QueryRecallRequest {
+                session_id: None,
+                ..QueryRecallRequest::default()
+            })),
+            None
+        );
+        assert_eq!(
+            request_session_scope(&LocalDaemonRequest::RelayStatus(RelayStatusRequest)),
+            None
+        );
+    }
+
+    #[test]
+    fn request_session_scope_covers_every_session_in_provider_batch() {
+        let request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
+            max_concurrency: Some(4),
+            launches: vec![
+                launch("session-a", "agent-a-1"),
+                launch("session-a", "agent-a-2"),
+                launch("session-b", "agent-b-1"),
+                launch("session-c", "agent-c-1"),
+                launch("session-b", "agent-b-2"),
+            ],
+        });
+
+        assert_eq!(
+            request_session_scope(&request),
+            Some(SessionMembershipScope::SessionIds(vec![
+                "session-a".to_string(),
+                "session-b".to_string(),
+                "session-c".to_string(),
+            ]))
+        );
+    }
+
+    fn launch(session_id: &str, agent_id: &str) -> LaunchProviderRunRequest {
+        LaunchProviderRunRequest {
+            session_id: session_id.to_string(),
+            agent_id: Some(agent_id.to_string()),
+            adapter_key: "dev-stub".to_string(),
+            provider: "claude-code".to_string(),
+            account_profile: "default".to_string(),
+            model: "sonnet".to_string(),
+            variant: None,
+            structured_endpoint: None,
+            provider_session_id: None,
+            native_tui: false,
+        }
+    }
+}

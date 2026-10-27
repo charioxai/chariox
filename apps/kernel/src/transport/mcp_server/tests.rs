@@ -1,0 +1,1196 @@
+use std::sync::Arc;
+
+use http_body_util::BodyExt;
+use hyper::StatusCode;
+use serde_json::Value;
+use tokio::sync::Mutex;
+
+use crate::agent::CreateAgentRequest;
+use crate::attachment::{AttachRequest, ClientCapabilityLevel};
+use crate::runtime::router::CommandRouter;
+use crate::session::CreateSessionRequest;
+use crate::{DaemonApp, DaemonConfig};
+
+use super::handle_json_rpc_value;
+
+fn run_mcp_server_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
+where
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(64 * 1024 * 1024)
+                .enable_all()
+                .build()
+                .expect("mcp server test runtime should build")
+                .block_on(test());
+        })
+        .expect("mcp server test thread should spawn")
+        .join()
+        .expect("mcp server test thread should not panic");
+}
+
+mod catalog_changes;
+mod permission_prompt;
+mod slice_tools;
+
+#[tokio::test]
+async fn mcp_initialize_and_tools_list_return_runtime_tools() {
+    let worktree = crate::test_support::TestWorktree::new("mcp-workflow-tools-worktree");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.providers()
+        .enable_workflow_tools(run.id())
+        .expect("workflow tools should be enabled");
+    let workflow_auth_token = run
+        .runtime_mcp_auth_token()
+        .expect("provider should expose runtime MCP auth")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+
+    let initialize = handle_json_rpc_value(
+        router.clone(),
+        "unused-token",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26"
+            }
+        }),
+    )
+    .await
+    .expect("initialize should succeed");
+    assert_eq!(initialize.status(), StatusCode::OK);
+    let initialize_body = initialize
+        .into_body()
+        .collect()
+        .await
+        .expect("initialize body should collect")
+        .to_bytes();
+    let initialize_value: Value =
+        serde_json::from_slice(&initialize_body).expect("initialize body should be json");
+    assert_eq!(
+        initialize_value["result"]["serverInfo"]["name"],
+        "chariox-runtime"
+    );
+
+    assert_eq!(
+        initialize_value["result"]["capabilities"]["tools"]["listChanged"], true,
+        "MP-08/MP-10 providers must be told the tool catalog can change"
+    );
+
+    let tools_list = handle_json_rpc_value(
+        router.clone(),
+        "unused-token",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await
+    .expect("tools/list should succeed");
+    assert_eq!(tools_list.status(), StatusCode::OK);
+    let tools_body = tools_list
+        .into_body()
+        .collect()
+        .await
+        .expect("tools list body should collect")
+        .to_bytes();
+    let tools_value: Value =
+        serde_json::from_slice(&tools_body).expect("tools list body should be json");
+    let tools = tools_value["result"]["tools"]
+        .as_array()
+        .expect("tools should be an array");
+    assert!(
+        tools.is_empty(),
+        "an unknown MCP token must not discover runtime tools"
+    );
+
+    let workflow_tools_list = handle_json_rpc_value(
+        router.clone(),
+        &workflow_auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await
+    .expect("authenticated workflow tools/list should succeed");
+    assert_eq!(workflow_tools_list.status(), StatusCode::OK);
+    let workflow_tools_body = workflow_tools_list
+        .into_body()
+        .collect()
+        .await
+        .expect("workflow tools list body should collect")
+        .to_bytes();
+    let workflow_tools_value: Value = serde_json::from_slice(&workflow_tools_body)
+        .expect("workflow tools list body should be json");
+    let tools = workflow_tools_value["result"]["tools"]
+        .as_array()
+        .expect("workflow tools should be an array");
+    assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "validate_workflow_handoff"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_read"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_write"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_clear"));
+}
+
+#[tokio::test]
+async fn mcp_resource_and_prompt_discovery_return_empty_lists() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+
+    for (id, method, result_key) in [
+        (1, "resources/list", "resources"),
+        (2, "resources/templates/list", "resourceTemplates"),
+        (3, "prompts/list", "prompts"),
+    ] {
+        let response = handle_json_rpc_value(
+            router.clone(),
+            "unused-token",
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": {}
+            }),
+        )
+        .await
+        .expect("discovery request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("discovery body should collect")
+            .to_bytes();
+        let value: Value = serde_json::from_slice(&body).expect("discovery body json");
+        assert_eq!(value["id"], id);
+        assert_eq!(
+            value["result"][result_key]
+                .as_array()
+                .expect("discovery result should be an array")
+                .len(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn() {
+    let worktree = crate::test_support::TestWorktree::new(
+        "mcp_http_workflow_token_lists_tools_and_acknowledges_active_turn",
+    );
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should exist");
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("agent-a")
+                .with_model("test-model")
+                .with_worktree(worktree.path().display().to_string()),
+        )
+        .expect("agent should spawn")
+        .id()
+        .to_string();
+    let workflow_id = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("wf".to_string()))
+        .expect("workflow should exist")
+        .id()
+        .to_string();
+    let node_id = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), &workflow_id, &agent_id)
+        .expect("node should be added")
+        .id()
+        .to_string();
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &node_id,
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should exist");
+    let (workflow_run, _, _) = app
+        .invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            &workflow_id,
+            "entry",
+            Some("start".to_string()),
+        )
+        .expect("workflow should invoke");
+    let node_run = workflow_run
+        .node_runs()
+        .first()
+        .expect("node run should exist");
+    let envelope = node_run.turn_envelope().expect("envelope should exist");
+    let auth_token = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("provider run should exist")
+        .runtime_mcp_auth_token()
+        .expect("mcp auth token should exist")
+        .to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+    let tools_list = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await
+    .expect("authenticated tools/list should succeed");
+    assert_eq!(tools_list.status(), StatusCode::OK);
+    let tools_body = tools_list
+        .into_body()
+        .collect()
+        .await
+        .expect("authenticated tools list body should collect")
+        .to_bytes();
+    let tools_value: Value =
+        serde_json::from_slice(&tools_body).expect("authenticated tools list should be json");
+    let tool_names = tools_value["result"]["tools"]
+        .as_array()
+        .expect("authenticated tools should be an array")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for expected in [
+        "ack_workflow_turn",
+        "validate_workflow_handoff",
+        "workflow_console_read",
+        "workflow_console_write",
+        "workflow_console_clear",
+    ] {
+        assert!(
+            tool_names.contains(expected),
+            "workflow token should discover `{expected}`"
+        );
+    }
+    assert!(
+        !tool_names.contains("chariox.slice_screenshot"),
+        "ordinary workflow tokens must not discover slice-only capabilities"
+    );
+
+    let response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "ack_workflow_turn",
+                "arguments": {
+                    "delivery_token": envelope.delivery_token(),
+                }
+            }
+        }),
+    )
+    .await
+    .expect("mcp request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body should collect")
+        .to_bytes();
+    let value: Value = serde_json::from_slice(&body).expect("body should be json");
+    assert_eq!(
+        value["result"]["structuredContent"]["state"],
+        "acknowledged"
+    );
+}
+
+#[test]
+fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact() {
+    run_mcp_server_large_stack_test(
+        "mcp-http-tools-call-reads-and-edits-workspace-live-sync-artifact",
+        mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner,
+    );
+}
+
+async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-workspace-live-sync-mcp-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).expect("test root should be created");
+    std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
+
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.providers.workspace_live_sync.mode =
+        crate::config::WorkspaceLiveSyncMode::Tracked;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let worktree = root.to_string_lossy().to_string();
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", &worktree))
+        .expect("session should exist");
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(AttachRequest::new(
+            session.id(),
+            "mcp-workspace-live-sync-test",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("attachment should attach");
+    let agent_id = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("agent-a")
+                .with_model("test-model")
+                .with_worktree(&worktree),
+        )
+        .expect("agent should spawn")
+        .id()
+        .to_string();
+    let workflow_id = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("wf".to_string()))
+        .expect("workflow should exist")
+        .id()
+        .to_string();
+    let node_id = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), &workflow_id, &agent_id)
+        .expect("node should be added")
+        .id()
+        .to_string();
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &node_id,
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should exist");
+    app.invoke_workflow_endpoint_and_schedule(
+        session.id(),
+        &workflow_id,
+        "entry",
+        Some("start".to_string()),
+    )
+    .expect("workflow should invoke");
+    let auth_token = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("provider run should exist")
+        .runtime_mcp_auth_token()
+        .expect("mcp auth token should exist")
+        .to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+    let read_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.read_artifact",
+                "arguments": {
+                    "path": "notes.txt"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("read request should succeed");
+    assert_eq!(read_response.status(), StatusCode::OK);
+    let read_body = read_response
+        .into_body()
+        .collect()
+        .await
+        .expect("read body should collect")
+        .to_bytes();
+    let read_value: Value = serde_json::from_slice(&read_body).expect("read body json");
+    assert_eq!(
+        read_value["result"]["structuredContent"]["content_text"],
+        "alpha\nbeta\n"
+    );
+    assert_eq!(
+        read_value["result"]["structuredContent"]["workspace"]["identity_changed"],
+        false
+    );
+    let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
+        .as_str()
+        .expect("snapshot id should be present")
+        .to_string();
+    let edit_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.edit_artifact",
+                "arguments": {
+                    "path": "notes.txt",
+                    "snapshot_id": snapshot_id,
+                    "old_text": "beta",
+                    "new_text": "gamma"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("edit request should succeed");
+    assert_eq!(edit_response.status(), StatusCode::OK);
+    let edit_body = edit_response
+        .into_body()
+        .collect()
+        .await
+        .expect("edit body should collect")
+        .to_bytes();
+    let edit_value: Value = serde_json::from_slice(&edit_body).expect("edit body json");
+    assert_eq!(edit_value["result"]["structuredContent"]["applied"], true);
+    assert_eq!(
+        edit_value["result"]["structuredContent"]["workspace"]["identity_changed"],
+        false
+    );
+    assert_eq!(
+        edit_value["result"]["structuredContent"]["change"]["kind"],
+        "update"
+    );
+    assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("edit diff should be present")
+        .contains("-beta"));
+    assert!(edit_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("edit diff should be present")
+        .contains("+gamma"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
+        "alpha\ngamma\n"
+    );
+
+    let patch_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.apply_patch",
+                "arguments": {
+                    "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n@@\n alpha\n-gamma\n+delta\n*** End Patch"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("patch request should succeed");
+    assert_eq!(patch_response.status(), StatusCode::OK);
+    let patch_body = patch_response
+        .into_body()
+        .collect()
+        .await
+        .expect("patch body should collect")
+        .to_bytes();
+    let patch_value: Value = serde_json::from_slice(&patch_body).expect("patch body json");
+    assert_eq!(patch_value["result"]["structuredContent"]["applied"], true);
+    assert!(patch_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("patch diff should be present")
+        .contains("+delta"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes.txt")).expect("file should be readable"),
+        "alpha\ndelta\n"
+    );
+
+    let write_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.write_artifact",
+                "arguments": {
+                    "path": "created.txt",
+                    "content_text": "created through chariox\n"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("write request should succeed");
+    assert_eq!(write_response.status(), StatusCode::OK);
+    let write_body = write_response
+        .into_body()
+        .collect()
+        .await
+        .expect("write body should collect")
+        .to_bytes();
+    let write_value: Value = serde_json::from_slice(&write_body).expect("write body json");
+    assert_eq!(write_value["result"]["structuredContent"]["applied"], true);
+    assert_eq!(
+        write_value["result"]["structuredContent"]["change"]["kind"],
+        "add"
+    );
+    assert!(write_value["result"]["structuredContent"]["change"]["diff"]
+        .as_str()
+        .expect("write diff should be present")
+        .contains("+created through chariox"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("created.txt")).expect("file should be readable"),
+        "created through chariox\n"
+    );
+
+    let move_delete_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.apply_patch",
+                "arguments": {
+                    "patch_text": "*** Begin Patch\n*** Update File: notes.txt\n*** Move to: archive/notes.txt\n@@\n-alpha\n+omega\n delta\n*** Delete File: created.txt\n*** End Patch"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("move/delete patch request should succeed");
+    assert_eq!(move_delete_response.status(), StatusCode::OK);
+    let move_delete_body = move_delete_response
+        .into_body()
+        .collect()
+        .await
+        .expect("move/delete body should collect")
+        .to_bytes();
+    let move_delete_value: Value =
+        serde_json::from_slice(&move_delete_body).expect("move/delete body json");
+    assert_eq!(
+        move_delete_value["result"]["structuredContent"]["applied"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("archive/notes.txt"))
+            .expect("moved file should be readable"),
+        "omega\ndelta\n"
+    );
+    assert!(!root.join("notes.txt").exists());
+    assert!(!root.join("created.txt").exists());
+
+    let rejected_patch_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.apply_patch",
+                "arguments": {
+                    "patch_text": "*** Begin Patch\n*** Add File: should-not-exist.txt\n+nope\n*** Update File: archive/notes.txt\n@@\n-missing\n+bad\n*** End Patch"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("rejected patch request should return a tool result");
+    assert_eq!(rejected_patch_response.status(), StatusCode::OK);
+    let rejected_patch_body = rejected_patch_response
+        .into_body()
+        .collect()
+        .await
+        .expect("rejected patch body should collect")
+        .to_bytes();
+    let rejected_patch_value: Value =
+        serde_json::from_slice(&rejected_patch_body).expect("rejected patch body json");
+    assert_eq!(
+        rejected_patch_value["result"]["structuredContent"]["applied"],
+        false
+    );
+    assert!(!root.join("should-not-exist.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("archive/notes.txt"))
+            .expect("moved file should remain unchanged"),
+        "omega\ndelta\n"
+    );
+
+    let direct_move_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.move_artifact",
+                "arguments": {
+                    "from_path": "archive/notes.txt",
+                    "to_path": "final.txt",
+                    "old_text": "omega",
+                    "new_text": "final"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("direct move request should succeed");
+    assert_eq!(direct_move_response.status(), StatusCode::OK);
+    let direct_move_body = direct_move_response
+        .into_body()
+        .collect()
+        .await
+        .expect("direct move body should collect")
+        .to_bytes();
+    let direct_move_value: Value =
+        serde_json::from_slice(&direct_move_body).expect("direct move body json");
+    assert_eq!(
+        direct_move_value["result"]["structuredContent"]["applied"],
+        true
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("final.txt")).expect("direct moved file should read"),
+        "final\ndelta\n"
+    );
+    assert!(!root.join("archive/notes.txt").exists());
+
+    let direct_delete_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.delete_artifact",
+                "arguments": {
+                    "path": "final.txt"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("direct delete request should succeed");
+    assert_eq!(direct_delete_response.status(), StatusCode::OK);
+    let direct_delete_body = direct_delete_response
+        .into_body()
+        .collect()
+        .await
+        .expect("direct delete body should collect")
+        .to_bytes();
+    let direct_delete_value: Value =
+        serde_json::from_slice(&direct_delete_body).expect("direct delete body json");
+    assert_eq!(
+        direct_delete_value["result"]["structuredContent"]["applied"],
+        true
+    );
+    assert_eq!(
+        direct_delete_value["result"]["structuredContent"]["change"]["kind"],
+        "delete"
+    );
+    assert!(!root.join("final.txt").exists());
+}
+
+#[test]
+fn mcp_http_tools_call_lists_and_requests_capabilities() {
+    run_mcp_server_large_stack_test(
+        "mcp-http-tools-call-lists-and-requests-capabilities",
+        mcp_http_tools_call_lists_and_requests_capabilities_inner,
+    );
+}
+
+async fn mcp_http_tools_call_lists_and_requests_capabilities_inner() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-capability-mcp-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join(".chariox").join("skills").join("browser-qa"))
+        .expect("skill root should be created");
+    std::fs::write(
+        root.join(".chariox")
+            .join("skills")
+            .join("browser-qa")
+            .join("SKILL.md"),
+        "---\nname: browser-qa\ndescription: Browser QA\n---\nUse the browser.\n",
+    )
+    .expect("skill should be written");
+    let mcp_registry =
+        crate::mcp::CharioxMcpRegistry::new(vec![root.join(".chariox").join("mcps")]);
+    mcp_registry
+        .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+            "browser",
+            "npx",
+            vec!["@playwright/mcp".to_string()],
+        ))
+        .expect("mcp should install");
+
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let workspace = root.to_string_lossy().to_string();
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(&workspace, &workspace))
+        .expect("session should exist");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("agent-a")
+                .with_model("test-model")
+                .with_worktree(&workspace),
+        )
+        .expect("agent should spawn");
+    let agent_id = agent.id().to_string();
+    let agent_ref = agent.agent_ref().to_string();
+    let workflow_id = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("wf".to_string()))
+        .expect("workflow should exist")
+        .id()
+        .to_string();
+    let node_id = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), &workflow_id, &agent_id)
+        .expect("node should be added")
+        .id()
+        .to_string();
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            &workflow_id,
+            &node_id,
+            Some("entry".to_string()),
+        )
+        .expect("endpoint should exist");
+    app.invoke_workflow_endpoint_and_schedule(
+        session.id(),
+        &workflow_id,
+        "entry",
+        Some("start".to_string()),
+    )
+    .expect("workflow should invoke");
+    let auth_token = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("provider run should exist")
+        .runtime_mcp_auth_token()
+        .expect("mcp auth token should exist")
+        .to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 8));
+    let list_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.list_extensions",
+                "arguments": {"kind": "all"}
+            }
+        }),
+    )
+    .await
+    .expect("list request should succeed");
+    let list_body = list_response
+        .into_body()
+        .collect()
+        .await
+        .expect("list body should collect")
+        .to_bytes();
+    let list_value: Value = serde_json::from_slice(&list_body).expect("list body json");
+    assert_eq!(
+        list_value["result"]["structuredContent"]["agent_ref"],
+        agent_ref
+    );
+    assert_eq!(
+        list_value["result"]["structuredContent"]["extensions"]["mcps"][0]["name"],
+        "browser"
+    );
+    assert_eq!(
+        list_value["result"]["structuredContent"]["extensions"]["skills"][0]["name"],
+        "browser-qa"
+    );
+
+    let request_response = handle_json_rpc_value(
+        router,
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "chariox.request_extension",
+                "arguments": {"kind": "skill", "name": "browser-qa"}
+            }
+        }),
+    )
+    .await
+    .expect("request capability should succeed");
+    let request_body = request_response
+        .into_body()
+        .collect()
+        .await
+        .expect("request body should collect")
+        .to_bytes();
+    let request_value: Value = serde_json::from_slice(&request_body).expect("request body json");
+    assert_eq!(
+        request_value["result"]["structuredContent"]["granted"],
+        true
+    );
+    assert_eq!(
+        request_value["result"]["structuredContent"]["effective"],
+        "now"
+    );
+    assert_eq!(
+        request_value["result"]["structuredContent"]["requires_provider_restart"],
+        false
+    );
+    assert!(
+        request_value["result"]["structuredContent"]["skill"]["body"]
+            .as_str()
+            .expect("skill body should be returned")
+            .contains("Use the browser.")
+    );
+    let agent = app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&agent_id)
+        .expect("agent should exist");
+    assert_eq!(agent.skill_grants(), vec!["browser-qa".to_string()]);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn mcp_tools_call_rejects_invalid_auth_token() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+    let response = handle_json_rpc_value(
+        router,
+        "invalid-token",
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "ack_workflow_turn",
+                "arguments": {
+                    "delivery_token": "workflow-ack:missing"
+                }
+            }
+        }),
+    )
+    .await
+    .expect("request should return a json-rpc response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body should collect")
+        .to_bytes();
+    let value: Value = serde_json::from_slice(&body).expect("body should be json");
+    assert_eq!(value["error"]["code"], -32000);
+}
+
+#[tokio::test]
+async fn mcp_get_catalog_stream_requires_running_agent_auth() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+    ));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(super::run_mcp_http_server_on_listener(router, listener));
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    socket.write_all(b"GET /mcp HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\nAuthorization: Bearer invalid\r\nConnection: close\r\n\r\n").await.unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).await.unwrap();
+    server.abort();
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "MP-08/MP-10 catalog stream must authenticate: {response}"
+    );
+}
+
+// MP-08/MP-11 (#922 review 3/6): providers see the typed refusal code.
+#[test]
+fn capability_tool_refusal_keeps_its_typed_code() {
+    let refused = crate::error::DaemonError::UserDomainRefused {
+        reason: crate::error::UserDomainRefusalReason::NotRequested,
+    };
+    assert_eq!(
+        super::tool_errors::message(&refused),
+        "user_domain_not_requested: User-domain request refused"
+    );
+}
+
+// MP-08/MP-10: scripts may return any JSON value, but MCP structuredContent is an object.
+#[test]
+fn runtime_tool_content_wraps_non_objects_as_structured_results() {
+    for payload in [
+        serde_json::json!("crm result"),
+        serde_json::json!([1, 2]),
+        serde_json::json!(3),
+        serde_json::json!(true),
+        serde_json::Value::Null,
+    ] {
+        let (content, structured) = super::runtime_tool_content(payload.clone());
+        assert!(
+            structured.is_object(),
+            "MCP structuredContent must be an object"
+        );
+        assert_eq!(structured, serde_json::json!({"result": payload}));
+        assert_eq!(content[0]["text"], structured.to_string());
+    }
+}
+
+#[test]
+fn runtime_tool_content_preserves_objects_and_extracts_images() {
+    let payload = serde_json::json!({"result": "crm result"});
+    let (content, structured) = super::runtime_tool_content(payload.clone());
+    assert_eq!(structured, payload.clone());
+    assert_eq!(content[0]["text"], payload.to_string());
+    let (content, structured) = super::runtime_tool_content(serde_json::json!({
+        "mime_type": "image/png", "image_base64": "aW1hZ2U=", "width": 1
+    }));
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["data"], "aW1hZ2U=");
+
+    assert!(structured.get("image_base64").is_none());
+    assert_eq!(content[1]["text"], structured.to_string());
+}
+
+#[test]
+fn mp08_browser_snapshot_remains_readable_after_provider_line_truncation() {
+    // Real OpenCode stores large MCP results in a file, then caps each Read
+    // line at 2,000 characters. A compact snapshot hides later public nodes.
+    let mut nodes = (0..80)
+        .map(|i| serde_json::json!({"node_ref":i,"node_name":"DIV","text":"public article text"}))
+        .collect::<Vec<_>>();
+    nodes.push(
+        serde_json::json!({"node_ref":80,"node_name":"INPUT","attributes":{"id":"searchInput"}}),
+    );
+    let payload = serde_json::json!({"snapshot":{
+        "document_id":"document-a", "dom_nodes":nodes,
+        "accessibility_nodes":[{"node_ref":80,"value":""}]
+    }});
+    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let text = content[0]["text"].as_str().unwrap();
+    assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
+    assert_eq!(structured, payload);
+    let readable = text
+        .lines()
+        .map(|line| line.chars().take(2_000).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        readable.contains("searchInput"),
+        "MP-08/MP-10/MP-11: public input must survive native Read's line cap"
+    );
+    assert!(
+        readable.contains("\"value\": \"\""),
+        "empty input proof must remain readable"
+    );
+}
+
+#[test]
+fn primitive_mcp_result_shape_is_versioned_and_hashed() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
+    let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
+        "content": content, "structuredContent": structured, "isError": false
+    }});
+    let hash = Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "88bc1a9e72ce7fc22c80259bf0c3c2a3b52634867849331c4fc0b91dada72b1a"
+    );
+}
+
+// MP-08/MP-10: real script execution through the authenticated shared MCP dispatcher.
+#[tokio::test]
+async fn mcp_script_string_result_remains_available_to_strict_clients() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-efix7-mcp-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let _cleanup = catalog_changes::Scratch(root.clone());
+    let environment = crate::script::CharioxEnvironmentConfig {
+        name: "efix7_python".into(),
+        runtime: crate::script::CharioxEnvironmentRuntime::Python {
+            python: "/usr/bin/python3".into(),
+        },
+    };
+    crate::script::CharioxEnvironmentRegistry::new(vec![
+        crate::script::CharioxEnvironmentRegistry::project_root(&root),
+    ])
+    .install(&environment)
+    .unwrap();
+    let source = root.join("crm.py");
+    std::fs::write(&source, "import json\ndef run(rows: list[str]) -> str:\n    \"\"\"Serialize CRM rows without logs.\"\"\"\n    return json.dumps(rows)\n\ndef test_run():\n    assert json.loads(run(['fixture'])) == ['fixture']\n").unwrap();
+    crate::script::CharioxScriptRegistry::new(vec![
+        crate::script::CharioxScriptRegistry::project_root(&root),
+    ])
+    .install(&source, Some("efix7_crm"), &environment)
+    .unwrap();
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            root.to_string_lossy(),
+            root.to_string_lossy(),
+        ))
+        .unwrap();
+    app.agents()
+        .grant_extension(
+            agent.id(),
+            crate::extension::ExtensionGrant::script("efix7_crm", "efix7_python"),
+        )
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let response = handle_json_rpc_value(
+        router,
+        &token,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                "name": "efix7_crm", "arguments": {"rows": ["fixture"]}
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["result"]["isError"], false);
+    assert!(value["result"]["structuredContent"].is_object());
+    let original: Value = serde_json::from_str(
+        value["result"]["structuredContent"]["result"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(original, serde_json::json!(["fixture"]));
+    let text: Value =
+        serde_json::from_str(value["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, value["result"]["structuredContent"]);
+}
+
+// MP-08/MP-10/MP-11: native MCP carries the identical image bytes and identity.
+#[test]
+fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
+    use base64::Engine as _;
+    let small = b"\x89PNG\r\n\x1a\nsynthetic-controller-pixels".to_vec();
+    let mut large = vec![37; 1024 * 1024];
+    large[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    // The native content converter retains byte equality above IPC limits.
+    // These are synthetic converter inputs, not Chromium/perception proof.
+    for bytes in [small, large] {
+        let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+            "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
+            "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
+        }));
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(content[0]["data"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+        assert_eq!(content[0]["mimeType"], "image/png");
+        assert_eq!(metadata["identity"]["document_id"], "document-1");
+        assert!(metadata.get("image_base64").is_none());
+        assert_eq!(content[1]["text"], metadata.to_string());
+    }
+}

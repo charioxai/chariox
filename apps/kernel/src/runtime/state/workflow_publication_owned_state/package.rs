@@ -1,0 +1,901 @@
+use base64::Engine;
+use flate2::{write::GzEncoder, Compression};
+use sha2::{Digest, Sha256};
+
+use super::*;
+
+mod deployment_contract;
+
+pub(super) fn workflow_publication_package_files(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    snapshot: &crate::session::WorkflowPublicationSnapshot,
+    extension_requirements: &serde_json::Value,
+    kernel_url: Option<&str>,
+    agent_app: Option<&serde_json::Value>,
+    agent_app_assets_dir: Option<&str>,
+) -> Result<Vec<crate::local::WorkflowPublicationPackageFile>, DaemonError> {
+    publication
+        .validate_source_snapshot(snapshot)
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message,
+        })?;
+    let publication_value =
+        serde_json::to_value(publication).map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to encode publication: {error}"),
+        })?;
+    let publication_package =
+        workflow_publication_package_json(publication, &publication_value, agent_app);
+    let requirements = extension_requirements.clone();
+    let bindings = workflow_publication_bindings_json(snapshot);
+    let config =
+        workflow_publication_gateway_config_json(publication, &publication_value, kernel_url);
+    let apps = publication.apps();
+    let mut files = vec![
+        package_file(
+            "publication.json",
+            pretty_json(&publication_package)?,
+            false,
+        ),
+        package_file("workflow.snapshot.json", pretty_json(snapshot)?, false),
+        package_file("requirements.json", pretty_json(&requirements)?, false),
+        package_file("bindings.example.json", pretty_json(&bindings)?, false),
+        package_file("publication.config.json", pretty_json(&config)?, false),
+        package_file(
+            ".env.example",
+            workflow_publication_env_template(publication, kernel_url),
+            false,
+        ),
+        package_file("run.sh", workflow_publication_launcher_script(), true),
+        package_file(
+            "README.md",
+            workflow_publication_readme(publication, &publication_package, &config),
+            false,
+        ),
+    ];
+    if publication_uses_http_ingress(&publication_value) {
+        files.extend([
+            package_file(
+                "public/index.html",
+                workflow_publication_index_html(publication),
+                false,
+            ),
+            package_file(
+                "public/app.js",
+                workflow_publication_app_js(&publication_value),
+                false,
+            ),
+            package_file(
+                "public/styles.css",
+                workflow_publication_styles_css(),
+                false,
+            ),
+        ]);
+    }
+    if agent_app
+        .and_then(|value| value.get("enabled"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        if let Some(assets_dir) = agent_app_assets_dir {
+            files.extend(workflow_publication_agent_app_asset_files(assets_dir)?);
+        }
+    }
+    if let Some(apps) = apps {
+        files.push(package_file("apps.json", pretty_json(apps)?, false));
+    }
+    let deployment_contract = deployment_contract::workflow_publication_deployment_contract_json(
+        publication,
+        &publication_value,
+        snapshot,
+        agent_app,
+        &requirements,
+        apps,
+        &files,
+    )?;
+    files.push(package_file(
+        "deployment-contract.json",
+        pretty_json(&deployment_contract)?,
+        false,
+    ));
+    Ok(files)
+}
+
+fn package_file(
+    path: impl Into<String>,
+    content: String,
+    executable: bool,
+) -> crate::local::WorkflowPublicationPackageFile {
+    package_file_bytes(path, content.as_bytes(), executable)
+}
+
+fn package_file_bytes(
+    path: impl Into<String>,
+    content: &[u8],
+    executable: bool,
+) -> crate::local::WorkflowPublicationPackageFile {
+    crate::local::WorkflowPublicationPackageFile {
+        path: path.into(),
+        content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+        executable,
+    }
+}
+
+fn pretty_json<T: serde::Serialize>(value: &T) -> Result<String, DaemonError> {
+    serde_json::to_string_pretty(value)
+        .map(|value| format!("{value}\n"))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to encode package JSON: {error}"),
+        })
+}
+
+fn workflow_publication_package_json(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    publication_value: &serde_json::Value,
+    agent_app: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let transport = hook_transport(publication_value);
+    let mut hook = serde_json::json!({
+        "id": format!("{}-hook", publication.id()),
+        "publication_id": publication.id(),
+        "transport": transport,
+        "endpoint_id": publication.endpoint_id(),
+        "queue_ref": publication.queue_ref().unwrap_or("default"),
+        "input_schema": publication_value.get("input_schema").cloned().unwrap_or(serde_json::Value::Null),
+        "trace_exposure": publication.trace_exposure().cloned().unwrap_or(serde_json::Value::Null),
+        "response_mode": "accepted",
+    });
+    if publication_uses_http_ingress(publication_value) {
+        hook["route"] = serde_json::Value::String(
+            string_field(publication_value, "route")
+                .map(str::to_string)
+                .unwrap_or_else(|| default_publication_route(publication_value).to_string()),
+        );
+        hook["methods"] = publication_value
+            .get("methods")
+            .cloned()
+            .unwrap_or_else(|| default_publication_methods(publication_value));
+        hook["mode"] = serde_json::Value::String(
+            string_field(publication_value, "mode")
+                .unwrap_or_else(|| default_publication_mode(publication_value))
+                .to_string(),
+        );
+        if let Some(parser) = publication_value
+            .get("parser")
+            .cloned()
+            .or_else(|| default_publication_parser(publication_value))
+        {
+            hook["parser"] = parser;
+        }
+    }
+    let mut package = serde_json::json!({
+        "schema_version": 1,
+        "package_version": workflow_publication_package_version(agent_app),
+        "publication_id": publication.id(),
+        "kind": publication.kind(),
+        "alias": publication.alias(),
+        "source_session_id": publication.session_id(),
+        "workflow_id": publication.workflow_id(),
+        "source_workflow_revision": publication.source_workflow_revision(),
+        "source_snapshot_digest": publication.source_snapshot_digest(),
+        "default_bindings_path": "bindings.local.json",
+        "hooks": [hook],
+        "assets": {
+            "public_dir": "public",
+            "scripts_dir": "scripts",
+        },
+        "deployment_contract": {
+            "path": "deployment-contract.json",
+            "schema_version": 1,
+        },
+    });
+    if agent_app
+        .and_then(|value| value.get("enabled"))
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        package["agent_app"] = workflow_publication_agent_app_json(agent_app);
+    }
+    package
+}
+
+pub(super) fn workflow_publication_package_version(_agent_app: Option<&serde_json::Value>) -> u32 {
+    4
+}
+
+fn workflow_publication_agent_app_json(agent_app: Option<&serde_json::Value>) -> serde_json::Value {
+    let mut value = agent_app
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+    value["enabled"] = serde_json::Value::Bool(true);
+    if !value.get("assets").is_some_and(|assets| assets.is_object()) {
+        value["assets"] = serde_json::json!({
+            "public_dir": "app",
+            "index": "index.html",
+        });
+    }
+    value
+}
+
+fn workflow_publication_agent_app_asset_files(
+    assets_dir: &str,
+) -> Result<Vec<crate::local::WorkflowPublicationPackageFile>, DaemonError> {
+    let root = std::path::PathBuf::from(assets_dir);
+    if !root.is_dir() {
+        return Err(DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("agent_app_assets_dir `{assets_dir}` is not a directory"),
+        });
+    }
+    let mut files = Vec::new();
+    collect_agent_app_asset_files(&root, &root, &mut files)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn collect_agent_app_asset_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut Vec<crate::local::WorkflowPublicationPackageFile>,
+) -> Result<(), DaemonError> {
+    let entries = std::fs::read_dir(dir).map_err(|error| DaemonError::LocalTransport {
+        operation: "export workflow publication package",
+        message: format!("failed to read agent app assets: {error}"),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!("failed to read agent app asset entry: {error}"),
+        })?;
+        let path = entry.path();
+        let metadata = entry
+            .metadata()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "failed to stat agent app asset `{}`: {error}",
+                    path.display()
+                ),
+            })?;
+        if metadata.is_dir() {
+            collect_agent_app_asset_files(root, &path, files)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "failed to relativize agent app asset `{}`: {error}",
+                    path.display()
+                ),
+            })?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!("agent app asset path is not UTF-8: {}", path.display()),
+            })?;
+        let content = std::fs::read(&path).map_err(|error| DaemonError::LocalTransport {
+            operation: "export workflow publication package",
+            message: format!(
+                "failed to read agent app asset `{}`: {error}",
+                path.display()
+            ),
+        })?;
+        files.push(package_file_bytes(
+            format!("app/{}", relative.replace(std::path::MAIN_SEPARATOR, "/")),
+            &content,
+            false,
+        ));
+    }
+    Ok(())
+}
+
+fn workflow_publication_bindings_json(
+    snapshot: &crate::local::WorkflowPublicationSnapshot,
+) -> serde_json::Value {
+    let overrides = snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            let node_ids = snapshot
+                .workflow
+                .nodes()
+                .iter()
+                .filter(|node| node.agent_id() == agent.id())
+                .map(|node| node.id().to_string())
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "agent_id": agent.id(),
+                "node_ids": node_ids,
+                "captured": {
+                    "provider": agent.provider(),
+                    "model": agent.model(),
+                    "effort": agent.effort(),
+                },
+                "replacement": null,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schema_version": 1,
+        "provider_model_overrides": overrides,
+    })
+}
+
+fn workflow_publication_gateway_config_json(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    publication_value: &serde_json::Value,
+    kernel_url: Option<&str>,
+) -> serde_json::Value {
+    let uses_http_ingress = publication_uses_http_ingress(publication_value);
+    let mut config = serde_json::json!({
+        "publication_id": publication.id(),
+        "session_id": publication.session_id(),
+        "workflow_ref": publication.workflow_id(),
+        "endpoint_ref": publication.endpoint_id(),
+    });
+    if uses_http_ingress {
+        config["route"] = serde_json::Value::String(
+            string_field(publication_value, "route")
+                .map(str::to_string)
+                .unwrap_or_else(|| default_publication_route(publication_value).to_string()),
+        );
+        config["mode"] = serde_json::Value::String(
+            string_field(publication_value, "mode")
+                .unwrap_or_else(|| default_publication_mode(publication_value))
+                .to_string(),
+        );
+        if let Some(parser) = publication_value
+            .get("parser")
+            .cloned()
+            .or_else(|| default_publication_parser(publication_value))
+        {
+            config["parser"] = parser;
+        }
+    }
+    if let Some(kernel_url) = kernel_url {
+        config["kernel_endpoint"] = serde_json::Value::String(kernel_url.to_string());
+    }
+    if uses_http_ingress {
+        if let Some(methods) = publication_value
+            .get("methods")
+            .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
+        {
+            config["methods"] = methods.clone();
+        } else {
+            let default_methods = default_publication_methods(publication_value);
+            if default_methods
+                .as_array()
+                .is_some_and(|values| !values.is_empty())
+            {
+                config["methods"] = default_methods;
+            }
+        }
+    }
+    if let Some(transport) = publication_value
+        .get("transport")
+        .filter(|value| !value.is_null())
+    {
+        config["transport"] = transport.clone();
+    }
+    if let Some(input_schema) = publication_value
+        .get("input_schema")
+        .filter(|value| !value.is_null())
+    {
+        config["input_schema"] = input_schema.clone();
+    }
+    if let Some(trace_exposure) = publication.trace_exposure() {
+        config["trace_exposure"] = trace_exposure.clone();
+    }
+    config
+}
+
+fn workflow_publication_env_template(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    kernel_url: Option<&str>,
+) -> String {
+    [
+        "# Copy this file to .env or export these variables before running run.sh.",
+        "HOST=0.0.0.0",
+        "PORT=3000",
+        &format!(
+            "CHARIOX_KERNEL_URL={}",
+            kernel_url.unwrap_or("ws://127.0.0.1:43118")
+        ),
+        "CHARIOX_PUBLICATION_PACKAGE=./publication.json",
+        &format!(
+            "CHARIOX_PUBLICATION_SESSION_ID={}",
+            publication.session_id()
+        ),
+        &format!("CHARIOX_PUBLICATION_ID={}", publication.id()),
+        "",
+    ]
+    .join("\n")
+}
+
+fn workflow_publication_launcher_script() -> String {
+    [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"",
+        "if [ -f \"$DIR/.env\" ]; then",
+        "  set -a",
+        "  . \"$DIR/.env\"",
+        "  set +a",
+        "fi",
+        "export CHARIOX_PUBLICATION_PACKAGE=\"${CHARIOX_PUBLICATION_PACKAGE:-$DIR/publication.json}\"",
+        "exec chariox-workflow-gateway",
+        "",
+    ]
+    .join("\n")
+}
+
+fn workflow_publication_readme(
+    publication: &crate::session::WorkflowPublicationDefinition,
+    publication_package: &serde_json::Value,
+    config: &serde_json::Value,
+) -> String {
+    let uses_http_ingress = publication_package
+        .pointer("/hooks/0/transport")
+        .and_then(serde_json::Value::as_str)
+        == Some("human_http");
+    let route = config
+        .get("route")
+        .and_then(|value| value.as_str())
+        .unwrap_or("/*");
+    let example_path = if route.contains('*') {
+        route.replace('*', "example")
+    } else {
+        route.to_string()
+    };
+    let mut readme = format!(
+        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n",
+        publication.alias().unwrap_or(publication.id())
+    );
+    readme.push_str("- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n");
+    if uses_http_ingress {
+        readme.push_str(&format!(
+            "- `public/`: editable browser assets\n\n## Invoke\n\n```bash\nBASE_URL=http://127.0.0.1:3000\ncurl -sS \"$BASE_URL{example_path}\"\n```\n\n"
+        ));
+    }
+    readme.push_str("## Hooks\n\n```json\n");
+    readme.push_str(
+        &serde_json::to_string_pretty(&publication_package["hooks"])
+            .unwrap_or_else(|_| "[]".to_string()),
+    );
+    readme.push_str("\n```\n");
+    readme
+}
+
+fn workflow_publication_index_html(
+    publication: &crate::session::WorkflowPublicationDefinition,
+) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{}</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main>
+    <h1>{}</h1>
+    <form id="invoke-form">
+      <textarea name="prompt" rows="5" autofocus></textarea>
+      <button type="submit">Run</button>
+    </form>
+    <pre id="output"></pre>
+  </main>
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
+"#,
+        escape_html(publication.alias().unwrap_or(publication.id())),
+        escape_html(publication.alias().unwrap_or(publication.id())),
+    )
+}
+
+fn workflow_publication_app_js(publication_value: &serde_json::Value) -> String {
+    let route = string_field(publication_value, "route")
+        .map(str::to_string)
+        .unwrap_or_else(|| default_publication_route(publication_value).to_string());
+    [
+        &format!("const routePattern = {}", serde_json::to_string(&route).unwrap_or_else(|_| "\"/*\"".to_string())),
+        "const form = document.querySelector('#invoke-form')",
+        "const output = document.querySelector('#output')",
+        "function invocationUrl(prompt) {",
+        "  const encoded = encodeURIComponent(prompt)",
+        "  const wildcardIndex = routePattern.indexOf('*')",
+        "  if (wildcardIndex >= 0) {",
+        "    const path = routePattern.slice(0, wildcardIndex) + encoded + routePattern.slice(wildcardIndex + 1)",
+        "    return new URL(path.startsWith('/') ? path : `/${path}`, window.location.origin).toString()",
+        "  }",
+        "  const url = new URL(routePattern.startsWith('/') ? routePattern : `/${routePattern}`, window.location.origin)",
+        "  url.searchParams.set('prompt', prompt)",
+        "  return url.toString()",
+        "}",
+        "form?.addEventListener('submit', (event) => {",
+        "  event.preventDefault()",
+        "  const data = new FormData(form)",
+        "  const prompt = String(data.get('prompt') ?? '').trim()",
+        "  if (!prompt) return",
+        "  output.textContent = 'Opening workflow invocation...'",
+        "  window.location.href = invocationUrl(prompt)",
+        "})",
+        "",
+    ]
+    .join("\n")
+}
+
+fn workflow_publication_styles_css() -> String {
+    [
+        "body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; background: #f7f7f4; color: #202124; }",
+        "main { max-width: 760px; margin: 0 auto; padding: 32px 20px; }",
+        "textarea { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #b9b9b2; border-radius: 6px; font: inherit; }",
+        "button { margin-top: 12px; padding: 10px 14px; border: 0; border-radius: 6px; background: #202124; color: white; font: inherit; }",
+        "pre { white-space: pre-wrap; }",
+        "",
+    ]
+    .join("\n")
+}
+
+pub(super) fn workflow_publication_package_digest(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+) -> Result<String, DaemonError> {
+    let mut hash = Sha256::new();
+    let mut files = files.iter().collect::<Vec<_>>();
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    hash.update((files.len() as u64).to_be_bytes());
+    for file in files {
+        let content = base64::engine::general_purpose::STANDARD
+            .decode(&file.content_base64)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "digest workflow publication package",
+                message: format!(
+                    "failed to decode package file `{}` while hashing: {error}",
+                    file.path
+                ),
+            })?;
+        hash.update((file.path.len() as u64).to_be_bytes());
+        hash.update(file.path.as_bytes());
+        hash.update((content.len() as u64).to_be_bytes());
+        hash.update(&content);
+        hash.update([u8::from(file.executable)]);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+/// Package files the kernel templates: they change with kernel upgrades,
+/// not with the workflow, so a release's inputs digest leaves them out.
+const KERNEL_TEMPLATED_PACKAGE_FILES: &[&str] = &[
+    ".env.example",
+    "run.sh",
+    "README.md",
+    "public/index.html",
+    "public/app.js",
+    "public/styles.css",
+];
+
+/// Protocol 378: the digest of a release's workflow-owned package files
+/// (its publication, snapshot, requirements, bindings, config, Apps, agent
+/// app assets and deployment contract), which a bind or recovery re-export
+/// must reproduce. The contract counts without the fields a kernel upgrade
+/// changes: its kernel version and what derives from the package digest or
+/// the templates.
+pub(in crate::runtime::state) fn workflow_publication_release_inputs_digest(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+) -> Result<String, DaemonError> {
+    let inputs = files
+        .iter()
+        .filter(|file| !KERNEL_TEMPLATED_PACKAGE_FILES.contains(&file.path.as_str()))
+        .map(|file| {
+            if file.path == "deployment-contract.json" {
+                release_inputs_contract(file)
+            } else {
+                Ok(file.clone())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    workflow_publication_package_digest(&inputs)
+}
+
+fn release_inputs_contract(
+    file: &crate::local::WorkflowPublicationPackageFile,
+) -> Result<crate::local::WorkflowPublicationPackageFile, DaemonError> {
+    let error = |message: String| DaemonError::LocalTransport {
+        operation: "digest workflow publication release inputs",
+        message,
+    };
+    let content = base64::engine::general_purpose::STANDARD
+        .decode(&file.content_base64)
+        .map_err(|decode| {
+            error(format!(
+                "failed to decode the deployment contract: {decode}"
+            ))
+        })?;
+    let mut contract: serde_json::Value = serde_json::from_slice(&content)
+        .map_err(|parse| error(format!("failed to parse the deployment contract: {parse}")))?;
+    if let Some(contract) = contract.as_object_mut() {
+        contract.remove("package_id");
+    }
+    if let Some(artifact) = contract["artifact"].as_object_mut() {
+        artifact.remove("content_digest");
+    }
+    if let Some(compatibility) = contract["compatibility"].as_object_mut() {
+        compatibility.remove("minimum_kernel_version");
+    }
+    if let Some(assets) = contract["presentation"]["assets"].as_array_mut() {
+        assets.retain(|asset| {
+            !asset["path"]
+                .as_str()
+                .is_some_and(|path| KERNEL_TEMPLATED_PACKAGE_FILES.contains(&path))
+        });
+    }
+    Ok(package_file(
+        &file.path,
+        pretty_json(&contract)?,
+        file.executable,
+    ))
+}
+
+pub(super) fn workflow_publication_package_archive_base64(
+    files: &[crate::local::WorkflowPublicationPackageFile],
+) -> Result<String, DaemonError> {
+    let mut archive_bytes = Vec::new();
+    {
+        let encoder = GzEncoder::new(&mut archive_bytes, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut files = files.iter().collect::<Vec<_>>();
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        for file in files {
+            let content = base64::engine::general_purpose::STANDARD
+                .decode(&file.content_base64)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "export workflow publication package",
+                    message: format!("failed to decode package file `{}`: {error}", file.path),
+                })?;
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(if file.executable { 0o755 } else { 0o644 });
+            header.set_cksum();
+            builder
+                .append_data(&mut header, file.path.as_str(), content.as_slice())
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "export workflow publication package",
+                    message: format!(
+                        "failed to add package file `{}` to archive: {error}",
+                        file.path
+                    ),
+                })?;
+        }
+        builder
+            .finish()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!("failed to finish publication package archive: {error}"),
+            })?;
+        builder
+            .into_inner()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!("failed to flush publication package archive: {error}"),
+            })?
+            .finish()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "export workflow publication package",
+                message: format!(
+                    "failed to finish compressed publication package archive: {error}"
+                ),
+            })?;
+    }
+    Ok(base64::engine::general_purpose::STANDARD.encode(archive_bytes))
+}
+
+fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
+    if let Some(kind) = publication_value
+        .get("kind")
+        .and_then(|value| value.as_str())
+    {
+        if matches!(
+            kind,
+            crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+                | crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED
+        ) {
+            return serde_json::Value::String(kind.to_string());
+        }
+    }
+    let Some(transport) = publication_value.get("transport") else {
+        return serde_json::Value::String("human_http".to_string());
+    };
+    if let Some(kind) = transport.get("kind").and_then(|value| value.as_str()) {
+        serde_json::Value::String(kind.to_string())
+    } else if transport.is_string() {
+        transport.clone()
+    } else {
+        serde_json::Value::String("human_http".to_string())
+    }
+}
+
+fn publication_uses_http_ingress(publication_value: &serde_json::Value) -> bool {
+    matches!(
+        hook_transport(publication_value).as_str(),
+        Some("human_http")
+    )
+}
+
+fn default_publication_route(_publication_value: &serde_json::Value) -> &'static str {
+    "/"
+}
+
+fn default_publication_methods(publication_value: &serde_json::Value) -> serde_json::Value {
+    let _ = publication_value;
+    serde_json::json!(["GET", "POST"])
+}
+
+fn default_publication_parser(publication_value: &serde_json::Value) -> Option<serde_json::Value> {
+    let route = string_field(publication_value, "route")
+        .unwrap_or_else(|| default_publication_route(publication_value));
+    if route == "/" {
+        return Some(serde_json::json!({"kind": "query_params"}));
+    }
+    Some(serde_json::json!({
+        "kind": "path_template",
+        "template": route_prompt_template(route),
+    }))
+}
+
+fn route_prompt_template(route: &str) -> String {
+    let normalized = if route.trim().is_empty() {
+        "/prompt/*"
+    } else {
+        route.trim()
+    };
+    if normalized.contains('*') {
+        return normalized.replace('*', ":prompt");
+    }
+    if normalized.contains(":prompt") {
+        return normalized.to_string();
+    }
+    format!("{}/:prompt", normalized.trim_end_matches('/'))
+}
+
+fn default_publication_mode(publication_value: &serde_json::Value) -> &'static str {
+    let _ = publication_value;
+    "async"
+}
+
+fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
+    value.get(field).and_then(|field| field.as_str())
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::*;
+
+    #[test]
+    fn publication_package_digest_length_frames_file_records() {
+        let left = vec![package_file("z", b"b", false)];
+        let right = vec![package_file("zYg==", b"", false)];
+
+        let left_digest = workflow_publication_package_digest(&left).expect("left digest");
+        let right_digest = workflow_publication_package_digest(&right).expect("right digest");
+
+        assert_eq!(
+            left_digest,
+            "sha256:586e9150a9d5fb2f9acdfda4a029feb0ea7aaa1c91332d142c1b5e305051f7e5"
+        );
+        assert_eq!(
+            right_digest,
+            "sha256:cf85ff5ab71aacd4309f63acea96197342afc4cf6e9af3eb955ddaf73a90a53c"
+        );
+        assert_ne!(left_digest, right_digest);
+    }
+
+    #[test]
+    fn publication_package_digest_matches_the_cloud_canonical_vector() {
+        let files = vec![
+            package_file("publication.json", b"{}", false),
+            package_file("entrypoint.sh", b"#!/bin/sh\nexit 0\n", true),
+        ];
+
+        assert_eq!(
+            workflow_publication_package_digest(&files).expect("package digest"),
+            "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a"
+        );
+    }
+
+    #[test]
+    fn release_inputs_digest_ignores_the_kernel_templates_only() {
+        let contract = |kernel: &str, digest: &str, slots: serde_json::Value| {
+            serde_json::to_vec(&serde_json::json!({
+                "package_id": digest,
+                "artifact": {"content_digest": digest, "digest_algorithm": "sha256"},
+                "compatibility": {"minimum_kernel_version": kernel},
+                "credential_slots": slots,
+                "presentation": {"assets": [
+                    {"path": "public/app.js", "sha256": format!("sha256:{kernel}")},
+                    {"path": "app/index.html", "sha256": "sha256:app"},
+                ]},
+            }))
+            .expect("contract")
+        };
+        let files = |readme: &[u8], contract: Vec<u8>, snapshot: &[u8]| {
+            vec![
+                package_file("README.md", readme, false),
+                package_file("deployment-contract.json", &contract, false),
+                package_file("run.sh", b"#!/bin/sh\n", true),
+                package_file("workflow.snapshot.json", snapshot, false),
+            ]
+        };
+        let digest = |files: Vec<_>| {
+            workflow_publication_release_inputs_digest(&files).expect("inputs digest")
+        };
+        let slots = serde_json::json!([{"id": "slack"}]);
+        let release = digest(files(
+            b"readme",
+            contract("1.0.0", "sha256:a", slots.clone()),
+            b"{}",
+        ));
+        // A kernel upgrade: new templates, kernel version and package digest.
+        assert_eq!(
+            release,
+            digest(files(
+                b"new readme",
+                contract("1.1.0", "sha256:b", slots.clone()),
+                b"{}"
+            ))
+        );
+        // The workflow's own files and the contract it was consented against count.
+        assert_ne!(
+            release,
+            digest(files(
+                b"readme",
+                contract("1.0.0", "sha256:a", slots.clone()),
+                b"{\"n\":1}"
+            ))
+        );
+        assert_ne!(
+            release,
+            digest(files(
+                b"readme",
+                contract("1.0.0", "sha256:a", serde_json::json!([{"id": "github"}])),
+                b"{}"
+            ))
+        );
+    }
+
+    #[test]
+    fn publication_package_defaults_http_ingress_to_root() {
+        let publication = serde_json::json!({ "transport": { "kind": "human_http" } });
+        assert_eq!(default_publication_route(&publication), "/");
+    }
+
+    fn package_file(
+        path: &str,
+        content: &[u8],
+        executable: bool,
+    ) -> crate::local::WorkflowPublicationPackageFile {
+        crate::local::WorkflowPublicationPackageFile {
+            path: path.to_string(),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+            executable,
+        }
+    }
+}

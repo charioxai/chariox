@@ -1,0 +1,5 @@
+{
+  "key_id": "dev.chariox.fixture.2026-08-v3",
+  "algorithm": "ed25519",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA8pS7k5z0eHqzBZr+PdjMYZXybTXw67sviQOb2T1iGec=\n-----END PUBLIC KEY-----\n"
+}

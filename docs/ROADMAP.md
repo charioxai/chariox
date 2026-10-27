@@ -1,0 +1,674 @@
+# Chariox Roadmap
+
+## Status
+
+Roadmap derived from `docs/spec-v1.md` and updated to match the code currently in `main`.
+
+Current milestone status:
+
+- M0 completed on 2026-03-16
+- M1 completed on 2026-03-17
+- M2 completed on 2026-03-18
+- M3 is now the OpenCode-first completion phase: capabilities, agent harnessing behavior, and remaining single-provider hardening work are still open
+- M4 is now the OpenCode-first local-runtime completion phase: the first manual multi-agent runtime slice and workflow runtime are landed, while local stabilization, immediate CLI responsiveness, and workflow polish remain open
+- M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
+- M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
+- M5.5 is the relay identity hardening phase: relay realms, pairing, scoped tokens, caller identity propagation, and hosted issuer compatibility are planned in `docs/M5_5_RELAY_IDENTITY_PLAN.md`
+- M5.6 completed on 2026-04-21: hosted Chariox Cloud device login, kernel-owned cloud relay onboarding, token minting, pairing, logout, and live cloud relay drill coverage are landed
+- M5.7 is the Chariox Cloud multi-user bridge: cloud-backed session invites, cloud user identity propagation, collaborator history, and hosted relay admission for multi-user sessions are planned in `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`
+- M6.5 is the kernel multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
+
+## 1. Roadmap Goals
+
+- deliver a stable daemon-centered v1 runtime
+- evolve the daemon into an explicit node runtime that can route both local and remote members in one session domain
+- ship a fully functioning local daemon + CLI path with one provider before expanding orchestration breadth
+- preserve native provider UX while adding orchestration value
+- keep server lightweight with strict security boundaries
+- close the OpenCode-first development cycle before adding more providers
+- finish agent harnessing and multi-machine session behavior before multi-platform and multi-provider expansion
+- keep the runtime compatible with later multi-agent workflow execution, structured handoffs, and isolated branch worktrees
+- add daemon-owned workspace coordination so multi-agent integration does not depend on a human manually resolving every conflict; M4.6 now covers managed provider-session artifact writes, while port claims, unsafe-mode policy commands, optional integration checks, and richer artifact domains remain future work
+
+## 2. Milestone Structure
+
+- M0: Foundations
+- M1: Core Session Runtime
+- M2: End-to-End Local OpenCode Baseline
+- M3: OpenCode Completion and Local Capability Hardening
+- M4: OpenCode Local Runtime Completion
+- M4.5: Kernel Runtime Refactor
+- M5: Relay and Remote Transport
+- M5.5: Relay Realms, Pairing, and Scoped Tokens. See `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
+- M5.6: Chariox Cloud Device Login and Relay Onboarding. Completed on 2026-04-21.
+- M5.7: Chariox Cloud Multi-User Bridge. See `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`.
+- M6: Remote Agents and Machine Membership
+- M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
+- M7: Chariox-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
+- M7.5: Chariox Shell. New milestone for a kernel-facing `chariox-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_CHARIOX_SHELL_PLAN.md`.
+- M14B: Native TUI validation and remote/slice parity. Deferred milestone for Chariox-managed Codex, OpenCode, and Claude Code native TUIs across local, standard remote, and slice scenarios. See `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`.
+- M8: Workflow Interconnection
+- M9: Multi-Provider Expansion and Adapter Generalization
+- M10: v1 Stabilization and Launch
+
+## 2.1 Delivery Sequence Within v1
+
+Multi-agent workflow execution remains part of v1, but it is no longer the immediate implementation priority.
+
+Rollout priority:
+
+- first deliver a single-agent local daemon + CLI path with one provider and live terminal streaming
+- then close the OpenCode-first local cycle with capabilities, agent harnessing behavior, workflow runtime behavior, and local hardening
+- then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
+- then add relay-backed remote transport
+- then harden relay identity with realms, pairing, scoped tokens, and caller identity propagation
+- then add Chariox Cloud hosted onboarding and cloud-backed identity/session invitations for users who do not self-host relay identity services
+- then add remote agents and machine membership on top of relay
+- then add session-scoped multi-user collaboration on top of the shared session and relay model
+- then add Chariox-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
+- then add `chariox-shell` as a kernel-facing command REPL and scriptable command surface sharing command execution with the TUI slash-command layer
+- then add additional clients on the same daemon/protocol model
+- then complete native TUI parity for Codex, OpenCode, and Claude Code across local, standard remote, and slice scenarios
+- then add workflow interconnection on top of remote agent connectivity
+- then add additional providers such as Claude Code and Codex plus the more generic provider-adapter/protocol work they require
+- workflow scheduling remains in scope, but it should follow the OpenCode-first runtime/harnessing/node-connectivity completion and fit inside the same long-term daemon architecture
+- the workflow model is now explicitly multi-definition per workspace and multi-endpoint per workflow; the first implementation slice should start with kernel-backed workflow definitions/endpoints before graph scheduling
+- that first slice is now implemented in the local runtime: workflow definitions are kernel-backed, workflows/endpoints resolve by id or alias, and node/edge/endpoint management exists before any run scheduling
+
+## 3. Milestones
+
+## M0 - Foundations
+
+Status:
+
+- completed on 2026-03-16
+- delivered workspace scaffolding, baseline CI, shared domain types, Prisma schema baseline, and Rust daemon/server bootstrap packages
+
+Outcomes:
+
+- monorepo/workspace setup and baseline CI
+- initial shared domain model for user/machine/daemon/session/provider run
+- developer docs baseline (`spec-v1`, architecture, protocol, roadmap)
+
+Exit criteria:
+
+- repository can build/lint/test baseline packages
+- docs provide a coherent implementation target
+
+## M1 - Core Session Runtime
+
+Outcomes:
+
+- daemon process lifecycle
+- session lifecycle (create/attach/detach/end)
+- PTY manager for provider runs
+- multi-attachment support with daemon-owned prompt queueing and canonical config propagation
+- parked provider run support with one active run at a time
+- workflow-compatible runtime foundations so later multi-agent graph execution can be added without redesigning session/provider/worktree ownership
+
+Exit criteria:
+
+- local client can run native provider in managed session
+- multiple clients can attach without breaking terminal behavior
+- implemented runtime surfaces do not block later workflow graph execution, node-scoped provider runs, or explicit worktree assignment
+
+## M2 - End-to-End Local OpenCode Baseline
+
+Status:
+
+- completed on 2026-03-18
+- delivered a real local daemon IPC path, a minimal local CLI, a real `opencode` adapter, and end-to-end prompt/output streaming through the daemon
+- first iteration continues to exclude provider login flows because OpenCode can run without login by default
+
+Outcomes:
+
+- OpenCode provider adapter wired through the daemon
+- local CLI client attached to daemon-managed sessions
+- single-agent prompt submission from an input field
+- live terminal/output streaming from the active OpenCode run back into the CLI as output appears
+- stable session creation/attach/launch/prompt/output loop for one local user on one machine
+- no workflow mode, no remote relay, no web app, and no provider switching in this milestone
+
+Exit criteria:
+
+- local CLI can create or attach to a session, launch OpenCode, submit a prompt, and stream output in real time
+- daemon remains the authority for session and PTY/provider-run lifecycle during that flow
+
+## M3 - OpenCode Completion and Local Capability Hardening
+
+Status:
+
+- M3 remains focused on closing the one-provider OpenCode cycle rather than expanding provider breadth
+- a large part of the local baseline hardening work has already landed: shared logging, persistent session management, richer transcript rendering, command-center work, and the early agent-management controls the M4 runtime now builds on
+- remaining M3 work is now the narrower OpenCode-first follow-on set: broader capability wiring, local UX hardening, and adapter/runtime stabilization without adding new provider families yet
+
+Outcomes:
+
+- upgrade OpenCode from the M2 PTY bootstrap path to a structured local server/session/event adapter
+- add a project-wide logging/debugging system with one machine-local log root and correlated logs across daemon and client processes
+- add explicit persistent session management with daemon-owned delete semantics and a reusable unattached CLI state
+- add syntax-highlighted markdown/code rendering in the TypeScript CLI transcript for provider responses
+- replace numeric session ids with commit-like ids and optional aliases, including unique-prefix resolution
+- harden the primary TypeScript local CLI after the Rust-to-TypeScript client migration
+- shell command capability
+- directory tree + file view/edit capabilities
+- screenshot capture capability
+- git/worktree inspection capability
+- file transfer + attach-transferred workflow
+- daemon-owned slash-command dispatch for Chariox capabilities
+- workflow-compatible local capability design so later multi-agent execution can reuse the same surfaces
+- keep provider breadth intentionally fixed to OpenCode while this cycle is being closed
+
+Exit criteria:
+
+- capability failures remain isolated from the terminal lane
+- the OpenCode-first local daemon + CLI model is complete enough that new providers are no longer needed to shake out the primary runtime contract
+- local slash-command UX is usable enough to drive capabilities without a web surface
+- OpenCode prompt lifecycle no longer depends on PTY-idle heuristics
+- detached sessions remain resumable until explicit deletion, and deleting the current session returns the CLI to a no-session state instead of forcing process exit
+
+## M4 - OpenCode Local Runtime Completion
+
+Status:
+
+- in progress as of 2026-04-10
+- the first manual multi-agent runtime slice is now in the codebase: top-level session agents are real execution targets, direct prompts route to the focused agent, provider runs are tracked per agent, agent-scoped history/output are recorded, and the TypeScript CLI supports `individual` and `split` multi-agent response modes
+- the current TypeScript CLI split view is still an initial slice, centered on the primary transcript plus up to two auxiliary panes
+- relay-backed remote connectivity has been moved out of this milestone and is now the primary goal of M5
+- the first transport/alignment slice has now landed:
+  - kernel-facing WebSocket transport for the TypeScript CLI
+  - managed vs external OpenCode endpoint binding
+- kernel-CLI transport hardening is now part of the delivered slice:
+  - monotonic pushed `event_id` values with bounded in-process replay
+  - resumable subscribe via `resume_from_event_id`
+  - heartbeat/liveness events
+  - client reconnect/resubscribe behavior
+- layered interaction testing is now part of the M4 baseline:
+  - CLI transport contract tests
+  - daemon kernel-WebSocket integration coverage
+  - live daemon + CLI smoke validation when transport/runtime behavior changes
+- transport resiliency drills are now partly complete:
+  - forced live disconnect with CLI reconnect/resubscribe validation is done
+  - slow-consumer/backpressure validation is done
+  - missed-event replay/catch-up validation after reconnect still needs a deeper streaming-focused live drill
+  - long-idle heartbeat/liveness validation is still pending
+- workflow runtime/state coverage inside the current M4 slice now also includes:
+  - daemon-owned workflow MCP tools for managed runs
+  - stop/resume for workflow runs with preserved turn envelopes
+  - structured workflow failure events and mailbox routing
+  - CLI workflow inspection of failure/audit state
+  - live mixed-provider workflow drills across Codex and OpenCode
+  - workflow-scoped shared console
+  - endpoint-scoped watchdog scheduling with interval triggers
+  - watchdog `skip` and `queue` scheduling policies
+- recent OpenCode multi-agent stabilization now covers:
+  - queued prompts preserving their target agent run even while another agent is actively working
+  - queued backlog advancing onto another healthy agent run after an unexpected active-run exit
+- OpenCode-backed multi-agent runtime stabilization is still needed
+
+Outcomes:
+
+Delivered in the current M4 slice:
+
+- multiple top-level Chariox-managed agents inside one session, each with its own focused-agent targeting, provider-run ownership, and agent-scoped history/runtime metadata
+- `Tab` and `/agent cycle` switch the active agent for direct interaction, not only footer metadata
+- prompts and provider output route through the focused agent's runtime context for the local daemon + CLI path
+- TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
+- explicit distinction between Chariox-managed top-level agents and provider-native subagents in the local runtime/data model
+- kernel-hosted WebSocket transport now exists for the primary TypeScript CLI path, while the older local IPC path remains for harnessing/tests
+- the first OpenCode-specific endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
+- layered interaction testing now exists for the kernel/CLI path:
+  - TypeScript transport contract tests for request, subscribe, unsubscribe, and close behavior
+  - daemon-side kernel-WebSocket integration coverage for request/subscribe/session-unavailable flows
+  - manual live-program smoke runs are now an expected part of transport/runtime validation
+
+Still pending in M4:
+
+- OpenCode-path multi-agent stabilization
+- broader agent interactions for harnessing on top of the current focused-agent runtime
+- workflow runnable validation and preflight diagnostics (missing endpoints/nodes/agents, invalid graphs)
+- broader automated interaction coverage:
+  - deterministic kernel/CLI transcript-flow integration tests
+  - PTY-driven terminal smoke tests for visible CLI behavior
+- generic agent transport remains deferred until after additional agent integrations beyond OpenCode
+- workspace coordination baseline:
+  - per-agent worktree or branch allocation
+  - file/workspace claim tracking
+  - mergeability/integration validation
+- daemon-owned provider runtime process ledger is now landed:
+  - tracked managed provider processes
+  - tracked provider-native session ids per provider run
+  - CLI `/provider processes` inspection
+  - safe teardown of idle/orphaned managed provider processes without breaking attached sessions
+  - blocker-aware safe-teardown reporting in the CLI
+  - late-stage daemon identity and manager semantics:
+    - persisted daemon runtime record under `.chariox/runtime/daemon`
+    - single-active-daemon lock per workspace/worktree
+    - CLI attach-or-start behavior against the workspace daemon record
+    - managed child stamping with daemon instance id
+    - optional stale managed-child reap on daemon restart
+- watchdog wakeup budgeting:
+  - default bounded `max_wakeups`
+  - explicit `null` for unbounded schedules
+- live-drill operational cleanup:
+  - every reusable drill harness should own and stop the daemon it starts
+  - reusable drill harnesses should end the sessions they create on exit
+- buffered endpoint-facing workflow outputs:
+  - intermediate workflow run outputs emitted by designated nodes
+  - workflow-level intermediate output schema with optional node-level override
+  - final and intermediate workflow outputs buffered at turn scope and only committed/forwarded when the turn completes
+- kernel/daemon naming cleanup:
+  - evaluate renaming `scheduler` to `runtime` or equivalent so ownership boundaries read correctly
+- daemon internal modularization is now landed:
+  - `SessionService` split into focused internal modules
+  - local API split into module + request/response type/test files
+- local completion still pending:
+  - richer workflow inspection/history UI
+  - watchdog cron syntax
+  - current CLI syntax/structure stabilization where needed
+
+The following workflow-runtime items are no longer pending in M4:
+
+- daemon-managed workflow instruction artifacts per node
+- per-edge workflow output schema registry plus runtime validation tooling
+- managed-run MCP tool exposure for workflow ACK and validation
+- workflow stop/resume with preserved turn-envelope context
+- structured workflow failure/audit state surfaced through runtime and CLI
+
+Additional M4 workflow-runtime item now planned:
+
+- kernel-owned workflow console service:
+  - one append-only console per workflow definition
+  - MCP `read` / `write` / `clear` for workflow nodes
+  - CLI `/workflow terminal` surface in the right-side panel
+- kernel/CLI drill reliability and timeout diagnostics:
+  - request-level local IPC tracing with request ids and duration logging
+  - clearer timeout attribution between transport, handler, and provider wait states
+  - a cleaner dedicated live-drill harness with isolated daemon/provider lifecycle
+  - daemon health snapshot surfaces for active requests, prompts, provider runs, and scheduler state
+- watchdog follow-up:
+  - cron syntax support on top of the shipped interval scheduler
+  - architecture naming cleanup: reconsider whether `scheduler` should be renamed to `runtime` now that endpoint watchdogs sit beside, not inside, workflow dispatch
+
+Exit criteria:
+
+- manual multi-agent session execution works through the daemon node, with visible per-agent panes/history and correct focused-agent prompt routing, and the OpenCode-backed runtime path is stable under integration coverage
+- workspace coordination prevents or explicitly surfaces conflicting edits before shared integration
+- the one-provider development cycle can be considered closed without depending on a second provider for validation
+- the primary kernel/CLI path has transport-contract, daemon-integration, and live smoke coverage strong enough that transport refactors do not depend on compile-only verification
+- local workflow runtime behavior is stable enough that remote transport work does not need to also solve local runtime ambiguity
+
+## M4.5 - Kernel Runtime Refactor
+
+Status:
+
+- ownership closed as of 2026-04-15
+- architectural target is documented in [ARCHITECTURE.md](/Users/miguel/chariox/docs/ARCHITECTURE.md)
+- implementation plan is documented in [M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md](/Users/miguel/chariox/docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md)
+- first implementation slices are landed: kernel command/event envelopes, event replay gaps, projection metadata, command routing, bounded interactive routing, typed CLI replay-gap handling, command-id retry/fanout safety, inbound WebSocket admission bounds, provider-run actor runtime isolation, provider actor enqueue error propagation, reserved-listener websocket tests, `KernelSessionService` ownership for public session creation/default-agent bootstrap plus session lifecycle/focus/resize/end/delete operations, `KernelAgentService` ownership for prompt submit/cancel/complete/queue-advance lifecycle operations, per-agent prompt command mailboxes, session-runtime create plus per-session attach/focus/resize/end/delete command mailboxes with cleanup on session close, session-scoped agent lifecycle routing through `SessionRuntime`, a focused-agent projection refreshed by session mailboxes and agent lifecycle responses for untargeted prompt routing, warmed projections for `GetSessionState`, `ListSessions`, `GetSessionHistory`, `GetProviderRun`, `ListProviderProcesses`, `GetProviderCatalog`, and agent/workflow inspection reads, shared kernel `PromptStateOwner` ownership for active/queued prompt mutation with compatibility session mirroring, owner-backed prompt routing and queue-front reads from `AgentRuntime`, prompt lifecycle publication into the shared session projection, agent-mailbox completion consuming lifecycle-published projections, one shared agent-runtime active/queued prompt projection read model, session response-borne projection refresh/removal from the session mailbox, explicit session request handling through the session-runtime boundary, explicit agent request handling through the agent-runtime boundary, legacy generic interactive fallback rejection, workflow-lane missing-session rejection from warmed projections, workflow response-borne projection refresh, explicit workflow request handling through the workflow-runtime boundary, daemon-health projection invariant drift reporting between session and agent-runtime prompt projections, a dedicated flattened `PromptRuntimeState` session prompt-runtime module for compatibility prompt mirrors/projections, daemon health projection snapshots for actor queues, provider runtime lanes, prompt counts, provider-catalog cache state, kernel websocket transport pressure, workspace worktree-collision state, `WorkspaceCoordinator` write-claim enforcement for explicit file-writing capabilities, and workflow node dispatch blocking/retry on workspace claims
+- post-slice live drills passed for manual multi-agent routing, shared-endpoint multi-agent routing, workflow progression, workflow scheduling, workflow workspace-claim retry, and CLI graph/outline drill catalogs
+- the seven ownership points are closed: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now use owned runtime paths. The M4.5 dead-code purge removed unused app-backed helper surfaces and obsolete runtime-tool compatibility dispatch. Workspace Live Sync managed mode is landed for Chariox-managed Codex/OpenCode sessions, with local and remote drills passing. Remaining coordination work is post-v1: port claims, unsafe-mode policy commands, optional integration checks, and artifact-specific region models beyond opaque whole-file locking
+
+Problem statement:
+
+- the daemon is already the correct authority boundary, but too much live implementation still flows through a coarse shared application object
+- a global `DaemonApp` lock is incompatible with an operating-system-like agent orchestration runtime where prompt submit, cancel, focus, resize, relay resume, provider output, workflow scheduling, history scans, capability jobs, and health inspection all run concurrently
+- splitting the lock into many smaller locks is not enough; the runtime needs clear ownership, ordered events, and read projections
+
+Outcomes:
+
+- introduce `DaemonKernel` as the composition root for command routing, event logging, projection updates, actor lifecycle, transport gateways, and background executors
+- define first-class `KernelCommand`, `KernelEvent`, command ids, event sequence ids, causation ids, and correlation ids for local and future relay paths
+- move prompt submit, cancel, focus, attach, detach, resize, and subscription resume onto an `InteractiveCommandLane`
+- create actor or mailbox ownership for sessions, agents, provider runs, workflow runs, capability execution, and relay runtime state
+- introduce a projection store for session lists, session snapshots, transcript pages, workflow inspection, provider process ledgers, and daemon health snapshots
+- retire `Arc<Mutex<DaemonApp>>` from hot request paths; keep `DaemonApp` only as bootstrap/shutdown/test composition while owned runtime services replace and delete the old app-backed helpers
+- keep provider catalog discovery, history hydration, capability jobs, provider process inspection, and relay bookkeeping off the interactive command path
+- add explicit bounded queues and backpressure policies for slow consumers and background work
+- make replay-window and replay-gap behavior explicit before relay scale-out
+- introduce daemon-owned worktree/collision coordination as part of the kernel boundary
+
+Exit criteria:
+
+- prompt submit, cancel, focus, terminal resize, attach, detach, and event subscription resume do not wait behind history reads, capability jobs, provider discovery, provider output fanout, or relay background work
+- the primary CLI reads projections and reconciles pushed events without requiring synchronous whole-session refreshes on the hot path
+- daemon tests cover command ordering, idempotent command retry, actor isolation, projection consistency, reconnect/replay gaps, slow consumers, worktree collision, and backpressure
+- live CLI drills show immediate local feedback and stable daemon responsiveness while background work is intentionally slowed
+- the relay milestone can build on the same command/event/projection model without turning relay into workspace authority
+
+## M5 - Relay and Remote Transport
+
+Planning reference:
+
+- `docs/M5_RELAY_PLAN.md`
+
+Outcomes:
+
+- standalone relay service as an independent Rust app
+- daemon-owned stable identity for remote registration:
+  - persisted `daemon_id`
+  - persisted `machine_id`
+  - optional human-friendly daemon alias
+- daemon outbound registration to one active relay endpoint at a time, configured from the CLI or waiting-room relay panel
+- the CLI always starts in the normal waiting room; local sessions are never blocked by relay setup or relay failures
+- relay auto-connect happens in the background after a relay is configured; the waiting room updates when connected, and active sessions may surface a small informational footer when remote capability becomes available
+- the waiting room keeps relay status and relay actions together under a `Relay` section, including the currently configured relay and the option to configure another one while connected
+- the same CLI supports both local direct operation and relay-mediated remote operation without a separate remote CLI app
+- remote terminal attachment through relay using the same daemon-owned request/event semantics
+- remote event subscription, heartbeat, reconnect, and resume behavior
+- self-hosted relay mode for the open-source project:
+  - static/shared credential configuration
+  - explicit daemon targeting by id or alias
+- mandatory session-scoped end-to-end encryption for all user-generated remote payloads, including prompts, workflow payloads, and transferred artifacts
+- self-hosted relay deployments do not relax the end-to-end encryption requirement
+- narrow roadmap note only:
+  - a separate service may later integrate with the relay for managed identity/discovery, but that service remains outside this repository and roadmap scope
+
+Exit criteria:
+
+- a daemon can register to a configured relay in the background and remain connected through an outbound connection
+- the waiting room shows local status, relay status/actions, and machine status in one surface
+- a CLI can connect through the relay to a selected daemon by id or alias
+- remote prompt submission and output streaming work without changing daemon session authority
+- the relay remains a transport broker, not a workspace/workflow authority
+- open-source self-hosted relay usage does not depend on any external managed service
+
+## M5.6 - Chariox Cloud Device Login And Relay Onboarding
+
+Status:
+
+- completed on 2026-04-21
+- closed scope is hosted relay onboarding, not multi-user collaboration
+- default hosted path is browser/device login through Chariox Cloud
+- kernel owns cloud relay profile state, cloud device polling, hosted relay pairing, runtime-token minting, client-token minting, relay configuration, and logout
+- CLI owns presentation only for the default hosted path: browser open, URL/code fallback, notices, and profile display mirror
+
+The default hosted-relay onboarding path should be browser/device login, not terminal email bootstrap.
+
+Target flow:
+
+- the waiting room exposes `Connect to Chariox Cloud`
+- `/relay cloud login` with no arguments starts device login
+- the CLI asks the kernel to start cloud login with stable local CLI and machine ids
+- Chariox Cloud returns a verification URL, short user code, device code, expiry, and polling interval
+- the CLI opens the browser to the verification URL
+- if browser launch fails, the CLI prints the URL and code and keeps polling
+- the user logs in or registers in Chariox Cloud, chooses or creates an account, and approves the local device
+- the kernel polls cloud until approved
+- cloud returns account/user/realm profile, paired client/machine ids, and a revocable cloud session token
+- the kernel persists cloud auth state, mints short-lived relay runtime tokens, configures relay, and remote machines appear in the normal waiting-room machine surface
+
+Logout is part of v1:
+
+- local logout always clears kernel cloud auth/profile state
+- `POST /auth/logout` revokes the cloud session token
+- logout can optionally revoke the paired client and/or machine
+
+Delivered implementation:
+
+- Chariox Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
+- the kernel owns device-login start, poll, persisted cloud profile state, and logout
+- the CLI no-argument `/relay cloud login` path calls the kernel for device login and opens the browser with URL/code fallback
+- the waiting room `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
+- the kernel owns hosted relay client pairing, machine pairing, relay connect/runtime-token minting, and client-token minting
+- the CLI default hosted path is now presentation only: it opens the browser, mirrors the returned profile for display/preferences, and renders notices
+- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Chariox Cloud, then verifies kernel-owned pair/connect/client-token and remote session attach
+- the old terminal email bootstrap helper remains only as a dev/manual compatibility path
+- if server logout fails, local logout still completes and the CLI warns that remote revocation was not confirmed
+
+Self-hosted relay discovery remains identity-less:
+
+- the waiting room may show machines visible through a manually configured self-hosted relay token/realm
+- no cloud user directory, collaborator history, account membership, or identity service is implied for self-hosted relays
+- trust and approval remain local kernel state
+
+Once multi-user collaboration exists, Chariox Cloud should keep a collaborator history:
+
+- previous collaborators can be suggested when adding users to a future session
+- collaborator history is convenience only, not authorization
+- every new session still requires an explicit invite/accept unless a later team/org policy changes that
+
+## M5.7 - Chariox Cloud Multi-User Bridge
+
+Implementation plan:
+
+- `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`
+
+Goal:
+
+Connect the hosted Chariox Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and workspace live sync authority.
+
+Scope:
+
+- cloud-backed session invite creation, acceptance, expiry, revocation, and membership listing
+- cloud user/account identity propagation into local kernels and CLIs after device login
+- relay admission for cloud session members without requiring users to share static relay credentials
+- collaborator history for users who have previously joined a shared session together
+- hosted relay route authorization based on account/session membership and scoped runtime credentials
+- CLI and shell commands for cloud invite creation, invite acceptance, member listing, and collaborator suggestions
+- live two-user cloud relay drills that prove cloud users can join the same session and then rely on the existing kernel multi-user rules
+
+Non-goals:
+
+- generalized ACLs or roles
+- enterprise SSO, org policy, audit history/search, or admin-managed teams
+- public user/agent marketplace
+- self-hosted relay identity service
+- moving workflow authorization or provider ownership into Chariox Cloud
+
+Exit criteria:
+
+- user A can create a cloud-backed invite for an existing session
+- user B can accept the invite after cloud login and join the same session through hosted relay
+- both users' kernels receive stable cloud user identity and session membership context
+- hosted relay credentials are scoped to the invited cloud session/account and do not grant broad realm access
+- collaborator history suggests prior collaborators without granting automatic access
+- existing M6.5 kernel rules still enforce owner-only providers/freeform agents, public workflow node labels, endpoint owner execution, caller-scoped redaction, and stale workflow edit rejection
+- live cloud two-user drill passes through hosted relay with two CLIs
+
+
+## M5 Docker Remote-Machine Lab
+
+The Docker lab is part of validating M5/M6 locally before requiring real separate machines. The repository should provide a Chariox base image that includes all Chariox apps (`chariox` CLI, daemon/kernel, and relay) plus required runtime dependencies. Provider installation and provider login remain the user's responsibility inside each container. Containers must have outbound internet for provider model calls, provider installation, hosted relay access, and provider login. Browser-based provider login is handled as a provider compatibility concern: the base image may include URL-printing browser shims, and each launch provider is tested/documented individually for Linux/container login behavior, callback ports, credential persistence, and normal prompt execution after restart.
+
+The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Chariox as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`. It includes a smoke runner, Codex/OpenCode installation helper, and a remote-CLI-to-host drill; provider account login remains manual.
+
+## M6 - Remote Agents and Machine Membership
+
+Outcomes:
+
+- remote machine registration on top of relay connectivity, with machine status displayed in the waiting room; pending machines are shown inline in the machine section rather than as a separate mode
+- all machine management operations are available as in-CLI slash commands: `/machine list`, `/machine kernels <machine-ref>`, `/machine approve <machine-ref>`, `/machine forget <machine-ref>`, and `/machine rename <machine-ref> <alias>`
+- remote daemons can host top-level Chariox-managed agents for the same logical collaboration model
+- session membership spanning multiple machines
+- remote agent routing and lifecycle ownership
+- provider-run ownership and state reporting for remote nodes
+- remote member resume/reassignment semantics
+- worker-kernel provider availability is advertised back to the home kernel and surfaced in the CLI as machine-qualified provider availability
+- remote agents are placed by machine, then bound to one selected worker kernel for their lifetime
+- provider login remains local to the worker kernel; the home kernel only consumes advertised provider availability
+
+Exit criteria:
+
+- a session can include remote machine-hosted agents without creating a second session authority
+- daemon and machine identity are strong enough for remote resume/reassignment
+- remote agent lifecycle is observable and debuggable through the same kernel-owned model
+- remote agents feel the same as local agents in the CLI once spawned, aside from explicit machine placement metadata
+
+## M6.5 - Multi-User Collaboration
+
+Implementation plan:
+
+- `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
+
+Outcomes:
+
+- session-scoped invites and explicit session membership
+- user-owned agents, providers, workflow nodes, and workflow endpoints
+- freeform privacy: users see and control only their own providers and agents
+- workflow collaboration: users can see shared workflow graph structure, public node labels, endpoint aliases, workflow run status, and workflow node status
+- no external-agent marker; public node labels identify other users' workflow nodes
+- fixed ownership rules rather than a generalized ACL system
+- users can add workflow edges when at least one endpoint node is theirs
+- users can remove any edge incident to one of their own nodes
+- users can add endpoints only to their own nodes
+- only endpoint owners can run their endpoints
+- node-level prompts and endpoint prompts are redacted from non-owners
+- caller-scoped protocol projections redact provider/model/private agent configuration before data reaches clients
+- optimistic workflow revision checks reject stale simultaneous workflow edits with a clear refresh/retry message
+- session-scoped workspace links let users explicitly coordinate workspace live sync across separate worktrees, forks, branches, or repositories
+- `chariox-shell` supports the same collaboration and workspace-link command families as the TUI/slash-command surface
+
+Exit criteria:
+
+- two users can join one session through a session invite
+- each user can use only their own providers and freeform agents
+- a shared workflow can contain nodes owned by multiple users
+- workflow node/run status is visible during workflow execution without exposing freeform agent status elsewhere
+- endpoint ownership is enforced for creation, binding, and execution
+- private node and endpoint prompts remain hidden from non-owners
+- stale concurrent workflow mutations are rejected rather than merged or silently overwritten
+- workspace links coordinate workspace live sync across explicitly linked repositories/worktrees
+- local and relay-backed collaboration drills pass with the same authorization and redaction behavior
+
+## M7 - Additional Clients
+
+Outcomes:
+
+- polished TypeScript CLI as the reference Chariox client for both local and relay-backed use
+- refined split-pane and multi-agent transcript UX
+- session-scoped E2E encryption for user-generated in-transit payloads
+- operational metadata storage boundaries enforced
+- iOS terminal client on the same daemon/protocol model
+- later web and Android clients if still in v1 scope
+
+Exit criteria:
+
+- the TypeScript CLI is the polished reference client for the local and relay-backed runtime model
+- additional client surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
+
+## M7 - Chariox-Owned MCP and Skill Management
+
+Status:
+
+- in progress as of 2026-04-17
+- implementation plan lives in `docs/M7_MCP_SKILLS_PLAN.md`
+- dynamic grant-based MCP activation is paused pending `docs/M7_MCP_ISOLATION_SPIKE_PLAN.md`
+
+Outcomes:
+
+- Chariox-owned MCP registry stored outside provider-scanned config
+- Chariox-owned skill registry stored outside provider-scanned paths
+- provider import for existing MCPs and skills
+- per-agent MCP and skill grants
+- provider-native MCP rendering at agent launch, pending spike validation for dynamic per-agent activation
+- Codex-style skill discovery and prompt injection for granted skills, including same-turn runtime skill request bodies
+- `/mcp`, `/skill`, and `/skills` CLI command surfaces
+- remote-machine MCP and skill materialization after local behavior is stable
+- repo-local MCP isolation spike to validate one provider runtime per agent, provider resume after restart, and MCP backing-server reuse
+
+Exit criteria:
+
+- local Codex and OpenCode agents see only their granted MCPs and skills, with MCP grant strictness validated by the isolation spike before production activation proceeds
+- imported provider MCPs and skills work as Chariox-owned copies
+- workflows reuse agent grants without overriding them
+- remote agents have an explicit design and implementation path for MCP/skill availability
+
+## M8 - Workflow Interconnection
+
+Outcomes:
+
+- workflow nodes bound to remote agents and machines
+- remote workflow message routing and handoff delivery
+- cross-machine workflow-run progression on the same logical runtime model
+- remote workflow failure/cancellation semantics
+- endpoint-facing workflow outputs preserved across inter-machine execution
+
+Exit criteria:
+
+- workflow runs can cross machine boundaries without moving workflow authority out of the daemon/kernel model
+- routing, failure, and output delivery semantics remain machine-parseable and observable
+
+## M9 - Multi-Provider Expansion and Adapter Generalization
+
+Outcomes:
+
+- provider adapter abstraction hardened after the OpenCode-first cycle closes
+- Claude Code and Codex support
+- generic protocol and adapter design hardened for later provider families
+- canonical control operations:
+  - `attach_file`
+  - `request_memory_update`
+  - `request_compaction_summary`
+- provider installation/auth-state probing with native CLI login reuse
+- provider version probing plus shipped command catalogs for supported provider versions
+- best-effort `/<provider>` completion on unsupported provider versions with explicit warnings
+- transfer package generation for provider switch/machine reassignment/resume
+- dual memory model implementation:
+  - short-term memory
+  - long-term memory
+- user-triggered Chariox context compaction flow (`/compact`)
+- agent-scoped extension registry for skills, MCPs, command packs, and related provider assets
+- daemon-managed MCP runtime with per-agent binding and visibility
+
+Exit criteria:
+
+- additional providers can fit the daemon/client contract without reshaping the OpenCode-first baseline
+- provider switching works without depending on provider-private hidden state
+- extension binding and MCP visibility are enforced per top-level agent
+
+## M10 - v1 Stabilization and Launch
+
+Outcomes:
+
+- reliability hardening and compatibility testing across providers
+- operational telemetry and failure diagnostics
+- user/admin docs for setup, security expectations, and limitations
+- release process and upgrade guidance
+- completion of the v1 workflow rollout, with circular topology delivered earlier and hierarchical topology completed later in v1
+- MCP runtime-tool hardening before release:
+  - one daemon-owned Chariox MCP server
+  - automatic MCP attachment for managed provider runs
+  - dynamic per-turn tool scoping and stronger per-run isolation
+  - reconnect/health monitoring for MCP-bound provider runs
+  - removal of transitional prompt-only ACK/tool guidance once MCP execution is proven
+
+Exit criteria:
+
+- v1 release checklist complete
+- known non-goals and follow-up items documented
+
+## 4. Cross-Cutting Workstreams
+
+- Project-wide observability and debugging pipeline
+- Unified node transport for local and relayed members
+- Provider compatibility matrix and adapter conformance
+- Extension compatibility matrix and projection rules per provider
+- UX quality for slash-command completion, status, and transfer transparency
+- Security/privacy review and threat modeling
+- Performance targets for PTY throughput and capability latency
+- Workspace coordination and integration safety
+- Generic workflow-engine compatibility: directed-graph scheduling model, structured handoff/completion contracts, worktree isolation, and aggregation/barrier semantics
+
+## 5. Risks and Mitigations
+
+- **Risk:** Provider behavior variance across CLIs.
+  - **Mitigation:** strict adapter contracts, shipped versioned command catalogs, custom-command discovery where supported, and explicit best-effort warnings on unsupported versions.
+- **Risk:** Provider login drift or expired local sessions.
+  - **Mitigation:** reuse provider-native login flows, probe structured auth state before launch, and surface local reauthentication guidance without storing provider credentials.
+- **Risk:** Provider-local extension files leak across agents or workflows.
+  - **Mitigation:** keep a daemon-owned extension registry, bind per top-level agent, and use provider config-root/worktree isolation when materializing provider views.
+- **Risk:** Memory drift or stale long-term memory.
+  - **Mitigation:** user review/edit/remove controls + explicit refresh reasons.
+- **Risk:** Overgrowth of control surface in v1.
+  - **Mitigation:** keep canonical control operations minimal and versioned.
+- **Risk:** Relay trust expansion.
+  - **Mitigation:** maintain session-E2E transport and metadata minimization.
+
+## 6. Post-v1 Candidates
+
+- richer workflow automation and policy hooks
+- broader messaging-client integrations
+- provider command driver registration so future adapters can install command catalogs into Chariox without hardcoding them in the CLI
+- advanced machine migration orchestration
+- optional content persistence with explicit governance

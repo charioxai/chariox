@@ -1,0 +1,582 @@
+import { readFile } from "node:fs/promises"
+import { isAbsolute, resolve as resolvePath } from "node:path"
+
+import type {
+  RuntimeSession,
+  WorkflowDefinition,
+  WorkflowEdgeDefinition,
+  WorkflowEndpointDefinition,
+  WorkflowDesignNodePatch,
+  WorkflowNodeDefinition,
+} from "./kernel-types.js"
+import {
+  addWorkflowEdgeRequest,
+  addWorkflowNodeRequest,
+  aliasWorkflowEndpointRequest,
+  bindWorkflowEndpointRequest,
+  createWorkflowEndpointRequest,
+  removeWorkflowEdgeRequest,
+  removeWorkflowNodeRequest,
+  setWorkflowNodeCanCompleteRunRequest,
+  setWorkflowNodeCanEmitIntermediateOutputRequest,
+  setWorkflowNodeIntermediateOutputSchemaRequest,
+  setWorkflowNodeMaxTurnsRequest,
+  setWorkflowNodeWaitForAllInputsRequest,
+  getSessionStateRequest,
+  grantAgentExtensionRequest,
+  resolveWorkflowRequest,
+  revokeAgentExtensionRequest,
+  updateWorkflowNodeInstructionsRequest,
+} from "./ipc-requests.js"
+import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
+import { resolveShellAgent } from "./shell-agent-resolver.js"
+import { sessionContextAgentId } from "./shell-session-context.js"
+import {
+  applyShellWorkflowDesignOp,
+  createShellWorkflowDesignId,
+} from "./shell-workflow-design-op.js"
+
+type ShellKernelClient = {
+  send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
+}
+
+export type ShellWorkflowGraphCommandDeps = {
+  client: ShellKernelClient
+  clientId?: string | undefined
+}
+
+export async function executeWorkflowNodeCommand(
+  args: string[],
+  parsed: ParsedShellCommand,
+  context: ShellContext,
+  deps: ShellWorkflowGraphCommandDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action, maybeWorkflowRef, maybeNodeOrAgent] = args
+  const workflowRef = args.length >= 3 ? maybeWorkflowRef : context.workflowId
+  const target = args.length >= 3 ? maybeNodeOrAgent : maybeWorkflowRef
+  if (action === "add") {
+    if (!workflowRef || !target) {
+      return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref>" }
+    }
+    const agent = await resolveShellAgent(context, deps, target)
+    if (!agent.ok) {
+      return { ok: false, message: agent.message }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      if (workflow.nodes?.some((node) => node.agent_id === agent.agent.id)) {
+        return { ok: false, message: `workflow already has a node for agent ${agent.agent.agent_ref}` }
+      }
+      const nodeId = createShellWorkflowDesignId("node")
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        {
+          kind: "node_add",
+          workflow_id: workflow.id,
+          node: { id: nodeId, agent_id: agent.agent.id },
+        },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const node = workflowNode(updatedWorkflow, nodeId)
+      const result = { ...payload, node, workflow: updatedWorkflow }
+      return resourceResult(
+        `added workflow node ${node.id} for agent ${agent.agent.agent_ref}`,
+        parsed.assignment,
+        node.id,
+        { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+        result,
+      )
+    }
+    const response = await deps.client.send(addWorkflowNodeRequest(sessionId, workflowRef, agent.agent.id))
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeAdded")
+    return resourceResult(
+      `added workflow node ${payload.node.id} for agent ${agent.agent.agent_ref}`,
+      parsed.assignment,
+      payload.node.id,
+      { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+      payload,
+    )
+  }
+  if (action === "remove") {
+    if (!workflowRef || !target) {
+      return { ok: false, message: "usage: workflow node remove [workflow-ref] <node-id>" }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      const node = workflowNode(workflow, target)
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "node_remove", workflow_id: workflow.id, node_id: node.id },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const result = { ...payload, node, workflow: updatedWorkflow }
+      return { ok: true, message: `removed workflow node ${node.id}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(removeWorkflowNodeRequest(sessionId, workflowRef, target))
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeRemoved")
+    return { ok: true, message: `removed workflow node ${payload.node.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "instructions") {
+    const instructionsAction = args[1]
+    if (instructionsAction === "show") {
+      const explicitWorkflowRef = args.length >= 4 ? args[2] : null
+      const workflowRef = explicitWorkflowRef ?? context.workflowId
+      const nodeId = explicitWorkflowRef ? args[3] : args[2]
+      if (!workflowRef || !nodeId) {
+        return { ok: false, message: "usage: workflow node instructions show [workflow-ref] <node-id>" }
+      }
+      const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+      const payload = expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
+      const node = payload.workflow.nodes?.find((entry) => entry.id === nodeId)
+      if (!node) {
+        return { ok: false, message: `workflow node ${nodeId} not found` }
+      }
+      return {
+        ok: true,
+        message: node.instructions?.trim() ? node.instructions : "(no instructions)",
+        data: { workflow: payload.workflow, node },
+        contextUpdates: { workflowId: payload.workflow.id },
+      }
+    }
+    if (instructionsAction === "set") {
+      const explicitWorkflowRef = args.length >= 5 ? args[2] : null
+      const workflowRef = explicitWorkflowRef ?? context.workflowId
+      const nodeId = explicitWorkflowRef ? args[3] : args[2]
+      const fileRef = explicitWorkflowRef ? args[4] : args[3]
+      if (!workflowRef || !nodeId || !fileRef) {
+        return { ok: false, message: "usage: workflow node instructions set [workflow-ref] <node-id> <file>" }
+      }
+      const instructionsPath = isAbsolute(fileRef) ? fileRef : resolvePath(context.worktree, fileRef)
+      const instructions = await readFile(instructionsPath, "utf8")
+      if (deps.clientId) {
+        const resolved = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+        const resolvedPayload = expectVariant<{ workflow: WorkflowDefinition }>(resolved, "WorkflowResolved")
+        const node = resolvedPayload.workflow.nodes?.find((entry) => entry.id === nodeId)
+        if (!node) {
+          return { ok: false, message: `workflow node ${nodeId} not found` }
+        }
+        const payload = await applyShellWorkflowDesignOp(
+          { client: deps.client, clientId: deps.clientId },
+          sessionId,
+          { kind: "node_update", workflow_id: resolvedPayload.workflow.id, node_id: nodeId, patch: { instructions } },
+        )
+        return {
+          ok: true,
+          message: `updated workflow node ${nodeId} instructions`,
+          data: payload,
+          contextUpdates: { workflowId: resolvedPayload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
+        }
+      }
+      const response = await deps.client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflowRef, nodeId, instructions))
+      const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowNodeInstructionsUpdated")
+      return { ok: true, message: `updated workflow node ${payload.node.id} instructions`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    return { ok: false, message: "usage: workflow node instructions show|set [workflow-ref] <node-id> [file]" }
+  }
+  if (
+    action === "can-complete-run"
+    || action === "can-emit-intermediate-output"
+    || action === "wait-for-all-inputs"
+    || action === "intermediate-output-schema"
+    || action === "max-turns"
+  ) {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const nodeId = explicitWorkflowRef ? args[2] : args[1]
+    const value = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !nodeId || value === undefined) {
+      return { ok: false, message: "usage: workflow node can-complete-run|can-emit-intermediate-output|wait-for-all-inputs|intermediate-output-schema|max-turns [workflow-ref] <node-id> <value>" }
+    }
+    let request: Record<string, unknown>
+    let designPatch: WorkflowDesignNodePatch
+    let variant: string
+    let renderedValue: string
+    if (action === "can-complete-run" || action === "can-emit-intermediate-output" || action === "wait-for-all-inputs") {
+      const normalized = value.trim().toLowerCase()
+      if (normalized !== "true" && normalized !== "false") {
+        return { ok: false, message: `usage: workflow node ${action} [workflow-ref] <node-id> <true|false>` }
+      }
+      const bool = normalized === "true"
+      if (action === "can-complete-run") {
+        request = setWorkflowNodeCanCompleteRunRequest(sessionId, workflowRef, nodeId, bool)
+        designPatch = { can_complete_workflow_run: bool }
+        variant = "WorkflowNodeCanCompleteRunUpdated"
+      } else if (action === "can-emit-intermediate-output") {
+        request = setWorkflowNodeCanEmitIntermediateOutputRequest(sessionId, workflowRef, nodeId, bool)
+        designPatch = { can_emit_intermediate_run_output: bool }
+        variant = "WorkflowNodeCanEmitIntermediateOutputUpdated"
+      } else {
+        request = setWorkflowNodeWaitForAllInputsRequest(sessionId, workflowRef, nodeId, bool)
+        designPatch = { wait_for_all_inputs: bool }
+        variant = "WorkflowNodeWaitForAllInputsUpdated"
+      }
+      renderedValue = normalized
+    } else if (action === "intermediate-output-schema") {
+      const schemaRef = value.trim().toLowerCase() === "none" ? null : value
+      request = setWorkflowNodeIntermediateOutputSchemaRequest(sessionId, workflowRef, nodeId, schemaRef)
+      designPatch = { intermediate_output_schema_ref: schemaRef }
+      variant = "WorkflowNodeIntermediateOutputSchemaUpdated"
+      renderedValue = schemaRef ?? "none"
+    } else {
+      const normalized = value.trim().toLowerCase()
+      const maxTurns = normalized === "none" ? null : Number.parseInt(normalized, 10)
+      if (maxTurns !== null && (!Number.isFinite(maxTurns) || maxTurns <= 0)) {
+        return { ok: false, message: "usage: workflow node max-turns [workflow-ref] <node-id> <count|none>" }
+      }
+      request = setWorkflowNodeMaxTurnsRequest(sessionId, workflowRef, nodeId, maxTurns)
+      designPatch = { max_turns: maxTurns }
+      variant = "WorkflowNodeMaxTurnsUpdated"
+      renderedValue = maxTurns === null ? "none" : String(maxTurns)
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      workflowNode(workflow, nodeId)
+      const designPayload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "node_update", workflow_id: workflow.id, node_id: nodeId, patch: designPatch },
+      )
+      const updatedWorkflow = workflowFromSession(designPayload.session, workflow.id)
+      const node = workflowNode(updatedWorkflow, nodeId)
+      const payload = { ...designPayload, node, workflow: updatedWorkflow }
+      return { ok: true, message: `workflow node ${node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: designPayload.session.id, agentId: sessionContextAgentId(designPayload.session) } }
+    }
+    const response = await deps.client.send(request)
+    const payload = expectVariant<{ node: WorkflowNodeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, variant)
+    return { ok: true, message: `workflow node ${payload.node.id} ${action} set to ${renderedValue}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "extensions") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const nodeId = explicitWorkflowRef ? args[2] : args[1]
+    if (!workflowRef || !nodeId) {
+      return { ok: false, message: "usage: workflow node extensions [workflow-ref] <node-id>" }
+    }
+    const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
+    if (!resolved.ok) return resolved
+    const sessionResponse = await deps.client.send(getSessionStateRequest(sessionId))
+    const session = expectAnyVariant<{ session: RuntimeSession }>(sessionResponse, ["SessionState", "SessionStateLoaded"]).session
+    const agent = session.agents.find((candidate) => candidate.id === resolved.node.agent_id)
+    const grants = agent?.extension_grants ?? []
+    return {
+      ok: true,
+      message: grants.length
+        ? grants.map((grant) => `${grant.kind}:${grant.name}${grant.environment ? `@${grant.environment}` : ""}${grant.max_safety ? ` allow=${grant.max_safety}` : ""}`).join("\n")
+        : `node ${resolved.node.id} agent ${resolved.agentRef} has no extensions`,
+      data: { workflow: resolved.workflow, node: resolved.node, agent },
+      contextUpdates: { workflowId: resolved.workflow.id, sessionId },
+    }
+  }
+  if (action === "extension") {
+    const extensionAction = args[1]
+    const hasExplicitWorkflow = args.length >= 6
+    const workflowRef = (hasExplicitWorkflow ? args[2] : context.workflowId) ?? null
+    const nodeId = hasExplicitWorkflow ? args[3] : args[2]
+    const kind = hasExplicitWorkflow ? args[4] : args[3]
+    const name = hasExplicitWorkflow ? args[5] : args[4]
+    if ((extensionAction !== "grant" && extensionAction !== "revoke") || !workflowRef || !nodeId || !isExtensionKind(kind) || !name) {
+      return { ok: false, message: "usage: workflow node extension grant|revoke [workflow-ref] <node-id> <mcp|skill|script|connector|app> <name> [--environment <name>] [--credential <id>] [--allow read|write|destructive]" }
+    }
+    const resolved = await resolveWorkflowNodeAgent(deps, sessionId, workflowRef, nodeId)
+    if (!resolved.ok) return resolved
+    const response = extensionAction === "grant"
+      ? await deps.client.send(grantAgentExtensionRequest(
+        context.workspace,
+        resolved.agentRef,
+        kind,
+        name,
+        readOption(args, "--environment"),
+        { credential: readOption(args, "--credential"), maxSafety: readOption(args, "--allow") },
+      ))
+      : await deps.client.send(revokeAgentExtensionRequest(resolved.agentRef, kind, name))
+    const payload = expectVariant<{ agent: unknown }>(response, extensionAction === "grant" ? "AgentExtensionGranted" : "AgentExtensionRevoked")
+    return {
+      ok: true,
+      message: `${extensionAction === "grant" ? "granted" : "revoked"} ${kind} ${name} ${extensionAction === "grant" ? "to" : "from"} workflow node ${resolved.node.id}`,
+      data: payload,
+      contextUpdates: { workflowId: resolved.workflow.id, sessionId },
+    }
+  }
+  return { ok: false, message: "usage: workflow node add [workflow-ref] <agent-ref> | remove [workflow-ref] <node-id> | instructions show|set ... | can-complete-run|can-emit-intermediate-output|intermediate-output-schema|max-turns|extensions|extension ..." }
+}
+
+export async function executeWorkflowEdgeCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellWorkflowGraphCommandDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action] = args
+  if (action === "add") {
+    const parsedAdd = parseWorkflowEdgeAddArgs(args.slice(1), context.workflowId ?? null)
+    const { workflowRef, fromNodeId, toNodeId, handoffSchemaRef } = parsedAdd
+    if (!workflowRef || !fromNodeId || !toNodeId) {
+      return { ok: false, message: workflowEdgeAddUsage }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      workflowNode(workflow, fromNodeId)
+      workflowNode(workflow, toNodeId)
+      const edgeId = createShellWorkflowDesignId("edge")
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        {
+          kind: "edge_add",
+          workflow_id: workflow.id,
+          edge: {
+            id: edgeId,
+            from_node_id: fromNodeId,
+            to_node_id: toNodeId,
+            ...(handoffSchemaRef ? { handoff_schema_ref: handoffSchemaRef } : {}),
+          },
+        },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const edge = workflowEdge(updatedWorkflow, edgeId)
+      const result = { ...payload, edge, workflow: updatedWorkflow }
+      return { ok: true, message: `added workflow edge ${edge.id}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(addWorkflowEdgeRequest(sessionId, workflowRef, fromNodeId, toNodeId, handoffSchemaRef))
+    const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeAdded")
+    return { ok: true, message: `added workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "remove") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const edgeId = explicitWorkflowRef ? args[2] : args[1]
+    if (!workflowRef || !edgeId) {
+      return { ok: false, message: "usage: workflow edge remove [workflow-ref] <edge-id>" }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      const edge = workflowEdge(workflow, edgeId)
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "edge_remove", workflow_id: workflow.id, edge_id: edge.id },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const result = { ...payload, edge, workflow: updatedWorkflow }
+      return { ok: true, message: `removed workflow edge ${edge.id}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(removeWorkflowEdgeRequest(sessionId, workflowRef, edgeId))
+    const payload = expectVariant<{ edge: WorkflowEdgeDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEdgeRemoved")
+    return { ok: true, message: `removed workflow edge ${payload.edge.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  return { ok: false, message: `${workflowEdgeAddUsage} | remove [workflow-ref] <edge-id>` }
+}
+
+const workflowEdgeAddUsage = "usage: workflow edge add [workflow-ref] <from-node-id> <to-node-id> [--handoff-schema <schema-ref>]"
+
+function parseWorkflowEdgeAddArgs(args: string[], selectedWorkflowRef: string | null) {
+  let handoffSchemaRef: string | null = null
+  const positional: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]
+    if (!value) continue
+    if (value === "--handoff-schema") {
+      handoffSchemaRef = args[index + 1] ?? null
+      index += 1
+      continue
+    }
+    positional.push(value)
+  }
+  const explicitWorkflowRef = positional.length >= 3 ? positional[0] : null
+  return {
+    workflowRef: explicitWorkflowRef ?? selectedWorkflowRef,
+    fromNodeId: explicitWorkflowRef ? positional[1] : positional[0],
+    toNodeId: explicitWorkflowRef ? positional[2] : positional[1],
+    handoffSchemaRef,
+  }
+}
+
+export async function executeWorkflowEndpointCommand(
+  args: string[],
+  context: ShellContext,
+  deps: ShellWorkflowGraphCommandDeps,
+): Promise<ShellCommandResult> {
+  const sessionId = context.sessionId!
+  const [action] = args
+  if (action === "new" || action === "create") {
+    const explicitWorkflowRef = args.length >= 3 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const entryNodeId = explicitWorkflowRef ? args[2] : args[1]
+    const alias = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !entryNodeId) {
+      return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias]" }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      workflowNode(workflow, entryNodeId)
+      const endpointId = createShellWorkflowDesignId("endpoint")
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        {
+          kind: "endpoint_add",
+          workflow_id: workflow.id,
+          endpoint: { id: endpointId, entry_node_id: entryNodeId, alias: alias ?? null },
+        },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const endpoint = workflowEndpoint(updatedWorkflow, endpointId)
+      const result = { ...payload, endpoint, workflow: updatedWorkflow }
+      return { ok: true, message: `created workflow endpoint ${endpoint.id}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(createWorkflowEndpointRequest(sessionId, workflowRef, entryNodeId, alias ?? null))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointCreated")
+    return { ok: true, message: `created workflow endpoint ${payload.endpoint.id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "alias") {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
+    const alias = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !endpointRef || !alias) {
+      return { ok: false, message: "usage: workflow endpoint alias [workflow-ref] <endpoint-ref> <alias>" }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      const endpoint = resolveWorkflowEndpoint(workflow, endpointRef)
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "endpoint_update", workflow_id: workflow.id, endpoint_id: endpoint.id, patch: { alias } },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const updatedEndpoint = workflowEndpoint(updatedWorkflow, endpoint.id)
+      const result = { ...payload, endpoint: updatedEndpoint, workflow: updatedWorkflow }
+      return { ok: true, message: `workflow endpoint ${updatedEndpoint.id} aliased as ${updatedEndpoint.alias}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(aliasWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, alias))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointAliased")
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} aliased as ${payload.endpoint.alias}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  if (action === "bind") {
+    const explicitWorkflowRef = args.length >= 4 ? args[1] : null
+    const workflowRef = explicitWorkflowRef ?? context.workflowId
+    const endpointRef = explicitWorkflowRef ? args[2] : args[1]
+    const entryNodeId = explicitWorkflowRef ? args[3] : args[2]
+    if (!workflowRef || !endpointRef || !entryNodeId) {
+      return { ok: false, message: "usage: workflow endpoint bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
+    }
+    if (deps.clientId) {
+      const workflow = await resolveWorkflow(deps, sessionId, workflowRef)
+      const endpoint = resolveWorkflowEndpoint(workflow, endpointRef)
+      workflowNode(workflow, entryNodeId)
+      const payload = await applyShellWorkflowDesignOp(
+        { client: deps.client, clientId: deps.clientId },
+        sessionId,
+        { kind: "endpoint_update", workflow_id: workflow.id, endpoint_id: endpoint.id, patch: { entry_node_id: entryNodeId } },
+      )
+      const updatedWorkflow = workflowFromSession(payload.session, workflow.id)
+      const updatedEndpoint = workflowEndpoint(updatedWorkflow, endpoint.id)
+      const result = { ...payload, endpoint: updatedEndpoint, workflow: updatedWorkflow }
+      return { ok: true, message: `workflow endpoint ${updatedEndpoint.id} bound to node ${updatedEndpoint.entry_node_id}`, data: result, contextUpdates: { workflowId: updatedWorkflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+    }
+    const response = await deps.client.send(bindWorkflowEndpointRequest(sessionId, workflowRef, endpointRef, entryNodeId))
+    const payload = expectVariant<{ endpoint: WorkflowEndpointDefinition; workflow: WorkflowDefinition; session: RuntimeSession }>(response, "WorkflowEndpointBound")
+    return { ok: true, message: `workflow endpoint ${payload.endpoint.id} bound to node ${payload.endpoint.entry_node_id}`, data: payload, contextUpdates: { workflowId: payload.workflow.id, sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
+  return { ok: false, message: "usage: workflow endpoint new [workflow-ref] <entry-node-id> [alias] | alias [workflow-ref] <endpoint-ref> <alias> | bind [workflow-ref] <endpoint-ref> <entry-node-id>" }
+}
+
+function resourceResult(
+  message: string,
+  assignment: string | undefined,
+  value: string,
+  contextUpdates: ShellCommandResult["contextUpdates"],
+  data: unknown,
+): ShellCommandResult {
+  return {
+    ok: true,
+    message,
+    data,
+    bindings: assignment ? { [assignment]: value } : undefined,
+    contextUpdates,
+  }
+}
+
+async function resolveWorkflowNodeAgent(
+  deps: ShellWorkflowGraphCommandDeps,
+  sessionId: string,
+  workflowRef: string,
+  nodeId: string,
+): Promise<
+  | { ok: true; workflow: WorkflowDefinition; node: WorkflowNodeDefinition; agentRef: string }
+  | { ok: false; message: string }
+> {
+  const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+  const payload = expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved")
+  const node = payload.workflow.nodes?.find((entry) => entry.id === nodeId)
+  if (!node) return { ok: false, message: `workflow node ${nodeId} not found` }
+  return { ok: true, workflow: payload.workflow, node, agentRef: node.agent_id }
+}
+
+function readOption(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name)
+  return index >= 0 ? args[index + 1] ?? null : null
+}
+
+function isExtensionKind(value: unknown): value is "mcp" | "skill" | "script" | "connector" | "app" {
+  return value === "mcp" || value === "skill" || value === "script" || value === "connector" || value === "app"
+}
+
+function expectVariant<T>(response: Record<string, unknown>, variant: string): T {
+  if (!(variant in response)) {
+    throw new Error(`unexpected response variant: expected ${variant}`)
+  }
+  return response[variant] as T
+}
+
+function expectAnyVariant<T>(response: Record<string, unknown>, variants: readonly string[]): T {
+  for (const variant of variants) {
+    if (variant in response) return response[variant] as T
+  }
+  throw new Error(`unexpected response variant: expected ${variants.join(" or ")}`)
+}
+
+async function resolveWorkflow(
+  deps: ShellWorkflowGraphCommandDeps,
+  sessionId: string,
+  workflowRef: string,
+): Promise<WorkflowDefinition> {
+  const response = await deps.client.send(resolveWorkflowRequest(sessionId, workflowRef))
+  return expectVariant<{ workflow: WorkflowDefinition }>(response, "WorkflowResolved").workflow
+}
+
+function workflowFromSession(session: RuntimeSession, workflowId: string): WorkflowDefinition {
+  const workflow = session.workflows?.find((candidate) => candidate.id === workflowId)
+  if (!workflow) throw new Error(`workflow design response did not include workflow ${workflowId}`)
+  return workflow
+}
+
+function workflowNode(workflow: WorkflowDefinition, nodeId: string): WorkflowNodeDefinition {
+  const node = workflow.nodes?.find((candidate) => candidate.id === nodeId)
+  if (!node) throw new Error(`workflow node ${nodeId} not found`)
+  return node
+}
+
+function workflowEdge(workflow: WorkflowDefinition, edgeId: string): WorkflowEdgeDefinition {
+  const edge = workflow.edges?.find((candidate) => candidate.id === edgeId)
+  if (!edge) throw new Error(`workflow edge ${edgeId} not found`)
+  return edge
+}
+
+function workflowEndpoint(workflow: WorkflowDefinition, endpointId: string): WorkflowEndpointDefinition {
+  const endpoint = workflow.endpoints?.find((candidate) => candidate.id === endpointId)
+  if (!endpoint) throw new Error(`workflow endpoint ${endpointId} not found`)
+  return endpoint
+}
+
+function resolveWorkflowEndpoint(workflow: WorkflowDefinition, endpointRef: string): WorkflowEndpointDefinition {
+  const endpoint = workflow.endpoints?.find((candidate) => (
+    candidate.id === endpointRef || candidate.alias === endpointRef
+  ))
+  if (!endpoint) throw new Error(`workflow endpoint ${endpointRef} not found`)
+  return endpoint
+}

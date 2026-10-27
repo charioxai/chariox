@@ -1,0 +1,528 @@
+use std::thread;
+use std::time::Duration;
+
+use crate::error::DaemonError;
+use crate::prompt_assembly::PromptEnvelope;
+use crate::provider::{
+    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderResumeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+};
+
+use super::super::{
+    claude_runtime::{abort_claude_turn, drain_claude_events, submit_claude_prompt},
+    codex_runtime::CodexPollResult,
+    codex_runtime::{abort_codex_turn, drain_codex_events, submit_codex_prompt},
+    opencode_binding::{
+        abort_opencode_session, submit_opencode_prompt, sync_opencode_run_selection_for_session,
+        OpenCodeRunSelection,
+    },
+    opencode_runtime::drain_opencode_events,
+};
+use super::native_interaction::ProviderNativeInteractionBridgeStore;
+use super::runtime_slots::ProviderRunRuntimeRegistry;
+use super::ProviderPromptSubmitAcknowledgement;
+
+pub(super) fn execute_submit_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: RuntimeProviderRun,
+    envelope: PromptEnvelope,
+    prompt_id: &str,
+) -> Result<ProviderPromptSubmitAcknowledgement, DaemonError> {
+    let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
+    if envelope.assessment_only {
+        return super::assessment::execute_assessment(runtime_registry, &run, envelope, prompt_id);
+    }
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch started",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
+    );
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(Duration::from_millis(750));
+        return Ok(ProviderPromptSubmitAcknowledgement {
+            resume_state: run.resume_state().clone(),
+        });
+    }
+    if run.adapter_key() == "codex" {
+        let (slot, mut state) = runtime_registry
+            .take_codex_runtime(&run_id)
+            .map_err(|error| error.steer_not_submitted(envelope.steering))?;
+        if !envelope.steering {
+            state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
+                provider_run_id: run_id.clone(),
+                prompt_id: prompt_id.into(),
+            });
+        }
+        let result = submit_codex_prompt(&run, &mut state, &envelope);
+        let mut resume_state = run.resume_state().clone();
+        resume_state.set_codex_thread_id(state.thread_id());
+        runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
+        return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
+    }
+    if run.adapter_key() == "claude" {
+        if !run.client_interface().is_chariox() {
+            return Ok(ProviderPromptSubmitAcknowledgement {
+                resume_state: run.resume_state().clone(),
+            });
+        }
+        let (slot, mut state) = runtime_registry
+            .take_claude_runtime(&run_id)
+            .map_err(|error| error.steer_not_submitted(envelope.steering))?;
+        let result = submit_claude_prompt(&run, &mut state, &envelope);
+        let mut resume_state = run.resume_state().clone();
+        if let Some(session_id) = state.session_id() {
+            resume_state.set_claude_session_id(session_id);
+        }
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(ProviderPromptSubmitAcknowledgement {
+            resume_state: run.resume_state().clone(),
+        });
+    }
+
+    let (slot, mut state) = runtime_registry
+        .take_opencode_runtime(&run_id)
+        .map_err(|error| error.steer_not_submitted(envelope.steering))?;
+    if !envelope.steering {
+        state.native_approval_origin = Some(crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: run_id.clone(),
+            prompt_id: prompt_id.into(),
+        });
+    }
+    let result = submit_opencode_prompt(&run, &mut state, &envelope);
+    crate::logging::debug_with_fields(
+        "daemon.provider.prompt_timing",
+        "provider prompt dispatch finished",
+        serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id,
+            "success": result.is_ok()}),
+    );
+    let resume_state = ProviderResumeState::from_opencode_session_id(state.session_id());
+    runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
+    result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state })
+}
+
+pub(super) fn execute_abort_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: RuntimeProviderRun,
+) -> Result<(), DaemonError> {
+    let run_id = run.id().to_string();
+    runtime_registry.take_assessment_output(&run_id);
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(Duration::from_millis(750));
+        return Ok(());
+    }
+    if run.adapter_key() == "codex" {
+        let (slot, mut state) = runtime_registry.take_codex_runtime(&run_id)?;
+        let result = abort_codex_turn(&run_id, &mut state);
+        runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
+    if run.adapter_key() == "claude" {
+        if !run.client_interface().is_chariox() {
+            return Ok(());
+        }
+        let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
+        let result = abort_claude_turn(&run, &mut state);
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(());
+    }
+
+    let (slot, mut state) = runtime_registry.take_opencode_runtime(&run_id)?;
+    let result = abort_opencode_session(&run, &mut state);
+    runtime_registry.restore_opencode_runtime_if_live(&run_id, &slot, state);
+    result
+}
+
+pub(super) fn execute_utility_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: RuntimeProviderRun,
+    envelope: PromptEnvelope,
+    timeout: Duration,
+    policy: ProviderUtilityExecutionPolicy,
+    cancellation: Option<super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
+    if policy.is_read_only_discovery()
+        && (run.execution_mode() != crate::provider::AgentExecutionMode::Plan
+            || run.permission_level() != crate::provider::AgentPermissionLevel::Required)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "run structured provider utility prompt",
+            message: "read-only discovery utility requires plan mode and required permissions"
+                .to_string(),
+        });
+    }
+    let run_id = run.id().to_string();
+    if !crate::provider::provider_run_uses_runtime_structured_utility_prompt(&run) {
+        return Err(DaemonError::LocalTransport {
+            operation: "run structured provider utility prompt",
+            message: format!(
+                "structured utility command is not supported for adapter `{}`",
+                run.adapter_key()
+            ),
+        });
+    }
+    let (slot, mut state) = runtime_registry.take_claude_runtime(&run_id)?;
+    if policy.is_metadata_only() {
+        // MP-08: Fresh official Claude child: no prior conversation or project bindings.
+        let credentials = state.metadata_discovery_credentials();
+        let result = (|| {
+            let mut utility =
+                crate::provider::claude_runtime::initialize_claude_runtime_with_credentials(
+                    &run,
+                    &credentials,
+                )?
+                .state;
+            let result = run_claude_utility_prompt_on_runtime(
+                &run,
+                &mut utility,
+                &envelope,
+                timeout,
+                true,
+                cancellation.as_ref(),
+                admission.as_ref(),
+            );
+            drop(utility);
+            result
+        })();
+        runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+        return result;
+    }
+    let expects_text = policy != ProviderUtilityExecutionPolicy::SessionCommand;
+    let result = run_claude_utility_prompt_on_runtime(
+        &run,
+        &mut state,
+        &envelope,
+        timeout,
+        expects_text,
+        None,
+        admission.as_ref(),
+    );
+    runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
+    result
+}
+
+fn run_claude_utility_prompt_on_runtime(
+    run: &RuntimeProviderRun,
+    state: &mut super::super::ClaudeRuntimeState,
+    envelope: &PromptEnvelope,
+    timeout: Duration,
+    expects_text: bool,
+    cancellation: Option<&super::utility_cancellation::MetadataUtilityCancellation>,
+    admission: Option<&crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
+    if cancellation.is_some_and(|c| c.is_cancelled()) {
+        return Err(cancelled_metadata_utility(run));
+    }
+    let guard = admission.map(|check| check.acquire()).transpose()?;
+    submit_claude_prompt(run, state, envelope)?;
+    drop(guard);
+    let deadline = std::time::Instant::now() + timeout;
+    let mut output = String::new();
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+        if cancellation.is_some_and(|c| c.is_cancelled()) {
+            return Err(cancelled_metadata_utility(run));
+        }
+        let batch = drain_claude_events(run, state)?;
+        for chunk in batch.chunks {
+            if chunk.kind == crate::terminal::TerminalOutputKind::ProviderOutput {
+                output.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            }
+        }
+        if let Some(error) = batch.terminal_failure {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "claude_utility_failed",
+                message: error,
+            });
+        }
+        if batch.prompt_completed {
+            let output = output.trim().to_string();
+            if output.is_empty() && expects_text {
+                return Err(DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "claude_utility_empty_output",
+                    message: "Claude utility returned no assistant text".to_string(),
+                });
+            }
+            return Ok(output);
+        }
+    }
+    Err(DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "claude_utility_timeout",
+        message: format!(
+            "Claude utility did not complete within {} ms",
+            timeout.as_millis()
+        ),
+    })
+}
+
+fn cancelled_metadata_utility(run: &RuntimeProviderRun) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "claude_utility_cancelled",
+        message: "the fresh metadata utility was cancelled before completing".to_string(),
+    }
+}
+
+pub(super) fn execute_terminate_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: RuntimeProviderRun,
+) -> Result<(), DaemonError> {
+    let run_id = run.id().to_string();
+    if run.adapter_key() == "codex" && runtime_registry.runtime_slot_missing_or_empty_codex(&run_id)
+    {
+        return Ok(());
+    }
+    if run.adapter_key() == "claude"
+        && runtime_registry.runtime_slot_missing_or_empty_claude(&run_id)
+    {
+        return Ok(());
+    }
+    if run.adapter_key() == "opencode"
+        && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
+    {
+        return Ok(());
+    }
+    execute_abort_command(runtime_registry, run)
+}
+
+pub(super) fn execute_selection_sync_command(
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run_id: &str,
+    run: &RuntimeProviderRun,
+) -> Result<OpenCodeRunSelection, DaemonError> {
+    let slot = runtime_registry.opencode_slot(run_id)?;
+    let (base_url, session_id) = {
+        let guard = slot.lock().expect("opencode runtime slot poisoned");
+        let state = guard
+            .as_ref()
+            .ok_or_else(|| DaemonError::ProviderProtocol {
+                provider_run_id: run_id.to_string(),
+                operation: "opencode_session_missing",
+                message: "no OpenCode session is bound to this provider run".to_string(),
+            })?;
+        (state.base_url().to_string(), state.session_id().to_string())
+    };
+    sync_opencode_run_selection_for_session(
+        run_id,
+        &base_url,
+        &session_id,
+        run.model(),
+        run.variant(),
+    )
+}
+
+pub(super) fn execute_output_poll_command(
+    native_interaction_bridge: &ProviderNativeInteractionBridgeStore,
+    runtime_registry: &ProviderRunRuntimeRegistry,
+    run: &RuntimeProviderRun,
+    output_poll_delay: Duration,
+) -> Result<Option<ProviderPromptSignalBatch>, DaemonError> {
+    let run_id = run.id();
+    if let Some(output) = runtime_registry.take_assessment_output(run_id) {
+        return Ok(Some(output));
+    }
+    if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        thread::sleep(Duration::from_millis(750));
+        return Ok(None);
+    }
+    if run.adapter_key() == "codex" {
+        let (slot, mut state) = match runtime_registry.take_codex_runtime(run_id) {
+            Ok((slot, state)) => (slot, state),
+            Err(_) => return Ok(None),
+        };
+        if !output_poll_delay.is_zero() {
+            thread::sleep(output_poll_delay);
+        }
+        let poll = drain_codex_events(run, &mut state, native_interaction_bridge.read());
+        state.acknowledge_output_poll();
+        let resolved_resume_state =
+            completed_codex_turn_resume_state(state.thread_id(), poll.as_ref().ok());
+        runtime_registry.restore_codex_runtime_if_live(run_id, &slot, state);
+        let poll = poll?;
+        let explicit_provider_error = poll.terminal_failure.is_some();
+        crate::logging::debug_with_fields(
+            "daemon.provider_run_actor",
+            "codex output poll result trace",
+            serde_json::json!({
+                "provider_run_id": run_id,
+                "chunks": poll.chunks.len(),
+                "completions": poll.completions.len(),
+                "prompt_completed": poll.prompt_completed,
+                "terminal_failure": poll
+                    .terminal_failure
+                    .as_deref()
+                    .map(crate::provider::sanitize_provider_diagnostic),
+                "notices": poll.notices.len(),
+            }),
+        );
+        return Ok(Some(ProviderPromptSignalBatch {
+            chunks: poll
+                .chunks
+                .into_iter()
+                .map(|chunk| ProviderPromptChunk {
+                    kind: chunk.kind,
+                    merge_key: chunk.merge_key,
+                    bytes: chunk.bytes,
+                })
+                .collect(),
+            completions: poll
+                .completions
+                .into_iter()
+                .map(|completion| ProviderAssistantCompletion {
+                    message_id: completion.message_id,
+                    completed_at_ms: completion.completed_at_ms,
+                })
+                .collect(),
+            prompt_completed: poll.prompt_completed,
+            terminal_failure: poll.terminal_failure,
+            explicit_provider_error,
+            notices: poll.notices,
+            resolved_model: None,
+            resolved_model_source: None,
+            resolved_variant: None,
+            resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
+            resolved_usage: poll.resolved_usage,
+            account_usage: (!poll.account_rate_limits.is_empty()).then(|| {
+                let limits = serde_json::Value::Array(poll.account_rate_limits);
+                crate::provider::codex_client::normalize_codex_usage(
+                    run.account_profile(),
+                    Some(&limits),
+                    None,
+                )
+            }),
+            resolved_resume_state,
+        }));
+    }
+    if run.adapter_key() == "claude" {
+        let (slot, mut state) = match runtime_registry.take_claude_runtime(run_id) {
+            Ok((slot, state)) => (slot, state),
+            Err(_) => return Ok(None),
+        };
+        if !output_poll_delay.is_zero() {
+            thread::sleep(output_poll_delay);
+        }
+        let drain = drain_claude_events(run, &mut state);
+        runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
+        return drain.map(Some);
+    }
+    if run.adapter_key() != "opencode" {
+        return Ok(None);
+    }
+    // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
+    let poll_started = std::time::Instant::now();
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll started",
+        serde_json::json!({"provider_run_id": run_id}),
+    );
+    let (slot, mut state) = match runtime_registry.take_opencode_runtime(run_id) {
+        Ok((slot, state)) => (slot, state),
+        Err(_) => return Ok(None),
+    };
+    if !output_poll_delay.is_zero() {
+        thread::sleep(output_poll_delay);
+    }
+    let drain = drain_opencode_events(run, &mut state, native_interaction_bridge.read());
+    runtime_registry.restore_opencode_runtime_if_live(run_id, &slot, state);
+    crate::logging::debug_with_fields(
+        "daemon.provider.opencode.timing",
+        "output poll finished",
+        serde_json::json!({"provider_run_id": run_id,
+            "elapsed_us": poll_started.elapsed().as_micros(),
+            "success": drain.is_ok(),
+            "chunks": drain.as_ref().ok().map(|batch| batch.chunks.len())}),
+    );
+    let drain = drain?;
+    let explicit_provider_error = drain.explicit_provider_error;
+    Ok(Some(ProviderPromptSignalBatch {
+        chunks: drain
+            .chunks
+            .into_iter()
+            .map(|chunk| ProviderPromptChunk {
+                kind: chunk.kind,
+                merge_key: chunk.merge_key,
+                bytes: chunk.bytes,
+            })
+            .collect(),
+        completions: drain
+            .completions
+            .into_iter()
+            .map(|completion| ProviderAssistantCompletion {
+                message_id: completion.message_id,
+                completed_at_ms: completion.completed_at_ms,
+            })
+            .collect(),
+        prompt_completed: drain.prompt_completed,
+        terminal_failure: drain.terminal_failure,
+        explicit_provider_error,
+        notices: drain.notices,
+        resolved_model: drain.resolved_model,
+        resolved_model_source: drain.resolved_model_source,
+        resolved_variant: drain.resolved_variant,
+        resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
+        resolved_usage: None,
+        account_usage: None,
+        resolved_resume_state: None,
+    }))
+}
+
+fn completed_codex_turn_resume_state(
+    thread_id: &str,
+    poll: Option<&CodexPollResult>,
+) -> Option<ProviderResumeState> {
+    let poll = poll?;
+    if !poll.prompt_completed {
+        return None;
+    }
+    Some(ProviderResumeState::from_codex_thread_id(thread_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::codex_runtime::{CodexAssistantCompletion, CodexPollResult};
+
+    use super::completed_codex_turn_resume_state;
+
+    fn codex_poll(prompt_completed: bool) -> CodexPollResult {
+        CodexPollResult {
+            chunks: Vec::new(),
+            completions: prompt_completed
+                .then(|| CodexAssistantCompletion {
+                    message_id: "msg-1".to_string(),
+                    completed_at_ms: 1,
+                })
+                .into_iter()
+                .collect(),
+            prompt_completed,
+            terminal_failure: None,
+            notices: Vec::new(),
+            resolved_usage: None,
+            account_rate_limits: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn codex_output_poll_resolves_resume_state_only_after_prompt_completion() {
+        assert_eq!(
+            completed_codex_turn_resume_state("thread-1", Some(&codex_poll(false)))
+                .and_then(|state| state.codex_thread_id().map(str::to_string)),
+            None
+        );
+
+        assert_eq!(
+            completed_codex_turn_resume_state("thread-1", Some(&codex_poll(true)))
+                .and_then(|state| state.codex_thread_id().map(str::to_string)),
+            Some("thread-1".to_string())
+        );
+    }
+}

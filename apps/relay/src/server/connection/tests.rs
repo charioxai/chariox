@@ -1,0 +1,1748 @@
+use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+use tokio::sync::{mpsc, RwLock};
+
+use super::support::*;
+use super::*;
+use crate::auth::DEFAULT_RELAY_REALM_ID;
+use crate::auth::{
+    RelayRevocationRegistry, RelaySubjectKind, RelayTokenClaims, ScopedTokenVerifier,
+    VerifiedRelayIdentity,
+};
+use crate::protocol::{ClientTarget, DaemonRegistration, EncryptedRelayPayload};
+use crate::registry::{PendingClientRequest, RelaySender};
+
+#[test]
+fn outgoing_queue_capacity_override_is_positive_and_defaults_safely() {
+    assert_eq!(parse_relay_outgoing_queue_capacity(Some("32")), 32);
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(None),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("0")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        parse_relay_outgoing_queue_capacity(Some("invalid")),
+        DEFAULT_RELAY_OUTGOING_QUEUE_CAPACITY
+    );
+}
+
+#[tokio::test]
+async fn saturated_display_viewer_is_closed_without_blocking_the_daemon_lane() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-1");
+    let (display_tx, _display_rx) = mpsc::channel(1);
+    display_tx
+        .try_send(DisplayStreamEvent::Chunk {
+            data: "first".to_string(),
+            message_kind: Some("binary".to_string()),
+        })
+        .expect("first display packet should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+    let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
+
+    try_forward_display_stream_event(
+        &registry,
+        &daemon_tx,
+        &daemon_key,
+        "stream-1",
+        DisplayStreamEvent::Chunk {
+            data: "second".to_string(),
+            message_kind: Some("binary".to_string()),
+        },
+    )
+    .await;
+
+    assert!(registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon("stream-1", &daemon_key)
+        .is_none());
+    let message = daemon_rx
+        .recv()
+        .await
+        .expect("daemon should receive a bounded backpressure close");
+    let Message::Text(text) = message else {
+        panic!("expected a relay text envelope");
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&text).expect("close envelope should decode"),
+        RelayEnvelope::DaemonDisplayTunnelClientClose {
+            stream_id,
+            error: Some(error),
+        } if stream_id == "stream-1" && error.code == "display_stream_backpressure"
+    ));
+}
+
+#[tokio::test]
+async fn saturated_display_viewer_observes_channel_close_after_daemon_terminal_event() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-1");
+    let (display_tx, mut display_rx) = mpsc::channel(1);
+    display_tx
+        .try_send(DisplayStreamEvent::Chunk {
+            data: "last-frame".to_string(),
+            message_kind: Some("binary".to_string()),
+        })
+        .expect("last display packet should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+
+    close_display_stream_from_daemon(&registry, &daemon_key, "stream-1", None).await;
+
+    assert!(matches!(
+        display_rx.recv().await,
+        Some(DisplayStreamEvent::Chunk { data, .. }) if data == "last-frame"
+    ));
+    assert!(display_rx.recv().await.is_none());
+    assert!(registry
+        .read()
+        .await
+        .display_stream_sender_for_daemon("stream-1", &daemon_key)
+        .is_none());
+}
+
+fn peer_addr(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
+    DaemonRegistration {
+        auth_token: "token".to_string(),
+        daemon_id: daemon_id.to_string(),
+        machine_id: "machine-1".to_string(),
+        machine_alias: None,
+        os_name: None,
+        kernel_started_at_ms: 0,
+        daemon_alias: None,
+        kernel_alias: None,
+        public_key: "public-key".to_string(),
+        capabilities: Vec::new(),
+        available_providers: Vec::new(),
+        provider_accounts: Vec::new(),
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+    }
+}
+
+#[test]
+fn scoped_daemon_registration_binds_subject_and_public_key() {
+    use sha2::{Digest, Sha256};
+
+    let mut registration = daemon_registration("slice:dev-1");
+    registration.daemon_alias = Some("slice:dev-1".to_string());
+    registration.public_key = "worker-public-key".to_string();
+    let thumbprint = Sha256::digest(registration.public_key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let identity = VerifiedRelayIdentity {
+        realm_id: "realm-1".to_string(),
+        subject: "slice:dev-1".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        expires_at_ms: u64::MAX,
+        token_id: Some("token-1".to_string()),
+        account_id: Some("account-1".to_string()),
+        user_id: Some("user-1".to_string()),
+        machine_id: Some(registration.machine_id.clone()),
+        client_id: None,
+        public_key_thumbprint: Some(thumbprint),
+    };
+
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
+
+    let mut wrong_key = registration.clone();
+    wrong_key.public_key = "attacker-public-key".to_string();
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_key),
+        Err("relay token key does not match daemon registration")
+    );
+
+    let mut wrong_machine = registration.clone();
+    wrong_machine.machine_id = "machine-attacker".to_string();
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_machine),
+        Err("relay token machine does not match daemon registration")
+    );
+
+    let mut wrong_subject = registration;
+    wrong_subject.daemon_id = "slice:other".to_string();
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_subject),
+        Err("relay token subject does not match daemon registration")
+    );
+}
+
+fn daemon_peer(sender: RelaySender, registration: DaemonRegistration) -> PeerHandle {
+    PeerHandle {
+        sender,
+        role: RelayConnectionRole::Daemon,
+        realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
+        identity: None,
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        daemon_registration: Some(registration),
+        client_daemon_key: None,
+    }
+}
+
+#[tokio::test]
+async fn revoked_daemon_is_not_route_admitted_before_watch_cleanup() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-old");
+    let daemon_addr = peer_addr(10_010);
+    let client_addr = peer_addr(10_011);
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(2);
+    let (client_sender, mut client_receiver) = mpsc::channel::<Message>(2);
+    let mut registration = daemon_registration("kernel-old");
+    registration.machine_id = "machine-old".to_string();
+    registration.auth_token = "old-kernel-token".to_string();
+
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
+    );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let mut client = client_peer(client_sender.clone());
+    client.client_daemon_key = Some(daemon_key.clone());
+    registry.peers.insert(client_addr, client);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    let registry = Arc::new(RwLock::new(registry));
+
+    let revocations = RelayRevocationRegistry::new();
+    let claims = RelayTokenClaims {
+        issuer: "issuer".to_string(),
+        subject: "kernel-old".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        issued_at_ms: 1,
+        expires_at_ms: 100,
+        token_id: "old-kernel-jti".to_string(),
+        account_id: Some("account-1".to_string()),
+        organization_id: None,
+        user_id: None,
+        device_id: None,
+        machine_id: Some("machine-old".to_string()),
+        client_id: None,
+        session_id: None,
+        public_key_thumbprint: None,
+        entitlements_version: None,
+    };
+    let auth_verifier = RelayAuthVerifier::ScopedToken(
+        ScopedTokenVerifier::new(
+            BTreeMap::from([("old-kernel-token".to_string(), claims)]),
+            BTreeMap::new(),
+            Some(10),
+        )
+        .with_revocations(revocations.clone()),
+    );
+    revocations.revoke_scoped_subject("account-1", RelaySubjectKind::Kernel, "kernel-old", 100);
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("revoked daemon token must fence routing");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::TokenRevoked);
+    assert_eq!(failure.reason(), "token_revoked");
+    let relay_request_counter = AtomicU64::new(0);
+
+    let action = handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "request-after-revocation".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("kernel-old".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
+        &registry,
+        &routes,
+        &auth_verifier,
+        client_addr,
+        &client_sender,
+        &relay_request_counter,
+    )
+    .await
+    .expect("revoked target should be rejected without closing the client");
+
+    assert_eq!(action, ConnectionAction::Continue);
+    assert!(matches!(
+        daemon_receiver.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    let Message::Text(payload) = client_receiver
+        .try_recv()
+        .expect("client should receive target-not-connected")
+    else {
+        panic!("expected client response text")
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("response should decode"),
+        RelayEnvelope::ClientResponse {
+            request_id,
+            error: Some(error),
+            ..
+        } if request_id == "request-after-revocation"
+            && error.code == "target_not_connected"
+            && error.retryable
+    ));
+    let guard = registry.read().await;
+    assert!(guard.daemons.contains_key(&daemon_key));
+    assert!(routes.daemon_sender(&daemon_key).is_some());
+    assert!(guard.peers.contains_key(&client_addr));
+    assert_eq!(guard.pending_request_count(), 0);
+}
+
+#[tokio::test]
+async fn daemon_route_admission_distinguishes_expired_token_from_missing_sender() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "kernel-expired");
+    let daemon_addr = peer_addr(10_012);
+    let (daemon_sender, _daemon_receiver) = mpsc::channel::<Message>(2);
+    let mut registration = daemon_registration("kernel-expired");
+    registration.auth_token = "expired-kernel-token".to_string();
+
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
+    );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::ScopedToken(ScopedTokenVerifier::new(
+        BTreeMap::from([(
+            "expired-kernel-token".to_string(),
+            RelayTokenClaims {
+                issuer: "issuer".to_string(),
+                subject: "kernel-expired".to_string(),
+                subject_kind: RelaySubjectKind::Kernel,
+                realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
+                allowed_actions: vec![RelayAction::DaemonRegister],
+                allowed_targets: None,
+                issued_at_ms: 1,
+                expires_at_ms: 9,
+                token_id: "expired-kernel-jti".to_string(),
+                account_id: Some("account-1".to_string()),
+                organization_id: None,
+                user_id: None,
+                device_id: None,
+                machine_id: Some("machine-1".to_string()),
+                client_id: None,
+                session_id: None,
+                public_key_thumbprint: None,
+                entitlements_version: None,
+            },
+        )]),
+        BTreeMap::new(),
+        Some(10),
+    ));
+
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("expired daemon token must fence routing");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::TokenExpired);
+    assert_eq!(failure.reason(), "token_expired");
+
+    routes.remove_daemon_sender(&daemon_key);
+    let failure = route_admitted_daemon_sender(&registry, &auth_verifier, &daemon_key)
+        .await
+        .expect_err("missing daemon sender must be reported separately");
+    assert_eq!(failure, DaemonRouteAdmissionFailure::SenderMissing);
+    assert_eq!(failure.reason(), "sender_missing");
+}
+
+fn client_peer(sender: RelaySender) -> PeerHandle {
+    PeerHandle {
+        sender,
+        role: RelayConnectionRole::Client,
+        realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
+        identity: None,
+        allowed_actions: Vec::new(),
+        allowed_targets: None,
+        daemon_registration: None,
+        client_daemon_key: None,
+    }
+}
+
+#[test]
+fn resolve_daemon_sender_uses_daemon_peer_index() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let registration = daemon_registration("daemon-1");
+    let daemon_addr = peer_addr(10_001);
+    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry
+        .peers
+        .insert(daemon_addr, daemon_peer(sender, registration));
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+
+    assert!(resolve_daemon_sender_locked(&registry, &daemon_key).is_some());
+
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), peer_addr(10_002));
+
+    assert!(
+        resolve_daemon_sender_locked(&registry, &daemon_key).is_none(),
+        "stale route index entries must not fall back to scanning all peers"
+    );
+}
+
+#[test]
+fn performance_drill_relay_fanout_resolves_daemon_routes_from_index() {
+    let mut registry = RelayRegistry::default();
+    for index in 0..2_000 {
+        let daemon_id = format!("daemon-{index}");
+        let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, daemon_id.clone());
+        let registration = daemon_registration(&daemon_id);
+        let addr = peer_addr(20_000 + index as u16);
+        let (sender, _receiver) = mpsc::channel::<Message>(1);
+        registry
+            .daemons
+            .insert(daemon_key.clone(), registration.clone());
+        registry
+            .peers
+            .insert(addr, daemon_peer(sender, registration));
+        registry.daemon_peers.insert(daemon_key, addr);
+    }
+
+    let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1999");
+    assert!(resolve_daemon_sender_locked(&registry, &target_key).is_some());
+    assert_eq!(registry.daemon_peers.len(), registry.daemons.len());
+
+    registry
+        .daemon_peers
+        .insert(target_key.clone(), peer_addr(65_000));
+    assert!(
+        resolve_daemon_sender_locked(&registry, &target_key).is_none(),
+        "indexed routing must not scan all relay peers when an index entry is stale"
+    );
+}
+
+#[tokio::test]
+async fn remove_daemon_peer_clears_daemon_route_index() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let registration = daemon_registration("daemon-1");
+    let peer_addr = peer_addr(10_003);
+    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry
+        .peers
+        .insert(peer_addr, daemon_peer(sender, registration));
+    registry.daemon_peers.insert(daemon_key.clone(), peer_addr);
+    let routes = registry.route_index();
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+
+    let _ = remove_peer(
+        &registry,
+        &routes,
+        peer_addr,
+        Some(&daemon_key),
+        &relay_request_counter,
+    )
+    .await;
+
+    let guard = registry.read().await;
+    assert!(!guard.daemons.contains_key(&daemon_key));
+    assert!(!guard.daemon_peers.contains_key(&daemon_key));
+    assert!(!guard.peers.contains_key(&peer_addr));
+}
+
+#[tokio::test]
+async fn remove_client_peer_unsubscribes_active_and_pending_daemon_subscriptions() {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let client_addr = peer_addr(10_007);
+    let other_client_addr = peer_addr(10_008);
+    let (client_sender, _client_receiver) = mpsc::channel::<Message>(4);
+    let (other_client_sender, _other_client_receiver) = mpsc::channel::<Message>(4);
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(4);
+    let mut registry = RelayRegistry::default();
+    registry
+        .peers
+        .insert(client_addr, client_peer(client_sender.clone()));
+    registry
+        .peers
+        .insert(other_client_addr, client_peer(other_client_sender));
+    registry.subscriptions.insert(
+        "active-subscription".to_string(),
+        ActiveSubscription {
+            client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "active-public-key".to_string(),
+        },
+    );
+    registry.subscriptions.insert(
+        "other-subscription".to_string(),
+        ActiveSubscription {
+            client_addr: other_client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "other-public-key".to_string(),
+        },
+    );
+    let routes = registry.route_index();
+    routes.set_client_sender(client_addr, client_sender.clone());
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    routes.set_subscription(
+        "active-subscription".to_string(),
+        ActiveEventRoute {
+            display: false,
+            daemon_key: daemon_key.clone(),
+            client_sender,
+        },
+    );
+    routes.insert_pending_client(
+        "relay-request-pending".to_string(),
+        PendingClientRequest {
+            client_addr,
+            client_request_id: "client-request-pending".to_string(),
+            daemon_key: daemon_key.clone(),
+            kind: PendingRequestKind::Subscribe {
+                display: false,
+                subscription_id: "pending-subscription".to_string(),
+                client_public_key: "pending-public-key".to_string(),
+            },
+        },
+    );
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+
+    let (_, cleanup_count, dropped_pending_count) = remove_peer(
+        &registry,
+        &routes,
+        client_addr,
+        None,
+        &relay_request_counter,
+    )
+    .await;
+
+    assert_eq!(cleanup_count, 2);
+    assert_eq!(dropped_pending_count, 1);
+    let guard = registry.read().await;
+    assert!(!guard.subscriptions.contains_key("active-subscription"));
+    assert!(guard.subscriptions.contains_key("other-subscription"));
+    drop(guard);
+    let mut cleanups = (0..2)
+        .map(|_| {
+            match daemon_receiver
+                .try_recv()
+                .expect("daemon cleanup should enqueue")
+            {
+                Message::Text(text) => match serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("daemon cleanup should decode")
+                {
+                    RelayEnvelope::DaemonUnsubscribe {
+                        relay_subscription_id,
+                        client_public_key,
+                        ..
+                    } => (relay_subscription_id, client_public_key),
+                    other => panic!("expected daemon unsubscribe, got {other:?}"),
+                },
+                other => panic!("expected daemon cleanup text, got {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    cleanups.sort();
+    assert_eq!(
+        cleanups,
+        vec![
+            (
+                "active-subscription".to_string(),
+                "active-public-key".to_string()
+            ),
+            (
+                "pending-subscription".to_string(),
+                "pending-public-key".to_string()
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn alias_resolution_ignores_temporary_peer_transport_registrations() {
+    let real_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel");
+    let temp_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "home-kernel:peer-tmp:req-1");
+    let mut real = daemon_registration("home-kernel");
+    real.daemon_alias = Some("home".to_string());
+    real.capabilities = vec!["kernel_websocket".to_string()];
+    let mut temporary = daemon_registration("home-kernel:peer-tmp:req-1");
+    temporary.daemon_alias = Some("home".to_string());
+    temporary.capabilities = vec!["relay_peer_transport".to_string()];
+    let mut registry = RelayRegistry::default();
+    registry.daemons.insert(real_key.clone(), real);
+    registry.daemons.insert(temp_key, temporary);
+    let real_addr = peer_addr(10_006);
+    let real_registration = registry
+        .daemons
+        .get(&real_key)
+        .expect("real registration should exist")
+        .clone();
+    let (real_sender, _receiver) = mpsc::channel::<Message>(1);
+    registry.peers.insert(
+        real_addr,
+        daemon_peer(real_sender.clone(), real_registration),
+    );
+    registry.daemon_peers.insert(real_key.clone(), real_addr);
+    registry
+        .route_index()
+        .set_daemon_sender(real_key.clone(), real_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::shared(None);
+
+    let resolved = resolve_target_daemon_key(
+        &registry,
+        &auth_verifier,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("home".to_string()),
+        },
+    )
+    .await;
+
+    assert_eq!(resolved, Some(real_key));
+}
+
+#[tokio::test]
+async fn target_resolution_and_live_metadata_ignore_stale_daemon_registration() {
+    let stale_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-stale");
+    let live_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-live");
+    let mut stale_registration = daemon_registration("daemon-stale");
+    stale_registration.daemon_alias = Some("stale".to_string());
+    stale_registration.capabilities = vec!["kernel_ws".to_string()];
+    let mut live_registration = daemon_registration("daemon-live");
+    live_registration.daemon_alias = Some("live".to_string());
+    live_registration.capabilities = vec!["kernel_ws".to_string()];
+    let live_addr = peer_addr(10_006);
+    let (live_sender, _receiver) = mpsc::channel::<Message>(1);
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(stale_key.clone(), stale_registration);
+    registry
+        .daemons
+        .insert(live_key.clone(), live_registration.clone());
+    registry.peers.insert(
+        live_addr,
+        daemon_peer(live_sender.clone(), live_registration),
+    );
+    registry.daemon_peers.insert(live_key.clone(), live_addr);
+    registry
+        .route_index()
+        .set_daemon_sender(live_key.clone(), live_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let auth_verifier = RelayAuthVerifier::shared(None);
+
+    let stale_exact = resolve_target_daemon_key(
+        &registry,
+        &auth_verifier,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: Some("daemon-stale".to_string()),
+            daemon_alias: None,
+        },
+    )
+    .await;
+    let stale_alias = resolve_target_daemon_key(
+        &registry,
+        &auth_verifier,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("stale".to_string()),
+        },
+    )
+    .await;
+    let live_exact = resolve_target_daemon_key(
+        &registry,
+        &auth_verifier,
+        DEFAULT_RELAY_REALM_ID,
+        &ClientTarget {
+            daemon_id: Some("daemon-live".to_string()),
+            daemon_alias: None,
+        },
+    )
+    .await;
+
+    let guard = registry.read().await;
+    assert_eq!(stale_exact, None);
+    assert_eq!(stale_alias, None);
+    assert_eq!(live_exact, Some(live_key));
+    assert_eq!(
+        guard.live_machines_in_realm(DEFAULT_RELAY_REALM_ID).len(),
+        1
+    );
+    assert_eq!(
+        guard.live_kernel_in_realm(DEFAULT_RELAY_REALM_ID, "daemon-stale"),
+        None
+    );
+    assert_eq!(
+        guard
+            .live_kernel_in_realm(DEFAULT_RELAY_REALM_ID, "daemon-live")
+            .expect("live daemon should remain visible")
+            .kernel_id,
+        "daemon-live"
+    );
+}
+
+#[tokio::test]
+async fn slow_event_consumer_cleanup_removes_matching_subscription_only() {
+    assert!(slow_event_consumer_cleanup_case().await);
+}
+
+async fn slow_event_consumer_cleanup_case() -> bool {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let client_addr = peer_addr(10_004);
+    let other_client_addr = peer_addr(10_005);
+    let (sender, mut receiver) = mpsc::channel::<Message>(1);
+    sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let (other_sender, mut other_receiver) = mpsc::channel::<Message>(1);
+    let mut registry = RelayRegistry::default();
+    registry
+        .peers
+        .insert(client_addr, client_peer(sender.clone()));
+    registry
+        .peers
+        .insert(other_client_addr, client_peer(other_sender.clone()));
+    registry.subscriptions.insert(
+        "slow-subscription".to_string(),
+        ActiveSubscription {
+            client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "slow-public-key".to_string(),
+        },
+    );
+    registry.subscriptions.insert(
+        "other-subscription".to_string(),
+        ActiveSubscription {
+            client_addr: other_client_addr,
+            daemon_key: daemon_key.clone(),
+            client_public_key: "other-public-key".to_string(),
+        },
+    );
+    let routes = registry.route_index();
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    routes.set_client_sender(client_addr, sender.clone());
+    routes.set_subscription(
+        "slow-subscription".to_string(),
+        ActiveEventRoute {
+            display: false,
+            daemon_key: daemon_key.clone(),
+            client_sender: sender.clone(),
+        },
+    );
+    routes.set_subscription(
+        "other-subscription".to_string(),
+        ActiveEventRoute {
+            display: false,
+            daemon_key: daemon_key.clone(),
+            client_sender: other_sender,
+        },
+    );
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+
+    let slow_delivered = route_daemon_event(
+        &registry,
+        &routes,
+        &daemon_key,
+        &relay_request_counter,
+        "slow-subscription".to_string(),
+        1,
+        encrypted_payload(),
+    )
+    .await;
+    assert!(!slow_delivered, "full client queue should reject event");
+
+    let guard = registry.read().await;
+    assert!(!guard.subscriptions.contains_key("slow-subscription"));
+    assert!(guard.subscriptions.contains_key("other-subscription"));
+    assert_eq!(
+        guard.backpressure_metrics().slow_subscription_close_count,
+        1
+    );
+    assert_eq!(guard.backpressure_metrics().target_queue_full_count, 0);
+    drop(guard);
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(Message::Text(text)) if text == "occupied"
+    ));
+    let cleanup = daemon_receiver
+        .try_recv()
+        .expect("slow subscription cleanup should reach daemon");
+    let Message::Text(payload) = cleanup else {
+        panic!("expected daemon cleanup text")
+    };
+    assert!(matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("daemon cleanup should decode"),
+        RelayEnvelope::DaemonUnsubscribe {
+            relay_subscription_id,
+            client_public_key,
+            ..
+        } if relay_subscription_id == "slow-subscription"
+            && client_public_key == "slow-public-key"
+    ));
+
+    let healthy_delivered = route_daemon_event(
+        &registry,
+        &routes,
+        &daemon_key,
+        &relay_request_counter,
+        "other-subscription".to_string(),
+        2,
+        encrypted_payload(),
+    )
+    .await;
+    assert!(
+        healthy_delivered,
+        "healthy subscription should remain writable"
+    );
+    let Message::Text(payload) = other_receiver
+        .try_recv()
+        .expect("healthy subscription should receive the next event")
+    else {
+        panic!("expected healthy subscription text")
+    };
+    let healthy_event = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("healthy event should decode"),
+        RelayEnvelope::ClientEvent {
+            subscription_id,
+            event_id: 2,
+            ..
+        } if subscription_id == "other-subscription"
+    );
+    assert!(healthy_event);
+    healthy_delivered && healthy_event
+}
+
+#[tokio::test]
+async fn target_backpressure_rejects_client_pending_request_without_client_close() {
+    assert!(target_backpressure_client_case().await);
+}
+
+async fn target_backpressure_client_case() -> bool {
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let client_addr = peer_addr(10_006);
+    let (client_sender, mut client_receiver) = mpsc::channel::<Message>(4);
+    let (daemon_sender, mut daemon_receiver) = mpsc::channel::<Message>(1);
+    daemon_sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let mut registry = RelayRegistry::default();
+    let daemon_addr = peer_addr(10_009);
+    let registration = daemon_registration("daemon-1");
+    registry
+        .daemons
+        .insert(daemon_key.clone(), registration.clone());
+    registry.peers.insert(
+        daemon_addr,
+        daemon_peer(daemon_sender.clone(), registration),
+    );
+    registry
+        .daemon_peers
+        .insert(daemon_key.clone(), daemon_addr);
+    let mut client = client_peer(client_sender.clone());
+    client.client_daemon_key = Some(daemon_key.clone());
+    registry.peers.insert(client_addr, client);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(daemon_key.clone(), daemon_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+    let auth_verifier = RelayAuthVerifier::shared(None);
+
+    handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "client-request-1".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
+        &registry,
+        &routes,
+        &auth_verifier,
+        client_addr,
+        &client_sender,
+        &relay_request_counter,
+    )
+    .await
+    .expect("saturated client route should reject without breaking");
+
+    let metrics_recorded = {
+        let guard = registry.read().await;
+        assert_eq!(guard.pending_request_count(), 0);
+        assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
+        assert_eq!(
+            guard.backpressure_metrics().slow_subscription_close_count,
+            0
+        );
+        guard.backpressure_metrics().target_queue_full_count == 1
+    };
+    let payload = match client_receiver.try_recv() {
+        Ok(Message::Text(text)) => text,
+        other => panic!("unexpected client rejection frame: {other:?}"),
+    };
+    let rejected_retryably = match serde_json::from_str::<RelayEnvelope>(&payload)
+        .expect("client rejection should decode")
+    {
+        RelayEnvelope::ClientResponse {
+            request_id,
+            encrypted_response: None,
+            error: Some(error),
+        } => {
+            assert_eq!(request_id, "client-request-1");
+            assert_eq!(error.code, "target_backpressure");
+            assert!(error.retryable);
+            error.retryable
+        }
+        other => panic!("unexpected client rejection envelope: {other:?}"),
+    };
+
+    assert!(matches!(daemon_receiver.try_recv(), Ok(Message::Text(text)) if text == "occupied"));
+    handle_client_packet_route_envelope(
+        RelayEnvelope::ClientRequest {
+            request_id: "client-request-2".to_string(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".to_string()),
+                daemon_alias: None,
+            },
+            encrypted_request: encrypted_payload(),
+        },
+        &registry,
+        &routes,
+        &auth_verifier,
+        client_addr,
+        &client_sender,
+        &relay_request_counter,
+    )
+    .await
+    .expect("client route should remain writable after backpressure");
+    let Message::Text(payload) = daemon_receiver
+        .try_recv()
+        .expect("target should receive the next client request")
+    else {
+        panic!("expected target request text")
+    };
+    let route_recovered = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("target request should decode"),
+        RelayEnvelope::DaemonRequest { relay_request_id, .. }
+            if relay_request_id == "relay-request-2"
+    );
+    assert!(route_recovered);
+    assert_eq!(registry.read().await.pending_request_count(), 1);
+    routes.remove_pending_client("relay-request-2");
+    rejected_retryably && route_recovered && metrics_recorded
+}
+
+#[tokio::test]
+async fn target_backpressure_rejects_peer_pending_request_without_requester_close() {
+    assert!(target_backpressure_peer_case().await);
+}
+
+async fn target_backpressure_peer_case() -> bool {
+    let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
+    let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
+    let requester_addr = peer_addr(10_008);
+    let (requester_sender, mut requester_receiver) = mpsc::channel::<Message>(4);
+    let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+    target_sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let mut registry = RelayRegistry::default();
+    registry.peers.insert(
+        requester_addr,
+        daemon_peer(requester_sender.clone(), daemon_registration("daemon-a")),
+    );
+    let routes = registry.route_index();
+    routes.set_daemon_sender(target_key.clone(), target_sender);
+    let registry = Arc::new(RwLock::new(registry));
+    let relay_request_counter = AtomicU64::new(0);
+
+    route_daemon_peer_request(
+        &registry,
+        &routes,
+        requester_addr,
+        &requester_sender,
+        &relay_request_counter,
+        &requester_key,
+        target_key.clone(),
+        "peer-request-1".to_string(),
+        encrypted_payload(),
+    )
+    .await
+    .expect("saturated peer route should reject without breaking");
+
+    let metrics_recorded = {
+        let guard = registry.read().await;
+        assert_eq!(guard.pending_request_count(), 0);
+        assert_eq!(guard.backpressure_metrics().target_queue_full_count, 1);
+        assert_eq!(
+            guard.backpressure_metrics().slow_subscription_close_count,
+            0
+        );
+        guard.backpressure_metrics().target_queue_full_count == 1
+    };
+    let payload = match requester_receiver.try_recv() {
+        Ok(Message::Text(text)) => text,
+        other => panic!("unexpected peer rejection frame: {other:?}"),
+    };
+    let rejected_retryably = match serde_json::from_str::<RelayEnvelope>(&payload)
+        .expect("peer rejection should decode")
+    {
+        RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            encrypted_response: None,
+            error: Some(error),
+        } => {
+            assert_eq!(request_id, "peer-request-1");
+            assert_eq!(from_daemon_id, "daemon-b");
+            assert_eq!(error.code, "target_backpressure");
+            assert!(error.retryable);
+            error.retryable
+        }
+        other => panic!("unexpected peer rejection envelope: {other:?}"),
+    };
+
+    assert!(matches!(target_receiver.try_recv(), Ok(Message::Text(text)) if text == "occupied"));
+    route_daemon_peer_request(
+        &registry,
+        &routes,
+        requester_addr,
+        &requester_sender,
+        &relay_request_counter,
+        &requester_key,
+        target_key,
+        "peer-request-2".to_string(),
+        encrypted_payload(),
+    )
+    .await
+    .expect("peer route should remain writable after backpressure");
+    let Message::Text(payload) = target_receiver
+        .try_recv()
+        .expect("target should receive the next peer request")
+    else {
+        panic!("expected peer request text")
+    };
+    let route_recovered = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("peer request should decode"),
+        RelayEnvelope::DaemonIncomingPeerRequest { relay_request_id, .. }
+            if relay_request_id == "relay-peer-request-2"
+    );
+    assert!(route_recovered);
+    assert_eq!(registry.read().await.pending_request_count(), 1);
+    routes.remove_pending_daemon("relay-peer-request-2");
+    rejected_retryably && route_recovered && metrics_recorded
+}
+
+#[tokio::test]
+async fn peer_event_target_backpressure_is_nonfatal() {
+    assert!(peer_event_target_backpressure_case().await);
+}
+
+async fn peer_event_target_backpressure_case() -> bool {
+    let requester_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-a");
+    let target_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-b");
+    let target_registration = daemon_registration("daemon-b");
+    let target_addr = peer_addr(10_007);
+    let requester_addr = peer_addr(10_008);
+    let (target_sender, mut target_receiver) = mpsc::channel::<Message>(1);
+    target_sender
+        .try_send(Message::Text("occupied".to_string().into()))
+        .expect("test queue should accept first message");
+    let mut registry = RelayRegistry::default();
+    registry
+        .daemons
+        .insert(target_key.clone(), target_registration.clone());
+    registry.peers.insert(
+        target_addr,
+        daemon_peer(target_sender.clone(), target_registration),
+    );
+    registry
+        .daemon_peers
+        .insert(target_key.clone(), target_addr);
+    let routes = registry.route_index();
+    routes.set_daemon_sender(target_key.clone(), target_sender);
+    let registry = Arc::new(RwLock::new(registry));
+
+    assert!(
+        !route_daemon_peer_event(
+            &registry,
+            &routes,
+            requester_addr,
+            &requester_key,
+            &target_key,
+            encrypted_payload(),
+        )
+        .await
+    );
+    assert_eq!(registry.read().await.pending_request_count(), 0);
+    assert!(matches!(
+        target_receiver.try_recv(),
+        Ok(Message::Text(text)) if text == "occupied"
+    ));
+    let route_recovered = route_daemon_peer_event(
+        &registry,
+        &routes,
+        requester_addr,
+        &requester_key,
+        &target_key,
+        encrypted_payload(),
+    )
+    .await;
+    assert!(route_recovered);
+    let Message::Text(payload) = target_receiver
+        .try_recv()
+        .expect("target should receive the next peer event")
+    else {
+        panic!("expected peer event text")
+    };
+    let event_forwarded = matches!(
+        serde_json::from_str::<RelayEnvelope>(&payload).expect("peer event should decode"),
+        RelayEnvelope::DaemonIncomingPeerEvent { from_daemon_id, .. }
+            if from_daemon_id == "daemon-a"
+    );
+    assert!(event_forwarded);
+    route_recovered && event_forwarded
+}
+
+#[tokio::test]
+async fn queue_saturation_fault_probe() {
+    let healthy_reader_preserved = slow_event_consumer_cleanup_case().await;
+    let client_route_recovered = target_backpressure_client_case().await;
+    let peer_route_recovered = target_backpressure_peer_case().await;
+    let peer_event_route_recovered = peer_event_target_backpressure_case().await;
+    assert!(healthy_reader_preserved);
+    assert!(client_route_recovered);
+    assert!(peer_route_recovered);
+    assert!(peer_event_route_recovered);
+    eprintln!(
+        "{}",
+        json!({
+            "schema": "chariox.queue_saturation_fault_probe.v1",
+            "queueLimitReachedDeterministically": client_route_recovered && peer_route_recovered && peer_event_route_recovered,
+            "clientRequestRejectedRetryably": client_route_recovered,
+            "peerRequestRejectedRetryably": peer_route_recovered,
+            "slowSubscriberIsolated": healthy_reader_preserved,
+            "healthyReaderPreserved": healthy_reader_preserved,
+            "readerLaneRemainedLive": client_route_recovered && peer_route_recovered && peer_event_route_recovered && healthy_reader_preserved,
+            "backpressureMetricsRecorded": client_route_recovered && peer_route_recovered
+        })
+    );
+}
+
+fn encrypted_payload() -> EncryptedRelayPayload {
+    EncryptedRelayPayload {
+        sender_public_key: "daemon-public".to_string(),
+        nonce: "nonce".to_string(),
+        ciphertext: "ciphertext".to_string(),
+    }
+}
+
+#[test]
+fn scoped_kernel_subject_cannot_register_a_foreign_daemon_through_alias() {
+    let identity = canonical_kernel_identity();
+    let mut registration = daemon_registration("kernel-foreign");
+    registration.daemon_alias = Some(identity.subject.clone());
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &registration),
+        Err("relay token subject does not match daemon registration"),
+        "a display alias must not authorize another canonical daemon identity"
+    );
+    registration.daemon_alias = None;
+    registration.kernel_alias = Some(identity.subject.clone());
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_err());
+}
+
+fn canonical_kernel_identity() -> VerifiedRelayIdentity {
+    VerifiedRelayIdentity {
+        realm_id: "realm-1".to_string(),
+        subject: "kernel-owned".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        expires_at_ms: u64::MAX,
+        token_id: Some("synthetic-token".to_string()),
+        account_id: Some("account-1".to_string()),
+        user_id: Some("user-1".to_string()),
+        machine_id: Some("machine-1".to_string()),
+        client_id: None,
+        public_key_thumbprint: None,
+    }
+}
+
+#[test]
+fn scoped_kernel_registration_accepts_only_its_canonical_or_production_temporary_id() {
+    let identity = canonical_kernel_identity();
+    for id in [
+        "kernel-owned",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
+    ] {
+        assert!(
+            validate_daemon_registration_identity(&identity, &daemon_registration(id)).is_ok(),
+            "{id}"
+        );
+    }
+    for id in [
+        "kernel-owned:peer-tmp:arbitrary",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-0-1-1",
+        "kernel-owned:peer-tmp:daemon-peer-tmp-1-1-1:foreign",
+        "kernel-other:peer-tmp:daemon-peer-tmp-1-1-1",
+    ] {
+        assert!(
+            validate_daemon_registration_identity(&identity, &daemon_registration(id)).is_err(),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn signed_machine_cannot_register_a_kernel_but_legacy_and_trusted_service_are_preserved() {
+    let registration = daemon_registration("kernel-owned");
+    let mut identity = canonical_kernel_identity();
+    identity.subject = registration.machine_id.clone();
+    identity.subject_kind = RelaySubjectKind::Machine;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_err());
+    identity.subject_kind = RelaySubjectKind::Service;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
+    identity.subject_kind = RelaySubjectKind::Machine;
+    identity.token_id = None;
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
+}
+
+// MP-08/MP-10: a ready viewer must survive a buffered producer burst larger
+// than the encrypted fragment queue, while genuinely stalled viewers close.
+#[tokio::test]
+async fn healthy_display_viewer_drains_bursts_without_false_backpressure() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "worker-burst");
+    let (display_tx, mut display_rx) = mpsc::channel(16);
+    registry.write().await.insert_pending_display_stream(
+        "burst-stream".to_string(),
+        daemon_key.clone(),
+        display_tx,
+    );
+    let consumer = tokio::spawn(async move {
+        let mut packets = Vec::new();
+        while let Some(DisplayStreamEvent::Chunk { data, .. }) = display_rx.recv().await {
+            packets.push(data);
+        }
+        packets
+    });
+    let (daemon_tx, mut daemon_rx) = mpsc::channel(2);
+    for index in 0..64 {
+        try_forward_display_stream_event(
+            &registry,
+            &daemon_tx,
+            &daemon_key,
+            "burst-stream",
+            DisplayStreamEvent::Chunk {
+                data: index.to_string(),
+                message_kind: Some("binary".to_string()),
+            },
+        )
+        .await;
+    }
+    assert!(
+        registry
+            .read()
+            .await
+            .display_stream_sender_for_daemon("burst-stream", &daemon_key)
+            .is_some(),
+        "ready viewer was closed before its receiver could run"
+    );
+    assert!(
+        daemon_rx.try_recv().is_err(),
+        "healthy viewer must not trigger an overload close"
+    );
+    registry
+        .write()
+        .await
+        .remove_pending_display_stream("burst-stream");
+    let packets = tokio::time::timeout(Duration::from_secs(1), consumer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        packets,
+        (0..64).map(|index| index.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn foreign_daemon_and_realm_cannot_close_display_stream() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let owner = DaemonKey::new("owner-realm", "owner");
+    let (tx, mut rx) = mpsc::channel(4);
+    registry
+        .write()
+        .await
+        .insert_pending_display_stream("owned".into(), owner.clone(), tx);
+    for foreign in [
+        DaemonKey::new("owner-realm", "foreign"),
+        DaemonKey::new("foreign-realm", "owner"),
+    ] {
+        close_display_stream_from_daemon(&registry, &foreign, "owned", None).await;
+        assert!(registry
+            .read()
+            .await
+            .display_stream_sender_for_daemon("owned", &owner)
+            .is_some());
+        assert!(rx.try_recv().is_err());
+    }
+    close_display_stream_from_daemon(&registry, &owner, "owned", None).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(DisplayStreamEvent::Close { .. })
+    ));
+    assert!(rx.recv().await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_subscription_admission_has_one_owner() {
+    let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let mut registry = RelayRegistry::default();
+    let (daemon_tx, _daemon_rx) = mpsc::channel(8);
+    let reg = daemon_registration("daemon-1");
+    registry.daemons.insert(key.clone(), reg.clone());
+    registry
+        .peers
+        .insert(peer_addr(18000), daemon_peer(daemon_tx.clone(), reg));
+    registry.daemon_peers.insert(key.clone(), peer_addr(18000));
+    let routes = registry.route_index();
+    routes.set_daemon_sender(key.clone(), daemon_tx);
+    let mut clients = Vec::new();
+    for port in [18001, 18002] {
+        let (tx, rx) = mpsc::channel(8);
+        let addr = peer_addr(port);
+        let mut peer = client_peer(tx.clone());
+        peer.client_daemon_key = Some(key.clone());
+        peer.allowed_actions = vec![RelayAction::PacketRoute];
+        registry.peers.insert(addr, peer);
+        routes.set_client_sender(addr, tx.clone());
+        clients.push((addr, tx, rx));
+    }
+    let registry = Arc::new(RwLock::new(registry));
+    let counter = Arc::new(AtomicU64::new(0));
+    let held = registry.read().await;
+    let verifier = RelayAuthVerifier::shared(None);
+    let envelope = |addr| RelayEnvelope::ClientSubscribe {
+        request_id: format!("request-{addr}"),
+        subscription_id: "shared-subscription".into(),
+        target: ClientTarget {
+            daemon_id: Some("daemon-1".into()),
+            daemon_alias: None,
+        },
+        session_id: "session".into(),
+        attachment_id: "attachment".into(),
+        client_public_key: "key".into(),
+        subscription_scope: None,
+        resume_from_event_id: None,
+        heartbeat_interval_ms: None,
+    };
+    {
+        let first = handle_client_packet_route_envelope(
+            envelope(clients[0].0),
+            &registry,
+            &routes,
+            &verifier,
+            clients[0].0,
+            &clients[0].1,
+            &counter,
+        );
+        let second = handle_client_packet_route_envelope(
+            envelope(clients[1].0),
+            &registry,
+            &routes,
+            &verifier,
+            clients[1].0,
+            &clients[1].1,
+            &counter,
+        );
+        tokio::pin!(first, second);
+        // Both clients reach the same held mutation barrier; no timeout selects the race.
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            assert!(
+                first.as_mut().poll(cx).is_pending(),
+                "subscription reservation must require exclusive registry access"
+            );
+            assert!(second.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(routes.pending_request_count(), 0);
+        drop(held);
+        let (first_result, second_result) = tokio::join!(first, second);
+        first_result.unwrap();
+        second_result.unwrap();
+    }
+    assert_eq!(routes.pending_request_count(), 1);
+    let conflict_count = clients.iter_mut().filter_map(|(_, _, rx)| rx.try_recv().ok()).filter(|message| {
+        matches!(message, Message::Text(text) if matches!(serde_json::from_str::<RelayEnvelope>(text).unwrap(), RelayEnvelope::ClientResponse { error: Some(error), .. } if error.code == "subscription_conflict"))
+    }).count();
+    assert_eq!(conflict_count, 1);
+}
+
+// MP-08 / MP-10 / MP-11: a socket that stops reading must retain the current bound.
+#[tokio::test]
+async fn silent_peer_is_removed_within_original_heartbeat_bound() {
+    use futures_util::SinkExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let registry_for_connection = registry.clone();
+    let task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            registry_for_connection,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+        .unwrap();
+    });
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
+            .await
+            .unwrap();
+    let mut registration = daemon_registration("silent-peer");
+    registration.auth_token = "public-fixture".to_string();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(registry.read().await.peers.len(), 1);
+    // Never read, so neither automatic Pong nor transport ACK can acknowledge data.
+    tokio::time::timeout(Duration::from_secs(25), task)
+        .await
+        .expect("dead peer must close within the original 5s check + 15s deadline + check jitter")
+        .unwrap();
+    assert!(registry.read().await.peers.is_empty());
+    drop(client);
+}
+
+// MP-08 / MP-10 / MP-11: a healthy peer acknowledging many small frames in one
+// read must never lose its connection (browser control WebSocket 1006).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn burst_of_small_frame_receipts_keeps_the_connection() {
+    use futures_util::{SinkExt, StreamExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let registry_for_connection = registry.clone();
+    let mut task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            registry_for_connection,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
+            .await
+            .unwrap();
+    let mut registration = daemon_registration("burst-peer");
+    registration.auth_token = "public-fixture".to_string();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let sender = loop {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        if let Some(peer) = registry.read().await.peers.values().next() {
+            break peer.sender.clone();
+        }
+    };
+    // More small frames than the wire window admits, sent without blocking the reader.
+    const FRAMES: usize = 4000;
+    tokio::spawn(async move {
+        for n in 0..FRAMES {
+            let request = format!(r#"{{"kind":"daemon_request","relay_request_id":"small-{n}"}}"#);
+            sender.send(Message::Text(request.into())).await.unwrap();
+        }
+        sender
+            .send(Message::Text(
+                r#"{"kind":"daemon_request","relay_request_id":"after-burst"}"#.into(),
+            ))
+            .await
+            .unwrap();
+    });
+    let mut receiver = crate::frame_transport::FrameReceiver::default();
+    let mut receipts = Vec::new();
+    // The wire window admits many small frames; read until it stalls on credit.
+    while let Ok(Some(Ok(Message::Text(text)))) =
+        tokio::time::timeout(Duration::from_millis(300), client.next()).await
+    {
+        receipts.extend(receiver.receive(&text).unwrap().1);
+    }
+    assert!(receipts.len() > 64, "the window must admit a receipt burst");
+    // One flush: the relay reads the whole receipt burst before its writer can drain it.
+    for receipt in receipts {
+        client.feed(Message::Text(receipt.into())).await.unwrap();
+    }
+    client.flush().await.unwrap();
+    loop {
+        let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), client.next())
+            .await
+            .expect("the connection must survive a receipt burst")
+            .expect("the relay must not end the stream")
+            .expect("the relay must not drop the socket")
+        else {
+            continue;
+        };
+        let (complete, receipt) = receiver.receive(&text).unwrap();
+        if let Some(receipt) = receipt {
+            client.send(Message::Text(receipt.into())).await.unwrap();
+        }
+        if complete.is_some_and(|text| text.contains("after-burst")) {
+            break;
+        }
+    }
+    assert!(!task.is_finished());
+    drop(client);
+    let _ = tokio::time::timeout(Duration::from_secs(3), &mut task).await;
+}
+
+#[tokio::test]
+async fn mp11_binary_event_routes_only_for_its_registered_daemon_and_realm() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let routes = registry.read().await.route_index();
+    let daemon = DaemonKey::new("realm", "kernel");
+    let (sender, mut receiver) = mpsc::channel(2);
+    routes.set_subscription(
+        "sub".into(),
+        ActiveEventRoute {
+            display: false,
+            daemon_key: daemon.clone(),
+            client_sender: sender,
+        },
+    );
+    let header = crate::binary_event::EventHeader {
+        kind: "daemon_event".into(),
+        subscription_id: "sub".into(),
+        event_id: 31,
+        sender_public_key: "opaque-key".into(),
+        nonce: "abcdefghijklmnop".into(),
+    };
+    let bytes = crate::binary_event::encode(&header, &[37; 1024]).unwrap();
+    let counter = AtomicU64::new(0);
+    for wrong in [
+        DaemonKey::new("other-realm", "kernel"),
+        DaemonKey::new("realm", "other-kernel"),
+    ] {
+        assert!(
+            !route_daemon_binary_event(&registry, &routes, &wrong, &counter, &bytes)
+                .await
+                .unwrap()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &bytes)
+            .await
+            .unwrap()
+    );
+    let Message::Binary(delivered) = receiver.recv().await.unwrap() else {
+        panic!("expected binary event");
+    };
+    let (header, ciphertext) = crate::binary_event::decode(&delivered).unwrap();
+    assert_eq!(header.kind, "client_event");
+    assert_eq!(header.subscription_id, "sub");
+    assert_eq!(header.event_id, 31);
+    assert_eq!(ciphertext, &[37; 1024]);
+    assert!(
+        route_daemon_binary_event(&registry, &routes, &daemon, &counter, &delivered)
+            .await
+            .is_err()
+    );
+}
+
+// MP-08 / MP-10 / MP-11: a v1 receiver must never see multiplexed v2 frames.
+#[tokio::test]
+async fn mp08_mp10_mp11_old_chunk_capability_is_rejected_before_registration() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let captured = registry.clone();
+    let task = tokio::spawn(async move {
+        let (stream, peer) = listener.accept().await.unwrap();
+        handle_connection(
+            stream,
+            peer,
+            captured,
+            RelayAuthVerifier::shared(Some("public-fixture".into())),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .await
+    });
+    // Old clients surface a WebSocket close reason, but discard HTTP 426 bodies.
+    let (mut client, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v1"))
+            .await
+            .expect("old TUI must receive a readable upgrade reason");
+    let message = tokio::time::timeout(Duration::from_secs(2), client.next())
+        .await
+        .expect("upgrade refusal must be bounded")
+        .unwrap()
+        .unwrap();
+    let Message::Close(Some(close)) = message else {
+        panic!("old transport must receive only a close frame, got {message:?}");
+    };
+    assert_eq!(
+        close.code,
+        tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy
+    );
+    assert_eq!(
+        close.reason,
+        "Update Chariox: relay requires chunks-v2 (protocol 532 / peer 140)"
+    );
+    assert!(task.await.unwrap().is_ok());
+    assert!(registry.read().await.peers.is_empty());
+}
+
+#[tokio::test]
+async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction() {
+    use futures_util::poll;
+    let key = DaemonKey::new(DEFAULT_RELAY_REALM_ID, "daemon-1");
+    let original_addr = peer_addr(39_001);
+    let replacement_addr = peer_addr(39_002);
+    let client_addr = peer_addr(39_003);
+    let (original_tx, mut original_rx) = mpsc::channel(8);
+    let (replacement_tx, mut replacement_rx) = mpsc::channel(8);
+    let (client_tx, mut client_rx) = mpsc::channel(8);
+    let registration = daemon_registration("daemon-1");
+    let mut state = RelayRegistry::default();
+    state.daemons.insert(key.clone(), registration.clone());
+    state.daemon_peers.insert(key.clone(), original_addr);
+    state.peers.insert(
+        original_addr,
+        daemon_peer(original_tx.clone(), registration.clone()),
+    );
+    let routes = state.route_index();
+    routes.set_daemon_sender(key.clone(), original_tx);
+    let registry = Arc::new(RwLock::new(state));
+    let verifier = RelayAuthVerifier::shared(None);
+    let counter = AtomicU64::new(0);
+    let mut identity = None;
+    let mut expiry = None;
+    // Park admission at its registry write, then place a replacement writer
+    // immediately after it. Tokio's fair lock makes the post-ack routing read
+    // observe that replacement, without timing sleeps or production hooks.
+    let held = registry.read().await;
+    let admitting = super::client_connect::admit(
+        RelayEnvelope::ClientConnectDisplayResume {
+            auth_token: "client-token".into(),
+            target: ClientTarget {
+                daemon_id: Some("daemon-1".into()),
+                daemon_alias: None,
+            },
+            expected_daemon_public_key: registration.public_key.clone(),
+            registration: crate::protocol::InitialDisplayResumeRegistration {
+                request_id: "resume-request".into(),
+                subscription_id: "fresh-route".into(),
+                session_id: "old-delivery".into(),
+                attachment_id: "1".into(),
+                client_public_key: "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=".into(),
+            },
+        },
+        super::client_connect::ClientConnectContext {
+            registry: &registry,
+            routes: &routes,
+            auth_verifier: &verifier,
+            peer_addr: client_addr,
+            outgoing_tx: &client_tx,
+            relay_request_counter: &counter,
+            verified_identity: &mut identity,
+            auth_expiry_deadline: &mut expiry,
+            initial_resume_negotiated: true,
+        },
+    );
+    tokio::pin!(admitting);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let replacing = registry.write();
+    tokio::pin!(replacing);
+    assert!(poll!(replacing.as_mut()).is_pending());
+    drop(held);
+    assert!(poll!(admitting.as_mut()).is_pending());
+    let Message::Text(ack) = client_rx
+        .try_recv()
+        .expect("MP-11 reach the admitted-before-routing seam")
+    else {
+        panic!("expected connect ack")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&ack).unwrap()["kind"],
+        "client_connected"
+    );
+    let mut replacing = replacing.await;
+    let mut replacement = registration;
+    replacement.public_key = "replacement-home-key".into();
+    replacing.daemons.insert(key.clone(), replacement.clone());
+    replacing.daemon_peers.insert(key.clone(), replacement_addr);
+    replacing.peers.insert(
+        replacement_addr,
+        daemon_peer(replacement_tx.clone(), replacement),
+    );
+    routes.set_daemon_sender(key, replacement_tx);
+    drop(replacing);
+    let _ = admitting.await.unwrap();
+    assert!(
+        replacement_rx.try_recv().is_err(),
+        "MP-11 an initial535 registration crossed its expected home key after admission"
+    );
+    assert!(original_rx.try_recv().is_err());
+    assert_eq!(registry.read().await.pending_request_count(), 0);
+}

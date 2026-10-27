@@ -1,0 +1,210 @@
+import {
+  normalizeRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity,
+  type CliOptions,
+  type PromptAttachmentPart,
+  type PromptSubmittedPayload,
+  type QueuedPromptCancelledPayload,
+  type QueuedPromptSteeredPayload,
+  type RuntimeSession,
+} from "./cli-types.js"
+import type { LocalIpcClient } from "./ipc.js"
+import type { CharioxLogger } from "./logging.js"
+import {
+  cancelActivePromptRequest,
+  cancelQueuedPromptRequest,
+  respondToInteractionRequest,
+  steerQueuedPromptRequest,
+  submitPromptRequest,
+  type InteractionPasskeyProof,
+} from "./ipc-requests.js"
+import { expectVariant } from "./ipc-response.js"
+import { launchProviderRun } from "./provider-api.js"
+import { describeCliError } from "./runtime.js"
+import { resizeSessionTerminal } from "./session-runtime-api.js"
+import { resolveAgentLaunchAccountProfile, resolvePromptRecoveryProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
+import {
+  expectPromptSubmittedPayload,
+  promptSubmissionOutcomeName,
+  promptSubmissionTargetAgentId,
+  promptSubmissionTranscriptMetadata,
+} from "@chariox/kernel-client/prompt-submission"
+
+export {
+  promptSubmissionTranscriptMetadata,
+} from "@chariox/kernel-client/prompt-submission"
+
+export type PromptSubmissionResult = {
+  payload: PromptSubmittedPayload
+  targetAgentId: string | null
+  outcomeName: string
+}
+
+export async function submitPromptWithRecovery(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string | null,
+  prompt: string,
+  attachments: PromptAttachmentPart[],
+  getSession: () => RuntimeSession,
+  options: CliOptions,
+  logger?: CharioxLogger | null,
+): Promise<PromptSubmissionResult> {
+  try {
+    return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+  } catch (error) {
+    if (!isRecoverableProviderError(error)) {
+      throw error
+    }
+
+    logger?.warn("prompt submission hit recoverable provider error", {
+      error: describeCliError(error),
+      session_id: sessionId,
+    })
+    const session = getSession()
+    const recoveryLaunch = resolvePromptRecoveryProviderLaunch(session, {
+      provider: options.provider ?? "opencode",
+      model: options.model,
+      effort: options.effort,
+    }, targetAgentId)
+    if (recoveryLaunch.action === "skip_launch") {
+      logger?.warn("skipping provider recovery launch", {
+        session_id: sessionId,
+        reason: recoveryLaunch.reason,
+        target_agent_id: targetAgentId,
+      })
+      throw error
+    }
+    await launchProviderRun(
+      client,
+      sessionId,
+      recoveryLaunch.launch.provider,
+      resolveAgentLaunchAccountProfile(recoveryLaunch.targetAgent, options.accountProfile),
+      recoveryLaunch.launch.model,
+      recoveryLaunch.launch.effort,
+      recoveryLaunch.targetAgentId,
+    )
+    await resizeSessionTerminal(client, sessionId)
+    logger?.info("relaunched provider after recoverable prompt failure", {
+      session_id: sessionId,
+    })
+    return submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+  }
+}
+
+async function submitPrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string | null,
+  prompt: string,
+  attachments: PromptAttachmentPart[],
+): Promise<PromptSubmissionResult> {
+  const response = await client.send<Record<string, unknown>>(
+    submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
+  )
+  const payload = expectPromptSubmittedPayload(response) as PromptSubmittedPayload
+  const normalizedPayload = {
+    ...payload,
+    session: normalizeRuntimeSessionWithAgentActivity(payload),
+  }
+  return {
+    payload: normalizedPayload,
+    targetAgentId: promptSubmissionTargetAgentId(normalizedPayload),
+    outcomeName: promptSubmissionOutcomeName(normalizedPayload),
+  }
+}
+
+export async function cancelActivePrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId?: string | null,
+): Promise<void> {
+  await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, targetAgentId))
+}
+
+export async function steerQueuedPrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+): Promise<QueuedPromptSteeredPayload> {
+  const response = await client.send<Record<string, unknown>>(
+    steerQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
+  )
+  const payload = expectVariant<QueuedPromptSteeredPayload>(response, "QueuedPromptSteered")
+  return {
+    ...payload,
+    session: normalizeRuntimeSessionWithAgentActivity(payload),
+  }
+}
+
+export async function cancelQueuedPrompt(
+  client: LocalIpcClient,
+  sessionId: string,
+  attachmentId: string,
+  targetAgentId: string,
+  promptId: string,
+): Promise<QueuedPromptCancelledPayload> {
+  const response = await client.send<Record<string, unknown>>(
+    cancelQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
+  )
+  const payload = expectVariant<QueuedPromptCancelledPayload>(response, "QueuedPromptCancelled")
+  return {
+    ...payload,
+    session: normalizeRuntimeSessionWithAgentActivity(payload),
+  }
+}
+
+export async function respondToInteraction(
+  client: LocalIpcClient,
+  sessionId: string,
+  interactionId: string,
+  choiceId: string,
+  customReply: string | null,
+  proof?: InteractionPasskeyProof | null,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(
+    respondToInteractionRequest(sessionId, interactionId, choiceId, customReply, proof),
+  )
+  const payload = expectVariant<{ interaction_id: string; session: RuntimeSession }>(response, "InteractionResponded")
+  if (payload.interaction_id !== interactionId || payload.session?.id !== sessionId) {
+    throw new Error("interaction response identity mismatch")
+  }
+  return normalizeRuntimeSession(payload.session)
+}
+
+function isRecoverableProviderError(error: unknown): boolean {
+  const message = describeCliError(error)
+  return message.includes("has no active provider run") || message.includes("cannot perform `submit prompt` while ended")
+}
+
+/** MP-08 / MP-10 / MP-11 A07: the owner's protected hand-off answer; the
+ * kernel returns only the safe outcome. Never resent on reconnect. */
+export async function respondToHandoff(
+  client: LocalIpcClient,
+  sessionId: string,
+  interactionId: string,
+  action: import("@chariox/kernel-client/owner-handoff").HandoffResponseAction,
+): Promise<import("@chariox/kernel-client/owner-handoff").HandoffOutcome> {
+  const { respondToHandoffRequest } = await import("@chariox/kernel-client/owner-handoff")
+  const response = await client.send<Record<string, unknown>>(respondToHandoffRequest(sessionId, interactionId, action))
+  const payload = expectVariant<{ outcome: import("@chariox/kernel-client/owner-handoff").HandoffOutcome }>(response, "HandoffResolved")
+  if (payload.outcome?.handoff_id !== interactionId) throw new Error("hand-off response identity mismatch")
+  return payload.outcome
+}
+
+/** MP-08 / MP-10 / MP-11: kernel-wide access popup; no session projection. */
+export async function respondToKernelAccessDecision(
+  client: LocalIpcClient, interactionId: string, choiceId: string,
+  proof?: InteractionPasskeyProof | null,
+): Promise<void> {
+  const response = await client.send<Record<string, unknown>>(
+    respondToInteractionRequest("kernel-access", interactionId, choiceId, null, proof),
+  )
+  const payload = expectVariant<{ interaction_id: string }>(response, "KernelAccessDecisionResponded")
+  if (payload.interaction_id !== interactionId) throw new Error("access response identity mismatch")
+}

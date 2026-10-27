@@ -1,0 +1,2448 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cross-repository implementation plan for Chariox event-based workflow publication, AEGS discovery, and AEDS delivery."
+    />
+    <title>Event-based Workflow Publication — Implementation Plan</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #0b0f0d;
+        --canvas-soft: #101713;
+        --panel: #151d18;
+        --panel-raised: #1a251e;
+        --ink: #f2f0e7;
+        --muted: #aeb9ae;
+        --quiet: #748078;
+        --line: #354139;
+        --accent: #b8f34a;
+        --accent-soft: #203414;
+        --signal: #f4a261;
+        --signal-soft: #392718;
+        --danger: #ff7b72;
+        --code: #080c0a;
+        --measure: 74ch;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(rgba(184, 243, 74, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(184, 243, 74, 0.025) 1px, transparent 1px),
+          var(--canvas);
+        background-size: 32px 32px;
+        color: var(--ink);
+        font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      a {
+        color: var(--accent);
+        text-underline-offset: 3px;
+      }
+
+      a:hover {
+        color: #dcff94;
+      }
+
+      code {
+        padding: 0.12rem 0.32rem;
+        border: 1px solid #2f3a33;
+        border-radius: 3px;
+        background: var(--code);
+        color: #d9efb2;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.9em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 1rem 0 0;
+        padding: 1rem 1.1rem;
+        border: 1px solid var(--line);
+        background: var(--code);
+        color: #d9efb2;
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.86rem;
+        line-height: 1.55;
+      }
+
+      pre code {
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(190px, 240px) minmax(0, 1040px);
+        gap: clamp(2rem, 5vw, 6rem);
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 0 clamp(1.25rem, 4vw, 4rem) 6rem;
+      }
+
+      aside {
+        position: sticky;
+        top: 0;
+        align-self: start;
+        height: 100vh;
+        padding: 2.5rem 0;
+      }
+
+      .nav-mark {
+        display: inline-grid;
+        width: 42px;
+        height: 42px;
+        place-items: center;
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-weight: 800;
+        letter-spacing: -0.08em;
+      }
+
+      nav {
+        margin-top: 2rem;
+      }
+
+      nav a {
+        display: block;
+        margin: 0.55rem 0;
+        color: var(--quiet);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      nav a:hover {
+        color: var(--ink);
+      }
+
+      .aside-meta {
+        position: absolute;
+        bottom: 2.5rem;
+        max-width: 210px;
+        color: var(--quiet);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+        line-height: 1.5;
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      .hero {
+        min-height: 78vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 5rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .kicker {
+        margin: 0 0 1.2rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.76rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        font-weight: 600;
+        line-height: 1.08;
+      }
+
+      h1 {
+        max-width: 900px;
+        font-size: clamp(3rem, 7vw, 6.7rem);
+        letter-spacing: -0.045em;
+      }
+
+      h1 span {
+        color: var(--accent);
+      }
+
+      h2 {
+        margin-top: 0;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        letter-spacing: -0.035em;
+      }
+
+      h3 {
+        margin-top: 1.6rem;
+        font-size: 1.35rem;
+      }
+
+      p {
+        max-width: var(--measure);
+        margin: 0.8rem 0 0;
+        color: var(--muted);
+      }
+
+      .lead {
+        max-width: 760px;
+        margin-top: 1.8rem;
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        font-size: clamp(1.15rem, 2.2vw, 1.6rem);
+        line-height: 1.45;
+      }
+
+      .facts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.55rem;
+        margin-top: 2rem;
+      }
+
+      .fact {
+        padding: 0.42rem 0.65rem;
+        border: 1px solid var(--line);
+        background: rgba(21, 29, 24, 0.74);
+        color: var(--muted);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.7rem;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      section {
+        padding: 5rem 0 1rem;
+        scroll-margin-top: 2rem;
+      }
+
+      .section-no {
+        display: block;
+        margin-bottom: 0.85rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .rule {
+        width: 64px;
+        height: 3px;
+        margin: 1.4rem 0;
+        border: 0;
+        background: var(--accent);
+      }
+
+      .callout {
+        max-width: 860px;
+        margin-top: 1.5rem;
+        padding: 1.15rem 1.25rem;
+        border-left: 3px solid var(--accent);
+        background: var(--accent-soft);
+      }
+
+      .callout.warning {
+        border-left-color: var(--signal);
+        background: var(--signal-soft);
+      }
+
+      .callout strong {
+        color: var(--ink);
+      }
+
+      .callout p {
+        margin-top: 0.3rem;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 1.5rem;
+        border: 1px solid var(--line);
+        background: var(--line);
+      }
+
+      .card {
+        min-width: 0;
+        padding: 1.35rem;
+        background: var(--panel);
+      }
+
+      .card h3 {
+        margin-top: 0;
+      }
+
+      .card p {
+        font-size: 0.92rem;
+      }
+
+      ul,
+      ol {
+        max-width: var(--measure);
+        margin: 0.85rem 0 0;
+        padding-left: 1.25rem;
+        color: var(--muted);
+      }
+
+      li {
+        margin: 0.45rem 0;
+        padding-left: 0.2rem;
+      }
+
+      li::marker {
+        color: var(--accent);
+      }
+
+      table {
+        width: 100%;
+        margin-top: 1.5rem;
+        border-collapse: collapse;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      th,
+      td {
+        padding: 0.85rem 0.95rem;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: var(--panel-raised);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      td {
+        color: var(--muted);
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 0.65rem;
+        margin-top: 1.7rem;
+      }
+
+      .flow-node {
+        position: relative;
+        min-height: 118px;
+        padding: 1rem;
+        border: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .flow-node:not(:last-child)::after {
+        content: "→";
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        right: -0.72rem;
+        width: 0.78rem;
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-weight: 800;
+        transform: translateY(-50%);
+      }
+
+      .flow-node b {
+        display: block;
+        color: var(--ink);
+      }
+
+      .flow-node span {
+        display: block;
+        margin-top: 0.45rem;
+        color: var(--quiet);
+        font-size: 0.78rem;
+        line-height: 1.4;
+      }
+
+      .milestones {
+        margin-top: 1.8rem;
+        border-top: 1px solid var(--line);
+      }
+
+      .milestone {
+        display: grid;
+        grid-template-columns: 100px minmax(0, 1fr);
+        gap: 1.2rem;
+        padding: 1.6rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .milestone-id {
+        color: var(--accent);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .milestone h3 {
+        margin-top: 0;
+      }
+
+      .acceptance {
+        border-color: var(--accent);
+      }
+
+      .phase-two {
+        opacity: 0.78;
+      }
+
+      footer {
+        margin-top: 5rem;
+        padding-top: 2rem;
+        border-top: 1px solid var(--line);
+        color: var(--quiet);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+      }
+
+      @media (max-width: 960px) {
+        .shell {
+          display: block;
+        }
+
+        aside {
+          position: static;
+          height: auto;
+          padding: 1.5rem 0 0;
+        }
+
+        nav,
+        .aside-meta {
+          display: none;
+        }
+
+        .hero {
+          min-height: auto;
+          padding: 4rem 0;
+        }
+
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-node:not(:last-child)::after {
+          content: "↓";
+          top: auto;
+          right: auto;
+          bottom: -0.85rem;
+          left: 1rem;
+          transform: none;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+
+        .milestone {
+          grid-template-columns: 1fr;
+          gap: 0.5rem;
+        }
+
+        table {
+          display: block;
+          overflow-x: auto;
+        }
+      }
+
+      @media print {
+        :root {
+          color-scheme: light;
+          --canvas: #ffffff;
+          --panel: #ffffff;
+          --panel-raised: #f1f3ef;
+          --ink: #111511;
+          --muted: #343c36;
+          --quiet: #58615a;
+          --line: #aab1aa;
+          --accent: #376400;
+          --accent-soft: #eef5e7;
+          --code: #f1f3ef;
+        }
+
+        body {
+          background: #ffffff;
+        }
+
+        .shell {
+          display: block;
+          max-width: none;
+          padding: 0;
+        }
+
+        aside {
+          display: none;
+        }
+
+        .hero {
+          min-height: auto;
+          padding: 1rem 0 2rem;
+        }
+
+        section {
+          padding-top: 2rem;
+        }
+
+        .card,
+        .flow-node,
+        table,
+        .callout {
+          break-inside: avoid;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside aria-label="Document navigation">
+        <div class="nav-mark" aria-hidden="true">A·E</div>
+        <nav>
+          <a href="#decision">Decision</a>
+          <a href="#invariants">Invariants</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#registry">Registry at scale</a>
+          <a href="#identity">Identity &amp; trust</a>
+          <a href="#product">Product UX</a>
+          <a href="#runtime">Runtime model</a>
+          <a href="#lifecycle">Lifecycle</a>
+          <a href="#ownership">Repository ownership</a>
+          <a href="#deployment">Remote VPS deployment</a>
+          <a href="#milestones">Milestones</a>
+          <a href="#validation">Validation</a>
+          <a href="#acceptance">Acceptance</a>
+        </nav>
+        <p class="aside-meta">
+          Status: first wave implemented; separate OVH AEDS/AEGS staging active; web, PTY, and all six real provider deliveries validated<br />
+          Scope: first-wave integrations<br />
+          Updated: 2026-08-12
+        </p>
+      </aside>
+
+      <main>
+        <header class="hero">
+          <p class="kicker">Chariox · Cross-repository implementation plan</p>
+          <h1>Event-based workflow <span>publication</span></h1>
+          <p class="lead">
+            Make external events a first-class workflow publication surface, backed by scalable
+            AEGS discovery, AEDS delivery, kernel-owned queueing, and equivalent product flows in
+            the web terminal and PTY-based TUI.
+          </p>
+          <p class="lead">
+            Historical plan. Protocol 365 retired the direct workflow event bindings it
+            describes: events now reach an <code>event_based</code> publication only through an
+            App inbox route and an App automation (see <code>docs/PROTOCOL.md</code>).
+          </p>
+          <div class="facts" aria-label="Plan facts">
+            <span class="fact">Runtime: chariox</span>
+            <span class="fact">Registry + web: chariox-cloud</span>
+            <span class="fact">Protocol bump required</span>
+            <span class="fact">No agent-owned subscriptions</span>
+            <span class="fact">AEDS / AEGS host separation</span>
+            <span class="fact">First wave in scope</span>
+          </div>
+        </header>
+
+        <section id="decision">
+          <span class="section-no">01 · Decision</span>
+          <h2>Build one vertical slice before building the marketplace.</h2>
+          <hr class="rule" />
+          <p>
+            Freeze the manifest, identity, subscription, and delivery contracts first. Then build
+            AEDS, a dummy AEGS, and the kernel event-publication path as one end-to-end slice. Add
+            the shared TUI/web management protocol next, followed by the paginated registry,
+            product catalog, GitHub AEGS, SDK, conformance suite, and the remaining first-wave
+            integrations.
+          </p>
+          <div class="callout">
+            <strong>AEDS is the canonical name.</strong>
+            <p>
+              AEGS means Chariox Event Generation Server. AEDS means Chariox Event Delivery Server.
+              Event publication is kernel core behavior, not a new agent extension type.
+            </p>
+          </div>
+          <div class="callout warning">
+            <strong>Mandatory product validation.</strong>
+            <p>
+              No implementation milestone is complete until the real product frontend has been
+              exercised through the web terminal and the real TUI has been exercised inside a PTY.
+              Backend tests, component tests, and mocked clients are necessary but insufficient.
+            </p>
+          </div>
+        </section>
+
+        <section id="invariants">
+          <span class="section-no">02 · Product and architecture invariants</span>
+          <h2>What must remain true.</h2>
+          <div class="grid">
+            <article class="card">
+              <h3>Workflow-owned</h3>
+              <p>
+                A published workflow endpoint owns event publications. Agents do not register
+                subscriptions, and deleting an agent does not revoke a published workflow.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Queue-native</h3>
+              <p>
+                After durable insertion, an event is an ordinary queued workflow prompt. Existing
+                queue ordering, idle dispatch, runtime interaction, and execution behavior apply.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Environment-exclusive</h3>
+              <p>
+                The same canonical event interest may have only one active route in an execution
+                environment. This prevents two publications from acting on the same worktree.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Host-independent</h3>
+              <p>
+                A publication binds to a stable environment identity rather than a transient kernel
+                process. Rebinding moves delivery without recreating the logical publication.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Runtime-independent registry</h3>
+              <p>
+                Registry discovery is on demand and never sits in the delivery path. Existing
+                publications continue working while the registry is unavailable.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Shared product path</h3>
+              <p>
+                Web and TUI use the same kernel services and serialized protocol. Cloud must not
+                fork runtime behavior or proxy event delivery.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Declarative catalog</h3>
+              <p>
+                Registry entries are signed data and schemas. Browsing a service never downloads or
+                executes publisher code in the browser or kernel.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Endpoint-shaped input</h3>
+              <p>
+                An AEGS produces a prompt plus optional artifacts. AEDS carries routing and delivery
+                metadata but does not invent workflow execution semantics.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Timezone-correct by boundary</h3>
+              <p>
+                Persisted and transported instants use UTC. Recurring wall-clock schedules retain
+                an IANA timezone, never a fixed offset. Web and TUI convert instants only at the
+                presentation boundary using the viewer's IANA timezone and its DST rules.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Separate failure domains</h3>
+              <p>
+                Hosted AEDS and hosted AEGSs do not share a machine. Delivery remains available
+                independently of a generator failure, and generator load cannot exhaust AEDS.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="architecture">
+          <span class="section-no">03 · System boundary</span>
+          <h2>Discovery is control plane. Delivery is runtime.</h2>
+          <div class="flow" aria-label="Event delivery flow">
+            <div class="flow-node">
+              <b>External provider</b>
+              <span>GitHub, Jira, Slack, or another source emits a native event.</span>
+            </div>
+            <div class="flow-node">
+              <b>AEGS</b>
+              <span>Authenticates the provider, normalizes the event, and applies source filters.</span>
+            </div>
+            <div class="flow-node">
+              <b>AEDS</b>
+              <span>Authenticates publication, stores pending delivery, and routes to the environment.</span>
+            </div>
+            <div class="flow-node">
+              <b>Kernel</b>
+              <span>Maintains an outbound connection and durably enqueues the prompt once.</span>
+            </div>
+            <div class="flow-node">
+              <b>Workflow queue</b>
+              <span>Uses the existing dispatch policy and invokes the published endpoint.</span>
+            </div>
+          </div>
+          <p>
+            Separately, the web and TUI ask the kernel to search the registry, inspect an AEGS,
+            authorize a connection, enumerate provider resources, and configure event bindings.
+            The registry is not contacted for each event and is not required after activation.
+          </p>
+          <p>
+            AEDS routes and AEGS logical subscriptions are deliberately separate durable records.
+            The kernel reconciles each AEGS through its operator endpoint using a distinct scoped
+            management capability. That authoritative, revision-fenced reconciliation gives the
+            AEGS the binding, opaque connection, provider scope, canonical event-interest key,
+            event type, and filter it needs to manage upstream subscriptions and map incoming
+            provider events. AEDS receives only normalized occurrences and never provider
+            credentials or source-specific subscription state.
+          </p>
+
+          <h3>Responsibility split</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Component</th>
+                <th>Owns</th>
+                <th>Must not own</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Registry</td>
+                <td>Search index, publisher identity, signed manifests, categories, ranking metadata</td>
+                <td>Runtime event traffic, workflow state, provider credentials</td>
+              </tr>
+              <tr>
+                <td>AEGS</td>
+                <td>Provider auth, upstream subscription strategy, normalization, source reconciliation</td>
+                <td>Kernel execution state or workflow scheduling</td>
+              </tr>
+              <tr>
+                <td>AEDS</td>
+                <td>Producer authentication, durable pending deliveries, environment routing, retry</td>
+                <td>Prompt interpretation, workflow dispatch policy, agent state</td>
+              </tr>
+              <tr>
+                <td>Kernel</td>
+                <td>Publication state, environment claims, durable queue insertion, dispatch, lifecycle</td>
+                <td>Marketplace ranking or provider webhook semantics</td>
+              </tr>
+              <tr>
+                <td>Cloud web</td>
+                <td>Product presentation and interaction through shared kernel protocol</td>
+                <td>Alternate subscription, queue, or delivery authority</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="registry">
+          <span class="section-no">04 · Registry at scale</span>
+          <h2>Search and browse pages—not catalog snapshots.</h2>
+          <p>
+            The catalog is expected to become large. Selecting Event-based notifications must not
+            cause the kernel or browser to fetch every service or every event definition. The
+            registry API returns small summaries, opaque cursors, and facet counts. Details and
+            event schemas are loaded only when opened.
+          </p>
+
+          <h3>Public query surface</h3>
+          <pre><code>GET /v1/event-generators
+    ?query=pull+request
+    &amp;category=developer-tools
+    &amp;publisher_trust=official,chariox
+    &amp;sort=recommended
+    &amp;cursor=&lt;opaque&gt;
+    &amp;limit=24
+
+GET /v1/event-generators/{generator_id}
+GET /v1/event-generators/{generator_id}/versions/{version}
+GET /v1/event-generators/{generator_id}/events
+    ?query=assigned
+    &amp;category=issues
+    &amp;cursor=&lt;opaque&gt;
+    &amp;limit=50
+GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
+
+          <div class="grid">
+            <article class="card">
+              <h3>Landing request</h3>
+              <p>
+                Returns bounded sections such as featured, most connected, recently added, and
+                category summaries. Each section has an independent continuation cursor.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Search request</h3>
+              <p>
+                Searches provider, publisher, service description, event names, and capability
+                tags. Results are relevance-ranked and cursor-paginated.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Category request</h3>
+              <p>
+                Returns a page plus subcategory and trust facets. The client may prefetch only the
+                next page after the current page becomes visible.
+              </p>
+            </article>
+            <article class="card">
+              <h3>Service detail</h3>
+              <p>
+                Loads the selected version, authentication model, operator disclosure, and a
+                separately paginated/searchable event list.
+              </p>
+            </article>
+          </div>
+
+          <h3>Scalability requirements</h3>
+          <ul>
+            <li>
+              Use cursor pagination; do not expose offsets whose cost grows with catalog depth.
+              Registry continuations are query-bound keyset cursors, not encoded numeric offsets.
+            </li>
+            <li>
+              Treat cursors as opaque and bind them to the query, filters, sort, and catalog
+              revision.
+            </li>
+            <li>
+              Return summary projections in browse/search. Fetch full manifests and JSON schemas
+              only for the selected implementation and version.
+            </li>
+            <li>
+              Add explicit limits, maximum page sizes, request timeouts, and response-size budgets.
+            </li>
+            <li>
+              Support ETags and cache-control for landing sections, query pages, service details,
+              icons, and pinned manifests.
+            </li>
+            <li>
+              Keep a bounded kernel cache keyed by registry, query fingerprint, cursor, locale, and
+              compatible protocol range. Eviction must not affect configured publications.
+            </li>
+            <li>
+              Debounce product search and cancel superseded requests. Never accumulate every result
+              page in an unbounded client store.
+            </li>
+            <li>
+              Filter or clearly mark incompatible AEGS versions using the requesting kernel's
+              protocol capabilities.
+            </li>
+            <li>
+              Return an explicit lifecycle state: <code>available</code>,
+              <code>development_preview</code>, or <code>coming_soon</code>. Browse remains
+              possible for every state, but clients must not create subscriptions for
+              <code>coming_soon</code> entries.
+            </li>
+            <li>
+              Never seed fictional installation totals. “Most connected” ranking is enabled only
+              after the registry has privacy-safe, measured usage; editorial recommendation and
+              implementation availability remain separate fields.
+            </li>
+            <li>
+              Do not auto-subscribe users when a publisher adds a new event. Publications pin an
+              event type and version until explicitly migrated.
+            </li>
+          </ul>
+
+          <h3>Kernel-facing protocol</h3>
+          <p>
+            Web and TUI send bounded operations such as
+            <code>EventCatalogLanding</code>, <code>EventCatalogSearch</code>,
+            <code>EventCatalogBrowseCategory</code>, <code>EventGeneratorGet</code>, and
+            <code>EventTypesList</code>. Responses preserve opaque cursors. There is deliberately no
+            <code>ListEntireEventCatalog</code> request.
+          </p>
+          <div class="callout">
+            <strong>Failure behavior:</strong>
+            <p>
+              A registry outage disables new discovery but does not disable configured
+              publications. The UI may display a clearly dated cached page, while authorization,
+              subscription health, and event delivery continue through their existing endpoints.
+            </p>
+          </div>
+        </section>
+
+        <section id="identity">
+          <span class="section-no">05 · Identity and trust</span>
+          <h2>Provider, publisher, and operator are separate facts.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Publisher</th>
+                <th>Operator</th>
+                <th>Product presentation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>GitHub</td>
+                <td>Chariox</td>
+                <td>Chariox</td>
+                <td>GitHub by Chariox · Chariox-maintained</td>
+              </tr>
+              <tr>
+                <td>GitHub</td>
+                <td>GitHub</td>
+                <td>GitHub</td>
+                <td>GitHub · Official</td>
+              </tr>
+              <tr>
+                <td>GitHub</td>
+                <td>Acme</td>
+                <td>User</td>
+                <td>GitHub by Acme · Community · Self-hosted</td>
+              </tr>
+            </tbody>
+          </table>
+          <ul>
+            <li>
+              Implementation IDs are publisher-scoped. Chariox-owned integrations use names such as
+              <code>dev.chariox.github</code>; provider-owned namespaces remain reserved.
+            </li>
+            <li>
+              “Official” requires explicit registry verification that the provider published or
+              endorsed the implementation. Domain control alone is not sufficient.
+            </li>
+            <li>
+              An official implementation may coexist with a Chariox-maintained implementation. It
+              does not silently replace, migrate, or revoke existing publications.
+            </li>
+            <li>
+              The authorization screen prominently identifies the operator because the operator,
+              not the catalog, may handle provider credentials and event data.
+            </li>
+            <li>
+              Registry records and version manifests are signed. The kernel verifies the registry
+              record, publisher identity, content digest, and supported protocol range.
+            </li>
+            <li>
+              “Most connected” is based on privacy-preserving aggregates of successful active
+              connections, not manifest downloads. Low-volume exact counts are not exposed.
+            </li>
+          </ul>
+        </section>
+
+        <section id="product">
+          <span class="section-no">06 · Product UX</span>
+          <h2>One model, adapted to two interfaces.</h2>
+
+          <h3>Global web notification center</h3>
+          <p>
+            The terminal sidebar has a dedicated <strong>Notifications</strong> tab. It lists
+            kernel-owned installed connections before a bounded catalog page, supports search and
+            category navigation without fetching the entire registry, and follows opaque cursors
+            through an explicit <strong>Show more</strong> action. Service detail includes the
+            publisher, operator, supported event inventory, and every compatible connection on the
+            active home kernel.
+          </p>
+          <p>
+            Connection detail exposes health, last validation, refresh, reconnect, dependent
+            workflow publications, and two-step removal. A provider can be installed here or from
+            workflow publication setup; both paths create the same durable kernel connection.
+            Workflow setup prefers a compatible ready connection and requires an explicit
+            <strong>Add another connection</strong> action before starting another authorization.
+          </p>
+
+          <h3>Web workflow side panel</h3>
+          <ol>
+            <li>Select <strong>Event-based notifications</strong> in the Publication tab.</li>
+            <li>
+              Open the catalog landing view: recommended, most connected, recently added, and
+              category navigation, each independently paged.
+            </li>
+            <li>Search or browse, then select a provider implementation.</li>
+            <li>
+              Inspect its publisher/operator badges, permissions, supported event categories, and
+              data-handling links.
+            </li>
+            <li>
+              Search and select multiple event types. The event list may itself be paginated.
+            </li>
+            <li>
+              Authorize once, then enumerate accessible repositories, projects, sites, mailboxes,
+              workspaces, or channels.
+            </li>
+            <li>Configure event-specific filters, target queue, and optional prompt templates.</li>
+            <li>Review combined scopes, duplicate conflicts, and resulting bindings.</li>
+            <li>Activate and display health, last delivery, and test-event controls.</li>
+          </ol>
+
+          <h3>TUI and slash commands</h3>
+          <p>
+            The TUI presents the same pages as navigable lists with incremental loading. Slash
+            commands use the same kernel requests rather than a reduced secondary implementation.
+          </p>
+          <pre><code>/notifications
+/notifications catalog
+/notifications search &lt;query&gt; [--category &lt;id&gt;] [--cursor &lt;cursor&gt;]
+/notifications show &lt;generator-id&gt;
+/notifications connections [generator-id]
+/notifications connect &lt;generator-id&gt;
+/notifications authorization &lt;authorization-id&gt;
+/notifications connection show|resources|refresh|reconnect|dependencies &lt;connection-id&gt;
+/notifications connection remove &lt;connection-id&gt; [--confirm]
+
+/workflow publication event connections [generator-id]
+/workflow publication event attach &lt;publication&gt; &lt;generator&gt; &lt;event-type&gt; ...
+/workflow publication event list|pause|resume|transfer|test|status</code></pre>
+          <p>
+            Search results expose a “load more” action tied to the returned cursor. Interactive
+            authorization shows an external URL or device flow without requiring a graphical
+            browser inside the TUI.
+          </p>
+
+          <div class="callout success">
+            <strong>2026-08-12 local product checkpoint passed.</strong>
+            <p>
+              An isolated protocol-252 kernel, OSS dummy AEGS, and feature web build exercised the
+              global catalog, GitHub service detail, dummy installation, durable ready connection,
+              health, dependency preview, and removal controls. The real TUI in a PTY observed the
+              same connection through <code>/notifications connections</code> and found GitHub
+              through bounded <code>/notifications search GitHub --limit 3</code>. The cloud web
+              suite passed 3,874 tests, its focused notification tests passed 3/3, and the OSS CLI
+              and kernel-client suites remained green.
+            </p>
+          </div>
+
+          <h3>Installed notification-service connections</h3>
+          <div class="callout success">
+            <strong>Authorize once per kernel, then attach to workflows.</strong>
+            <p>
+              Provider authorization installs an <code>EventConnection</code> in the kernel's
+              notification center; it is not owned by the workflow that first requested it. Every
+              workflow publication on that kernel may select a compatible installed connection,
+              enumerate its provider resources, and create bindings without authorizing again.
+            </p>
+          </div>
+          <ul>
+            <li>
+              This lifecycle is provider-independent and applies to every AEGS, including GitHub,
+              Jira, Slack, Gmail, and third-party implementations.
+            </li>
+            <li>
+              The AEGS retains provider credentials. The kernel persists only the opaque connection
+              handle, generator/operator identity, non-secret display metadata, health, and usage.
+            </li>
+            <li>
+              Selecting a service reuses a compatible ready connection by default. Creating another
+              provider-account or tenant connection requires an explicit <strong>Add another
+              connection</strong> action.
+            </li>
+            <li>
+              Authorization attempts are durable kernel records bound to their opaque owner and
+              AEGS connection IDs. A bounded kernel poller resumes them after restart and registers
+              terminal AEGS state even when the initiating browser tab or workflow panel has
+              closed; client observation is a projection of that state, not the completion
+              authority. Expired attempts are durably discarded.
+            </li>
+            <li>
+              Failed AEGS validation, resource inspection, reconnect, or revoke calls persist the
+              installed connection as <code>unavailable</code> instead of leaving a stale ready
+              badge. A later successful validation restores the AEGS-reported state on the same
+              opaque connection ID; transient outages never create replacement connections.
+            </li>
+            <li>
+              Deleting a workflow removes its bindings, not the installed connection. Removing a
+              connection is a separate notification-center action that lists and confirms affected
+              publications before revocation.
+            </li>
+            <li>
+              Confirmed removal is ordered and failure-safe: the kernel serializes attachment,
+              reactivation, transfer, and removal by owner plus connection ID; durably tombstones
+              every non-tombstoned dependent binding through its normal workflow lane; then asks
+              the AEGS to revoke credentials and subscriptions; and only afterward removes the
+              durable kernel record. A failed remote revoke leaves inactive bindings and a
+              reconnectable kernel record, so retry cannot produce active orphan routes.
+            </li>
+            <li>
+              A deployment to another kernel resolves a compatible connection already installed on
+              the target. Opaque handles and credentials are never copied between kernels; if none
+              exists, the target kernel requests authorization.
+            </li>
+          </ul>
+
+          <h3>Duplicate conflict UX</h3>
+          <div class="callout warning">
+            <strong>Already routed in this environment.</strong>
+            <p>
+              If the canonical event interest already targets another publication, show that
+              workflow, endpoint, and queue. The allowed actions are Open existing, Transfer route,
+              or Cancel. There is no “subscribe anyway” path in the same environment.
+            </p>
+          </div>
+        </section>
+
+        <section id="runtime">
+          <span class="section-no">07 · Runtime and data model</span>
+          <h2>Separate catalog identity, event interest, route, and occurrence.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Record</th>
+                <th>Purpose</th>
+                <th>Stable identity</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>EventGeneratorVersion</code></td>
+                <td>Pinned AEGS implementation, protocol version, and signed manifest digest</td>
+                <td>Publisher-scoped generator ID + version</td>
+              </tr>
+              <tr>
+                <td><code>EventConnection</code></td>
+                <td>Opaque authorized connection to one provider tenant/account</td>
+                <td>AEGS-issued connection handle</td>
+              </tr>
+              <tr>
+                <td><code>EventBinding</code></td>
+                <td>Event type, canonical filter, prompt configuration, endpoint, and queue</td>
+                <td>Publication-owned binding ID</td>
+              </tr>
+              <tr>
+                <td><code>EventInterest</code></td>
+                <td>Deduplication key for equivalent source event plus filter</td>
+                <td>Hash of AEGS, event type/version, connection scope, canonical filter</td>
+              </tr>
+              <tr>
+                <td><code>EnvironmentRoute</code></td>
+                <td>Maps one interest to one active workflow endpoint in an environment</td>
+                <td>Environment ID + event-interest key</td>
+              </tr>
+              <tr>
+                <td><code>EventOccurrence</code></td>
+                <td>One provider fact transformed into prompt plus optional artifacts</td>
+                <td>AEGS occurrence ID and AEDS delivery ID</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p>
+            Enforce a unique active route on
+            <code>(execution_environment_id, event_interest_key)</code>. A single publication may
+            hold many bindings, but each binding is independently versioned, reconciled, tested,
+            paused, transferred, and deleted.
+          </p>
+
+          <h3>Delivery envelope</h3>
+          <pre><code>{
+  "delivery_id": "opaque-aeds-id",
+  "binding_id": "opaque-publication-binding-id",
+  "event_type": "pull-request.opened",
+  "event_type_version": 1,
+  "occurred_at": "2026-07-27T09:45:00Z",
+  "prompt": "Review pull request #482 in owner/repository.",
+  "artifacts": [
+    {
+      "name": "pull-request.json",
+      "media_type": "application/json",
+      "reference": "opaque-artifact-reference"
+    }
+  ]
+}</code></pre>
+          <p>
+            Prompt and artifact limits reuse the workflow endpoint contract. AEDS may enforce a
+            defensive transport envelope ceiling, but it does not introduce a separate product
+            payload model. Canonical event metadata stays inline. An AEGS includes an artifact
+            only when the reference is durable and retrievable by the workflow; it must not
+            advertise synthetic adapter-local references.
+          </p>
+
+          <h3>Connection and acknowledgement</h3>
+          <ul>
+            <li>The kernel opens one authenticated outbound persistent connection to AEDS.</li>
+            <li>
+              On reconnect it presents stable kernel/environment identity, active route claims, and
+              the last accepted delivery cursor.
+            </li>
+            <li>
+              The kernel acknowledges a delivery only after the durable, idempotent queue
+              transaction succeeds.
+            </li>
+            <li>
+              A lost acknowledgement may cause network redelivery, but the existing
+              <code>delivery_id</code> prevents a second queued prompt.
+            </li>
+            <li>
+              After insertion there are no special event semantics: ordinary workflow queue and
+              dispatch rules apply.
+            </li>
+          </ul>
+        </section>
+
+        <section id="lifecycle">
+          <span class="section-no">08 · Publication and deployment lifecycle</span>
+          <h2>The publication persists; the route can move.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Operation</th>
+                <th>Required behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Republish in same environment</td>
+                <td>Preserve binding identity and upstream subscription; update endpoint revision atomically.</td>
+              </tr>
+              <tr>
+                <td>Move environment to new kernel</td>
+                <td>Rebind the route, fence the old kernel, and resume from the durable delivery cursor.</td>
+              </tr>
+              <tr>
+                <td>Deploy to a distinct environment</td>
+                <td>Create an independent environment route and, when needed, an independent logical AEGS subscription.</td>
+              </tr>
+              <tr>
+                <td>Publish same interest twice in one environment</td>
+                <td>Reject activation and expose the existing owner; permit an explicit atomic transfer.</td>
+              </tr>
+              <tr>
+                <td>Pause publication</td>
+                <td>Stop new delivery for its route without deleting workflow definition or authorization.</td>
+              </tr>
+              <tr>
+                <td>Delete published workflow</td>
+                <td>Tombstone routes, revoke delivery capabilities, reconcile AEGS state, and retain auditable status.</td>
+              </tr>
+              <tr>
+                <td>Kernel or computer reboot</td>
+                <td>Reconnect automatically, reassert claims, reconcile subscriptions, and drain pending delivery.</td>
+              </tr>
+              <tr>
+                <td>AEGS manifest deprecation</td>
+                <td>Keep the pinned version active where safe; surface migration health and require explicit migration.</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="ownership">
+          <span class="section-no">09 · Cross-repository ownership</span>
+          <h2>Runtime below clients; presentation above protocol.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Repository</th>
+                <th>Implementation ownership</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>chariox</code></td>
+                <td>
+                  Shared contracts; kernel publication service; durable event binding and inbox
+                  state; public AEDS client; local/remote TUI and slash commands; public AEGS SDK,
+                  dummy/reference generator, conformance tools, protocol snapshots, and runtime
+                  drills. Production AEDS and AEGS implementations do not live here.
+                </td>
+              </tr>
+              <tr>
+                <td><code>chariox-aeds</code> <span class="badge">private</span></td>
+                <td>
+                  The independently versioned and deployed AEDS product: subscription route
+                  registry, authenticated producer ingress, durable delivery, kernel connections,
+                  acknowledgements, operational endpoints, self-host packaging, and deployment
+                  runbooks. One repository produces an image that may be deployed as multiple
+                  AEDS instances.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>chariox-aegs-&lt;provider&gt;</code>
+                  <span class="badge">private · one per integration</span>
+                </td>
+                <td>
+                  One independently versioned, secured, and deployed repository for every
+                  Chariox-maintained production integration, beginning with
+                  <code>chariox-aegs-github</code> and then Jira, Linear, GitLab, Sentry, and Slack.
+                  Each owns only its provider authorization, webhook/subscription lifecycle,
+                  normalization, protected credentials, and catalog manifest.
+                </td>
+              </tr>
+              <tr>
+                <td><code>chariox-cloud</code></td>
+                <td>
+                  Hosted registry API and search index; publisher verification and editorial
+                  metadata; search, categories, recommendations, pagination, and installation
+                  metadata; browser authorization callbacks where required; web workflow
+                  side-panel catalog and configuration; web minimum-protocol gates and
+                  browser-terminal drills. It may configure service discovery but does not own or
+                  embed AEDS/AEGS runtimes.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            The public registry endpoint is configurable in the kernel. Hosted Cloud may operate
+            the default registry and AEDS, but it must not proxy browser-to-kernel terminal traffic,
+            become workflow authority, or inspect provider execution state.
+          </p>
+          <div class="callout good">
+            <strong>Repository extraction completed for the implementation branch.</strong>
+            <p>
+              The temporary <code>apps/aeds</code> and combined <code>apps/aegs</code> incubators
+              have been split. AEDS now lives in the private <code>chariox-aeds</code> repository;
+              GitHub, Jira, Linear, GitLab, Sentry, and Slack each live in a separate private
+              <code>chariox-aegs-&lt;provider&gt;</code> repository. OSS retains only
+              <code>chariox-aegs-dummy</code>, the public protocol and SDK, conformance contracts,
+              kernel integration, and a cross-repository local drill. Service-specific containers,
+              TLS, systemd, migrations, credentials, and operational tooling are owned by the
+              corresponding private repository. Every first-wave AEGS repository also owns its
+              publisher-signed catalog manifest and validates its generator identity and supported
+              event set with the public SDK. Operator, verification, availability, recommendation,
+              and installation metadata remain independently authenticated registry fields rather
+              than publisher-signed manifest content. The final cleanup gate requires searches
+              and build graphs in both <code>chariox</code> and <code>chariox-cloud</code> to show
+              no duplicate production runtime.
+            </p>
+          </div>
+          <p>
+            Catalog identity is publisher-scoped rather than reserved by service name. For
+            example, Chariox's GitHub implementation uses <code>dev.chariox.github</code>; a future
+            verified implementation published by GitHub uses GitHub's own namespace and may
+            coexist as the official implementation.
+          </p>
+
+          <h3>Implementation workspaces</h3>
+          <pre><code>chariox
+  branch:   codex/event-based-publication
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/chariox
+
+chariox-cloud
+  branch:   codex/event-based-publication
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/chariox-cloud</code></pre>
+        </section>
+
+        <section id="deployment">
+          <span class="section-no">10 · Remote VPS deployment</span>
+          <h2>Promote locally proven services into separate failure domains.</h2>
+          <p>
+            After the complete local product slice passes, deploy AEDS and the dummy AEGS to
+            dedicated remote VPS hosts and repeat the acceptance matrix over public TLS. OVH is
+            the current staging provider, but the deployment contract remains host-independent.
+            The deployment design must keep AEDS and AEGSs on different machines and must not
+            assume that the existing relay machine has spare capacity. If a second event host is
+            not yet assigned, isolated containers on the local development machine provide a
+            nonblocking deployment rehearsal.
+          </p>
+          <div class="callout">
+            <strong>Host-separation rule.</strong>
+            <p>
+              AEDS and AEGSs must never be co-located on the same host. The existing relay host is
+              protected capacity: it may receive a bounded temporary staging role only after a
+              fresh CPU, memory, disk, network, and port preflight. If the new reservation plus
+              safely available capacity cannot provide distinct AEDS and AEGS hosts, provision
+              another machine rather than weakening isolation.
+            </p>
+          </div>
+          <div class="callout warning">
+            <strong>Local-container fallback.</strong>
+            <p>
+              Machine procurement does not block implementation. Keep one limited AEDS container
+              running and validate exactly one AEGS container at a time, with distinct volumes,
+              secrets, identities, and published loopback ports. Build, start, exercise, stop, and
+              remove each AEGS before advancing to the next; do not run or build the complete
+              provider matrix concurrently on a constrained development machine. Exercise the same
+              images, configuration, persistence, restart, rollback, and product drills intended
+              for remote staging. This proves deployability but not physical failure-domain
+              separation, public TLS, host reboot, or cross-machine recovery; those gates remain
+              required on separate remote hosts.
+            </p>
+          </div>
+          <div class="callout good">
+            <strong>Host-independent deployment packaging completed.</strong>
+            <p>
+              The private <code>chariox-aeds</code> repository and every first-wave private AEGS
+              repository now own their immutable image workflow, bounded production Compose
+              definition, systemd unit, configuration preflight, health check, backup/restore
+              operations, and deployment runbook. Each package has passed local syntax,
+              ShellCheck, Compose rendering, Rust tests, formatting, and Clippy validation. AEDS
+              and every AEGS were handled sequentially; no provider matrix was built or run
+              concurrently. Every production release workflow now scans the exact published image
+              digest with a commit-pinned vulnerability scanner and refuses fixed high or critical
+              findings before provenance attestation. Exact local AEDS and GitHub AEGS images
+              passed that policy with zero findings; all seven workflow definitions parse and
+              enforce the same gate. The ownership-scoped cleanup removed all event-service
+              containers, images, build layers, scanner caches, and build-step containers without
+              pruning unrelated Docker state. Hosted GitHub Actions verification subsequently ran
+              successfully for <code>chariox-aeds</code> and all six first-wave production AEGS
+              repositories: formatting, Clippy, tests, ShellCheck, and OCI image builds are green.
+              The current private-repository revisions also publish exact-commit GHCR images
+              sequentially with BuildKit <code>mode=max</code> provenance and SPDX SBOM
+              attestations, scan the pushed digest for fixed high or critical vulnerabilities,
+              and read both attestations back from the registry before succeeding. GitHub's
+              <code>actions/attest</code> storage API is intentionally not used because GitHub does
+              not offer artifact attestations for personal-account private repositories outside
+              Enterprise Cloud; the OCI attestations remain attached to the private image digest
+              and are independently inspected by each release workflow.
+              The local core drill also found and closed a strict-shell restore defect shared by
+              the deployment repositories: an absent optional production environment file could
+              terminate restore before an explicit local port override was honored. A guarded
+              environment reader and regression test now cover both missing files and duplicate
+              key resolution in AEDS and every first-wave AEGS repository; the AEDS plus dummy
+              AEGS durable delivery, restart, backup, and restore slice passes locally.
+              On 2026-08-11 the current revisions of Jira
+              (<code>4e515cc5</code>), Linear (<code>1a84d342</code>), GitLab
+              (<code>4c2cb72b</code>), Sentry (<code>4d66b017</code>), and Slack
+              (<code>c76cf4f5</code>) each passed hosted CI and a new sequential release-image
+              workflow after a Linux Compose parsing defect was found in the unquoted
+              <code>tmpfs</code> short syntax. Every repository now renders its production Compose
+              definition in CI and asserts the exact mount option before building. Their new
+              immutable image digests are respectively
+              <code>ea6d804e…a379</code>, <code>9dd4ac63…a158</code>,
+              <code>63356376…0d24</code>, <code>14848897…c67a</code>, and
+              <code>02dff589…73c0</code>; every release passed the vulnerability, provenance, and
+              SBOM gates. Task-owned local Rust outputs and validation images were then removed,
+              reclaiming approximately 5.5 GiB without pruning unrelated Docker state.
+              Separate AEDS and AEGS hosts, TLS, persistence, reboot, restore, and all six live
+              provider paths are now proven with legitimate provider applications and tenants;
+              staging did not substitute invented OAuth identities. A
+              read-only 2026-07-28 snapshot of the existing relay
+              host showed negligible load. A fresh read-only 2026-08-10 check reported 3.2 GiB
+              available memory and 13 GiB free disk at 83% utilization; no event service was
+              installed there and the host remains protected relay-only capacity.
+            </p>
+            <p>
+              The Sentry first-wave adapter was subsequently aligned with Sentry's current
+              Integration Platform instead of retaining the synthetic generic-OAuth assumption.
+              Revision <code>4d66b017</code> first implemented the external-install callback carrying
+              <code>installationId</code>, <code>orgSlug</code>, and state; exchanges and refreshes
+              the installation-scoped short-lived token; encrypts credentials at rest; isolates
+              organization scopes by AEGS connection ID; and maps every signed delivery back to
+              exactly one authorized installation. The webhook boundary now requires
+              <code>Request-ID</code>, <code>Sentry-Hook-Timestamp</code>,
+              <code>Sentry-Hook-Resource</code>, and <code>Sentry-Hook-Signature</code>, uses the
+              Sentry App client secret as the single production signing credential, and rejects
+              timestamps outside a five-minute replay window. Nine focused tests, Clippy,
+              ShellCheck, Compose rendering, the container build, a zero-high/critical Trivy
+              scan, provenance, and SBOM verification passed in CI/release runs
+              <code>31482505196</code> and <code>31482782795</code>. Deployment of digest
+              <code>sha256:1484889719fdbfbaf0d6d2fd41cfce428719608923de141fbf5e55a39306c67a</code>
+              also passed an exact Linux/amd64 OCI title, source-revision, and protocol-label
+              check; the temporary local image and registry login were removed afterward.
+              A real unpublished public Sentry App named
+              <code>Chariox Event Notifications</code> now supplies the staging slug, client ID,
+              client secret, callback, webhook URL, organization scope, and the real
+              <code>issue.created</code>/<code>issue.resolved</code> event interests. Live
+              installation exposed two additional provider-contract defects that synthetic OAuth
+              could not reveal: the token exchange must explicitly use
+              <code>grant_type=authorization_code</code>, and verified Sentry Apps remain pending
+              until the integration calls the installation-details API with
+              <code>{"status":"installed"}</code>. Both are covered by focused mock-provider
+              regressions. Revision <code>5b980ba1</code> passed twelve tests, formatting, Clippy,
+              ShellCheck, Compose rendering, vulnerability scanning, and OCI provenance/SBOM
+              verification in CI/release runs <code>31490910866</code> and
+              <code>31491315449</code>. Its exact image digest
+              <code>sha256:2a2227faf0fbbe2500f09f29d9eb4ac8790cefd383b8716519ac18cf82c71a60</code>
+              is deployed on the separate AEGS VPS with a checksummed pre-upgrade database backup.
+              Final Sentry acceptance deliberately removes the older pending installation and
+              performs a clean installation against this revision before counting a real issue
+              webhook as evidence; manually repairing a pre-fix installation is not accepted as
+              the end-to-end proof.
+            </p>
+            <p>
+              Real Sentry-provider acceptance completed on 2026-08-11. Sentry accepted a new
+              error event as issue <code>140086217</code> and emitted an authenticated
+              <code>issue.created</code> Integration Platform webhook. The drill found two
+              deployment-state defects rather than adapter defects: Sentry's installation-side
+              service-hook projection had to be refreshed after the granular webhook migration,
+              and the AEDS producer capability still named the obsolete
+              <code>issue.alerted</code>/<code>metric.alerted</code> interests instead of
+              <code>issue.created</code>. The production allowlist is now least-privilege and
+              matches the deployed adapter exactly:
+              <code>issue.created</code> and <code>issue.resolved</code>. Repeating the drill then
+              returned HTTP 202 from the Sentry AEGS, advanced AEDS acknowledgements from 42 to
+              43 with zero pending or expired deliveries, queued the canonical prompt in the
+              published workflow, and completed workflow run
+              <code>0000019ff1137dd0</code>. A real PTY observed the queued prompt and reported
+              <code>event delivery connected; active routes=4</code>. The temporary diagnostic
+              Sentry personal token was revoked after use. Revision <code>648e0548</code> now
+              authenticates and acknowledges Sentry's mandatory
+              <code>installation.created</code>/<code>installation.deleted</code> lifecycle
+              callbacks without publishing them as workflow events; invalid signatures remain
+              rejected. Fourteen tests, formatting, Clippy, ShellCheck, Compose checks, the
+              container build, high/critical vulnerability scan, provenance, and SBOM checks
+              passed in CI/release runs <code>31498390232</code> and
+              <code>31498712299</code>. Immutable digest
+              <code>sha256:03e59c546bf615791efd2335be20ea15fa658abb9ab54addd0956ab0c8a18d2d</code>
+              was deployed after a checksummed database backup, and a signed public-TLS
+              lifecycle probe returned HTTP 200 with no AEDS publication. The shared AEDS
+              six-provider acceptance fixture was corrected to the same
+              <code>issue.created</code> contract in private revision <code>8f7da918</code> and
+              passed hosted CI run <code>31498391001</code>. The drill kernel bearer was also
+              rotated on both AEDS and the kernel after it appeared in diagnostic output; the old
+              credential is no longer accepted.
+            </p>
+            <p>
+              The OSS deployment orchestrator now includes a guarded remote-host acceptance
+              runner. Its current filenames retain the original <code>hetzner</code> label, but
+              the implementation accepts exact SSH targets from any provider. It consumes the
+              exact clean host-separation evidence, rechecks machine identities
+              and role markers, requires public HTTPS health, verifies the exact expected set of
+              concurrently active first-wave AEGSs, and handles AEDS then each selected AEGS
+              sequentially. Its default mode is read-only;
+              service restarts require an explicit flag and can affect only the two exact systemd
+              units. It never performs host reboot, firewall mutation, container removal, or
+              Docker pruning. The preflight and acceptance harnesses accept distinct per-host SSH
+              credentials and pass twelve focused tests,
+              including stale-revision and dirty-worktree refusal.
+            </p>
+          </div>
+
+          <div class="callout good">
+            <strong>Separated AEDS staging and the cross-machine vertical slice are active.</strong>
+            <p>
+              On 2026-08-11 the dedicated OVH AEDS VPS
+              <code>vps-775dbb36.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
+              was fenced as the <code>aeds</code> role and is deployed from private revision
+              <code>3ee73b1d1df0a0ac21d7ca6822d6c935e83bca15</code> and immutable image
+              <code>ghcr.io/mgutierrez09/chariox-aeds@sha256:a7194caf850567ad9ee2ce43e00e146abcea4d74e9320a3347f967a2eaa1c76d</code>.
+              Its public WSS/HTTPS edge is
+              <code>https://aeds.57.131.138.28.sslip.io</code>. A real local kernel connected to it,
+              reconciled a workflow-owned dummy subscription on the separate AEGS host, and
+              completed delivery through
+              <code>remote AEGS → remote AEDS → local kernel → workflow queue → agent</code>.
+              Repeating the same occurrence produced the same delivery identity without a second
+              workflow execution. AEDS acknowledged immediately after durable kernel acceptance;
+              subsequent execution used the ordinary workflow endpoint queue semantics.
+              The final upgrade followed a checksummed backup, preserved all durable routes and
+              acknowledgements, and made authentication failures protocol-native: a wrong kernel
+              bearer now receives the typed, non-retryable
+              <code>invalid_kernel_credentials</code> frame rather than an ambiguous transport
+              close. The live kernel automatically reconnected after the upgrade and completed a
+              queued event without manual intervention.
+            </p>
+            <p>
+              The checksummed SQLite/WAL backup and destructive restore drill preserved the active
+              route and delivery counters. Exact service restarts and full sequential host reboots
+              passed on both event machines. The kernel reconnected automatically after AEDS
+              returned, and the AEGS subscription survived its host reboot. A final read-only
+              audit found the AEDS container healthy at 12.66 MiB against its 512 MiB limit, with
+              3.3 GiB host memory and 34 GiB disk available and no swap use.
+            </p>
+            <p>
+              PTY validation found and closed two product-path defects: generic
+              <code>/workflow publication …</code> commands were incorrectly routed through the
+              legacy workflow-alias handler, and local test events serialized milliseconds as a
+              timezone-free string. The shared CLI handler now routes every publication lifecycle
+              command, while the kernel emits canonical RFC 3339 UTC instants. Focused CLI and
+              kernel regressions pass, and a post-restart PTY test started and completed the
+              workflow with the expected prompt.
+            </p>
+            <p>
+              Time handling is now enforced as a platform contract rather than patched for one
+              developer timezone. OSS rejects timezone-free event instants, canonicalizes wire
+              instants to RFC 3339 UTC, validates recurring schedule zones as IANA identifiers,
+              and centralizes client-side instant parsing and local presentation. Cloud stores
+              instants in timezone-aware columns and its isolated PostgreSQL harness explicitly
+              resets every database to UTC so a developer's machine timezone cannot leak into
+              migration expectations. The same Cloud migration suite passes under
+              <code>UTC</code>, <code>Europe/Helsinki</code>,
+              <code>America/New_York</code>, and <code>Asia/Tokyo</code>; the production behavior
+              still renders for the viewer's real locale and zone, including DST.
+            </p>
+            <p>
+              Final product validation used a real Cloud identity and the hosted relay rather than
+              a mocked client. In the web workflow publication side panel, Event-based
+              notifications loaded the bounded category landing page, searched for GitHub through
+              the kernel-backed registry API, opened publisher/operator trust metadata and the
+              paginated event list, and displayed the active dummy and GitHub bindings. In a real
+              PTY, the TUI discovered and executed
+              <code>/workflow publication event search github</code>,
+              <code>/workflow publication event list</code>, and
+              <code>/workflow publication event status</code> through the same kernel protocol.
+              Both surfaces observed the same published workflow and remote AEDS connection.
+            </p>
+            <p>
+              The final frontend pass repeated this against the locally built product web terminal
+              connected through a real relay to the live event kernel. The Event-based
+              notifications panel displayed seven bounded recommended entries and paged category
+              facets; Jira, Linear, GitLab, Sentry, Slack, and GitHub were all marked
+              <code>development_preview</code>. Searching for Slack returned one result, and its
+              service detail exposed publisher, operator, credential-boundary copy, and the
+              selectable <code>app.mentioned</code>, <code>message.channels</code>, and
+              <code>reaction.added</code> definitions. A retained browser screenshot records that
+              product state. A separate real PTY search showed the same Slack catalog identity and
+              availability through the kernel protocol.
+            </p>
+            <p>
+              A restart benchmark against the 1.9 GiB durable database also found a snapshot
+              selection defect: an older entity checkpoint was preferred over a newer legacy
+              snapshot, forcing hundreds of thousands of journal records to replay and emitting a
+              warning per stale prompt. Restore now selects the snapshot with the greatest durable
+              sequence and aggregates stale-record diagnostics into one bounded warning. The real
+              kernel restore fell from roughly 42–70 seconds and up to 1.8 GiB RSS to 157 ms for
+              durable restoration, 174 ms through bootstrap, and approximately 90 MiB settled RSS;
+              the focused durability suite passes 13 tests including the sequence regression.
+            </p>
+            <p>
+              On 2026-08-11 the production GitHub AEGS delivered a real
+              <code>pull_request.opened</code> webhook for
+              <code>charioxai/chariox-event-publication-drill</code> PR #1 through
+              <code>GitHub → GitHub AEGS → remote AEDS → local kernel → workflow queue → agent</code>.
+              The agent verified the payload and recorded the delivery evidence as a comment on the
+              PR, closing the end-to-end loop with the staged GitHub App installation.
+            </p>
+          </div>
+
+          <div class="callout good">
+            <strong>OVH AEGS staging is active.</strong>
+            <p>
+              On 2026-08-10 the smaller OVH VPS
+              <code>vps-95adeb93.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
+              was rebuilt as Debian 12 and fenced with the exact <code>aegs</code> host role. It
+              runs Docker, Compose, Caddy, a deny-by-default firewall, SSH key-only access, bounded
+              container logging, and 2 GiB of swap. The public dummy AEGS remains active over TLS at
+              <code>https://dummy.51.38.80.192.sslip.io</code> while the independently packaged
+              GitHub AEGS runs concurrently at
+              <code>https://github.51.38.80.192.sslip.io</code>. The dummy is pinned to OSS revision
+              <code>fe5b8595016eda7dcf943fd728e90ac0dabe239f</code>, limited to 0.5 CPU and
+              128 MiB, and restored successfully after a full host reboot with its durable test
+              subscription intact. The GitHub AEGS is pinned to revision
+              <code>f379df0eae9413741fc23bd5dd56a965bbe4f536</code> and immutable image digest
+              <code>sha256:dac35156a73129c305db62fb6cffc7047ffcfdbf1c57f685586248859a7c2f33</code>;
+              its release passed provenance, SBOM, and high/critical vulnerability gates before an
+              in-place remote upgrade retained the authorized connection and active subscription.
+              A fresh checksummed backup preceded the upgrade, and the standalone operational
+              health command now loads the deployed non-default port and exact expected revision.
+              The service is capped at 0.5 CPU and 256 MiB; a final audit measured approximately
+              1.24 MiB for GitHub and 14.05 MiB for the 128 MiB dummy while both remained healthy,
+              leaving 3.3 GiB available memory, 34 GiB free disk, and unused swap. The GitHub App
+              <code>Chariox Event Staging Runtime</code> is installed only on the private
+              <code>charioxai/chariox-event-publication-drill</code> repository. A real
+              <code>pull_request.opened</code> webhook for PR #1 reconciled one GitHub subscription,
+              increased AEDS acknowledgements, injected the canonical prompt into the workflow
+              queue, and started a workflow agent which independently queried that pull request.
+              This proves concurrent multi-generator routing through one AEDS while preserving
+              isolated credentials, state, ports, limits, and service lifecycles.
+              The Linux rehearsal also exposed that file-backed Compose secrets preserve host
+              ownership. The AEDS and all first-wave AEGS deployment validators and runbooks now
+              require each root-only secret directory to contain UID/GID
+              <code>10001:10001</code>, mode-<code>0400</code> files so their non-root containers
+              can read secrets without making them accessible to host users.
+              The AEDS role now runs on the separately provisioned OVH VPS; co-location on this
+              AEGS host remains forbidden.
+            </p>
+            <p>
+              On 2026-08-11 Jira, Linear, GitLab, Sentry, and Slack were added sequentially to the
+              same dedicated AEGS host at isolated loopback ports and public TLS origins. Together
+              with GitHub, all six production AEGSs and the public dummy now remain concurrently
+              active. Each production integration has its own immutable digest, Compose project,
+              SQLite volume, root-protected secret directory, systemd unit, Caddy hostname, 0.25
+              CPU limit, and 128 MiB memory limit except GitHub's existing 256 MiB limit. With all
+              seven containers healthy, measured container memory was approximately 21 MiB in
+              total initially and approximately 26 MiB in the final audit, host memory available
+              remained 3.2 GiB, swap use remained zero, and 34 GiB of
+              disk remained free.
+            </p>
+            <p>
+              A single authenticated WSS connection then reconciled six simultaneous AEDS routes
+              and delivered signed synthetic webhooks through
+              <code>GitHub, Jira, Linear, GitLab, Sentry, and Slack AEGS → AEDS → kernel client</code>.
+              Each provider produced exactly one canonical delivery, each delivery was
+              acknowledged, and replaying the identical provider occurrence returned
+              <code>duplicate: true</code> with the same delivery ID. The acceptance harness found
+              and closed a missing Rustls feature which had restricted it to local
+              <code>ws://</code>; a compile-time regression now protects public
+              <code>wss://</code> validation. Jira and GitLab used the explicit
+              provider-reconciliation-pending path: desired interests were durably saved while
+              dynamic provider webhook creation correctly remained pending legitimate OAuth.
+              This synthetic matrix alone did not claim live-provider acceptance; the live-provider
+              validations recorded below now provide that acceptance evidence.
+            </p>
+            <p>
+              Real Jira Cloud acceptance then used the authorized Chariox development application
+              and project <code>KAN</code>. Creating issue <code>KAN-1</code> emitted the genuine
+              provider webhook, traversed Jira AEGS, AEDS, the durable kernel inbox, and the normal
+              workflow endpoint queue, and completed the workflow run. Deleting the publication
+              tombstoned its binding and removed the dynamic upstream webhook; the temporary issue
+              was deleted. Jira revision
+              <code>48227cf79b8d192d119f26bb34adebc72fa60504</code> and immutable digest
+              <code>sha256:9d71f9a2d56c19b016ca8cf879275dc8733bd3ce4b89ff62492b8eab18b15bdd</code>
+              were subsequently deployed after a checksummed backup. Its standalone health command
+              now resolves the configured loopback port and verifies that exact revision.
+            </p>
+            <p>
+              Real Linear acceptance used an authorized organization connection and issue
+              <code>ARR-7</code>. The actual issue event produced one canonical delivery and a
+              completed queued workflow run. Removing the publication reduced the provider-side
+              subscription count from one to zero, tombstoned the binding, and the drill issues
+              were deleted. This proves provider subscription reconciliation and deletion rather
+              than only signed synthetic webhook handling.
+            </p>
+            <p>
+              Real Slack acceptance used the <code>Chariox Event Notifications</code> Slack app in
+              the <code>Chariox Event Validation</code> workspace, with independently authorized
+              <code>app_mention</code>, <code>message.channels</code>, and
+              <code>reaction_added</code> interests. Genuine channel messages first proved that
+              notifications arriving while a workflow run is busy remain ordinary queued prompts.
+              The drill exposed a kernel lifecycle defect: a completed workflow run released its
+              logical provider run but retained the managed PTY, allowing a later run to inherit an
+              expired runtime credential. The kernel now removes the managed process and tracking
+              atomically when a non-reused workflow provider run completes; a focused regression and
+              three consecutive live deliveries, including one after an AEDS restart, pass with a
+              fresh provider process each time. A real PTY observed the queued event, AEDS route
+              status, binding list, and deletion; deletion tombstoned the binding and returned the
+              active route count from five to four. Slack revision
+              <code>bf47a98835ad52bf161f8cc2c8e3ab26bb3e75f7</code> is deployed as immutable
+              digest
+              <code>sha256:834c1ec7e99cdfd9f2cad10c7b86401c919025c27ffc9bcf6a818c84da66cdc9</code>
+              after a checksummed backup.
+            </p>
+            <p>
+              The TLS-capable acceptance harness is released from private AEDS revision
+              <code>f48ba8e470244b171e27b8ff968fb662727bb074</code>. Its immutable image
+              <code>sha256:3438a360…a9f19</code> passed the fixed high/critical vulnerability,
+              provenance, and SBOM gates, then replaced the earlier AEDS staging image after a
+              checksummed backup. The upgrade retained two active workflow routes and 26
+              acknowledgements with zero pending deliveries. The final six-provider WSS
+              delivery and duplicate-replay matrix passed against that exact deployed image.
+            </p>
+            <p>
+              The GitLab AEGS was subsequently aligned with GitLab 19.1 Standard Webhooks at
+              private revision <code>4c2cb72bb4fbe9935b2000645f72f30735e58524</code>. New hooks now
+              configure a 32-byte <code>whsec_&lt;base64&gt;</code> signing token; inbound requests
+              require <code>webhook-id</code>, <code>webhook-timestamp</code>, and the space-separated
+              <code>webhook-signature</code> list, verify the raw-body HMAC-SHA256 in constant time,
+              and reject stale timestamps. Legacy token verification remains only for older
+              self-managed installations configured with a legacy token; a <code>whsec_</code>
+              deployment cannot downgrade to plaintext <code>X-Gitlab-Token</code>. Hosted CI and
+              release gates passed, including zero reported image vulnerabilities plus provenance
+              and SBOM inspection, and immutable digest <code>sha256:63356376…0d24</code> replaced
+              only the GitLab container after a checksummed backup. The staging secret was rotated
+              to the standard token shape. A six-provider WSS matrix then passed signed delivery,
+              acknowledgement, and same-ID duplicate replay for every producer; an explicit
+              plaintext downgrade probe returned HTTP 401. A subsequent GitLab-only matrix passed
+              after service restart, the post-upgrade checksummed backup completed, and AEDS ended
+              with zero pending or expired deliveries.
+            </p>
+            <p>
+              Live GitLab-provider acceptance followed using a legitimate GitLab OAuth
+              application, the real project
+              <code>chariox-event-publication-drill/gitlab-event-publication-drill</code>, and a
+              dynamically reconciled project webhook. Transferring the same
+              <code>merge_request.opened@1</code> interest between two workflow notification triggers in the
+              same execution environment tombstoned the old binding, removed its provider hook,
+              and left exactly one active subscription and one active GitLab hook. Opening merge
+              request <code>!2</code> then traversed
+              <code>GitLab → GitLab AEGS → remote AEDS → local kernel → workflow queue → agent</code>;
+              AEDS acknowledgements advanced from 41 to 42 with zero pending or expired
+              deliveries, and workflow run <code>0000019ff086c892</code> completed from the
+              canonical event prompt. A real PTY subsequently showed the same active binding,
+              queue, environment, and connected AEDS status through
+              <code>/workflow publication event list</code> and
+              <code>/workflow publication event status</code>. The drill also found GitLab's
+              create-hook default for push events: omitting the field silently enabled push
+              notifications. The adapter now sends explicit false values for every unrequested
+              event family and includes a regression test, so one catalog interest cannot produce
+              unrelated queued workflow prompts.
+            </p>
+            <p>
+              AEDS and GitHub passed guarded service restart acceptance with the full six-service
+              set active, after which Jira, Linear, GitLab, Sentry, and Slack were restarted and
+              checked one at a time. A full AEGS-host reboot then recovered Caddy, Docker, the
+              dummy, and all six production AEGSs automatically. Every public readiness endpoint
+              passed within the new boot, and the six-provider WSS delivery plus duplicate replay
+              matrix passed again after recovery. Finally, Jira, Linear, GitLab, Sentry, and Slack
+              each completed its owned checksummed SQLite/WAL backup and destructive restore one
+              at a time; public readiness and the complete six-provider delivery/deduplication
+              matrix passed again after all restores. AEDS ended with zero pending deliveries.
+            </p>
+            <p>
+              On 2026-08-12 the connection-registry rollout was promoted sequentially across the
+              complete production AEGS set. Every image was built from the clean repository
+              <code>main</code>, scanned for high and critical vulnerabilities, and verified for
+              provenance and SBOM attestations before deployment. The live revisions are
+              GitHub <code>12b6cd23ebcd30c63c347aa206c564de939932d5</code>, GitLab
+              <code>8b278524093dd47b1f5d982186daa59be0ed088a</code>, Jira
+              <code>a0c06dad1198b30ab4d447207d3aefead9d45c21</code>, Linear
+              <code>9bd769f312a6eaa4a17c07d1c694bb694adbf446</code>, Sentry
+              <code>340b91ffd7e7273eb7b8b88472873f02c9eb407a</code>, and Slack
+              <code>ca838ffd385bc83a9c0c9f3939ca0090ebc1df9f</code>. Each service retained its
+              durable volume and authorization configuration, and each prior pinned environment
+              was preserved as the immediate rollback target. Public <code>/version</code>
+              checks reported the exact expected revision, protocol version 1, and configured
+              authorization for all six services. AEDS remained current at private revision
+              <code>3ee73b1d1df0a0ac21d7ca6822d6c935e83bca15</code> throughout the rollout.
+            </p>
+            <p>
+              The post-rollout host audit found the dummy plus all six production AEGS containers
+              healthy concurrently. The 4 GiB AEGS host retained 3.1 GiB available memory, used no
+              swap, and had 33 GiB free disk. All nine implementation repositories were clean and
+              synchronized with their upstream branches after the deployment checkpoint.
+            </p>
+            <p>
+              Install-once Notification Center acceptance completed on 2026-08-12 through the
+              real product frontend and PTY. Kernel-owned connections for GitHub, GitLab, Jira,
+              Linear, Sentry, and Slack reached <code>ready</code>, survived kernel restart, and
+              were reused by workflow publications without repeating provider authorization.
+              GitHub additionally proved that two workflows can reuse one installed connection,
+              deleting one publication does not revoke the connection or the other binding, and a
+              real pull request event still starts the surviving workflow. Real provider events
+              completed workflow runs for GitHub PR #6, GitLab issue #1, Jira
+              <code>KAN-2</code>, Linear <code>ARR-8</code>, Slack
+              <code>app.mentioned</code>, and Sentry <code>issue.created</code>. The PTY observed
+              the same connection registry, bindings, and completed runs through the shared kernel
+              protocol. The web catalog's featured-services region was corrected to scroll through
+              all seven entries, including Sentry and Slack.
+            </p>
+            <p>
+              This acceptance also closed two boundary defects. Workflow event binding creation
+              now fetches the selected catalog manifest and rejects generator identity, manifest
+              digest, event type, or event version values that the installed implementation did
+              not declare; a live <code>issue.created_typo@1</code> probe was rejected before any
+              binding persisted. For Sentry, a real issue proved that the provider accepted event
+              ingestion while its Integration Platform webhook was suppressed on the dynamic-DNS
+              staging hostname. Moving only the Sentry webhook boundary to the VPS's stable OVH
+              hostname produced HTTP <code>202 Accepted</code>, one matched interest, one AEDS
+              route, and completed workflow run <code>0000019ff625c6ad</code>. The temporary
+              diagnostic tunnel was removed, and the private Sentry AEGS operations guide now
+              requires a stable provider-owned hostname plus a real <code>issue.created</code>
+              acceptance event before rollout completion.
+            </p>
+            <p>
+              The guarded read-only acceptance run <code>ovh-final-20260811</code>, bound to clean
+              OSS revision <code>7b35367bf</code>, independently rechecked distinct machine IDs,
+              exact host-role markers, the active AEDS and GitHub systemd units, public readiness,
+              and capacity on both hosts. It passed without restarting or mutating either service.
+              The subsequent <code>ovh-final-clean-20260811</code> run, bound to clean revision
+              <code>f7a0b30f7</code>, required the exact concurrent production set
+              <code>github,jira,linear,gitlab,sentry,slack</code> and passed both read-only and
+              guarded restart modes.
+            </p>
+          </div>
+
+          <h3>Target host roles</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Host role</th>
+                <th>Services</th>
+                <th>Isolation and persistence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Relay host</td>
+                <td>Existing hosted relay and its Caddy edge</td>
+                <td>
+                  Remains relay-first. It is not general event-runtime capacity and is not changed
+                  without a passing capacity and regression preflight.
+                </td>
+              </tr>
+              <tr>
+                <td>AEDS host</td>
+                <td>AEDS, loopback health/metrics, Caddy HTTPS/WSS edge</td>
+                <td>
+                  Dedicated service identity, delivery database/volume, backup target, and
+                  producer/kernel credentials. No provider OAuth secrets.
+                </td>
+              </tr>
+              <tr>
+                <td>AEGS host</td>
+                <td>Dummy plus all six concurrently runnable first-wave production AEGSs</td>
+                <td>
+                  Separate container, identity, secrets, limits, state, logs, loopback port, and TLS
+                  hostname per AEGS. Install and validate integrations sequentially, then keep the
+                  resource-bounded healthy set active together to exercise AEDS multi-producer
+                  routing. No access to AEDS storage or another AEGS's provider credentials.
+                </td>
+              </tr>
+              <tr>
+                <td>Additional AEGS hosts</td>
+                <td>Generators moved out as traffic, privilege, or provider isolation requires</td>
+                <td>
+                  Same deployment contract. Registry identity remains stable when the operator
+                  changes placement.
+                </td>
+              </tr>
+              <tr>
+                <td>Local fallback</td>
+                <td>One AEDS container plus one sequentially selected dummy or first-party AEGS container</td>
+                <td>
+                  Development-only deployment rehearsal. Separate networks, volumes, secrets,
+                  resource limits, and ports emulate host roles without exceeding the local
+                  machine budget, but do not satisfy separate-host remote acceptance.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Deployment shape</h3>
+          <ul>
+            <li>
+              Produce immutable Linux OCI images for AEDS and every Chariox-maintained AEGS. Deploy
+              pinned digests tied to the exact revision of each owning service repository plus
+              compatible OSS and Cloud revisions; do not deploy by pulling a mutable branch on the
+              host.
+            </li>
+            <li>
+              Run persistent staging containers under systemd with restart limits, explicit
+              service users, read-only roots where practical, bounded CPU/memory, and separately
+              mounted data and secret paths.
+            </li>
+            <li>
+              Bind application ports to loopback. Caddy exposes distinct HTTPS/WSS hostnames for
+              AEDS and for each externally reachable AEGS webhook/OAuth surface.
+            </li>
+            <li>
+              Permit only SSH and public HTTP/TLS at the host firewall. Cross-machine AEGS-to-AEDS
+              traffic uses public or private TLS with scoped producer credentials; it never uses a
+              shared filesystem.
+            </li>
+            <li>
+              Store AEDS pending deliveries and route state on a durable volume. The first
+              single-node staging implementation may use SQLite/WAL behind a storage interface,
+              but must prove restart and backup/restore before acceptance.
+            </li>
+            <li>
+              Give each AEGS its own durable connection/subscription store. Provider credentials
+              and webhook secrets remain in that AEGS's protected secret boundary and never enter
+              AEDS, the registry, publication packages, or workflow prompts.
+            </li>
+            <li>
+              Export readiness, structured logs, bounded metrics, build/version identity, storage
+              health, connection counts, pending-delivery depth, retry age, and subscription
+              reconciliation status without exposing prompts, artifacts, or credentials.
+            </li>
+            <li>
+              Keep the current image and one known-good rollback image. Upgrade one service at a
+              time and verify delivery continuity before promoting the new version.
+            </li>
+          </ul>
+
+          <h3>Promotion ladder</h3>
+          <ol>
+            <li>
+              <strong>Local fixtures:</strong> protocol, state-machine, retry, dedupe, lifecycle,
+              and conformance tests.
+            </li>
+            <li>
+              <strong>Local product:</strong> real web-terminal and PTY/TUI setup, delivery,
+              conflict, health, test-event, and deletion flows.
+            </li>
+            <li>
+              <strong>Local deployment rehearsal:</strong> run the immutable AEDS and AEGS images
+              in isolated local containers with persistent volumes, restart policies, resource
+              limits, upgrade/rollback, backup/restore, and product validation. Use this whenever
+              the second remote event host is not yet available.
+            </li>
+            <li>
+              <strong>Ephemeral remote VPS:</strong> use the existing SSH preflight, artifact
+              provenance, run ownership, resource safety lease, and cleanup machinery to stage
+              temporary AEDS and AEGS services on their designated hosts.
+            </li>
+            <li>
+              <strong>Persistent remote staging:</strong> install systemd-managed pinned images,
+              Caddy routes, durable volumes, secret files, backup, monitoring, and rollback.
+            </li>
+            <li>
+              <strong>Failure validation:</strong> restart each service, reboot each host,
+              interrupt the cross-host network, lose an acknowledgement, exhaust a bounded queue,
+              rotate credentials, restore from backup, and verify recovery.
+            </li>
+            <li>
+              <strong>Live provider:</strong> receive a real provider event and execute the target
+              workflow exactly once through both product surfaces.
+            </li>
+            <li>
+              <strong>Registry promotion:</strong> only then mark a Chariox-operated AEGS
+              available or recommended. The dummy AEGS remains a development fixture.
+            </li>
+          </ol>
+
+          <h3>Deployment artifacts and runbooks</h3>
+          <ul>
+            <li>OCI build definitions, digests, SBOM/provenance record, and version endpoint.</li>
+            <li>Systemd unit templates and least-privilege environment/secret-file contract.</li>
+            <li>Caddy host routing and TLS readiness checks without embedding credentials.</li>
+            <li>Install, upgrade, health-check, rollback, backup, restore, and removal commands.</li>
+            <li>
+              Guarded remote-host drill that targets exact configured hosts, refuses broad cleanup,
+              labels every owned resource, and removes only run-owned temporary artifacts.
+            </li>
+            <li>
+              Retained evidence containing source revisions, image digests, host roles, service
+              versions, restart/reboot timeline, queue/delivery results, web screenshots, and
+              PTY/TUI transcripts.
+            </li>
+          </ul>
+        </section>
+
+        <section id="milestones">
+          <span class="section-no">11 · Implementation milestones</span>
+          <h2>Executable scope ends with the first wave.</h2>
+          <div class="milestones">
+            <article class="milestone">
+              <div class="milestone-id">M0 · Contract</div>
+              <div>
+                <h3>ADR, schemas, and fixtures</h3>
+                <ul>
+                  <li>Finalize terminology, boundaries, identity, and environment uniqueness.</li>
+                  <li>
+                    Establish the public/private repository boundary and extract production
+                    service runtimes before deployment: one private AEDS repository and one
+                    private repository per Chariox-maintained AEGS.
+                  </li>
+                  <li>
+                    Specify registry summary/detail pages, cursors, manifests, AEGS management, and
+                    AEDS delivery protocols.
+                  </li>
+                  <li>
+                    Define lifecycle state machines, error taxonomy, version negotiation, and
+                    security/threat model updates.
+                  </li>
+                  <li>Create signed dummy registry and AEGS fixtures.</li>
+                  <li>
+                    Establish the global time contract: reject timezone-free transport instants,
+                    canonicalize event times to UTC, store Cloud instants as timezone-aware values,
+                    retain IANA zones for cron semantics, and localize only for presentation.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M1 · Runtime</div>
+              <div>
+                <h3>AEDS + dummy AEGS + kernel vertical slice</h3>
+                <ul>
+                  <li>Implement durable AEDS pending delivery and scoped producer capabilities.</li>
+                  <li>Implement kernel connection, heartbeat, reconnect, resume, and reconciliation.</li>
+                  <li>
+                    Add event publication and binding persistence, environment claims, and
+                    idempotent queue insertion.
+                  </li>
+                  <li>
+                    Keep durable-journal recovery bounded and quiet: aggregate stale-record
+                    diagnostics and regression-test startup time so reboot/reconnect does not emit
+                    one warning per obsolete prompt.
+                  </li>
+                  <li>
+                    Extend the existing queued prompt source metadata without introducing a
+                    parallel scheduler.
+                  </li>
+                  <li>Prove test-event delivery through the real workflow endpoint queue.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M2 · Protocol</div>
+              <div>
+                <h3>Shared management surface and TUI</h3>
+                <ul>
+                  <li>Add bounded catalog search/browse/detail/event-list requests with cursors.</li>
+                  <li>Add authorization, resource enumeration, CRUD, health, transfer, and test requests.</li>
+                  <li>
+                    Increment the local daemon protocol version and update shape/hash snapshots.
+                  </li>
+                  <li>
+                    Add TUI views and slash commands using the shared requests. The shared
+                    <code>/notifications</code> namespace, detached-safe command catalog, reusable
+                    connection attachment, and dependency-confirmed removal are implemented;
+                    real PTY validation remains part of the acceptance gate.
+                  </li>
+                  <li>Add focused PTY drills for search paging, configuration, and delivery.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M3 · Catalog</div>
+              <div>
+                <h3>Registry and web product slice</h3>
+                <ul>
+                  <li>
+                    Implement cursor-paginated search, categories, facets, signed details, and
+                    compatibility filtering.
+                  </li>
+                  <li>
+                    Implement the Event-based notifications side-panel landing, search, browse,
+                    service detail, event selection, and configuration states.
+                  </li>
+                  <li>
+                    Add publisher/operator trust badges, authorization disclosures, pagination,
+                    loading, empty, stale-cache, and failure states.
+                  </li>
+                  <li>
+                    Validate in the actual browser terminal with screenshots at desktop and narrow
+                    widths.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M4 · Deployment</div>
+              <div>
+                <h3>Local-container fallback and remote-host gate</h3>
+                <ul>
+                  <li>
+                    Build deployment images from the extracted private AEDS and per-provider AEGS
+                    repositories; OSS cross-repository Compose is only a local orchestrator and is
+                    not deployable production provenance.
+                  </li>
+                  <li>
+                    Package AEDS and the dummy AEGS as immutable OCI images and prove their complete
+                    deployment contract first in separately isolated local containers.
+                  </li>
+                  <li>
+                    Keep local builds and runtime resource-bounded: AEDS remains available while
+                    each AEGS is built, exercised, stopped, and removed one at a time. The full
+                    provider matrix is a CI/remote-host gate, not a concurrent laptop workload.
+                  </li>
+                  <li>
+                    Treat the local-container path as sufficient to continue implementation while
+                    machine procurement is pending, but not as separate-host or production evidence.
+                  </li>
+                  <li>
+                    Reserve and preflight the remote machines, assign distinct AEDS and AEGS
+                    host roles, and refuse unsafe co-location or relay-host overload.
+                  </li>
+                  <li>
+                    Add immutable OCI builds, systemd units, Caddy routes, durable volumes,
+                    protected secrets, readiness/metrics, backup/restore, and rollback.
+                  </li>
+                  <li>
+                    Run ephemeral remote validation before installing persistent staging services.
+                  </li>
+                  <li>
+                    Connect a real local kernel to remote AEDS over WSS and deliver from the dummy
+                    AEGS running on its separate host.
+                  </li>
+                  <li>
+                    Repeat web-terminal and PTY/TUI acceptance, then service restart, host reboot,
+                    cross-host partition, ACK loss, credential rotation, and restore drills.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M5 · GitHub</div>
+              <div>
+                <h3>First production AEGS</h3>
+                <ul>
+                  <li>
+                    Extract the implementation into the private
+                    <code>chariox-aegs-github</code> repository with independent CI, image,
+                    versioning, security scanning, deployment configuration, and catalog manifest.
+                  </li>
+                  <li>
+                    Implement GitHub App authorization, installation/repository discovery, webhook
+                    verification, source deduplication, and event normalization.
+                  </li>
+                  <li>
+                    Ship pull request opened first, then the approved GitHub event set through the
+                    same manifest and event-binding model.
+                  </li>
+                  <li>
+                    Validate offline kernel delivery, reboot, retry, duplicate conflict, transfer,
+                    and publication deletion end to end locally.
+                  </li>
+                  <li>
+                    Deploy the GitHub AEGS to its remote AEGS host, receive a real GitHub webhook,
+                    publish across machines to AEDS, and repeat product and failure validation
+                    before registry promotion.
+                  </li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M6 · Platform</div>
+              <div>
+                <h3>AEGS SDK and conformance suite</h3>
+                <ul>
+                  <li>
+                    Provide manifest validation, auth helpers, AEDS client, event/artifact builders,
+                    signature/replay helpers, and a local test harness.
+                  </li>
+                  <li>
+                    Add lifecycle, retry, schema compatibility, security, and registry publication
+                    conformance tests.
+                  </li>
+                  <li>
+                    Require UTC event timestamps in producer conformance and test the same instant
+                    across UTC, Helsinki, New York, and Tokyo plus spring/autumn DST boundaries.
+                  </li>
+                  <li>Document first-party, official-provider, community, and self-hosted paths.</li>
+                </ul>
+              </div>
+            </article>
+
+            <article class="milestone">
+              <div class="milestone-id">M7 · First wave</div>
+              <div>
+                <h3>Complete the initial integration set</h3>
+                <ul>
+                  <li>
+                    Give every Chariox-maintained integration its own private repository, CI,
+                    immutable image, protected credential boundary, and publisher-scoped catalog
+                    identity.
+                  </li>
+                  <li><strong>Jira Cloud:</strong> OAuth 2.0 dynamic webhooks and renewal.</li>
+                  <li><strong>Linear:</strong> organization/team webhook subscriptions.</li>
+                  <li><strong>GitLab:</strong> project/group events and self-managed host support.</li>
+                  <li><strong>Sentry:</strong> alerts, issues, and project service hooks.</li>
+                  <li><strong>Slack:</strong> Events API, workspace auth, event filtering, and scopes.</li>
+                  <li>
+                    Run the complete web-terminal, PTY/TUI, reconnect, deletion, and environment
+                    exclusivity matrix locally and against the separate remote AEDS/AEGS hosts
+                    for every first-wave AEGS.
+                  </li>
+                </ul>
+              </div>
+            </article>
+          </div>
+
+          <div class="callout phase-two">
+            <strong>Second phase — mentioned, not planned here.</strong>
+            <p>
+              After first-wave completion, plan a second integration phase covering Notion, Gmail,
+              Google Calendar, Discord, Microsoft Outlook/Calendar through Graph, additional CI and
+              observability providers, and Stripe. Gmail and Calendar require source
+              reconciliation and expiring watch renewal; Discord may require Gateway support for
+              events not exposed through HTTP webhooks. That phase gets its own plan after the SDK,
+              registry, and first-wave operational evidence exist.
+            </p>
+          </div>
+        </section>
+
+        <section id="validation">
+          <span class="section-no">12 · Validation matrix</span>
+          <h2>Test the product, not only the services.</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Required evidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Unit and state-machine tests</td>
+                <td>Canonical filters, uniqueness, lifecycle transitions, cursor validation, retry, and dedupe</td>
+              </tr>
+              <tr>
+                <td>Protocol tests</td>
+                <td>
+                  Version bump, serialized shape snapshots, compatibility gates, bounded
+                  pagination, explicit-zone parsing, and UTC event wire timestamps
+                </td>
+              </tr>
+              <tr>
+                <td>Time and timezone contract</td>
+                <td>
+                  UTC-aware database columns and migration, no timezone-free transport strings,
+                  IANA-zone cron behavior, local Web/TUI rendering, and multi-zone/DST regression
+                  tests independent of the test machine's timezone
+                </td>
+              </tr>
+              <tr>
+                <td>AEDS/AEGS conformance</td>
+                <td>Auth, signing, replay protection, renewal, retry, ordering tolerance, deletion</td>
+              </tr>
+              <tr>
+                <td>Kernel drills</td>
+                <td>Offline backlog, reboot, ACK loss, stale kernel fencing, environment transfer, durable queue insertion</td>
+              </tr>
+              <tr>
+                <td>Remote VPS deployment</td>
+                <td>
+                  Separate AEDS/AEGS hosts, pinned artifacts, TLS, durable state, backup/restore,
+                  service restart, host reboot, cross-host partition, rollback, and clean removal
+                </td>
+              </tr>
+              <tr>
+                <td>Local deployment fallback</td>
+                <td>
+                  The same pinned AEDS/AEGS images validated sequentially as AEDS plus one AEGS,
+                  with separate volumes, secrets, limits, restart, backup/restore, rollback, and
+                  both product surfaces; explicitly recorded as non-separate-host evidence
+                </td>
+              </tr>
+              <tr>
+                <td>Product frontend — web terminal</td>
+                <td>
+                  Real browser session against a live kernel: landing pages, category paging,
+                  search paging, service detail, multi-event selection, authorization,
+                  configuration, conflict handling, health, test event, and deletion; final
+                  screenshots required
+                </td>
+              </tr>
+              <tr>
+                <td>Product frontend — TUI in PTY</td>
+                <td>
+                  Real TUI process under a PTY: slash discovery, incremental results, keyboard
+                  navigation, external auth handoff, multi-event setup, duplicate conflict,
+                  resize/repaint, queued event visibility, reconnect, and deletion
+                </td>
+              </tr>
+              <tr>
+                <td>Cross-surface parity</td>
+                <td>A publication created in either surface is inspectable, testable, transferable, and removable in the other</td>
+              </tr>
+              <tr>
+                <td>Live provider drill</td>
+                <td>Real provider event reaches the configured workflow endpoint and executes exactly once in the target environment</td>
+              </tr>
+              <tr>
+                <td>Repository extraction and cleanup</td>
+                <td>
+                  AEDS and every Chariox-maintained production AEGS build, test, and deploy from
+                  their owning private repositories. Production runtime, provider adapter,
+                  container, migration, deployment, and operational files are removed from
+                  <code>chariox</code> and <code>chariox-cloud</code>; no duplicate implementation
+                  remains. OSS retains only kernel/publication behavior, public schemas and SDK,
+                  conformance tests, and the dummy/local-development AEGS.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h3>Mandatory runtime scenarios</h3>
+          <ul>
+            <li>Registry has millions of entries in the test index; first page remains bounded.</li>
+            <li>Rapid search replacement cancels stale requests and does not reorder results.</li>
+            <li>Category and event cursors remain stable within a catalog revision.</li>
+            <li>Registry unavailable while an existing publication continues receiving events.</li>
+            <li>
+              The same UTC event renders correctly in UTC, Europe/Helsinki, America/New_York, and
+              Asia/Tokyo without changing the stored or transported value.
+            </li>
+            <li>
+              Cron schedules keep their configured local wall-clock time across spring and autumn
+              DST transitions while each computed occurrence remains an absolute UTC instant.
+            </li>
+            <li>
+              Timezone-free event/API timestamps are rejected, while provider timestamps carrying
+              a non-zero RFC 3339 offset are normalized to UTC before publication.
+            </li>
+            <li>Kernel offline when an event occurs; prompt appears after reboot and reconnect.</li>
+            <li>Connection drops between durable enqueue and ACK; only one prompt is visible.</li>
+            <li>Two workflows request the same event interest in one environment; second activation fails visibly.</li>
+            <li>Workflow moves to a different kernel; old kernel is fenced and pending delivery resumes.</li>
+            <li>Same workflow deploys to a distinct environment; independent routing is explicit.</li>
+            <li>Publication deletion revokes delivery and upstream subscription state reconciles.</li>
+            <li>
+              AEDS and AEGS run on different remote machines; stopping or saturating an AEGS does
+              not make AEDS unavailable.
+            </li>
+            <li>
+              AEDS restarts and its host reboots while pending deliveries survive and resume from
+              durable state.
+            </li>
+            <li>
+              The AEGS host restarts, restores provider authorization and webhook state, resumes
+              authenticated publications to AEDS, and reconciles logical subscriptions without
+              creating duplicate environment routes.
+            </li>
+            <li>
+              A cross-host partition recovers without lost accepted events or duplicate workflow
+              prompts.
+            </li>
+            <li>
+              A pinned release is rolled back on one host without modifying the other host or the
+              existing relay service.
+            </li>
+          </ul>
+        </section>
+
+        <section id="acceptance">
+          <span class="section-no">13 · Definition of done</span>
+          <h2>The first wave is complete only when all surfaces agree.</h2>
+          <div class="grid acceptance">
+            <article class="card">
+              <h3>Architecture</h3>
+              <ul>
+                <li>Event-based is a first-class workflow publication surface.</li>
+                <li>Kernel remains workflow and queue authority.</li>
+                <li>Registry is paginated, searchable, cacheable, and absent from delivery.</li>
+                <li>AEDS and AEGS responsibilities remain distinct.</li>
+                <li>
+                  Production AEDS and AEGSs live only in their private owning repositories; OSS
+                  and Cloud contain no duplicate production implementation.
+                </li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Safety</h3>
+              <ul>
+                <li>One active event interest per execution environment.</li>
+                <li>Signed manifests and clear publisher/operator identity.</li>
+                <li>Durable enqueue and delivery-ID dedupe.</li>
+                <li>Explicit transfer, deletion, and credential revocation.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Product</h3>
+              <ul>
+                <li>Large-catalog browse, search, categories, and paging work in web and TUI.</li>
+                <li>Multiple events can be configured in one publication flow.</li>
+                <li>Conflict and health states are understandable and actionable.</li>
+                <li>Real web-terminal screenshots and PTY/TUI transcripts are retained.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Integrations</h3>
+              <ul>
+                <li>GitHub, Jira, Linear, GitLab, Sentry, and Slack pass conformance.</li>
+                <li>Each passes live delivery, reboot, retry, transfer, and deletion drills.</li>
+                <li>SDK and documentation are sufficient for a non-Chariox publisher.</li>
+                <li>Second-phase integrations remain explicitly deferred.</li>
+              </ul>
+            </article>
+            <article class="card">
+              <h3>Deployment</h3>
+              <ul>
+                <li>AEDS and AEGSs run on separate remote machines.</li>
+                <li>The existing relay host remains within measured resource headroom.</li>
+                <li>Images are immutable and support a proven rollback.</li>
+                <li>Local containers keep implementation unblocked before host procurement.</li>
+                <li>Restart, reboot, partition, backup/restore, TLS, and clean-removal drills pass.</li>
+              </ul>
+            </article>
+          </div>
+        </section>
+
+        <footer>
+          EVENT_BASED_PUBLICATION_SURFACE_PLAN.html · Chariox architecture · 2026-07-27
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

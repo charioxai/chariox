@@ -1,0 +1,534 @@
+import assert from "node:assert/strict"
+import { mkdtemp, mkdir, rm, utimes, writeFile } from "node:fs/promises"
+import net from "node:net"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+
+import {
+  childTerminationStatus,
+  findMatchingProcessIdsFromPsOutput,
+  formatDrillCommandLine,
+  makeAvailablePorts,
+  makeNonEphemeralDrillPorts,
+  makePorts,
+  providerAuthFailureFromTerminalText,
+  resolveBuiltBinary,
+  resolveBuiltBinarySync,
+  runLogged,
+  screenSessionListContains,
+  waitForCondition,
+  waitForTcpPort,
+  withDevStubProviderInventory,
+} from "./drill-runtime-helpers.mjs"
+import { cleanupHostedCloudIdentity } from "./live-hosted-cloud-relay-drill-helpers.mjs"
+
+test("child termination status covers exit codes and signals", () => {
+  assert.equal(childTerminationStatus({ exitCode: null, signalCode: null }), null)
+  assert.equal(childTerminationStatus({ exitCode: 7, signalCode: null }), "exit code 7")
+  assert.equal(childTerminationStatus({ exitCode: null, signalCode: "SIGKILL" }), "signal SIGKILL")
+})
+
+function cleanupProfile() {
+  return {
+    accountId: "account-1",
+    accountSlug: "hosted-cleanup",
+    realmId: "realm-1",
+    clientId: "own-client",
+    machineId: "own-machine",
+    cloudSessionToken: "synthetic-session",
+  }
+}
+
+function sessionRevocationPost(calls) {
+  let active = true
+  return async (url, body, headers) => {
+    calls.push({ url, body, headers })
+    assert.equal(active, true, "cleanup must not use its session after revocation")
+    if (url.endsWith("/clients/revoke") || url.endsWith("/machines/revoke")) {
+      assert.deepEqual(headers, { authorization: "Bearer synthetic-session" })
+      if (body.clientId === "own-client" || body.machineId === "own-machine") active = false
+    } else {
+      assert.equal(body.sessionToken, "synthetic-session")
+      if (url.endsWith("/auth/logout")) active = false
+    }
+  }
+}
+
+test("hosted Cloud cleanup offlines kernels, authenticates foreign revokes, then revokes its own identities atomically", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: cleanupProfile(),
+    clientIds: ["own-client", "foreign-client", "foreign-client"],
+    machineIds: ["own-machine", "foreign-machine"],
+    kernelPresences: [
+      { machineId: "foreign-machine", kernelId: "foreign-kernel" },
+      { machineId: "own-machine", kernelId: "own-kernel" },
+    ],
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls),
+    logger: (event, details) => { logs.push({ event, details }) },
+  })
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+    "https://cloud.example/auth/logout",
+  ])
+  assert.equal(calls[0].body.status, "OFFLINE")
+  assert.equal(calls[2].body.clientId, "foreign-client")
+  assert.equal(calls[3].body.machineId, "foreign-machine")
+  assert.deepEqual(calls[4].body, {
+    sessionToken: "synthetic-session",
+    accountId: "account-1",
+    clientId: "own-client",
+    machineId: "own-machine",
+    revokeClient: true,
+    revokeMachine: true,
+  })
+  assert.deepEqual(logs, [{
+    event: "cloud-identity-cleanup",
+    details: {
+      accountSlug: "hosted-cleanup",
+      clients: ["own-client", "foreign-client"],
+      machines: ["own-machine", "foreign-machine"],
+      kernels: ["foreign-kernel", "own-kernel"],
+      logout: true,
+    },
+  }])
+  assert.doesNotMatch(JSON.stringify(logs), /synthetic-session/)
+})
+
+test("hosted Cloud cleanup attempts all foreign revocations but preserves its own session after a presence failure", async () => {
+  const calls = []
+  const post = sessionRevocationPost(calls)
+  await assert.rejects(
+    () => cleanupHostedCloudIdentity({
+      profile: cleanupProfile(),
+      clientIds: ["own-client", "foreign-client"],
+      machineIds: ["own-machine", "foreign-machine"],
+      kernelPresences: [{ machineId: "own-machine", kernelId: "own-kernel" }],
+      baseUrl: "https://cloud.example",
+      post: async (...args) => {
+        await post(...args)
+        if (args[0].endsWith("/kernels/presence")) throw new Error("presence rejected")
+      },
+      logger: () => {},
+    }),
+    /hosted Cloud identity cleanup failed/,
+  )
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+  ])
+})
+
+test("hosted Cloud cleanup retains authority to retry partial presence or foreign revocation failures", async (t) => {
+  for (const failedPath of ["/kernels/presence", "/clients/revoke", "/machines/revoke"]) {
+    await t.test(failedPath, async () => {
+      const calls = []
+      const logs = []
+      const post = sessionRevocationPost(calls)
+      let failOnce = true
+      const cleanup = () => cleanupHostedCloudIdentity({
+        profile: cleanupProfile(),
+        clientIds: ["own-client", "foreign-client"],
+        machineIds: ["own-machine", "foreign-machine"],
+        kernelPresences: [{ machineId: "foreign-machine", kernelId: "foreign-kernel" }],
+        baseUrl: "https://cloud.example",
+        post: async (...args) => {
+          await post(...args)
+          if (failOnce && args[0].endsWith(failedPath)) {
+            failOnce = false
+            throw new Error("temporary cleanup failure")
+          }
+        },
+        logger: (_event, details) => { logs.push(details) },
+      })
+      await assert.rejects(cleanup(), /hosted Cloud identity cleanup failed/)
+      assert.deepEqual(calls.map((call) => call.url), [
+        "https://cloud.example/kernels/presence",
+        "https://cloud.example/clients/revoke",
+        "https://cloud.example/machines/revoke",
+      ])
+      assert.equal(logs[0].logout, false)
+      await cleanup()
+      assert.equal(calls.at(-1).url, "https://cloud.example/auth/logout")
+      assert.equal(calls.at(-1).body.revokeClient, true)
+      assert.equal(calls.at(-1).body.revokeMachine, true)
+      assert.equal(logs.at(-1).logout, true)
+      assert.doesNotMatch(JSON.stringify(logs), /synthetic-session/)
+    })
+  }
+})
+
+test("hosted Cloud cleanup preserves an owner session for foreign worker cleanup with logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: cleanupProfile(),
+    clientIds: ["foreign-client"],
+    machineIds: ["foreign-machine"],
+    kernelPresences: [{ machineId: "foreign-machine", kernelId: "foreign-kernel" }],
+    logout: false,
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls),
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://cloud.example/kernels/presence",
+    "https://cloud.example/clients/revoke",
+    "https://cloud.example/machines/revoke",
+  ])
+  assert.equal(logs[0].logout, false)
+})
+
+test("hosted Cloud cleanup consumes its session when own revocation is requested even with logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: cleanupProfile(),
+    clientIds: ["own-client"],
+    machineIds: ["own-machine"],
+    logout: false,
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls),
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls.map((call) => call.url), ["https://cloud.example/auth/logout"])
+  assert.equal(calls[0].body.revokeClient, true)
+  assert.equal(calls[0].body.revokeMachine, true)
+  assert.equal(logs[0].logout, true)
+})
+
+test("hosted Cloud cleanup revokes only the requested own identity and logs out last", async (t) => {
+  for (const [clientIds, machineIds, revokeClient, revokeMachine] of [
+    [["own-client"], [], true, false],
+    [[], ["own-machine"], false, true],
+    [[], [], false, false],
+  ]) {
+    await t.test(`client=${revokeClient} machine=${revokeMachine}`, async () => {
+      const calls = []
+      await cleanupHostedCloudIdentity({
+        profile: cleanupProfile(), clientIds, machineIds,
+        baseUrl: "https://cloud.example",
+        post: sessionRevocationPost(calls), logger: () => {},
+      })
+      assert.deepEqual(calls.map((call) => call.url), ["https://cloud.example/auth/logout"])
+      assert.deepEqual(calls[0].body, {
+        sessionToken: "synthetic-session", accountId: "account-1",
+        clientId: "own-client", machineId: "own-machine", revokeClient, revokeMachine,
+      })
+    })
+  }
+})
+
+test("hosted Cloud cleanup can log out a browser session with no device identities", async () => {
+  const calls = []
+  await cleanupHostedCloudIdentity({
+    profile: { accountId: "account-1", accountSlug: "browser", realmId: "realm-1" },
+    cloudSessionToken: "synthetic-session",
+    baseUrl: "https://cloud.example",
+    post: sessionRevocationPost(calls), logger: () => {},
+  })
+  assert.deepEqual(calls, [{
+    url: "https://cloud.example/auth/logout",
+    body: { sessionToken: "synthetic-session", accountId: "account-1", revokeClient: false, revokeMachine: false },
+    headers: undefined,
+  }])
+})
+
+test("hosted Cloud cleanup rejects missing authority before partial cleanup and keeps error output private", async () => {
+  const calls = []
+  const post = async (...args) => { calls.push(args) }
+  await assert.rejects(
+    cleanupHostedCloudIdentity({
+      profile: { accountId: "account-1", machineId: "own-machine" },
+      machineIds: ["own-machine"],
+      kernelPresences: [{ machineId: "own-machine", kernelId: "own-kernel" }],
+      post, logger: () => {},
+    }),
+    /requires an authenticated Cloud session/,
+  )
+  await assert.rejects(
+    cleanupHostedCloudIdentity({
+      profile: { cloudSessionToken: "synthetic-private-session", machineCredential: "synthetic-private-credential" },
+      post, logger: () => {},
+    }),
+    (error) => {
+      assert.match(error.message, /requires an account id/)
+      assert.doesNotMatch(error.message, /synthetic-private/)
+      return true
+    },
+  )
+  assert.deepEqual(calls, [])
+})
+
+test("hosted Cloud cleanup allows an unauthenticated no-op when logout false", async () => {
+  const calls = []
+  const logs = []
+  await cleanupHostedCloudIdentity({
+    profile: { accountId: "account-1" }, logout: false,
+    post: async (...args) => { calls.push(args) },
+    logger: (_event, details) => { logs.push(details) },
+  })
+  assert.deepEqual(calls, [])
+  assert.equal(logs[0].logout, false)
+})
+
+test("dev-stub drill inventory is enabled explicitly without mutating the source environment", () => {
+  const source = { PATH: "/usr/bin", CHARIOX_PROVIDER_DEV_STUB: "0" }
+  const enabled = withDevStubProviderInventory(source)
+
+  assert.deepEqual(enabled, { PATH: "/usr/bin", CHARIOX_PROVIDER_DEV_STUB: "1" })
+  assert.equal(source.CHARIOX_PROVIDER_DEV_STUB, "0")
+})
+
+test("available port selection retries when another host rejects the first candidate", async () => {
+  const candidates = [makePorts(32000), makePorts(36000)]
+  const checked = []
+  const selected = await makeAvailablePorts({
+    candidateFactory: () => candidates[checked.length],
+    localAvailability: async () => true,
+    additionalAvailability: async (ports) => {
+      checked.push(ports)
+      return checked.length > 1
+    },
+    maxAttempts: candidates.length,
+  })
+
+  assert.deepEqual(checked, candidates)
+  assert.equal(selected, candidates[1])
+})
+
+test("non-ephemeral drill ports stay below the default Linux ephemeral range", () => {
+  const ports = makeNonEphemeralDrillPorts(24000)
+  assert.equal(ports.relayPort, 24000)
+  assert.equal(ports.codexPort, 26001)
+  assert.ok(Object.values(ports).every((port) => port < 32768))
+  assert.throws(
+    () => makeNonEphemeralDrillPorts(31000),
+    /must stay below 32768/,
+  )
+})
+
+test("built binary resolution chooses the newest Cargo target candidate", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-binary-"))
+  const manifestPath = path.join(root, "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "chariox-kernel")
+  const workspaceBinary = path.join(root, "target", "debug", "chariox-kernel")
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(workspaceBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(workspaceBinary, "current")
+    await utimes(crateBinary, new Date(1_000), new Date(1_000))
+    await utimes(workspaceBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
+
+    await utimes(crateBinary, new Date(3_000), new Date(3_000))
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("built binary resolution honors an explicit shared Cargo target", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "chariox-drill-shared-target-"))
+  const manifestPath = path.join(root, "repo", "apps", "kernel", "Cargo.toml")
+  const crateBinary = path.join(root, "repo", "apps", "kernel", "target", "debug", "chariox-kernel")
+  const sharedTarget = path.join(root, "shared-target")
+  const sharedBinary = path.join(sharedTarget, "debug", "chariox-kernel")
+  const options = {
+    env: { CARGO_TARGET_DIR: sharedTarget },
+    cwd: root,
+  }
+  try {
+    await mkdir(path.dirname(crateBinary), { recursive: true })
+    await mkdir(path.dirname(sharedBinary), { recursive: true })
+    await writeFile(crateBinary, "stale")
+    await writeFile(sharedBinary, "shared")
+    await utimes(sharedBinary, new Date(1_000), new Date(1_000))
+    await utimes(crateBinary, new Date(2_000), new Date(2_000))
+
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", options), sharedBinary)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("detects ANSI-rendered provider authentication failures", () => {
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[8BLogin\x1b[9Gexpired\x1b[17G \u00b7 Please run /login"),
+    "Login expired",
+  )
+  assert.equal(
+    providerAuthFailureFromTerminalText("\x1b[93C\x1b[35BNot\x1b[98Glogged\x1b[105Gin \u00b7 Run /login"),
+    "Not logged in",
+  )
+  assert.equal(providerAuthFailureFromTerminalText("CLAUDECHARLIE"), null)
+})
+
+test("formatDrillCommandLine quotes replayable command diagnostics", () => {
+  assert.equal(
+    formatDrillCommandLine("node", ["apps/cli/scripts/drill-validation-suite.mjs", "--label", "Alice's local run"]),
+    "node apps/cli/scripts/drill-validation-suite.mjs --label 'Alice'\\''s local run'",
+  )
+})
+
+test("runLogged failure diagnostics use formatted command lines", async () => {
+  await assert.rejects(
+    () => runLogged(process.execPath, ["-e", "process.exit(7)", "arg with space"]),
+    /node.* -e 'process\.exit\(7\)' 'arg with space' exited with 7/,
+  )
+})
+
+test("waitForCondition returns the first ready observation", async () => {
+  let count = 0
+  const observed = await waitForCondition({
+    label: "counter",
+    timeoutMs: 100,
+    pollMs: 1,
+    observe: async () => ({ count: ++count }),
+    isReady: (value) => value.count === 2,
+  })
+
+  assert.deepEqual(observed, { count: 2 })
+})
+
+test("waitForCondition reports the last observation on timeout", async () => {
+  await assert.rejects(
+    () => waitForCondition({
+      label: "agent idle",
+      timeoutMs: 5,
+      pollMs: 1,
+      observe: async () => ({ agent: "agent-1", state: "Working" }),
+      isReady: () => false,
+    }),
+    /timed out waiting for agent idle\nlast_observation=/,
+  )
+})
+
+test("waitForCondition reports transient observer errors", async () => {
+  await assert.rejects(
+    () => waitForCondition({
+      label: "relay freshness",
+      timeoutMs: 5,
+      pollMs: 1,
+      observe: async () => {
+        throw new Error("relay unavailable")
+      },
+    }),
+    /last_error=Error: relay unavailable/,
+  )
+})
+
+test("waitForCondition can fail immediately on definitive errors", async () => {
+  let count = 0
+  await assert.rejects(
+    () => waitForCondition({
+      label: "file content",
+      timeoutMs: 100,
+      pollMs: 1,
+      retryOnError: false,
+      observe: async () => ({ actual: "wrong" }),
+      isReady: () => {
+        count += 1
+        throw new Error("unexpected content")
+      },
+    }),
+    /unexpected content/,
+  )
+  assert.equal(count, 1)
+})
+
+test("waitForTcpPort waits for reachable listeners", async () => {
+  const server = await listenOnEphemeralPort()
+  try {
+    await waitForTcpPort(server.address().port, "127.0.0.1", 100)
+  } finally {
+    await closeServer(server)
+  }
+})
+
+test("waitForTcpPort reports the last reachability observation", async () => {
+  const server = await listenOnEphemeralPort()
+  const port = server.address().port
+  await closeServer(server)
+
+  await assert.rejects(
+    () => waitForTcpPort(port, "127.0.0.1", 5),
+    /last_observation=/,
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput finds run-owned drill processes", () => {
+  const psOutput = `
+  101 /usr/bin/login -fq user /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js opencode --relay-token remote-native-token-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  102 /opt/homebrew/bin/bun /repo/apps/cli/dist/index.js --client-id chariox-remote-native-observer-opencode-4242 --automation-socket /tmp/arb-rnt-opencode-4242.sock
+  103 /Applications/Codex.app/Contents/MacOS/Codex
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "remote-native-token-4242",
+      "/tmp/arb-rnt-opencode-4242.sock",
+    ], 999),
+    [101, 102],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput ignores the current process", () => {
+  const psOutput = `
+  201 node apps/cli/scripts/live-remote-native-tui-drill.mjs --relay-token remote-native-token-4242
+  202 bun /repo/apps/cli/dist/index.js codex --relay-token remote-native-token-4242
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, ["remote-native-token-4242"], 201),
+    [202],
+  )
+})
+
+test("findMatchingProcessIdsFromPsOutput supports regex markers and empty patterns", () => {
+  const psOutput = `
+  301 screen -dmS chariox-rnt-codex-a-4242 -L bun /repo/apps/cli/dist/index.js
+  302 screen -dmS unrelated -L node server.js
+  `
+
+  assert.deepEqual(
+    findMatchingProcessIdsFromPsOutput(psOutput, [
+      "",
+      null,
+      /chariox-rnt-codex-[ab]-4242/,
+    ], 999),
+    [301],
+  )
+})
+
+test("screenSessionListContains identifies an exact detached screen name", () => {
+  const output = `There are screens on:\n\t301.chariox-rnt-claude-a-4242\t(Detached)\n\t302.unrelated\t(Detached)\n`
+
+  assert.equal(screenSessionListContains(output, "chariox-rnt-claude-a-4242"), true)
+  assert.equal(screenSessionListContains(output, "chariox-rnt-claude-b-4242"), false)
+})
+
+async function listenOnEphemeralPort() {
+  const server = net.createServer()
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  return server
+}
+
+async function closeServer(server) {
+  await new Promise((resolve) => server.close(resolve))
+}

@@ -1,0 +1,629 @@
+use serde_json::{json, Value};
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::error::DaemonError;
+use crate::provider::ProviderWriteAccessMode;
+
+use super::approval_bodies::{
+    apply_patch_review_body, command_execution_approval_body, exec_command_review_body,
+    file_change_approval_body,
+};
+use super::json_rpc::JsonRpcMessage;
+use super::permission::{
+    read_only_codex_permission_grant, workspace_live_sync_codex_permission_grant,
+};
+use super::runtime_mcp::call_runtime_mcp_tool;
+use super::{CodexClient, CodexSocket};
+
+impl CodexClient {
+    pub(super) fn respond_to_server_request(
+        &self,
+        socket: &mut CodexSocket,
+        message: &JsonRpcMessage,
+    ) -> Result<bool, DaemonError> {
+        let Some(request_id) = message.id.as_ref() else {
+            return Ok(false);
+        };
+        let Some(method) = message.method.as_deref() else {
+            return Ok(false);
+        };
+        crate::logging::debug_with_fields(
+            "daemon.provider.codex",
+            "received codex server request",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "method": method,
+                "params": if self.metadata_only_discovery { Value::Null } else { message.params.clone().unwrap_or(Value::Null) },
+            }),
+        );
+        let result = if self.metadata_only_discovery {
+            match method {
+                "item/permissions/requestApproval" => json!({"permissions": {}, "scope": "turn"}),
+                "mcpServer/elicitation/request" => {
+                    json!({"action": "decline", "content": null, "_meta": null})
+                }
+                "item/tool/call" => json!({"success": false, "contentItems": []}),
+                "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+                    json!({"decision": "decline"})
+                }
+                "execCommandApproval" | "applyPatchApproval" => json!({"decision": "denied"}),
+                _ => {
+                    return Err(self.protocol_error(
+                        "metadata_discovery_request",
+                        "unexpected metadata discovery request".into(),
+                    ))
+                }
+            }
+        } else {
+            match method {
+                "item/commandExecution/requestApproval" => {
+                    self.command_execution_approval_response(message)?
+                }
+                "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
+                "execCommandApproval" => self.exec_command_approval_response(message)?,
+                "applyPatchApproval" => self.apply_patch_approval_response(message)?,
+                "item/permissions/requestApproval" => self.permissions_approval_response(message),
+                "mcpServer/elicitation/request" => self.respond_to_mcp_elicitation(message),
+                "item/tool/call" => self.respond_to_dynamic_tool_call(message)?,
+                _ => {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider.codex",
+                        "unhandled codex server request",
+                        json!({
+                            "provider_run_id": self.provider_run_id,
+                            "method": method,
+                        }),
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": result,
+        });
+        socket
+            .send(Message::Text(payload.to_string().into()))
+            .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
+        Ok(true)
+    }
+
+    fn respond_to_mcp_elicitation(&self, message: &JsonRpcMessage) -> Value {
+        if self.read_only_discovery_permissions {
+            return json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            });
+        }
+        let approve = message.params.as_ref().is_some_and(|params| {
+            params.get("serverName").and_then(Value::as_str) == Some("chariox")
+                && params
+                    .get("_meta")
+                    .and_then(|meta| meta.get("codex_approval_kind"))
+                    .and_then(Value::as_str)
+                    == Some("mcp_tool_call")
+        });
+        if approve {
+            json!({
+                "action": "accept",
+                "content": {},
+                "_meta": null,
+            })
+        } else {
+            json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            })
+        }
+    }
+
+    pub(super) fn permissions_approval_response(&self, message: &JsonRpcMessage) -> Value {
+        let requested_permissions = message
+            .params
+            .as_ref()
+            .and_then(|params| params.get("permissions"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if self.read_only_discovery_permissions {
+            return json!({
+                "permissions": read_only_codex_permission_grant(&requested_permissions, self.discovery_read_root.as_deref()),
+                "scope": "turn",
+            });
+        }
+        match self.write_access_mode {
+            ProviderWriteAccessMode::Unrestricted
+            | ProviderWriteAccessMode::WorkspaceLiveSyncTracked => json!({
+                "permissions": requested_permissions,
+                "scope": "session",
+            }),
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged => {
+                let cwd = message
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.get("cwd"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(std::path::Path::new);
+                let granted_permissions = workspace_live_sync_codex_permission_grant(
+                    &requested_permissions,
+                    &self.workspace_live_sync_roots,
+                    cwd,
+                );
+                json!({
+                    "permissions": granted_permissions,
+                    "scope": "turn",
+                })
+            }
+        }
+    }
+
+    fn command_execution_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested command approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let body = command_execution_approval_body(&params);
+        self.request_native_permission_interaction(
+            &params,
+            "codex-command-approval",
+            Some("Command approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Warning,
+        )
+    }
+
+    fn file_change_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested file change approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let body = file_change_approval_body(&params);
+        self.request_native_permission_interaction(
+            &params,
+            "codex-file-change-approval",
+            Some("File change approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Critical,
+        )
+    }
+
+    fn exec_command_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested exec command approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let body = exec_command_review_body(&params);
+        self.request_native_review_interaction(
+            &params,
+            "codex-exec-command-approval",
+            Some("Command approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Warning,
+        )
+    }
+
+    fn apply_patch_approval_response(
+        &self,
+        message: &JsonRpcMessage,
+    ) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({ "decision": "decline" }));
+        }
+        let params = message
+            .params
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex requested apply_patch approval",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "params": params,
+            }),
+        );
+        let body = apply_patch_review_body(&params);
+        self.request_native_review_interaction(
+            &params,
+            "codex-apply-patch-approval",
+            Some("File change approval required".to_string()),
+            body,
+            crate::session::RuntimeInteractionLevel::Critical,
+        )
+    }
+
+    fn native_approval_origin_for_request(
+        &self,
+        params: &Value,
+    ) -> Option<crate::session::NativeInteractionOrigin> {
+        let turn_id = params
+            .get("turnId")
+            .or_else(|| params.get("turn_id"))
+            .and_then(Value::as_str);
+        if self
+            .native_approval_turn_id
+            .as_deref()
+            .is_some_and(|expected| turn_id != Some(expected))
+        {
+            return None;
+        }
+        if self.native_approval_turn_id.is_some() {
+            return self.native_approval_origin.clone();
+        }
+        turn_id.filter(|id| !id.is_empty()).map(|id| {
+            crate::session::NativeInteractionOrigin::NativeTurn {
+                provider_run_id: self.provider_run_id.clone(),
+                native_turn_id: id.into(),
+            }
+        })
+    }
+
+    /// Codex waits for an answer to every approval request, so a failed
+    /// interaction declines instead of leaving the turn without one.
+    fn native_interaction_resolution(
+        &self,
+        result: Result<crate::provider::ProviderNativeInteractionResolution, DaemonError>,
+    ) -> crate::provider::ProviderNativeInteractionResolution {
+        result.unwrap_or_else(|error| {
+            crate::logging::warn_with_fields(
+                "daemon.provider.codex",
+                "codex native interaction failed; declining",
+                json!({
+                    "provider_run_id": self.provider_run_id,
+                    "error": error.to_string(),
+                }),
+            );
+            crate::provider::ProviderNativeInteractionResolution {
+                status: "timed_out".into(),
+                choice_id: None,
+                reply: None,
+            }
+        })
+    }
+
+    fn request_native_permission_interaction(
+        &self,
+        params: &Value,
+        prefix: &str,
+        title: Option<String>,
+        message: String,
+        level: crate::session::RuntimeInteractionLevel,
+    ) -> Result<Value, DaemonError> {
+        let Some(bridge) = self.native_interaction_bridge.as_ref() else {
+            return Ok(json!({ "decision": "decline" }));
+        };
+        let session_id = self.session_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_permission",
+                "missing session context for native permission prompt".to_string(),
+            )
+        })?;
+        let agent_id = self.agent_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_permission",
+                "missing agent context for native permission prompt".to_string(),
+            )
+        })?;
+        let origin = self.native_approval_origin_for_request(params);
+        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
+            .with_native_origin(origin);
+        let resolution =
+            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex native permission interaction resolved",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "interaction_prefix": prefix,
+                "status": resolution.status,
+                "choice_id": resolution.choice_id,
+                "reply": resolution.reply,
+            }),
+        );
+        Ok(Self::codex_v2_approval_decision(&resolution))
+    }
+
+    fn request_native_review_interaction(
+        &self,
+        params: &Value,
+        prefix: &str,
+        title: Option<String>,
+        message: String,
+        level: crate::session::RuntimeInteractionLevel,
+    ) -> Result<Value, DaemonError> {
+        let Some(bridge) = self.native_interaction_bridge.as_ref() else {
+            return Ok(json!({ "decision": "denied" }));
+        };
+        let session_id = self.session_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_review",
+                "missing session context for native approval prompt".to_string(),
+            )
+        })?;
+        let agent_id = self.agent_id.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_native_review",
+                "missing agent context for native approval prompt".to_string(),
+            )
+        })?;
+        let origin = self.native_approval_origin_for_request(params);
+        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
+            .with_native_origin(origin);
+        let resolution =
+            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
+        crate::logging::info_with_fields(
+            "daemon.provider.codex",
+            "codex native review interaction resolved",
+            json!({
+                "provider_run_id": self.provider_run_id,
+                "interaction_prefix": prefix,
+                "status": resolution.status,
+                "choice_id": resolution.choice_id,
+                "reply": resolution.reply,
+            }),
+        );
+        Ok(Self::codex_v2_approval_decision(&resolution))
+    }
+
+    fn codex_v2_approval_decision(
+        resolution: &crate::provider::ProviderNativeInteractionResolution,
+    ) -> Value {
+        match resolution.choice_id.as_deref() {
+            Some("allow_once") => json!({ "decision": "accept" }),
+            Some("allow_session") => json!({ "decision": "acceptForSession" }),
+            Some("deny") | None => json!({ "decision": "decline" }),
+            Some(_) => json!({ "decision": "decline" }),
+        }
+    }
+
+    fn respond_to_dynamic_tool_call(&self, message: &JsonRpcMessage) -> Result<Value, DaemonError> {
+        if self.read_only_discovery_permissions {
+            return Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": "MCP tool calls are disabled during read-only discovery",
+                }],
+                "success": false,
+            }));
+        }
+        let params = message.params.as_ref().ok_or_else(|| {
+            self.protocol_error("codex_dynamic_tool_call", "missing params".to_string())
+        })?;
+        let tool_name = params.get("tool").and_then(Value::as_str).ok_or_else(|| {
+            self.protocol_error("codex_dynamic_tool_call", "missing tool name".to_string())
+        })?;
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let server_url = self.runtime_mcp_server_url.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_dynamic_tool_call",
+                "runtime MCP server URL is missing".to_string(),
+            )
+        })?;
+        let auth_token = self.runtime_mcp_auth_token.as_deref().ok_or_else(|| {
+            self.protocol_error(
+                "codex_dynamic_tool_call",
+                "runtime MCP auth token is missing".to_string(),
+            )
+        })?;
+        match call_runtime_mcp_tool(server_url, auth_token, tool_name, arguments) {
+            Ok(text) => Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": text,
+                }],
+                "success": true,
+            })),
+            Err(error) => Ok(json!({
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": error.to_string(),
+                }],
+                "success": false,
+            })),
+        }
+    }
+}
+
+fn codex_permission_interaction(
+    prefix: &str,
+    title: Option<String>,
+    message: String,
+    level: crate::session::RuntimeInteractionLevel,
+    agent_id: &str,
+) -> crate::session::RuntimeInteraction {
+    crate::session::RuntimeInteraction::new(
+        format!("{prefix}-{}", crate::session::unix_epoch_ms()),
+        agent_id,
+        crate::session::RuntimeInteractionKind::Permission,
+        level,
+        title,
+        message,
+        vec![
+            crate::session::RuntimeInteractionChoice::new(
+                "allow_once",
+                "Allow once",
+                "allow_once",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "allow_session",
+                "Allow for session",
+                "allow_session",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+            ),
+            crate::session::RuntimeInteractionChoice::new(
+                "deny",
+                "Deny",
+                "deny",
+                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
+            ),
+        ],
+        None,
+        None,
+        None,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn approval_lifetime_withdrawn_codex_permission_is_declined() {
+        let resolution = crate::provider::ProviderNativeInteractionResolution {
+            status: "timed_out".into(),
+            choice_id: None,
+            reply: None,
+        };
+        assert_eq!(
+            CodexClient::codex_v2_approval_decision(&resolution),
+            json!({"decision": "decline"})
+        );
+    }
+
+    use serde_json::json;
+
+    use super::{CodexClient, JsonRpcMessage};
+
+    #[test]
+    fn read_only_discovery_rejects_mutating_mcp_tool_calls_without_contacting_runtime() {
+        let client = CodexClient::new("run-1", "not-a-runtime-mcp-endpoint")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("not-a-runtime-mcp-endpoint"), Some("token-123"))
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/tool/call".to_string()),
+            params: Some(json!({
+                "tool": "workspace_live_sync_write_artifact",
+                "arguments": {"path": "/repo/output", "content": "mutate"}
+            })),
+            result: None,
+            error: None,
+        };
+
+        let response = client
+            .respond_to_dynamic_tool_call(&message)
+            .expect("discovery should return a protocol-level MCP rejection");
+
+        assert_eq!(response.get("success"), Some(&json!(false)));
+        assert_eq!(
+            response["contentItems"][0]["text"],
+            "MCP tool calls are disabled during read-only discovery"
+        );
+    }
+
+    #[test]
+    fn read_only_discovery_declines_mcp_elicitation() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(2)),
+            method: Some("mcpServer/elicitation/request".to_string()),
+            params: Some(json!({
+                "serverName": "chariox",
+                "_meta": {"codex_approval_kind": "mcp_tool_call"}
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.respond_to_mcp_elicitation(&message),
+            json!({
+                "action": "decline",
+                "content": null,
+                "_meta": null,
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod approval_origin_tests {
+    use super::*;
+    #[test]
+    fn approval_lifetime_codex_buffered_request_keeps_actor_prompt_and_refuses_other_turns() {
+        let origin = crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: "run".into(),
+            prompt_id: "prompt-A".into(),
+        };
+        let client = CodexClient::new("run", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_native_approval_context(Some(origin.clone()), Some("provider-turn-A".into()));
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"provider-turn-A"})),
+            Some(origin)
+        );
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"provider-turn-B"})),
+            None
+        );
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"callId":"legacy-without-turn"})),
+            None
+        );
+    }
+    #[test]
+    fn approval_lifetime_codex_native_request_uses_provider_identity_without_current_prompt_capture(
+    ) {
+        let client = CodexClient::new("run", "ws://127.0.0.1:1").unwrap();
+        assert_eq!(
+            client.native_approval_origin_for_request(&json!({"turnId":"native-A"})),
+            Some(crate::session::NativeInteractionOrigin::NativeTurn {
+                provider_run_id: "run".into(),
+                native_turn_id: "native-A".into()
+            })
+        );
+        assert_eq!(client.native_approval_origin_for_request(&json!({})), None);
+    }
+}

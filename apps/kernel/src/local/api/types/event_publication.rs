@@ -1,0 +1,361 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub use chariox_event_protocol::{
+    AegsAuthorizationFlow as EventGeneratorAuthorizationFlow,
+    AegsConnectedResource as EventConnectedResource,
+    AegsConnectionLifecycleState as EventConnectionLifecycleState,
+    AegsConnectionScope as EventConnectionScope, AegsConnectionStatus as EventConnectionStatus,
+    AegsProviderResource as EventGeneratorResource,
+    AegsProviderResourcePage as EventGeneratorResourcePage,
+};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnection {
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
+    pub generator_id: String,
+    pub connection_id: String,
+    pub status: EventConnectionStatus,
+    #[serde(default)]
+    pub lifecycle_state: EventConnectionLifecycleState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<EventConnectionScope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<EventConnectedResource>,
+    /// Protocol 365: active App inbox routes and App connection grants that
+    /// use the connection.
+    #[serde(default)]
+    pub attached_trigger_count: u64,
+    #[serde(default, skip_serializing_if = "is_json_null")]
+    pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_validated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_health_check_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_event_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<String>,
+    #[serde(default)]
+    pub test_event_supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventConnectionAuthorization {
+    pub authorization_id: String,
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventConnectionPage {
+    pub connections: Vec<EventConnection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Protocol 365: an App installation that uses an event connection, through
+/// an inbox route (`route_id`) or a connection grant (no `route_id`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventConnectionDependency {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_id: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallEventConnectionRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObserveEventConnectionAuthorizationRequest {
+    pub authorization_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshEventConnectionRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReconnectEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionResourcesRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionDependenciesRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventGeneratorParty {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventGeneratorCatalogSummary {
+    #[serde(default = "default_event_generator_schema_version")]
+    pub schema_version: u32,
+    pub generator_id: String,
+    pub version: String,
+    pub name: String,
+    pub summary: String,
+    pub provider: String,
+    pub publisher: EventGeneratorParty,
+    pub operator: EventGeneratorParty,
+    pub verification: String,
+    pub manifest_digest: String,
+    pub protocol_version: u32,
+    pub categories: Vec<String>,
+    pub installed_count: u64,
+    pub recommended: bool,
+    #[serde(default = "default_event_generator_availability")]
+    pub availability: String,
+    /// Trusted registry metadata for the provider management endpoint. This is
+    /// a route only; authentication is negotiated separately and never stored
+    /// in the catalog response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventGeneratorEventDefinition {
+    pub event_type: String,
+    pub version: u32,
+    pub name: String,
+    pub description: String,
+    pub filter_schema: Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventGeneratorActionDefinition {
+    pub action_id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
+    pub target: String,
+    pub mutation: bool,
+    pub idempotent: bool,
+    pub input_schema: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventGeneratorCatalogDetail {
+    #[serde(flatten)]
+    pub summary: EventGeneratorCatalogSummary,
+    pub authorization: Value,
+    pub events: Vec<EventGeneratorEventDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<EventGeneratorActionDefinition>,
+    pub signature: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deprecation: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventCatalogCategory {
+    pub id: String,
+    pub name: String,
+    pub service_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventCatalogFacet {
+    pub id: String,
+    pub values: Vec<EventCatalogFacetValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventCatalogFacetValue {
+    pub value: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventGeneratorCatalogPage {
+    pub services: Vec<EventGeneratorCatalogSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub categories: Vec<EventCatalogCategory>,
+    pub facets: Vec<EventCatalogFacet>,
+    pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventGeneratorEventPage {
+    pub events: Vec<EventGeneratorEventDefinition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventGeneratorCatalogLandingRequest {
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchEventGeneratorCatalogRequest {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowseEventGeneratorCategoryRequest {
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventGeneratorDetailRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrowseEventGeneratorEventsRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_event_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartEventGeneratorAuthorizationRequest {
+    pub generator_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventGeneratorResourcesRequest {
+    pub generator_id: String,
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default = "default_catalog_page_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetEventDeliveryStatusRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventDeliveryStatus {
+    pub configured: bool,
+    pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aeds_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_connected_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    /// Active App inbox routes fed by an event generator.
+    pub active_route_count: usize,
+}
+
+fn default_catalog_page_limit() -> u32 {
+    20
+}
+
+fn default_event_page_limit() -> u32 {
+    50
+}
+
+fn default_event_generator_availability() -> String {
+    "unknown".to_string()
+}
+
+fn default_event_generator_schema_version() -> u32 {
+    1
+}
+
+fn is_json_null(value: &Value) -> bool {
+    value.is_null()
+}

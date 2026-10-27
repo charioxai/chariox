@@ -1,0 +1,616 @@
+use super::*;
+
+pub fn export_development_context(
+    request: DevelopmentContextExportRequest,
+) -> Result<DevelopmentContextExportResult, DaemonError> {
+    export_development_context_with_environment(request, None)
+}
+
+pub fn export_development_context_with_environment(
+    request: DevelopmentContextExportRequest,
+    environment: Option<DevelopmentProjectEnvironment>,
+) -> Result<DevelopmentContextExportResult, DaemonError> {
+    export_development_context_with_vault(request, environment, None)
+}
+
+pub(crate) fn export_development_context_with_vault(
+    request: DevelopmentContextExportRequest,
+    mut environment: Option<DevelopmentProjectEnvironment>,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
+) -> Result<DevelopmentContextExportResult, DaemonError> {
+    validate_export_request(&request)?;
+    let archive_parent = request.archive_path.parent().ok_or_else(|| {
+        context_error("development context archive path must have a parent directory")
+    })?;
+    if request.archive_path.exists() {
+        return Err(context_error(format!(
+            "development context archive `{}` already exists",
+            request.archive_path.display()
+        )));
+    }
+
+    let resolved_archive_parent = resolve_future_path(archive_parent)?;
+    let mut canonical_sources = BTreeSet::new();
+    let mut selected_sources = Vec::with_capacity(request.repositories.len());
+    for selection in &request.repositories {
+        let canonical_worktree = fs::canonicalize(&selection.worktree_path)
+            .map_err(|error| context_io_error("resolve source worktree", error))?;
+        if !canonical_sources.insert(canonical_worktree.clone()) {
+            return Err(context_error(format!(
+                "source worktree `{}` is selected more than once",
+                canonical_worktree.display()
+            )));
+        }
+        if resolved_archive_parent.starts_with(&canonical_worktree) {
+            return Err(context_error(format!(
+                "development context archive cannot be created inside source worktree `{}`",
+                canonical_worktree.display()
+            )));
+        }
+        selected_sources.push((selection, canonical_worktree));
+    }
+
+    fs::create_dir_all(archive_parent)
+        .map_err(|error| context_io_error("create archive parent", error))?;
+    let canonical_archive_parent = fs::canonicalize(archive_parent)
+        .map_err(|error| context_io_error("resolve archive parent", error))?;
+    if canonical_archive_parent != resolved_archive_parent {
+        return Err(context_error(
+            "development context archive parent changed while preparing the export",
+        ));
+    }
+
+    let staging_root =
+        create_unique_private_directory(&canonical_archive_parent, ".tmp-chariox-managed-context")?;
+    let staging_name = staging_root
+        .file_name()
+        .ok_or_else(|| context_error("development context staging path has no file name"))?
+        .to_string_lossy();
+    let temporary_archive_path = canonical_archive_parent.join(format!("{staging_name}.archive"));
+    let mut cleanup = ExportCleanup::new(staging_root.clone(), temporary_archive_path.clone());
+    let temporary_archive = private_create_new(&temporary_archive_path)?;
+    cleanup.own_archive();
+
+    let mut repositories = Vec::with_capacity(request.repositories.len());
+    let mut source_repositories = Vec::with_capacity(request.repositories.len());
+    let mut repository_ids = BTreeSet::new();
+    let mut target_directories = BTreeSet::new();
+    let mut materialized_entries = 0_u64;
+    let mut manifest_budget = ManifestMemoryBudget::new();
+    manifest_budget.consume(request.project_id.len().saturating_add(256))?;
+    for (selection, canonical_worktree) in selected_sources {
+        let (exported, estimate) = export_repository(
+            selection,
+            &canonical_worktree,
+            &staging_root,
+            &mut repository_ids,
+            &mut target_directories,
+            &mut manifest_budget,
+            vault,
+        )?;
+        materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
+        source_repositories.push(DevelopmentSourceRepositoryMapping {
+            source_workspace_id: selection.workspace_id.clone(),
+            repository_id: exported.repository_id.clone(),
+        });
+        repositories.push(exported);
+    }
+
+    if let Some(layer) = &mut environment {
+        layer.sealed.manifest.validate().map_err(context_error)?;
+        if layer.sealed.manifest.project_id != request.project_id
+            || layer.evidence.digest() != layer.sealed.manifest.evidence_digest
+        {
+            return Err(context_error(
+                "Project environment does not match development export",
+            ));
+        }
+        layer.repository_workspaces = source_repositories
+            .iter()
+            .map(|r| (r.repository_id.clone(), r.source_workspace_id.clone()))
+            .collect();
+        if layer.sealed.manifest.entries.iter().any(|e| {
+            !layer
+                .repository_workspaces
+                .values()
+                .any(|workspace| workspace == &e.workspace_id)
+        }) {
+            return Err(context_error(
+                "Project environment workspace is not selected",
+            ));
+        }
+    }
+    let manifest = DevelopmentContextManifest {
+        vault_artifacts: vault.map_or_else(Vec::new, |v| v.artifacts()),
+        schema_version: if vault.is_some_and(|v| !v.artifacts().is_empty()) {
+            VAULT_CONTEXT_SCHEMA_VERSION
+        } else if environment.is_some() {
+            ENVIRONMENT_CONTEXT_SCHEMA_VERSION
+        } else if repositories
+            .iter()
+            .any(|repository| !repository.workspace_kind.is_git())
+        {
+            DIRECTORY_CONTEXT_SCHEMA_VERSION
+        } else {
+            DEVELOPMENT_CONTEXT_SCHEMA_VERSION
+        },
+        project_id: request.project_id,
+        repositories,
+        project_environment: environment,
+    };
+    // The gzip writer is bounded by the room left beside the staged artifacts, so only the bytes
+    // actually written are admitted.
+    write_archive(
+        &temporary_archive_path,
+        temporary_archive,
+        &staging_root,
+        &manifest,
+    )?;
+    let archive_size_bytes = fs::metadata(&temporary_archive_path)
+        .map_err(|error| context_io_error("inspect development context archive", error))?
+        .len();
+    let archive_sha256 = sha256_file(&temporary_archive_path)?;
+    cleanup.remove_staging()?;
+    publish_archive_no_clobber(
+        &temporary_archive_path,
+        &request.archive_path,
+        &canonical_archive_parent,
+    )?;
+    Ok(DevelopmentContextExportResult {
+        manifest,
+        archive_path: request.archive_path,
+        archive_sha256,
+        archive_size_bytes,
+        source_repositories,
+    })
+}
+
+pub(crate) fn publish_archive_no_clobber(
+    temporary: &Path,
+    destination: &Path,
+    destination_parent: &Path,
+) -> Result<(), DaemonError> {
+    fs::hard_link(temporary, destination).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            context_error(format!(
+                "development context archive `{}` already exists",
+                destination.display()
+            ))
+        } else {
+            context_io_error("publish development context archive", error)
+        }
+    })?;
+    #[cfg(unix)]
+    if let Err(error) = File::open(destination_parent).and_then(|directory| directory.sync_all()) {
+        let _ = fs::remove_file(destination);
+        return Err(context_io_error(
+            "sync development context archive directory",
+            error,
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_future_path(path: &Path) -> Result<PathBuf, DaemonError> {
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(context_error(
+            "development context archive path cannot contain parent-directory components",
+        ));
+    }
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| context_io_error("resolve current directory", error))?
+            .join(path)
+    };
+    let mut existing = absolute.as_path();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        let component = existing.file_name().ok_or_else(|| {
+            context_error("development context archive parent has no existing ancestor")
+        })?;
+        suffix.push(component.to_os_string());
+        existing = existing.parent().ok_or_else(|| {
+            context_error("development context archive parent has no existing ancestor")
+        })?;
+    }
+    let mut resolved = fs::canonicalize(existing)
+        .map_err(|error| context_io_error("resolve archive ancestor", error))?;
+    for component in suffix.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn validate_export_request(request: &DevelopmentContextExportRequest) -> Result<(), DaemonError> {
+    if request.project_id.trim().is_empty()
+        || request.project_id.len() > MAX_CONTEXT_IDENTIFIER_BYTES
+    {
+        return Err(context_error("development context project id is required"));
+    }
+    if request.repositories.is_empty() {
+        return Err(context_error(
+            "development context must contain at least one repository",
+        ));
+    }
+    if request
+        .repositories
+        .iter()
+        .filter(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+        .count()
+        != 1
+    {
+        return Err(context_error(
+            "development context must contain exactly one primary repository",
+        ));
+    }
+    if request.repositories.iter().any(|repository| {
+        repository.workspace_id.trim().is_empty()
+            || repository.workspace_id.len() > MAX_CONTEXT_IDENTIFIER_BYTES
+    }) {
+        return Err(context_error(
+            "development context source Workspace identifiers are required",
+        ));
+    }
+    Ok(())
+}
+
+fn export_repository(
+    selection: &DevelopmentRepositorySelection,
+    worktree: &Path,
+    staging_root: &Path,
+    repository_ids: &mut BTreeSet<String>,
+    target_directories: &mut BTreeSet<String>,
+    manifest_budget: &mut ManifestMemoryBudget,
+    vault: Option<&vault_artifacts::ExportVault<'_>>,
+) -> Result<
+    (
+        DevelopmentRepositoryManifest,
+        RepositoryMaterializationEstimate,
+    ),
+    DaemonError,
+> {
+    match fs::symlink_metadata(worktree.join(".git")) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return super::directory::export_directory(
+                selection,
+                worktree,
+                staging_root,
+                repository_ids,
+                target_directories,
+                manifest_budget,
+                vault,
+            );
+        }
+        Err(error) => return Err(context_io_error("inspect Git workspace metadata", error)),
+        Ok(_) => {}
+    }
+    ensure_worktree_root(worktree)?;
+    let source_before = repository_source_state(worktree)?;
+    let source_estimate = inspect_export_repository(worktree)?;
+    let head_sha = source_before.head_sha.clone();
+    let branch = source_before.branch.clone();
+    let origin_url = source_before.origin_url.clone();
+    let upstream = source_before.upstream.clone().filter(|upstream| {
+        origin_url.is_some()
+            && upstream
+                .strip_prefix("origin/")
+                .is_some_and(|branch| !branch.is_empty())
+    });
+    let logical_name = repository_logical_name(worktree, origin_url.as_deref());
+    let source_basename = source_repository_basename(worktree)?;
+    let repository_id = unique_repository_id(
+        origin_url.as_deref(),
+        &head_sha,
+        &logical_name,
+        repository_ids,
+    );
+    let target_directory = target_directory_for_export(&source_basename, target_directories)?;
+    manifest_budget.consume(
+        head_sha
+            .len()
+            .saturating_add(branch.as_ref().map_or(0, String::len))
+            .saturating_add(upstream.as_ref().map_or(0, String::len))
+            .saturating_add(origin_url.as_ref().map_or(0, String::len))
+            .saturating_add(logical_name.len())
+            .saturating_add(repository_id.len())
+            .saturating_add(target_directory.len())
+            .saturating_add(2048),
+    )?;
+    let repository_root = staging_root.join("repositories").join(&repository_id);
+    create_private_directory(&repository_root)?;
+    let bundle_path = repository_root.join("repository.bundle");
+    let bundle_relative = format!("repositories/{repository_id}/repository.bundle");
+    let (bundle_size_bytes, bundle_sha256) = if let Some(vault) = vault {
+        let items = super::super::credential_free::scan_repository(worktree)?;
+        let bytes = git::create_git_bundle_bytes(
+            worktree,
+            crate::managed_context::limits::memory_budget(),
+        )?;
+        git::verify_git_bundle_header_reader(
+            &mut std::io::Cursor::new(bytes.as_slice()),
+            &head_sha,
+        )?;
+        let size = bytes.len() as u64;
+        let digest = sha256_bytes(&bytes);
+        vault.stage(staging_root, &bundle_relative, &bytes, items)?;
+        (size, digest)
+    } else {
+        create_git_bundle(
+            worktree,
+            &bundle_path,
+            crate::managed_context::limits::disk_budget(&repository_root),
+        )?;
+        verify_git_bundle(worktree, &bundle_path, &head_sha)?;
+        (
+            fs::metadata(&bundle_path)
+                .map_err(|error| context_io_error("inspect Git bundle", error))?
+                .len(),
+            sha256_file(&bundle_path)?,
+        )
+    };
+    let (overlay, overlay_size_bytes) = export_overlay(
+        worktree,
+        &repository_id,
+        staging_root,
+        manifest_budget,
+        vault,
+    )?;
+    let source_estimate =
+        charge_overlay_materialization(source_estimate, &overlay, UNBOUNDED_BYTES, u64::MAX)?;
+    let (verified_overlay, verified_overlay_size_bytes) = overlay::verify_overlay(
+        worktree,
+        &repository_id,
+        &repository_root,
+        &mut ManifestMemoryBudget::new(),
+        vault.is_some(),
+    )?;
+    let verified_estimate = charge_overlay_materialization(
+        inspect_export_repository(worktree)?,
+        &verified_overlay,
+        UNBOUNDED_BYTES,
+        u64::MAX,
+    )?;
+    let source_after = repository_source_state(worktree)?;
+    if source_before != source_after
+        || overlay != verified_overlay
+        || overlay_size_bytes != verified_overlay_size_bytes
+        || source_estimate != verified_estimate
+    {
+        return Err(context_error(format!(
+            "source repository `{}` changed while exporting; retry the development context export",
+            worktree.display()
+        )));
+    }
+
+    Ok((
+        DevelopmentRepositoryManifest {
+            workspace_kind: DevelopmentWorkspaceKind::Git,
+            directories: Vec::new(),
+            repository_id: repository_id.clone(),
+            source_binding_sha256: source_repository_binding_sha256(
+                &DevelopmentSourceRepositoryBinding {
+                    role: selection.role,
+                    workspace_id: selection.workspace_id.clone(),
+                    worktree_id: selection.worktree_id.clone(),
+                },
+            ),
+            logical_name,
+            role: selection.role,
+            target_directory,
+            head_sha,
+            branch,
+            upstream,
+            origin_url,
+            bundle_path: format!("repositories/{repository_id}/repository.bundle"),
+            bundle_sha256,
+            bundle_size_bytes,
+            overlay,
+            overlay_size_bytes,
+        },
+        source_estimate,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepositorySourceState {
+    head_sha: String,
+    branch: Option<String>,
+    upstream: Option<String>,
+    origin_url: Option<String>,
+}
+
+fn repository_source_state(worktree: &Path) -> Result<RepositorySourceState, DaemonError> {
+    Ok(RepositorySourceState {
+        head_sha: git_text(worktree, &["rev-parse", "--verify", "HEAD"])?,
+        branch: git_optional_text(worktree, &["symbolic-ref", "--short", "-q", "HEAD"])?,
+        upstream: git_optional_text(
+            worktree,
+            &[
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            ],
+        )?,
+        origin_url: git_optional_text(worktree, &["remote", "get-url", "origin"])?
+            .and_then(|value| sanitize_origin_url(&value)),
+    })
+}
+
+pub(super) fn repository_logical_name(worktree: &Path, origin_url: Option<&str>) -> String {
+    let candidate = origin_url
+        .and_then(|origin| origin.trim_end_matches('/').rsplit('/').next())
+        .map(|name| name.trim_end_matches(".git"))
+        .filter(|name| !name.is_empty())
+        .or_else(|| worktree.file_name().and_then(OsStr::to_str))
+        .unwrap_or("repository");
+    sanitize_directory_name(candidate)
+}
+
+pub(super) fn source_repository_basename(worktree: &Path) -> Result<String, DaemonError> {
+    let basename = worktree
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| context_error("source repository basename is not valid UTF-8"))?;
+    validate_repository_basename(basename)?;
+    Ok(basename.to_string())
+}
+
+pub(super) fn unique_repository_id(
+    origin_url: Option<&str>,
+    head_sha: &str,
+    logical_name: &str,
+    occupied: &mut BTreeSet<String>,
+) -> String {
+    let base = sha256_bytes(
+        format!(
+            "{}\0{head_sha}\0{logical_name}",
+            origin_url.unwrap_or_default()
+        )
+        .as_bytes(),
+    );
+    for suffix in 0_u32.. {
+        let candidate = if suffix == 0 {
+            format!("repo-{}", &base[..16])
+        } else {
+            format!("repo-{}-{suffix}", &base[..16])
+        };
+        if occupied.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("repository id suffix space is unbounded")
+}
+
+// MP-05 / MP-08 / MP-11: every placement preserves the selected basename.
+// Refuse collisions rather than silently renaming a supporting workspace.
+pub(super) fn target_directory_for_export(
+    source_basename: &str,
+    occupied: &mut BTreeSet<String>,
+) -> Result<String, DaemonError> {
+    validate_repository_basename(source_basename)?;
+    if !occupied.insert(source_basename.to_lowercase()) {
+        return Err(context_error(format!(
+            "source repository basename `{source_basename}` collides with another selected repository"
+        )));
+    }
+    Ok(source_basename.to_string())
+}
+
+pub(super) fn validate_repository_basename(value: &str) -> Result<(), DaemonError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 255
+        || path.components().count() != 1
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        || value.chars().any(|character| character.is_control())
+    {
+        return Err(context_error(
+            "source repository basename is unsafe or invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn sanitize_directory_name(value: &str) -> String {
+    let normalized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let normalized = normalized.trim_matches(['-', '.']).to_string();
+    let normalized = if normalized.is_empty() || normalized == "." || normalized == ".." {
+        "repository".to_string()
+    } else {
+        normalized
+    };
+    if normalized.len() <= MAX_TARGET_DIRECTORY_BASE_BYTES {
+        normalized
+    } else {
+        let digest = sha256_bytes(normalized.as_bytes());
+        let prefix_bytes = MAX_TARGET_DIRECTORY_BASE_BYTES - 17;
+        format!("{}-{}", &normalized[..prefix_bytes], &digest[..16])
+    }
+}
+
+pub(super) fn sanitize_origin_url(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with("file:")
+    {
+        return None;
+    }
+    if let Ok(mut url) = url::Url::parse(value) {
+        if !matches!(url.scheme(), "http" | "https" | "ssh" | "git") {
+            return None;
+        }
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        return Some(url.to_string());
+    }
+    if let Some((user_host, path)) = value.split_once(':') {
+        let host = user_host
+            .rsplit_once('@')
+            .map(|(_, host)| host)
+            .unwrap_or(user_host);
+        if !host.is_empty() && !path.is_empty() && !host.contains('/') {
+            return Some(format!("{host}:{path}"));
+        }
+    }
+    None
+}
+
+struct ExportCleanup {
+    staging_root: PathBuf,
+    archive_path: PathBuf,
+    remove_archive: bool,
+}
+
+impl ExportCleanup {
+    fn new(staging_root: PathBuf, archive_path: PathBuf) -> Self {
+        Self {
+            staging_root,
+            archive_path,
+            remove_archive: false,
+        }
+    }
+
+    fn own_archive(&mut self) {
+        self.remove_archive = true;
+    }
+
+    fn remove_staging(&mut self) -> Result<(), DaemonError> {
+        fs::remove_dir_all(&self.staging_root)
+            .map_err(|error| context_io_error("remove development context staging", error))?;
+        self.staging_root = PathBuf::new();
+        Ok(())
+    }
+}
+
+impl Drop for ExportCleanup {
+    fn drop(&mut self) {
+        if !self.staging_root.as_os_str().is_empty() {
+            let _ = fs::remove_dir_all(&self.staging_root);
+        }
+        if self.remove_archive {
+            let _ = fs::remove_file(&self.archive_path);
+        }
+    }
+}

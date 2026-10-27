@@ -1,0 +1,259 @@
+import {
+  derivePromptProviderSelection,
+  providerRunForPromptSelection,
+  resolveProviderModelContextLimit,
+  type PromptProviderSelectionOptions,
+  type ProviderModelContextCatalog,
+} from "./prompt-provider-selection.js"
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+} from "./kernel-types.js"
+
+export type PromptMetaTone = "primary" | "secondary" | "accent" | "warning" | "success" | "info" | "text"
+
+export type PromptMetaPart = {
+  kind: "provider" | "model" | "variant"
+  text: string
+  tone: PromptMetaTone
+}
+
+export type PromptUsageMeta = {
+  tokensLabel: string
+  usagePercent: number | null
+  usageLabel: string
+  barFilled: string
+  barEmpty: string
+}
+
+const promptUsageNumber = new Intl.NumberFormat("en-US")
+
+export type PromptMetaStateOptions = PromptProviderSelectionOptions
+
+export type PromptUsageStateOptions = {
+  readonly providerRun: RuntimeProviderRun | null
+  readonly focusedAgent?: AgentInstance | null
+  readonly catalog: ProviderModelContextCatalog
+  readonly barWidth?: number
+}
+
+export function derivePromptMetaState(options: PromptMetaStateOptions): PromptMetaPart[] {
+  const selection = derivePromptProviderSelection(options)
+  return formatPromptMetaParts(
+    selection.provider,
+    selection.model,
+    selection.effort,
+  )
+}
+
+export function derivePromptUsageState(options: PromptUsageStateOptions): PromptUsageMeta | null {
+  const run = providerRunForPromptSelection(options.providerRun, options.focusedAgent)
+  if (!run) {
+    return null
+  }
+
+  return formatPromptUsageMeta(
+    run.usage_tokens_total,
+    run.usage?.context_tokens,
+    resolveProviderModelContextLimit(options.catalog, run.provider, run.model),
+    options.barWidth ?? 12,
+  )
+}
+
+export function formatPromptMetaLine(provider: string | null, model: string | null, effort: string | null) {
+  return formatPromptMetaParts(provider, model, effort).map((part) => part.text).join(" • ")
+}
+
+export function formatPromptMetaParts(
+  provider: string | null,
+  model: string | null,
+  effort: string | null,
+): PromptMetaPart[] {
+  if (!provider) {
+    return [{
+      kind: "provider",
+      text: "No provider selected",
+      tone: "text",
+    }]
+  }
+
+  const parts: PromptMetaPart[] = [
+    {
+      kind: "provider",
+      text: formatProvider(provider),
+      tone: toneForProvider(provider),
+    },
+    {
+      kind: "model",
+      text: formatModel(model ?? "default"),
+      tone: toneForModel(model ?? "default"),
+    },
+  ]
+
+  const effortLabel = formatEffort(effort ?? "")
+  if (effortLabel) {
+    parts.push({
+      kind: "variant",
+      text: effortLabel,
+      tone: toneForVariant(effort ?? ""),
+    })
+  }
+
+  return parts
+}
+
+export function formatPromptUsageMeta(
+  totalTokens: number | null | undefined,
+  contextTokens: number | null | undefined,
+  contextLimit: number | null | undefined,
+  barWidth = 10,
+): PromptUsageMeta | null {
+  if (totalTokens == null || totalTokens < 0) {
+    return null
+  }
+
+  const usagePercent = contextTokens != null && contextTokens >= 0 && contextLimit && contextLimit > 0 && contextTokens <= contextLimit
+    ? Math.round((contextTokens / contextLimit) * 100)
+    : null
+  const clampedPercent = usagePercent == null
+    ? 0
+    : Math.max(0, Math.min(100, usagePercent))
+  const filledCount = Math.round((clampedPercent / 100) * barWidth)
+
+  return {
+    tokensLabel: `${promptUsageNumber.format(totalTokens)} tok`,
+    usagePercent,
+    usageLabel: usagePercent == null ? "" : `${usagePercent}%`,
+    barFilled: "=".repeat(filledCount),
+    barEmpty: "-".repeat(Math.max(0, barWidth - filledCount)),
+  }
+}
+
+function formatProvider(provider: string) {
+  return formatKnownLabel(provider) || "OpenCode"
+}
+
+function formatModel(model: string) {
+  const normalized = model.trim()
+  if (!normalized || normalized === "default") return "Default"
+  for (const prefix of ["codex/", "claude/", "claude-p/", "claude-headless/"]) {
+    if (normalized.startsWith(prefix)) return normalized.slice(prefix.length)
+  }
+  return normalized
+}
+
+function formatEffort(effort: string) {
+  const normalized = effort.trim()
+  if (!normalized || normalized === "default") {
+    return ""
+  }
+  return formatKnownLabel(normalized)
+}
+
+function formatKnownLabel(value: string) {
+  return value
+    .split(/([\/-])/)
+    .map((part) => {
+      if (part === "/" || part === "-") {
+        return part
+      }
+      if (!part) {
+        return ""
+      }
+      if (/^gpt$/i.test(part)) {
+        return "GPT"
+      }
+      if (/^openai$/i.test(part)) {
+        return "OpenAI"
+      }
+      if (/^github$/i.test(part)) {
+        return "GitHub"
+      }
+      if (/^opencode$/i.test(part)) {
+        return "OpenCode"
+      }
+      if (/^codex$/i.test(part)) {
+        return "Codex"
+      }
+      return part.charAt(0).toUpperCase() + part.slice(1)
+    })
+    .join("")
+}
+
+function toneForProvider(provider: string): PromptMetaTone {
+  const normalized = provider.trim().toLowerCase()
+  if (!normalized) {
+    return "text"
+  }
+  if (normalized.includes("opencode")) {
+    return "primary"
+  }
+  if (normalized.includes("openai") || normalized.includes("github")) {
+    return "info"
+  }
+  if (normalized.includes("anthropic") || normalized.includes("claude")) {
+    return "warning"
+  }
+  if (normalized.includes("google") || normalized.includes("gemini") || normalized.includes("deepseek")) {
+    return "success"
+  }
+  if (normalized.includes("xai") || normalized.includes("grok")) {
+    return "accent"
+  }
+  return fallbackTone(normalized)
+}
+
+function toneForModel(model: string): PromptMetaTone {
+  const normalized = model.trim().toLowerCase()
+  if (!normalized || normalized === "default") {
+    return "text"
+  }
+  if (/(^|\/)gpt|\bo[134]\b/.test(normalized)) {
+    return "secondary"
+  }
+  if (normalized.includes("claude") || normalized.includes("anthropic")) {
+    return "warning"
+  }
+  if (normalized.includes("gemini") || normalized.includes("deepseek")) {
+    return "success"
+  }
+  if (normalized.includes("grok") || normalized.includes("xai")) {
+    return "accent"
+  }
+  if (normalized.includes("llama") || normalized.includes("mistral")) {
+    return "primary"
+  }
+  if (normalized.includes("qwen") || normalized.includes("github")) {
+    return "info"
+  }
+  return fallbackTone(normalized)
+}
+
+function toneForVariant(effort: string): PromptMetaTone {
+  const normalized = effort.trim().toLowerCase()
+  if (!normalized || normalized === "default") {
+    return "text"
+  }
+  if (normalized === "low" || normalized === "fast") {
+    return "success"
+  }
+  if (normalized === "medium" || normalized === "balanced" || normalized === "normal") {
+    return "warning"
+  }
+  if (normalized === "high" || normalized === "quality") {
+    return "primary"
+  }
+  if (normalized === "max") {
+    return "accent"
+  }
+  return fallbackTone(normalized)
+}
+
+function fallbackTone(value: string): PromptMetaTone {
+  const tones: PromptMetaTone[] = ["primary", "secondary", "accent", "warning", "success", "info"]
+  let hash = 0
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0
+  }
+  return tones[hash % tones.length] ?? "text"
+}

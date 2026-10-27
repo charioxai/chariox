@@ -1,0 +1,46 @@
+export type CliLoadingStateControllerDeps = {
+  getSessionHydrating: () => boolean
+  setSessionHydrating: (next: boolean) => void
+  setLoadingHistory: (next: boolean) => void
+  setHistoryLoadingMessage: (next: string | null) => void
+  renderHistoryLoadingIndicator: () => void
+  isAttached: () => boolean
+  visibleTranscriptEntryCount: () => number
+  workflowScreenActive: () => boolean
+  rebuildTranscript: () => void
+  requestTranscriptRender: () => void
+  rebuildEmptyAuxiliaryPanes: () => void
+}
+
+export function createCliLoadingStateController(
+  deps: CliLoadingStateControllerDeps,
+) {
+  const setHistoryLoadingState = (next: boolean, message: string | null = null) => {
+    deps.setLoadingHistory(next)
+    deps.setHistoryLoadingMessage(next ? null : message)
+    deps.renderHistoryLoadingIndicator()
+  }
+
+  const setSessionHydratingState = (next: boolean) => {
+    if (deps.getSessionHydrating() === next) {
+      return false
+    }
+    deps.setSessionHydrating(next)
+    deps.rebuildEmptyAuxiliaryPanes()
+    if (
+      deps.isAttached()
+      && deps.visibleTranscriptEntryCount() === 0
+      && !deps.workflowScreenActive()
+    ) {
+      deps.rebuildTranscript()
+      return true
+    }
+    deps.requestTranscriptRender()
+    return true
+  }
+
+  return {
+    setHistoryLoadingState,
+    setSessionHydratingState,
+  }
+}

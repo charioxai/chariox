@@ -1,0 +1,694 @@
+import assert from "node:assert/strict"
+import { mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import test from "node:test"
+
+import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
+import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
+
+test("email bootstrap cannot bypass independent kernel enrollment", async () => {
+  let saved = false
+  const footers: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { footers.push(message) },
+    saveCloudRelayProfile: async () => { saved = true },
+  }))
+  await handlers.handleRelayCommand({kind:"relay", raw:"/relay cloud login", args:["cloud", "login", "https://cloud.example.test", "fixture@example.test"]})
+  assert.equal(saved, false)
+  assert.match(footers[0] ?? "", /email bootstrap is retired/)
+})
+
+test("relay cloud login without args uses device flow", async () => {
+  const notices: string[] = []
+  const savedProfiles: Array<Record<string, unknown> | null> = []
+  const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    clientId: "client-1",
+    appendNotice: (message: string) => { notices.push(message) },
+    bootstrapCloudRelay: async () => {
+      throw new Error("bootstrap path should not be used")
+    },
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
+      assert.equal(apiUrl, "https://staging.chariox.com")
+      assert.equal(input.clientId, undefined)
+      assert.equal(input.machineId, "machine-1")
+      assert.equal(input.machineAlias, "laptop")
+      return {
+        apiUrl,
+        deviceCode: "dev-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://staging.chariox.com/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => false,
+    pollCloudDeviceLogin: async (_apiUrl: string, deviceCode: string) => {
+      assert.equal(deviceCode, "dev-code")
+      return {
+        status: "approved",
+        profile: {
+          apiUrl: "https://staging.chariox.com",
+          email: "user@example.com",
+          accountId: "account-1",
+          userId: "user-1",
+          accountSlug: "user",
+          realmId: "realm-1",
+          relayUrl: "wss://relay.example",
+          issuerId: "issuer-1",
+          clientId: "client-1",
+          machineId: "machine-1",
+          cloudSessionToken: "session-token",
+        },
+      }
+    },
+    pairCloudRelayMachine: async (profile: Record<string, unknown>, machineId: string, alias?: string) => ({
+      ...profile,
+      machineId,
+      machineAlias: alias ?? "laptop",
+    }),
+    issueCloudMachineRelayToken: async (_profile: Record<string, unknown>, daemonId: string, machineId: string) => {
+      assert.equal(daemonId, "daemon-1")
+      assert.equal(machineId, "machine-1")
+      return {
+        relayUrl: "wss://relay.example",
+        relayToken: "relay-token",
+        tokenExpiresAtMs: 1234,
+      }
+    },
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => {
+      configured.push({ relayUrl, relayToken })
+      return {
+        configured: true,
+        connected: true,
+        relay_url: relayUrl,
+        relay_token_configured: relayToken != null,
+        daemon_id: "daemon-1",
+        machine_id: "machine-1",
+        machine_alias: "laptop",
+      }
+    },
+    saveCloudRelayProfile: async (profile: Record<string, unknown> | null) => {
+      savedProfiles.push(profile)
+    },
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login"] })
+
+  assert.equal((savedProfiles.at(-1) as { cloudSessionToken?: string; tokenExpiresAtMs?: number } | null)?.cloudSessionToken, "session-token")
+  assert.equal((savedProfiles.at(-1) as { tokenExpiresAtMs?: number } | null)?.tokenExpiresAtMs, 1234)
+  assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "relay-token" }])
+  assert.ok(notices.some((message) => /code=ABCD-EFGH/.test(message)))
+  assert.equal(notices.at(-1), "cloud linked: user")
+})
+
+test("/cloud opens hosted browser terminal when a cloud profile already exists", async () => {
+  const flashed: string[] = []
+  const notices: string[] = []
+  const openedUrls: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { flashed.push(message) },
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    getRelayStatus: async () => ({
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => {
+      throw new Error("device login should not start for an existing cloud profile")
+    },
+    openExternalUrl: async (url: string) => {
+      openedUrls.push(url)
+      return true
+    },
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.deepEqual(openedUrls, ["https://cloud.example/terminal?view=waiting"])
+  assert.match(notices[0] ?? "", /Opening Chariox Cloud/)
+  assert.doesNotMatch(notices.join("\n"), /code=|Link this machine/)
+  assert.equal(flashed.at(-1), "opened Chariox Cloud")
+})
+
+test("/cloud links instead of opening when the local kernel is not linked", async () => {
+  const notices: string[] = []
+  let startedDeviceLogin = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    issueCloudKernelRelayToken: async () => {
+      throw new Error("cloud relay profile missing; run /relay cloud login first")
+    },
+    configureRelay: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => {
+      startedDeviceLogin = true
+      return {
+        apiUrl: "https://cloud.example",
+        deviceCode: "device-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://cloud.example/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => false,
+    pollCloudDeviceLogin: async () => ({ status: "expired_token" }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.equal(startedDeviceLogin, true)
+  assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Open: Cmd-click the link.\nTerminal.app: Cmd-double-click.\nCopy: select the link, then Cmd-C."))
+  assert.doesNotMatch(notices[0] ?? "", /Opening Chariox Cloud/)
+})
+
+test("/cloud links instead of opening when the cloud machine identity was revoked", async () => {
+  const notices: string[] = []
+  const openedUrls: string[] = []
+  let startedDeviceLogin = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "user@example.com",
+      accountId: "account-1",
+      userId: "user-1",
+      accountSlug: "user",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+      machineId: "machine-1",
+    }),
+    getRelayStatus: async () => ({
+      configured: true,
+      connected: false,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    issueCloudMachineRelayToken: async () => {
+      throw new Error('cloud relay request failed with 403: {"error":{"code":"identity_revoked","message":"Subject has been revoked"}}')
+    },
+    configureRelay: async () => ({
+      configured: true,
+      connected: false,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => {
+      startedDeviceLogin = true
+      return {
+        apiUrl: "https://cloud.example",
+        deviceCode: "device-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://cloud.example/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async (url: string) => {
+      openedUrls.push(url)
+      return true
+    },
+    pollCloudDeviceLogin: async () => ({ status: "expired_token" }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] })
+
+  assert.equal(startedDeviceLogin, true)
+  assert.deepEqual(openedUrls, ["https://cloud.example/activate?user_code=ABCD-EFGH"])
+  assert.match(notices[0] ?? "", /Cloud link needs refresh/)
+  assert.match(notices[1] ?? "", /Link this kernel to Chariox Cloud/)
+  assert.doesNotMatch(notices.join("\n"), /Opening Chariox Cloud/)
+})
+
+test("/cloud link triggers hosted device login flow", async () => {
+  const flashed: string[] = []
+  const notices: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { flashed.push(message) },
+    appendNotice: (message: string) => { notices.push(message) },
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async () => ({
+      apiUrl: "https://cloud.example",
+      deviceCode: "device-code",
+      userCode: "ABCD-EFGH",
+      verificationUrl: "https://cloud.example/activate?user_code=ABCD-EFGH",
+      expiresAtMs: Date.now() + 60_000,
+      intervalSeconds: 1,
+    }),
+    openExternalUrl: async () => true,
+    pollCloudDeviceLogin: async () => ({
+      status: "approved",
+      profile: {
+        apiUrl: "https://cloud.example",
+        email: "user@example.com",
+        accountId: "account-1",
+        userId: "user-1",
+        accountSlug: "user",
+        realmId: "realm-1",
+        relayUrl: "wss://relay.example",
+        issuerId: "issuer-1",
+        machineId: "machine-1",
+        machineAlias: "laptop",
+      },
+    }),
+    pairCloudRelayMachine: async () => {
+      throw new Error("device login must not pair the already-provisioned machine again")
+    },
+    issueCloudMachineRelayToken: async () => ({
+      relayUrl: "wss://relay.example",
+      relayToken: "relay-token",
+      tokenExpiresAtMs: 1234,
+    }),
+    configureRelay: async () => ({
+      configured: true,
+      connected: true,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud link", args: ["link"] })
+
+  assert.deepEqual(flashed, [])
+  assert.match(notices[0] ?? "", /Link this kernel to Chariox Cloud/)
+  assert.ok((notices[0] ?? "").includes("Open: Cmd-click the link.\nTerminal.app: Cmd-double-click.\nCopy: select the link, then Cmd-C."))
+  assert.equal(notices.at(-1), "cloud linked: user")
+})
+
+test("relay cloud login without args prefers configured hosted api url", async () => {
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    clientId: "client-1",
+    cloudRelayApiUrl: "https://staging.chariox.com/",
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: "laptop",
+    }),
+    startCloudDeviceLogin: async (apiUrl: string) => {
+      assert.equal(apiUrl, "https://staging.chariox.com/")
+      return {
+        apiUrl,
+        deviceCode: "dev-code",
+        userCode: "ABCD-EFGH",
+        verificationUrl: "https://staging.chariox.com/activate?user_code=ABCD-EFGH",
+        expiresAtMs: Date.now() + 60_000,
+        intervalSeconds: 1,
+      }
+    },
+    openExternalUrl: async () => true,
+    pollCloudDeviceLogin: async () => ({ status: "expired_token" }),
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud login", args: ["cloud", "login"] })
+})
+
+test("relay cloud connect mints a daemon token and configures relay", async () => {
+  const notices: string[] = []
+  const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
+  let savedProfile: Record<string, unknown> | null = null
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => profile,
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: null,
+    }),
+    issueCloudKernelRelayToken: async () => ({
+      relayUrl: "wss://relay.example",
+      relayToken: "runtime-token",
+      tokenExpiresAtMs: 1234,
+    }),
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => {
+      configured.push({ relayUrl, relayToken })
+      return {
+        configured: true,
+        connected: true,
+        relay_url: relayUrl,
+        relay_token_configured: Boolean(relayToken),
+        daemon_id: "daemon-1",
+        machine_id: "machine-1",
+        machine_alias: null,
+      }
+    },
+    saveCloudRelayProfile: async (next: Record<string, unknown> | null) => {
+      savedProfile = next
+    },
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud connect", args: ["cloud", "connect"] })
+
+  assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "runtime-token" }])
+  assert.equal((savedProfile as { tokenExpiresAtMs?: number } | null)?.tokenExpiresAtMs, 1234)
+  assert.equal(notices.at(-1), "cloud kernel connected: wss://relay.example")
+})
+
+test("relay cloud connect reports pending relay registration clearly", async () => {
+  const notices: string[] = []
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    appendNotice: (message: string) => { notices.push(message) },
+    getCloudRelayProfile: () => profile,
+    cloudRelayConnectTimeoutMs: 1,
+    cloudRelayConnectPollMs: 1,
+    getRelayStatus: async () => ({
+      configured: true,
+      connected: false,
+      relay_url: "wss://relay.example",
+      relay_token_configured: true,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: null,
+    }),
+    issueCloudKernelRelayToken: async () => ({
+      relayUrl: "wss://relay.example",
+      relayToken: "runtime-token",
+      tokenExpiresAtMs: 1234,
+    }),
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => ({
+      configured: true,
+      connected: false,
+      relay_url: relayUrl,
+      relay_token_configured: Boolean(relayToken),
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: null,
+    }),
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud connect", args: ["cloud", "connect"] })
+
+  assert.match(notices.at(-1) ?? "", /kernel is not online in Cloud yet/)
+  assert.match(notices.at(-1) ?? "", /relay=not connected/)
+  assert.match(notices.at(-1) ?? "", /machine=machine-1/)
+})
+
+test("MP-08 / MP-11 retired relay cloud pair-machine refuses without storing a machine identity", async () => {
+  const footers: string[] = []
+  let saved = false
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    flashFooter: (message: string) => { footers.push(message) },
+    pairCloudRelayMachine: async () => { throw new Error("retired kernel human Cloud control must not be called") },
+    saveCloudRelayProfile: async () => { saved = true },
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud pair-machine", args: ["cloud", "pair-machine"] })
+
+  assert.equal(saved, false)
+  assert.match(footers.at(-1) ?? "", /pair-machine is retired; run \/cloud link on the receiving kernel/)
+})
+
+test("relay cloud connect prefers paired machine tokens", async () => {
+  const configured: Array<{ relayUrl: string | null; relayToken: string | null }> = []
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "user@example.com",
+    accountId: "account-1",
+    userId: "user-1",
+    accountSlug: "user",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+    machineId: "machine-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => profile,
+    getRelayStatus: async () => ({
+      configured: false,
+      connected: false,
+      relay_url: null,
+      relay_token_configured: false,
+      daemon_id: "daemon-1",
+      machine_id: "machine-1",
+      machine_alias: null,
+    }),
+    issueCloudKernelRelayToken: async () => {
+      throw new Error("kernel token path should not be used")
+    },
+    issueCloudMachineRelayToken: async (_profile: Record<string, unknown>, daemonId: string, machineId: string) => ({
+      relayUrl: "wss://relay.example",
+      relayToken: `machine-token:${machineId}:${daemonId}`,
+      tokenExpiresAtMs: 5678,
+    }),
+    configureRelay: async (relayUrl: string | null, relayToken: string | null) => {
+      configured.push({ relayUrl, relayToken })
+      return {
+        configured: true,
+        connected: true,
+        relay_url: relayUrl,
+        relay_token_configured: Boolean(relayToken),
+        daemon_id: "daemon-1",
+        machine_id: "machine-1",
+        machine_alias: null,
+      }
+    },
+    saveCloudRelayProfile: async () => {},
+  }))
+
+  await handlers.handleRelayCommand({ kind: "relay", raw: "/relay cloud connect", args: ["cloud", "connect"] })
+
+  assert.deepEqual(configured, [{ relayUrl: "wss://relay.example", relayToken: "machine-token:machine-1:daemon-1" }])
+})
+
+test("cloud invite create pairs cloud and local session invite tokens", async () => {
+  const notices: string[] = []
+  const flashed: string[] = []
+  const profile = {
+    apiUrl: "https://cloud.example",
+    email: "owner@example.com",
+    accountId: "account-1",
+    userId: "owner-1",
+    accountSlug: "owner",
+    realmId: "realm-1",
+    relayUrl: "wss://relay.example",
+    issuerId: "issuer-1",
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => profile,
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashed.push(message) },
+    openExternalUrl: async (url: string) => {
+      assert.match(url, /cloud_invite=cloud-token/)
+      assert.match(url, /local_invite=local-token/)
+      return false
+    },
+    createSessionInvite: async (sessionId: string, _expiresInMs: number | null, maxUses: number | null, collaborationLevel?: string | null) => {
+      assert.equal(sessionId, "session-1")
+      assert.equal(maxUses, 2)
+      assert.equal(collaborationLevel, "full")
+      return {
+        invite: { invite_token: "local-token", invite: { invite_id: "local-invite-1" } },
+        session: makeSession(),
+      }
+    },
+    createCloudSessionInvite: async (sessionId: string, options: { maxUses?: number | null; collaborationLevel?: string | null }) => {
+      assert.equal(sessionId, "session-1")
+      assert.equal(options.maxUses, 2)
+      assert.equal(options.collaborationLevel, "full")
+      return { invite: { invite_id: "cloud-invite-1", invite_token: "cloud-token" } }
+    },
+  }))
+
+  await handlers.handleCloudCommand({ kind: "cloud", raw: "/cloud invite create 2 --level full", args: ["invite", "create", "2", "--level", "full"] })
+
+  assert.match(notices.at(-1) ?? "", /local_invite=local-token/)
+  assert.equal(flashed.at(-1), "cloud invite created")
+})
+
+test("cloud invite accept accepts cloud token and joins local session when URL carries both tokens", async () => {
+  const flashed: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "peer@example.com",
+      accountId: "account-2",
+      userId: "peer-1",
+      accountSlug: "peer",
+      realmId: "realm-2",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+    }),
+    flashFooter: (message: string) => { flashed.push(message) },
+    acceptCloudSessionInvite: async (inviteToken: string) => {
+      assert.equal(inviteToken, "cloud-token")
+      return { acceptance: { user_id: "peer-1" } }
+    },
+    joinSessionInvite: async (inviteToken: string, userId: string) => {
+      assert.equal(inviteToken, "local-token")
+      assert.equal(userId, "peer-1")
+      return {
+        member: { user_id: "peer-1" },
+        session: makeSession({ id: "joined-session" }),
+      }
+    },
+  }))
+
+  await handlers.handleCloudCommand({
+    kind: "cloud",
+    raw: "/cloud invite accept https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token",
+    args: ["invite", "accept", "https://cloud.example/sessions/invites?cloud_invite=cloud-token&local_invite=local-token"],
+  })
+
+  assert.equal(flashed.at(-1), "joined cloud session as peer-1")
+})
+
+test("cloud deployments command projects the linked account portfolio", async () => {
+  const originalFetch = globalThis.fetch
+  const notices: string[] = []
+  const flashed: string[] = []
+  let requestedUrl = ""
+  globalThis.fetch = async (input, init) => {
+    requestedUrl = String(input)
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer session-token")
+    return new Response(JSON.stringify({
+      projects: [],
+      portfolio: [{
+        project: {
+          id: "project-1",
+          accountId: "account-1",
+          name: "Support app",
+          slug: "support-app",
+          kind: "agent_app",
+          defaultEnvironmentSlug: "production",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        defaultEnvironment: null,
+        latestRelease: null,
+        latestPromotion: null,
+        needsAttention: false,
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } })
+  }
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    getCloudRelayProfile: () => ({
+      apiUrl: "https://cloud.example",
+      email: "owner@example.com",
+      accountId: "account-1",
+      userId: "owner-1",
+      accountSlug: "owner",
+      realmId: "realm-1",
+      relayUrl: "wss://relay.example",
+      issuerId: "issuer-1",
+      cloudSessionToken: "session-token",
+    }),
+    appendCloudNotice: (message: string) => { notices.push(message) },
+    flashFooter: (message: string) => { flashed.push(message) },
+  }))
+
+  try {
+    await handlers.handleCloudCommand({
+      kind: "cloud",
+      raw: "/cloud deployments list",
+      args: ["deployments", "list"],
+    })
+
+    assert.equal(new URL(requestedUrl).searchParams.get("accountId"), "account-1")
+    assert.match(notices.at(-1) ?? "", /project-1\tSupport app\tagent_app/)
+    assert.equal(flashed.at(-1), "1 deployed workflow")
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

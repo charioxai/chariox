@@ -1,0 +1,1440 @@
+//! Workflow prompt queue advancement.
+
+use super::*;
+
+const LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS: u64 = 5_000;
+
+type WorkflowAdmission<T> = (
+    T,
+    Option<crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation>,
+);
+
+impl KernelRuntimeOwnedState {
+    fn workflow_ensure_dispatchable_runtime_instance(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.workflow_cleanup_runtime_instances(session_id)?;
+        let Some(candidate) = self
+            .session_store
+            .write()
+            .workflow_runtime_instance_provision_candidate(session_id)?
+        else {
+            return Ok(false);
+        };
+
+        if candidate.primary {
+            let instance = self
+                .session_store
+                .write()
+                .ensure_primary_workflow_runtime_instance(session_id)?;
+            let Some(instance) = instance else {
+                return Ok(true);
+            };
+            if let Err(error) =
+                self.persist_workflow_runtime_session(session_id, "workflow_instance_provisioned")
+            {
+                let _ = self
+                    .session_store
+                    .write()
+                    .remove_workflow_runtime_instance(session_id, instance.id());
+                return Err(error);
+            }
+            return Ok(true);
+        }
+
+        let instance_id = format!("workflow-instance-{:032x}", rand::random::<u128>());
+        let mut node_agent_ids = std::collections::BTreeMap::new();
+        let mut materialized_agents = Vec::new();
+        let worktree_id = {
+            let worktree_root = self
+                .config_projection
+                .snapshot()
+                .workflow_runtime_artifact_root()
+                .join("instances")
+                .join(session_id);
+            std::fs::create_dir_all(&worktree_root).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "provision workflow runtime instance",
+                    message: format!(
+                        "failed to create workflow instance directory `{}`: {error}",
+                        worktree_root.display()
+                    ),
+                }
+            })?;
+            let target = worktree_root.join(&instance_id);
+            let placement = crate::agent::GitWorktreePlacement {
+                target_directory: Some(target.display().to_string()),
+                branch: None,
+                from_ref: Some("HEAD".to_string()),
+            };
+            let worktree_id =
+                crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
+                    &placement,
+                    std::path::Path::new(&candidate.source_worktree_id),
+                    None,
+                    "provision workflow runtime instance",
+                )?;
+            let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
+            for node in candidate.workflow.nodes() {
+                let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
+                    agent_id.clone()
+                } else {
+                    let source_agent = match self.agent_store.get_agent(node.agent_id()) {
+                        Ok(source_agent) => source_agent,
+                        Err(error) => {
+                            self.workflow_rollback_runtime_instance_provision(
+                                &candidate.source_worktree_id,
+                                &worktree_id,
+                                false,
+                                &materialized_agents,
+                            );
+                            return Err(error);
+                        }
+                    };
+                    let materialized = self
+                        .agent_store
+                        .materialize_workflow_runtime_agent_by_agent(
+                            source_agent,
+                            session_id,
+                            &worktree_id,
+                            candidate.creating_agent_id.as_deref(),
+                        );
+                    materialized_agents.push(materialized.clone());
+                    agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
+                    materialized.id().to_string()
+                };
+                node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
+            }
+            worktree_id
+        };
+
+        let instance = crate::session::WorkflowEndpointRuntimeInstance::new(
+            instance_id.clone(),
+            candidate.workflow.id(),
+            candidate.endpoint.id(),
+            candidate.workflow.revision(),
+            candidate.ordinal,
+            false,
+            node_agent_ids,
+            worktree_id.clone(),
+        );
+        if let Err(error) = self
+            .session_store
+            .write()
+            .register_workflow_runtime_instance(session_id, instance)
+        {
+            self.workflow_rollback_runtime_instance_provision(
+                &candidate.source_worktree_id,
+                &worktree_id,
+                false,
+                &materialized_agents,
+            );
+            return Err(error);
+        }
+        if let Err(error) =
+            self.persist_workflow_runtime_session(session_id, "workflow_instance_provisioned")
+        {
+            let _ = self
+                .session_store
+                .write()
+                .remove_workflow_runtime_instance(session_id, &instance_id);
+            self.workflow_rollback_runtime_instance_provision(
+                &candidate.source_worktree_id,
+                &worktree_id,
+                false,
+                &materialized_agents,
+            );
+            return Err(error);
+        }
+        if !materialized_agents.is_empty() {
+            if let Err(error) = self.durable_state_store.append_event(
+                "agents.created",
+                Some(session_id.to_string()),
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agents": &materialized_agents,
+                }),
+            ) {
+                let _ = self
+                    .session_store
+                    .write()
+                    .remove_workflow_runtime_instance(session_id, &instance_id);
+                let _ = self.persist_workflow_runtime_session(
+                    session_id,
+                    "workflow_instance_provision_rollback",
+                );
+                self.workflow_rollback_runtime_instance_provision(
+                    &candidate.source_worktree_id,
+                    &worktree_id,
+                    false,
+                    &materialized_agents,
+                );
+                return Err(error);
+            }
+        }
+        Ok(true)
+    }
+
+    pub(super) fn workflow_cleanup_runtime_instances(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (source_worktree_id, missing_agent_instances, referenced_instance_worktrees) = {
+            let sessions = self.session_store.read();
+            let session = sessions.get_session(session_id)?;
+            let referenced_instance_worktrees = session
+                .workflow_runtime_instances()
+                .iter()
+                .filter(|instance| !instance.primary())
+                .map(|instance| std::path::PathBuf::from(instance.worktree_id()))
+                .collect::<std::collections::BTreeSet<_>>();
+            let missing = session
+                .workflow_runtime_instances()
+                .iter()
+                .filter(|instance| !instance.primary())
+                .filter(|instance| {
+                    instance
+                        .node_agent_ids()
+                        .values()
+                        .any(|agent_id| self.agent_store.get_agent(agent_id).is_err())
+                })
+                .map(|instance| {
+                    (
+                        instance.id().to_string(),
+                        instance.active_run_id().map(str::to_string),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (
+                session.worktree_id().to_string(),
+                missing,
+                referenced_instance_worktrees,
+            )
+        };
+        let removed_orphaned_agents = self
+            .workflow_cleanup_orphaned_runtime_agents(session_id, &referenced_instance_worktrees)?;
+        self.workflow_cleanup_orphaned_runtime_worktrees(session_id, &source_worktree_id);
+        for (instance_id, active_run_id) in missing_agent_instances {
+            if let Some(active_run_id) = active_run_id {
+                let node_run_id = self
+                    .session_store
+                    .read()
+                    .resolve_workflow_run_ref(session_id, &active_run_id)
+                    .ok()
+                    .and_then(|run| run.node_runs().first().map(|node| node.id().to_string()));
+                let activity_mutation = self.begin_managed_activity_mutation();
+                if let Some(node_run_id) = node_run_id {
+                    let _ = self.session_store.write().fail_workflow_node_run(
+                        session_id,
+                        &active_run_id,
+                        &node_run_id,
+                    );
+                } else {
+                    let _ = self
+                        .session_store
+                        .write()
+                        .release_workflow_runtime_instance_for_run(session_id, &active_run_id);
+                }
+                self.persist_workflow_runtime_session_with_activity_mutation(
+                    session_id,
+                    "missing_workflow_runtime_instance_reconciled",
+                    activity_mutation,
+                )?;
+            }
+            self.session_store
+                .write()
+                .mark_workflow_runtime_instance_stale(session_id, &instance_id)?;
+        }
+        let cleanup_ready = self
+            .session_store
+            .write()
+            .cleanup_ready_workflow_runtime_instances(session_id)?;
+        if cleanup_ready.is_empty() {
+            if removed_orphaned_agents > 0 {
+                self.persist_workflow_runtime_session(
+                    session_id,
+                    "orphaned_workflow_runtime_agents_cleaned",
+                )?;
+            }
+            return Ok(());
+        }
+        for instance in &cleanup_ready {
+            if !instance.primary() {
+                let agent_ids = instance
+                    .node_agent_ids()
+                    .values()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                for agent_id in agent_ids {
+                    self.workflow_cleanup_runtime_agent(session_id, &agent_id)?;
+                }
+                crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                    &source_worktree_id,
+                    instance.worktree_id(),
+                    "cleanup workflow runtime instance",
+                )?;
+            }
+            self.session_store
+                .write()
+                .remove_workflow_runtime_instance(session_id, instance.id())?;
+        }
+        self.persist_workflow_runtime_session(session_id, "workflow_instances_cleaned")?;
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let _ = std::fs::remove_dir(&instance_root);
+        Ok(())
+    }
+
+    fn workflow_cleanup_orphaned_runtime_agents(
+        &self,
+        session_id: &str,
+        referenced_instance_worktrees: &std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<usize, DaemonError> {
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let orphaned_agent_ids = self
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter(|agent| !agent.visible_in_freeform())
+            .filter_map(|agent| {
+                let worktree = std::path::PathBuf::from(agent.worktree_id()?);
+                (worktree.starts_with(&instance_root)
+                    && !referenced_instance_worktrees.contains(&worktree))
+                .then(|| agent.id().to_string())
+            })
+            .collect::<Vec<_>>();
+        for agent_id in &orphaned_agent_ids {
+            self.workflow_cleanup_runtime_agent(session_id, agent_id)?;
+        }
+        Ok(orphaned_agent_ids.len())
+    }
+
+    fn workflow_cleanup_runtime_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+            if run.state() != crate::provider::ProviderRunState::Ended {
+                let ended = self
+                    .provider_store
+                    .terminate_run_provider_only(session_id, run.id())?
+                    .into_run();
+                self.provider_run_projection.update(ended.clone());
+                self.remove_provider_process_tracking_for_run(ended.id(), None);
+            }
+        }
+        self.clear_agent_prompt_runtime_state(session_id, agent_id);
+        self.prompt_state_owner.remove_agent(session_id, agent_id);
+        self.external_provider_sessions
+            .detach_agent(session_id, agent_id);
+        self.attached_provider_transcript_cursors
+            .detach_agent(session_id, agent_id);
+        let Ok(agent) = self.agent_store.get_agent(agent_id) else {
+            return Ok(());
+        };
+        let was_focused = agent.state() == crate::agent::AgentState::Focused
+            || self
+                .session_store
+                .read()
+                .get_session(session_id)?
+                .focused_agent_id()
+                == Some(agent_id);
+        let removed_agent = self
+            .agent_store
+            .destroy_workflow_runtime_agent(agent_id, &mut self.session_store.write())?;
+        if let Err(error) = self.durable_state_store.append_event(
+            "agent.deleted",
+            Some(agent.session_id().to_string()),
+            serde_json::json!({ "agent": &agent }),
+        ) {
+            self.agent_store.restore_agent(removed_agent);
+            if was_focused {
+                let _ = self.agent_store.focus_agent(
+                    session_id,
+                    agent_id,
+                    &mut self.session_store.write(),
+                );
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(super) fn workflow_cleanup_runtime_instances_exclusive(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.workflow_cleanup_runtime_instances(session_id)
+    }
+
+    pub(super) fn workflow_cleanup_deleted_session_runtime_artifacts(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for instance in session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary())
+        {
+            crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                session.worktree_id(),
+                instance.worktree_id(),
+                "delete session workflow runtime instance",
+            )?;
+        }
+
+        self.workflow_cleanup_orphaned_runtime_worktrees(session.id(), session.worktree_id());
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session.id());
+        if instance_root.exists() {
+            std::fs::remove_dir_all(&instance_root).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "delete session workflow runtime instance",
+                    message: format!(
+                        "failed to remove deleted session workflow runtime artifacts at `{}`: {error}",
+                        instance_root.display(),
+                    ),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn workflow_cleanup_orphaned_runtime_worktrees(
+        &self,
+        session_id: &str,
+        source_worktree_id: &str,
+    ) {
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id);
+        let referenced_worktrees = self
+            .session_store
+            .read()
+            .get_session(session_id)
+            .map(|session| {
+                session
+                    .workflow_runtime_instances()
+                    .iter()
+                    .filter(|instance| !instance.primary())
+                    .map(|instance| std::path::PathBuf::from(instance.worktree_id()))
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        let Ok(entries) = std::fs::read_dir(&instance_root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if referenced_worktrees.contains(&path) {
+                continue;
+            }
+            if let Err(error) = crate::git_worktree_placement::remove_git_worktree(
+                source_worktree_id,
+                &path,
+                "cleanup orphaned workflow runtime instance",
+            ) {
+                let fallback = std::fs::symlink_metadata(&path).and_then(|metadata| {
+                    if metadata.file_type().is_symlink() {
+                        std::fs::remove_file(&path)
+                    } else {
+                        std::fs::remove_dir_all(&path)
+                    }
+                });
+                if fallback.is_ok() {
+                    let _ = crate::git_worktree_placement::remove_git_worktree(
+                        source_worktree_id,
+                        &path,
+                        "prune orphaned workflow runtime instance",
+                    );
+                    continue;
+                }
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "orphaned workflow runtime worktree cleanup failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "worktree": path,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+        let _ = std::fs::remove_dir(&instance_root);
+    }
+
+    fn workflow_rollback_runtime_instance_provision(
+        &self,
+        source_worktree_id: &str,
+        worktree_id: &str,
+        primary: bool,
+        materialized_agents: &[crate::agent::AgentInstance],
+    ) {
+        for agent in materialized_agents.iter().rev() {
+            let _ = self.agent_store.remove_workflow_runtime_agent(agent.id());
+        }
+        if !primary {
+            let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                source_worktree_id,
+                worktree_id,
+                "rollback workflow runtime instance",
+            );
+        }
+    }
+
+    fn workflow_reconcile_live_orphans(&self, session_id: &str) {
+        // A durable Ready entry is work awaiting admission, not an orphan. On a
+        // storage failure preserve it until authoritative recovery can decide.
+        if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+            return;
+        }
+        let Ok(supervised_tasks) = self.supervised_workflow_targets(session_id) else {
+            return; // Failed supervision reads cannot establish orphanhood.
+        };
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let reconciled = self
+            .session_store
+            .write()
+            .reconcile_live_orphaned_workflow_runs_with_tasks(
+                session_id,
+                crate::session::unix_epoch_ms(),
+                LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS,
+                &supervised_tasks,
+            );
+        let count = match reconciled {
+            Ok(count) => count,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "live workflow orphan reconciliation failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        if count == 0 {
+            return;
+        }
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!("Stopped {count} orphaned workflow run(s) so queued prompts can advance."),
+        );
+        if let Err(error) = self.persist_workflow_runtime_session_with_activity_mutation(
+            session_id,
+            "workflow_live_orphan_reconciled",
+            activity_mutation,
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.runtime",
+                "live workflow orphan reconciliation persistence failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    pub(super) fn workflow_collect_due_watchdog_dispatches(
+        &self,
+        now_ms: u64,
+    ) -> WorkflowPromptDispatches {
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
+        let collection = if self
+            .config_projection
+            .snapshot()
+            .publication_control_state_root
+            .is_some()
+        {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdogs_after_publication_activation(now_ms)
+        } else {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
+        };
+        let collection = match collection {
+            Ok(collection) => collection,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow watchdog collection failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+                return WorkflowPromptDispatches::default();
+            }
+        };
+
+        let mut changed_session_ids = collection.changed_session_ids;
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for plan in collection.plans {
+            let session_id = plan.session_id.clone();
+            let watchdog_id = plan.watchdog_id.clone();
+            changed_session_ids.insert(session_id.clone());
+            match self.workflow_start_watchdog_tick_plan(plan) {
+                Ok(next_dispatches) => dispatches.extend(next_dispatches),
+                Err(error) => {
+                    self.mark_workflow_watchdog_launch_failed(&session_id, &watchdog_id, &error);
+                    self.record_notice(
+                        &session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(&session_id),
+                        format!("Workflow watchdog `{watchdog_id}` failed to launch: {error}"),
+                    );
+                }
+            }
+        }
+        self.persist_workflow_watchdog_sessions(changed_session_ids);
+        dispatches
+    }
+
+    fn workflow_start_watchdog_tick_plan(
+        &self,
+        plan: crate::session::WorkflowWatchdogTickPlan,
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        self.workflow_reconcile_live_orphans(&plan.session_id);
+        if plan.enqueue_prompt {
+            self.workflow_admit_prompt_transaction_with_invoker(
+                &plan.session_id,
+                "workflow_watchdog_prompt_enqueued",
+                |sessions| {
+                    if !sessions.workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?
+                        || sessions.has_queued_workflow_prompt_for_watchdog(
+                            &plan.session_id,
+                            &plan.watchdog_id,
+                        )?
+                    {
+                        return Ok(None);
+                    }
+                    let owner = sessions.resolve_workflow_endpoint_ref(
+                        &plan.session_id, &plan.workflow_id, &plan.endpoint_id,
+                    )?.owner_user_id().to_string();
+                    let queued = sessions.enqueue_workflow_prompt(
+                        &plan.session_id,
+                        &plan.workflow_id,
+                        &plan.endpoint_id,
+                        Some(plan.invocation_prompt.clone()),
+                        plan.queue_id.as_deref(),
+                        crate::session::WorkflowQueuedPromptSource::Scheduled,
+                        Some(plan.watchdog_id.clone()),
+                    )?;
+                    sessions.mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id)?;
+                    // MP-08/MP-10/MP-11: the endpoint owner is captured at admission,
+                    // not inferred from a mutable workflow when the run is read.
+                    Ok(Some(((), Some(crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: queued.id().to_string(), user_id: owner,
+                    }))))
+                },
+                None,
+            )?;
+        }
+        if plan.enqueue_only {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let should_start = self
+            .session_store
+            .read()
+            .workflow_watchdog_can_start(&plan.session_id, &plan.watchdog_id)?;
+        if !should_start {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        let (_outcome, dispatches) =
+            self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
+        if self
+            .session_store
+            .read()
+            .has_queued_workflow_prompt_for_watchdog(&plan.session_id, &plan.watchdog_id)?
+        {
+            let _ = self
+                .session_store
+                .write()
+                .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
+        }
+        Ok(dispatches)
+    }
+
+    /// Admit a queued workflow prompt as one authoritative and durable mutation.
+    ///
+    /// The activity boundary serializes capture with the session mutation, while the
+    /// durable transition and session write locks prevent a failed append rollback
+    /// from erasing an unrelated successful session change. `None` is a no-op and
+    /// deliberately records neither activity nor a projection change.
+    fn workflow_admit_prompt_transaction_with_invoker<T>(
+        &self,
+        session_id: &str,
+        reason: &str,
+        admit: impl FnOnce(
+            &mut crate::session::SessionService,
+        ) -> Result<Option<WorkflowAdmission<T>>, DaemonError>,
+        committed: Option<&mut bool>,
+    ) -> Result<Option<T>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let durable_state_store = self.durable_state_store.clone();
+        let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let session_before_admission = sessions.get_session(session_id)?;
+            let admitted = match admit(&mut sessions) {
+                Ok(admitted) => admitted,
+                Err(error) => {
+                    sessions.restore_session(session_before_admission);
+                    return Err(error);
+                }
+            };
+            let Some((admitted, invocation_creator)) = admitted else {
+                return Ok(None);
+            };
+            let durable_session = sessions.get_session(session_id)?;
+            if let Err(error) = durable_state_store
+                .persist_workflow_runtime_transition_with_invocation(
+                    &durable_session,
+                    reason,
+                    invocation_creator,
+                )
+            {
+                sessions.restore_session(session_before_admission);
+                return Err(error);
+            }
+            Ok(Some(admitted))
+        })?;
+        if admitted.is_some() {
+            if let Some(committed) = committed {
+                *committed = true;
+            }
+            activity_mutation.record();
+            // Publication is deliberately after durable admission and activity capture.
+            self.session_snapshot(session_id)?;
+        }
+        Ok(admitted)
+    }
+
+    /// Promote one queued Meta task without exposing a rejected durable removal.
+    fn admit_next_queued_metaagent_task_transaction(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::session::QueuedMetaagentTask>, DaemonError> {
+        let _admission = self.begin_managed_activity_admission()?;
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let durable_state_store = self.durable_state_store.clone();
+        let admitted = durable_state_store.with_workflow_runtime_transition_lock(|| {
+            let mut sessions = self.session_store.write();
+            let session_before_admission = sessions.get_session(session_id)?;
+            let task = match sessions.pop_next_queued_metaagent_task(session_id) {
+                Ok(task) => task,
+                Err(error) => {
+                    sessions.restore_session(session_before_admission);
+                    return Err(error);
+                }
+            };
+            let Some(task) = task else {
+                return Ok(None);
+            };
+            let mut durable_session = sessions.get_session(session_id)?;
+            durable_session.set_agents(self.agent_store.get_session_agents(session_id));
+            self.project_session_runtime_view(&mut durable_session);
+            if let Err(error) = durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.to_string()),
+                serde_json::json!({
+                    "session": &durable_session,
+                    "reason": "metaagent_queued_task_promoted",
+                }),
+            ) {
+                sessions.restore_session(session_before_admission);
+                return Err(error);
+            }
+            Ok(Some(task))
+        })?;
+        if admitted.is_some() {
+            activity_mutation.record();
+            // Publication follows durable ownership transfer and runs without admission guards.
+            self.session_snapshot(session_id)?;
+        }
+        Ok(admitted)
+    }
+
+    #[cfg(test)]
+    pub(super) fn workflow_enqueue_prompt_and_maybe_start(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
+    ) -> Result<
+        (
+            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
+        self.workflow_enqueue_prompt_by_agent_and_maybe_start(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+            queue_ref,
+            publication_invocation,
+            None,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            None,
+        )
+    }
+
+    // Admission carries endpoint, publication and immutable caller bindings together.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn workflow_enqueue_prompt_by_agent_and_maybe_start(
+        &self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        queue_ref: Option<&str>,
+        publication_invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
+        creator: Option<&str>,
+        invoking_user: Option<&str>,
+        obligation: Option<&str>,
+    ) -> Result<
+        (
+            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
+        self.workflow_reconcile_live_orphans(session_id);
+        let prepared: Result<_, DaemonError> = (|| {
+            let workflow = self
+                .session_store
+                .read()
+                .resolve_workflow_ref(session_id, workflow_ref)?;
+            let endpoint = self.session_store.read().resolve_workflow_endpoint_ref(
+                session_id,
+                workflow.id(),
+                endpoint_ref,
+            )?;
+            self.workflow_validate_agents(session_id, &workflow)?;
+            Ok((workflow, endpoint))
+        })();
+        let (workflow, endpoint) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                crate::runtime::room_dispatch_registration::receipt(
+                    &self.durable_state_store,
+                    obligation,
+                    false,
+                    None,
+                )?;
+                return Err(error);
+            }
+        };
+        let mut committed = false;
+        let mut resource_id = None;
+        let admitted = self.workflow_admit_prompt_transaction_with_invoker(
+            session_id,
+            "workflow_prompt_enqueued",
+            |sessions| {
+                let queued = sessions.enqueue_workflow_prompt_by_agent(
+                    session_id,
+                    workflow.id(),
+                    endpoint.id(),
+                    prompt,
+                    queue_ref,
+                    crate::session::WorkflowQueuedPromptSource::Manual,
+                    None,
+                    publication_invocation,
+                    creator,
+                )?;
+                resource_id = Some(queued.id().to_string());
+                let invocation = invoking_user.filter(|_| creator.is_none()).map(|user_id| {
+                    crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation {
+                        queue_item_id: queued.id().to_string(),
+                        user_id: user_id.to_string(),
+                    }
+                });
+                Ok(Some((queued, invocation)))
+            },
+            Some(&mut committed),
+        );
+        let queued_prompt = match admitted {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                // Later persistence/projection errors can have committed: retain their intent.
+                if !committed {
+                    crate::runtime::room_dispatch_registration::receipt(
+                        &self.durable_state_store,
+                        obligation,
+                        false,
+                        None,
+                    )?;
+                }
+                return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(committed),
+                    resource_id.as_deref(),
+                    error,
+                ));
+            }
+        }
+        .expect("manual workflow prompt admission must mutate the session");
+        let (claimed, dispatches) = self
+            .workflow_start_next_queued_prompt_for_response(session_id)
+            .map_err(|error| {
+                crate::runtime::room_dispatch_registration::dispatch_error(
+                    obligation,
+                    Some(true),
+                    Some(queued_prompt.id()),
+                    error,
+                )
+            })?;
+        let Some(claimed_outcome) = claimed else {
+            // This invocation dispatched nothing itself, but a concurrent
+            // invocation may have already admitted our prompt into the primary
+            // run between our enqueue and this point. Attribute that Started run
+            // to us so exactly one caller owns it. The invocation that performed
+            // the dispatch carries and applies the provider dispatches, so we
+            // return none here.
+            if let Some(workflow_run) =
+                self.workflow_started_run_for_queued_prompt(session_id, queued_prompt.id())?
+            {
+                return Ok((
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run: Box::new(workflow_run),
+                        workflow,
+                        endpoint,
+                    },
+                    dispatches,
+                ));
+            }
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                    queued_prompt: Box::new(queued_prompt),
+                    workflow,
+                    endpoint,
+                },
+                dispatches,
+            ));
+        };
+        let claimed_requested_prompt = match &claimed_outcome {
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                workflow_run, ..
+            } => workflow_run.queue_item_id() == Some(queued_prompt.id()),
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                queued_prompt: claimed,
+                ..
+            } => claimed.id() == queued_prompt.id(),
+        };
+        if claimed_requested_prompt {
+            return Ok((claimed_outcome, dispatches));
+        }
+        // Our dispatch loop advanced a different invocation's (older) prompt. Our
+        // own prompt may itself have been admitted concurrently; if so, report
+        // Started for it while still returning the dispatches we own so they are
+        // applied exactly once.
+        if let Some(workflow_run) =
+            self.workflow_started_run_for_queued_prompt(session_id, queued_prompt.id())?
+        {
+            return Ok((
+                crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                    workflow_run: Box::new(workflow_run),
+                    workflow,
+                    endpoint,
+                },
+                dispatches,
+            ));
+        }
+        Ok((
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                queued_prompt: Box::new(queued_prompt),
+                workflow,
+                endpoint,
+            },
+            dispatches,
+        ))
+    }
+
+    /// Return the workflow run that admitted `queued_prompt_id`, if any. Under
+    /// concurrent invocation a different caller's dispatch loop may admit our
+    /// prompt into the single primary instance; this lets the owning invocation
+    /// report `Started` for its own prompt instead of a spurious `Enqueued`.
+    fn workflow_started_run_for_queued_prompt(
+        &self,
+        session_id: &str,
+        queued_prompt_id: &str,
+    ) -> Result<Option<crate::session::WorkflowRun>, DaemonError> {
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id)?;
+        Ok(session
+            .workflow_runs()
+            .iter()
+            .find(|workflow_run| {
+                workflow_run.queue_item_id() == Some(queued_prompt_id)
+                    && !workflow_run.status().is_terminal()
+            })
+            .cloned())
+    }
+
+    pub(super) fn workflow_schedule_queued_prompt_run(
+        &self,
+        session_id: &str,
+        queued_prompt: crate::session::WorkflowQueuedPrompt,
+        workflow_run: crate::session::WorkflowRun,
+        workflow: crate::session::WorkflowDefinition,
+        endpoint: crate::session::WorkflowEndpointDefinition,
+        failure_dispatches: &mut WorkflowPromptDispatches,
+    ) -> Result<
+        (
+            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+            let _ = self.session_store.write().mark_workflow_watchdog_invoked(
+                session_id,
+                watchdog_id,
+                workflow_run.id(),
+            );
+        }
+        let validation = self.workflow_validate_agents(session_id, &workflow);
+        let valid_agents = validation.is_ok();
+        let dispatches = match validation
+            .and_then(|()| self.workflow_schedule_entry_node(session_id, &workflow_run))
+        {
+            Ok(dispatches) => dispatches,
+            Err(error) => {
+                if valid_agents
+                    && self.workflow_preserve_entry_after_failure(session_id, workflow_run.id())
+                {
+                    return Err(error);
+                }
+                let activity_mutation = self.begin_managed_activity_mutation();
+                let failed_node_run_id = workflow_run
+                    .node_runs()
+                    .first()
+                    .map(|node_run| node_run.id().to_string());
+                if let Some(node_run) = workflow_run.node_runs().first() {
+                    let _ = self.session_store.write().record_workflow_failure_event(
+                        session_id,
+                        workflow_run.id(),
+                        crate::session::WorkflowFailureEvent::new(
+                            crate::session::WorkflowFailureKind::TransportFailure,
+                            node_run.id(),
+                            Vec::new(),
+                            error.to_string(),
+                        ),
+                    );
+                    let _ = self.session_store.write().fail_workflow_node_run(
+                        session_id,
+                        workflow_run.id(),
+                        node_run.id(),
+                    );
+                }
+                let released_claim = failed_node_run_id.is_some_and(|node_run_id| {
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run.id(),
+                        &node_run_id,
+                    )
+                });
+                let _ = self
+                    .session_store
+                    .write()
+                    .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
+                if self
+                    .persist_workflow_runtime_session_with_activity_mutation(
+                        session_id,
+                        "workflow_entry_validation_failed",
+                        activity_mutation,
+                    )
+                    .is_err()
+                {
+                    let _ = self.durable_state_store.fence_writer();
+                } else if released_claim {
+                    failure_dispatches.extend(self.workflow_retry_blocked_claims());
+                }
+                return Err(error);
+            }
+        };
+        let still_blocked = !dispatches.admitted_workflow_prompt
+            && workflow_run.node_runs().first().is_some_and(|node| {
+                node.status() == crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+            });
+        if !still_blocked {
+            if let Err(error) =
+                self.persist_workflow_runtime_session(session_id, "workflow_entry_scheduled")
+            {
+                self.workflow_preserve_entry_after_failure(session_id, workflow_run.id());
+                return Err(error);
+            }
+        }
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run.id())?;
+        Ok((
+            crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                workflow_run: Box::new(workflow_run),
+                workflow,
+                endpoint,
+            },
+            dispatches,
+        ))
+    }
+
+    pub(super) fn workflow_start_next_queued_prompt_for_response(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        (
+            Option<crate::app::workflow_runtime::WorkflowLaunchOutcome>,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
+        if !self.publication_activation.is_active() {
+            return Ok((None, WorkflowPromptDispatches::default()));
+        }
+        self.durable_state_store.require_writer_healthy()?;
+        self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
+        loop {
+            let next = match self.workflow_recover_pending_entry(session_id)? {
+                Some(next) => Some(next),
+                None => {
+                    self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
+                    self.workflow_dequeue_durably(session_id)?
+                }
+            };
+            let Some((queued_prompt, workflow_run, workflow, endpoint)) = next else {
+                return Ok((None, accumulated));
+            };
+            let Some(_claim) = self
+                .workflow_entry_claims
+                .try_claim(session_id, workflow_run.id())
+            else {
+                // Another caller owns this entry dispatch, but the run already
+                // exists durably. Preserve Started attribution for its queue item.
+                return Ok((
+                    Some(
+                        crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                            workflow_run: Box::new(workflow_run),
+                            workflow,
+                            endpoint,
+                        },
+                    ),
+                    accumulated,
+                ));
+            };
+            match self.workflow_schedule_queued_prompt_run(
+                session_id,
+                queued_prompt.clone(),
+                workflow_run,
+                workflow,
+                endpoint,
+                &mut accumulated,
+            ) {
+                Ok((outcome, dispatches)) => {
+                    accumulated.extend(dispatches);
+                    return Ok((Some(outcome), accumulated));
+                }
+                Err(error) => {
+                    // A durable entry remains pending, or the writer is fenced
+                    // after prompt admission. Never spin or mark it failed here.
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return Err(error);
+                    }
+                    self.record_queued_workflow_prompt_launch_failure(
+                        session_id,
+                        &queued_prompt,
+                        &error,
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn workflow_maybe_start_next_queued_prompt(
+        &self,
+        session_id: &str,
+    ) -> WorkflowPromptDispatches {
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
+        if self.durable_state_store.require_writer_healthy().is_err() {
+            return WorkflowPromptDispatches::default();
+        }
+        self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
+        loop {
+            let next_workflow = match self.workflow_recover_pending_entry(session_id) {
+                Ok(Some(pending)) => Ok(Some(pending)),
+                Ok(None) => {
+                    if let Err(error) =
+                        self.workflow_ensure_dispatchable_runtime_instance(session_id)
+                    {
+                        self.record_notice(
+                            session_id,
+                            None,
+                            self.attachment_store
+                                .list_session_attachment_ids(session_id),
+                            format!("Failed to provision workflow instance: {error}"),
+                        );
+                        return accumulated;
+                    }
+                    self.workflow_dequeue_durably(session_id)
+                }
+                Err(error) => Err(error),
+            };
+            let (queued_prompt, workflow_run, workflow, endpoint) = match next_workflow {
+                Ok(Some(claimed)) => claimed,
+                Ok(None) => {
+                    let queued_metaagent_is_busy = self
+                        .session_store
+                        .get_session(session_id)
+                        .ok()
+                        .and_then(|session| {
+                            let metaagent_id = session
+                                .queued_metaagent_tasks()
+                                .front()
+                                .map(|task| task.metaagent_id().to_string())?;
+                            let (active_prompt, queued_prompts) =
+                                self.prompt_state_owner.state_parts(&session, &metaagent_id);
+                            Some(active_prompt.is_some() || !queued_prompts.is_empty())
+                        })
+                        .unwrap_or(false);
+                    if queued_metaagent_is_busy {
+                        return accumulated;
+                    }
+                    let queued_metaagent_task =
+                        self.admit_next_queued_metaagent_task_transaction(session_id);
+                    return match queued_metaagent_task {
+                        Ok(Some(task)) => {
+                            accumulated.starting_metaagent_tasks.push(task);
+                            accumulated
+                        }
+                        Ok(None) => accumulated,
+                        Err(error) => {
+                            self.record_notice(
+                                session_id,
+                                None,
+                                self.attachment_store
+                                    .list_session_attachment_ids(session_id),
+                                format!("Failed to start queued Meta task: {error}"),
+                            );
+                            accumulated
+                        }
+                    };
+                }
+                Err(error) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!("Failed to start queued workflow prompt: {error}"),
+                    );
+                    return accumulated;
+                }
+            };
+            let Some(_claim) = self
+                .workflow_entry_claims
+                .try_claim(session_id, workflow_run.id())
+            else {
+                return accumulated;
+            };
+            match self.workflow_schedule_queued_prompt_run(
+                session_id,
+                queued_prompt.clone(),
+                workflow_run,
+                workflow,
+                endpoint,
+                &mut accumulated,
+            ) {
+                Ok((
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        workflow,
+                        endpoint,
+                    },
+                    dispatches,
+                )) => {
+                    self.record_notice(
+                        session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Started queued workflow run `{}` for workflow `{}` endpoint `{}`.",
+                            workflow_run.id(),
+                            workflow.id(),
+                            endpoint.id()
+                        ),
+                    );
+                    accumulated.extend(dispatches);
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return accumulated;
+                    }
+                }
+                Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
+                Err(error) => {
+                    if !matches!(self.workflow_pending_entry(session_id), Ok(None)) {
+                        return accumulated;
+                    }
+                    self.record_queued_workflow_prompt_launch_failure(
+                        session_id,
+                        &queued_prompt,
+                        &error,
+                    );
+                }
+            }
+        }
+    }
+
+    fn record_queued_workflow_prompt_launch_failure(
+        &self,
+        session_id: &str,
+        queued_prompt: &crate::session::WorkflowQueuedPrompt,
+        error: &DaemonError,
+    ) {
+        crate::logging::warn_with_fields(
+            "daemon.runtime",
+            "queued workflow prompt launch failed",
+            serde_json::json!({
+                "session_id": session_id,
+                "queued_prompt_id": queued_prompt.id(),
+                "workflow_id": queued_prompt.workflow_id(),
+                "endpoint_id": queued_prompt.endpoint_id(),
+                "error": error.to_string(),
+            }),
+        );
+        if let Some(watchdog_id) = queued_prompt.watchdog_id() {
+            self.mark_workflow_watchdog_launch_failed(session_id, watchdog_id, error);
+        }
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!(
+                "Queued workflow prompt `{}` failed: {error}",
+                queued_prompt.id()
+            ),
+        );
+    }
+
+    fn mark_workflow_watchdog_launch_failed(
+        &self,
+        session_id: &str,
+        watchdog_id: &str,
+        error: &DaemonError,
+    ) {
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let update = if workflow_watchdog_failure_is_terminal(error) {
+            self.session_store
+                .write()
+                .mark_workflow_watchdog_failed_and_disable(
+                    session_id,
+                    watchdog_id,
+                    error.to_string(),
+                )
+        } else {
+            self.session_store.write().mark_workflow_watchdog_failed(
+                session_id,
+                watchdog_id,
+                error.to_string(),
+            )
+        };
+        if update.is_ok() {
+            if let Err(persist_error) = self
+                .persist_workflow_runtime_session_with_activity_mutation(
+                    session_id,
+                    "workflow_watchdog_launch_failed",
+                    activity_mutation,
+                )
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow watchdog failure persistence failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "watchdog_id": watchdog_id,
+                        "error": persist_error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
+    fn persist_workflow_watchdog_sessions(&self, session_ids: BTreeSet<String>) {
+        for session_id in session_ids {
+            if let Err(error) =
+                self.persist_workflow_runtime_session(&session_id, "workflow_schedule_tick")
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "workflow schedule session persistence failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+}
+
+fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::WorkflowNotFound { .. }
+            | DaemonError::WorkflowEndpointNotFound { .. }
+            | DaemonError::WorkflowNodeNotFound { .. }
+            | DaemonError::WorkflowNodeAgentMissing { .. }
+            | DaemonError::InvalidWorkflowGraphReference { .. }
+            | DaemonError::AgentNotFound { .. }
+    )
+}
+
+#[cfg(test)]
+pub(in crate::runtime) mod tests;

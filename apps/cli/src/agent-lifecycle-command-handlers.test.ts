@@ -1,0 +1,608 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+  RuntimeSession,
+  SliceRecord,
+} from "./cli-types.js"
+import { formatAgentLabel } from "./agent-label.js"
+import {
+  formatAgentInspectSummary,
+  formatAgentListSummary,
+  handleAgentFocusCommand,
+} from "./agent-lifecycle-command-handlers.js"
+
+test("agent list summary renders aliases and pluralization", () => {
+  assert.equal(formatAgentListSummary([]), "no agents in session")
+  const remoteAgent = agent({
+    id: "agent-2",
+    agent_ref: "agent-b",
+    state: "Working",
+    provider: "codex",
+    model: "codex/gpt-5.4",
+    worktree_id: "/repo/feature",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-worker",
+    },
+    remote_extension_manifest_sync: {
+      state: "stale",
+      manifest_hash: "abcdef123456",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+    extension_grants: [
+      { kind: "mcp", name: "filesystem" },
+      { kind: "script", name: "deploy", environment: "prod" },
+    ],
+  })
+  assert.equal(
+    formatAgentListSummary([
+      agent({ agent_ref: "agent-a", alias: "builder" }),
+      remoteAgent,
+    ]),
+    "2 agents: agent-a (builder) [Idle; opencode gpt-5.4; worktree worktree-1; local; 0 grants], agent-b [Working; codex/gpt-5.4; worktree /repo/feature; remote kernel-worker@machine-worker (lease=lease-1, leased_agent=leased-agent-1, run=run-worker); 2 grants (active tools home-proxy); manifest stale abcdef12 pending revoke error worker offline; see /extension sync-status agent-b]",
+  )
+  assert.match(
+    formatAgentListSummary([remoteAgent], [slice({
+      id: "slice-1",
+      name: "devbox",
+      status: "running",
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      agent_ids: ["agent-2"],
+      provider_auth: [{
+        provider: "codex",
+        account_profile: "work",
+        state: "authenticated",
+        email: "work@example.com",
+        source: "slice",
+      }],
+    })]),
+    /agent-b \[Working; codex\/gpt-5.4; worktree \/repo\/feature; slice devbox \(lease=lease-1, leased_agent=leased-agent-1, run=run-worker\); auth codex=work \(work@example.com\);/,
+  )
+  assert.match(
+    formatAgentListSummary([remoteAgent], [slice({
+      id: "slice-missing-auth",
+      name: "missing-auth",
+      status: "running",
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      agent_ids: ["agent-2"],
+      providers: ["codex", "opencode:openai"],
+    })]),
+    /slice missing-auth \(lease=lease-1, leased_agent=leased-agent-1, run=run-worker\); auth missing codex, opencode:openai;/,
+  )
+  assert.match(
+    formatAgentListSummary([remoteAgent], [], {}, {
+      homeKernelId: "home-kernel",
+      homeMachineId: "home-machine",
+      ownerUserId: "user-1",
+      workspaceLiveSyncMode: "tracked",
+      workspaceLiveSyncWorktree: "/repo",
+    }),
+    /^session runtime: home kernel home-kernel@home-machine; owner user-1; authority home-owned\n1 agent:/,
+  )
+})
+
+test("agent inspect summary renders placement, grants, manifest, and substitutes", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "slice qa",
+    state: "Working",
+    provider: "codex",
+    model: "codex/gpt-5.4",
+    effort: "high",
+    execution_mode_override: "plan",
+    permission_level_override: "required",
+    workspace_id: "/repo",
+    worktree_id: "/repo/feature",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-1",
+    },
+    extension_grants: [
+      { kind: "mcp", name: "filesystem" },
+      { kind: "skill", name: "review" },
+    ],
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+    substitutes: [{ provider: "opencode", model: "zen", variant: "fast" }],
+  }), [slice({
+    id: "slice-wrong",
+    name: "wrong-by-worker",
+    status: "running",
+    worktree_id: "/repo/other",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-other"],
+  }), slice({
+    id: "slice-1",
+    name: "devbox",
+    status: "running",
+    worktree_id: "/repo/feature",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-remote", "agent-helper"],
+    provider_auth: [{
+      provider: "codex",
+      account_profile: "daily",
+      state: "authenticated",
+      email: "dev@example.com",
+      source: "slice",
+    }],
+  })], {
+    activeProviderRunId: "run-session",
+    activeProviderRunAgentId: "agent-remote",
+  }, {
+    homeKernelId: "home-kernel",
+    homeMachineId: "home-machine",
+    ownerUserId: "user-1",
+    workspaceLiveSyncMode: "tracked",
+    workspaceLiveSyncWorktree: "/repo",
+  })
+
+  assert.match(summary, /agent-remote \(slice qa\) \[Working\]/)
+  assert.match(summary, /home kernel: home-kernel@home-machine/)
+  assert.match(summary, /session owner: user-1/)
+  assert.match(summary, /workspace: \/repo/)
+  assert.match(summary, /placement: slice devbox \(worker=slice-machine, kernel=slice-kernel, lease=lease-1, leased_agent=leased-agent-1, active_run=run-1\)/)
+  assert.match(summary, /provider run: session=run-session, worker=run-1/)
+  assert.match(summary, /slice: devbox \(id=slice-1, status=running, owner=kernel-home@machine-home, authority=home-managed, display=headless, worktree=\/repo\/feature, agents=2\)/)
+  assert.match(summary, /slice provider auth: ready codex/)
+  assert.match(summary, /slice provider accounts: codex=daily \(dev@example.com\)/)
+  assert.match(summary, /extensions: 2 grants \(active tools home-proxy; skills snapshot; mcp=1, skill=1\)/)
+  assert.match(summary, /extension runtime: home-proxy tools execute on home with home-owned grants and credentials; skills are passive snapshots/)
+  assert.match(summary, /extension boundary: home validates every call; credentials never leave home/)
+  assert.match(summary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(summary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels slice-machine if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+  assert.match(summary, /substitutes: 0:opencode\/zen\/fast/)
+  assert.doesNotMatch(summary, /last substitution/)
+})
+
+test("agent inspect summary calls out missing slice provider auth", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "slice-kernel",
+      worker_machine_id: "slice-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  }), [slice({
+    id: "slice-1",
+    name: "devbox",
+    status: "running",
+    worker_kernel_id: "slice-kernel",
+    worker_machine_id: "slice-machine",
+    agent_ids: ["agent-remote"],
+    providers: ["codex", "opencode:openai"],
+  })])
+
+  assert.match(summary, /placement: slice devbox/)
+  assert.match(summary, /slice provider auth: missing codex, opencode:openai/)
+  assert.match(summary, /slice provider accounts: none/)
+})
+
+test("agent inspect summary gives recovery for slice lookup failures", () => {
+  const summary = formatAgentInspectSummary(agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "slice:linux-dev",
+      worker_machine_id: "hetzner",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  }), [], {}, {}, "kernel did not return slice inventory")
+
+  assert.match(summary, /placement: remote \(worker=hetzner, kernel=slice:linux-dev, lease=lease-1, leased_agent=leased-agent-1\)/)
+  assert.match(summary, /slice lookup: kernel did not return slice inventory/)
+  assert.match(summary, /slice next: run \/slice list; run \/slice doctor linux-dev if listed; run \/kernel remote-runtime if slice inventory stays unavailable/)
+})
+
+test("remote skill-only agent summaries do not report pending home-proxy manifest", () => {
+  const remoteSkillOnlyAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    alias: "reviewer",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "skill", name: "review" }],
+  })
+
+  const listSummary = formatAgentListSummary([remoteSkillOnlyAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteSkillOnlyAgent)
+
+  assert.match(listSummary, /1 grant \(skills snapshot\)/)
+  assert.doesNotMatch(listSummary, /manifest pending/)
+  assert.match(inspectSummary, /extensions: 1 grant \(skills snapshot; skill=1\)/)
+  assert.match(inspectSummary, /extension runtime: skill snapshot: home projects passive content; executable helpers require a separate tool grant/)
+  assert.match(inspectSummary, /extension boundary: passive content only; executable helpers require separate tool grants/)
+  assert.match(inspectSummary, /remote extension sync: not applicable \(no active home-proxy tools\)/)
+  assert.doesNotMatch(inspectSummary, /pending, next=/)
+})
+
+test("agent summaries keep final remote extension revokes visible after grants are gone", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [],
+    remote_extension_manifest_sync: {
+      state: "failed",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: true,
+      last_error: "worker offline",
+    },
+  })
+
+  const listSummary = formatAgentListSummary([remoteAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteAgent)
+
+  assert.match(listSummary, /0 grants \(final revoke pending\)/)
+  assert.match(listSummary, /manifest failed abcdef12 pending revoke error worker offline; see \/extension sync-status agent-remote/)
+  assert.match(inspectSummary, /extensions: none \(final revoke pending\)/)
+  assert.match(inspectSummary, /remote extension sync: failed, pending revoke, hash=abcdef123456, error=worker offline/)
+  assert.match(inspectSummary, /remote extension next: keep the home revoke in place; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if the revoke stays pending; use \/extension sync-retry agent-remote after the worker reconnects/)
+})
+
+test("agent summaries make settling home-proxy manifests actionable", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+    extension_grants: [{ kind: "connector", name: "status-api" }],
+    remote_extension_manifest_sync: {
+      state: "pending",
+      manifest_hash: "abcdef1234567890",
+      pending_revoke: false,
+    },
+  })
+
+  const listSummary = formatAgentListSummary([remoteAgent])
+  const inspectSummary = formatAgentInspectSummary(remoteAgent)
+
+  assert.match(listSummary, /manifest pending abcdef12; see \/extension sync-status agent-remote/)
+  assert.match(inspectSummary, /remote extension sync: pending, hash=abcdef123456/)
+  assert.match(inspectSummary, /remote extension next: home keeps stale home-proxy calls blocked until the worker manifest settles; run \/extension sync-status agent-remote; run \/machine kernels machine-worker if it does not settle; use \/extension sync-retry agent-remote after worker connectivity is healthy/)
+})
+
+test("agent summaries expose session and worker provider run pointers", () => {
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "kernel-worker",
+      worker_machine_id: "machine-worker",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+      active_worker_provider_run_id: "run-worker",
+    },
+  })
+
+  assert.match(
+    formatAgentListSummary([remoteAgent], [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: "agent-remote",
+    }),
+    /session run run-session/,
+  )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: "agent-remote",
+    }),
+    /provider run: session=run-session, worker=run-worker/,
+  )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /provider run: session=run-session owner unknown, worker=run-worker/,
+  )
+  assert.match(
+    formatAgentInspectSummary(remoteAgent, [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /provider run next: run \/kernel health and \/provider processes; export a debug bundle, then close or relaunch the mismatched provider run before sending more prompts to agent-remote/,
+  )
+  assert.match(
+    formatAgentInspectSummary(agent({
+      id: "agent-working",
+      agent_ref: "agent-working",
+      state: "Working",
+      remote_execution: {
+        worker_kernel_id: "kernel-worker",
+        worker_machine_id: "machine-worker",
+        execution_lease_id: "lease-1",
+        leased_agent_id: "leased-agent-1",
+      },
+    })),
+    /provider run next: run \/kernel remote-runtime and \/machine kernels machine-worker; reconnect or relaunch the remote\/slice worker before sending prompts to that remote\/slice agent if no active worker run appears/,
+  )
+  assert.doesNotMatch(
+    formatAgentListSummary([remoteAgent], [], {
+      activeProviderRunId: "run-session",
+      activeProviderRunAgentId: null,
+    }),
+    /session run run-session/,
+  )
+})
+
+test("agent focus command applies focus, launches a run, and reports the focused agent", async () => {
+  const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
+  const agentB = agent({ id: "agent-b", agent_ref: "agent-b", alias: "agent-2", provider: "codex", model: "codex/gpt-5.4" })
+  const previousSession = session({ focused_agent_id: agentA.id, agents: [agentA, agentB] })
+  const focusedSession = session({ focused_agent_id: agentB.id, agents: [agentA, agentB] })
+  let flashedMessage = ""
+  let launchedAgentId: string | null = null
+  let launchedVariant: string | null = null
+  let appliedSessionId: string | null = null
+
+  await handleAgentFocusCommand({
+    isAttached: () => true,
+    sessionState: () => previousSession,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual",
+    maxAgentsPerScreen: () => 4,
+    flashFooter: (message) => { flashedMessage = message },
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    applySessionState: (nextSession) => { appliedSessionId = nextSession.focused_agent_id },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: agentB, session: focusedSession }),
+    launchAgentProviderRun: async (_provider, _model, variant, agentId) => {
+      launchedAgentId = agentId
+      launchedVariant = variant
+      return providerRun({ agent_instance_id: agentId })
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => focusedSession,
+    destroyAgent: async () => focusedSession,
+    focusAgent: async () => ({ agent: agentB, session: focusedSession }),
+    resolveSessionAgent: () => ({ agent: agentB, error: null }),
+    formatAgentLabel,
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["focus", agentB.id])
+
+  assert.equal(launchedAgentId, agentB.id)
+  assert.equal(launchedVariant, agentB.effort)
+  assert.equal(appliedSessionId, agentB.id)
+  assert.equal(flashedMessage, "focused on agent-2")
+})
+
+test("agent focus command does not launch a local provider run for remote-backed agents", async () => {
+  const agentA = agent({ id: "agent-a", agent_ref: "agent-a" })
+  const remoteAgent = agent({
+    id: "agent-remote",
+    agent_ref: "agent-remote",
+    remote_execution: {
+      worker_kernel_id: "worker-kernel",
+      worker_machine_id: "worker-machine",
+      execution_lease_id: "lease-1",
+      leased_agent_id: "leased-agent-1",
+    },
+  })
+  const previousSession = session({ focused_agent_id: agentA.id, agents: [agentA, remoteAgent] })
+  const focusedSession = session({ focused_agent_id: remoteAgent.id, agents: [agentA, remoteAgent] })
+  let launched = false
+  let providerRunCleared = false
+
+  await handleAgentFocusCommand({
+    isAttached: () => true,
+    sessionState: () => previousSession,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual",
+    maxAgentsPerScreen: () => 4,
+    flashFooter: () => {},
+    appendNotice: () => {},
+    formatError: (error) => String(error),
+    applySessionState: () => {},
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: remoteAgent, session: focusedSession }),
+    launchAgentProviderRun: async () => {
+      launched = true
+      return providerRun()
+    },
+    setProviderRunState: (run) => {
+      if (run === null) {
+        providerRunCleared = true
+      }
+    },
+    refreshSessionState: async () => focusedSession,
+    destroyAgent: async () => focusedSession,
+    focusAgent: async () => ({ agent: remoteAgent, session: focusedSession }),
+    resolveSessionAgent: () => ({ agent: remoteAgent, error: null }),
+    formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["focus", remoteAgent.id])
+
+  assert.equal(launched, false)
+  assert.equal(providerRunCleared, true)
+})
+
+test("agent focus command moves the session focus to the agent named by alias or ref, also from no focus", async () => {
+  const codex = agent({ id: "agent-1", agent_ref: "codex-1", alias: "focusdrill" })
+  const claude = agent({ id: "agent-2", agent_ref: "claude-1", alias: "claude-apps", remote_execution: {
+    worker_kernel_id: "worker-kernel",
+    worker_machine_id: "worker-machine",
+    execution_lease_id: "lease-1",
+    leased_agent_id: "leased-agent-1",
+  } })
+  // No focus agent: every visible agent was deleted or none was focused yet.
+  let current = session({ focused_agent_id: null, agents: [codex, claude] })
+  const focused: string[] = []
+  const flashes: Array<{ message: string; tone: string }> = []
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => current,
+    currentModelId: () => "opencode/gpt-5.4",
+    currentVariantId: () => "high",
+    providerRunState: () => null,
+    multiAgentResponseLayout: () => "individual" as const,
+    maxAgentsPerScreen: () => 4,
+    flashFooter: (message: string, tone: "info" | "error") => { flashes.push({ message, tone }) },
+    appendNotice: () => {},
+    formatError: (error: unknown) => String(error),
+    applySessionState: (next: RuntimeSession) => { current = next },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    cycleAgentFocus: async () => ({ agent: null, session: current }),
+    launchAgentProviderRun: async () => providerRun(),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => current,
+    destroyAgent: async () => current,
+    // The kernel's FocusAgent takes an agent id and moves the session focus.
+    focusAgent: async (agentId: string) => {
+      focused.push(agentId)
+      const target = current.agents.find((entry) => entry.id === agentId)
+      assert.ok(target, `kernel got unknown agent id ${agentId}`)
+      return { agent: target, session: { ...current, focused_agent_id: agentId } }
+    },
+    resolveSessionAgent: (reference?: string | null) => {
+      const matches = current.agents.filter((entry) =>
+        entry.id === reference || entry.agent_ref === reference || entry.alias === reference)
+      return matches.length === 1
+        ? { agent: matches[0]!, error: null }
+        : { agent: null, error: `agent '${reference}' not found` }
+    },
+    formatAgentLabel: (entry: AgentInstance | null | undefined) => entry?.agent_ref ?? "",
+    refreshSplitPaneFocusRepaint: () => {},
+  }
+
+  await handleAgentFocusCommand(deps, ["focus", "claude-apps"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  await handleAgentFocusCommand(deps, ["focus", "codex-1"])
+  assert.equal(current.focused_agent_id, "agent-1")
+  await handleAgentFocusCommand(deps, ["focus", "agent-2"])
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"])
+
+  await handleAgentFocusCommand(deps, ["focus", "nobody"])
+  await handleAgentFocusCommand(deps, ["focus"])
+  assert.deepEqual(focused, ["agent-2", "agent-1", "agent-2"], "no kernel call without a resolved agent")
+  assert.equal(current.focused_agent_id, "agent-2")
+  assert.deepEqual(flashes.slice(-2), [
+    { message: "agent 'nobody' not found", tone: "error" },
+    { message: "usage: /agent focus <agent-ref>", tone: "error" },
+  ])
+})
+
+function agent(overrides: Partial<AgentInstance> = {}): AgentInstance {
+  return {
+    id: "agent-1",
+    agent_ref: "agent-1",
+    session_id: "session-1",
+    alias: null,
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    worktree_id: "worktree-1",
+    state: "Idle",
+    is_processing: false,
+    grid_row: 0,
+    grid_col: 0,
+    grid_row_span: 1,
+    grid_col_span: 1,
+    created_at_ms: 0,
+    last_activity_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
+  return {
+    id: "session-1",
+    project_id: "project-default",
+    alias: null,
+    workspace_id: "workspace-1",
+    worktree_id: "worktree-1",
+    created_at_ms: 0,
+    status: "Running",
+    active_provider_run_id: null,
+    attachment_ids: ["attachment-1"],
+    active_prompt: null,
+    queued_prompts: [],
+    focused_agent_id: "agent-1",
+    max_agents: 6,
+    agents: [agent()],
+    workflows: [],
+    workflow_runs: [],
+    config_state: {
+      version: 0,
+      values: {},
+      updated_by_attachment_id: null,
+    },
+    ...overrides,
+  }
+}
+
+function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
+  return {
+    id: "slice-1",
+    name: "slice-1",
+    owner_kernel_id: "kernel-home",
+    owner_machine_id: "machine-home",
+    backend: "local_docker",
+    os: "linux",
+    status: "running",
+    worker_kernel_ref: "slice:slice-1",
+    created_at_ms: 0,
+    updated_at_ms: 0,
+    ...overrides,
+  }
+}
+
+function providerRun(overrides: Partial<RuntimeProviderRun> = {}): RuntimeProviderRun {
+  return {
+    id: "run-1",
+    session_id: "session-1",
+    agent_instance_id: "agent-1",
+    adapter_key: "codex",
+    provider: "codex",
+    account_profile: "default",
+    model: "codex/gpt-5.4",
+    variant: "high",
+    usage_tokens_total: null,
+    state: "Running",
+    started_at_ms: 0,
+    ...overrides,
+  }
+}

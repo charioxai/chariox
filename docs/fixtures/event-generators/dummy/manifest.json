@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "generator_id": "dev.chariox.dummy",
+  "version": "1.0.0",
+  "name": "Dummy Events",
+  "summary": "Deterministic event source for local and deployment validation.",
+  "provider": "Chariox test harness",
+  "publisher": {
+    "id": "dev.chariox",
+    "name": "Chariox"
+  },
+  "protocol_version": 3,
+  "categories": ["Developer tools", "Testing"],
+  "authorization": {
+    "kind": "none",
+    "disclosure": "This deterministic fixture does not contact an external provider."
+  },
+  "events": [
+    {
+      "event_type": "dummy.test",
+      "version": 1,
+      "name": "Test event",
+      "description": "Emits a user-supplied prompt and optional artifact references.",
+      "filter_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "channel": { "type": "string", "default": "default" }
+        }
+      },
+      "required_scopes": []
+    }
+  ],
+  "signature": {
+    "key_id": "dev.chariox.fixture.2026-08-v3",
+    "algorithm": "ed25519",
+    "digest": "sha256:f40b9a94c3319565975f9d23c65a1796869b7083cdfa9f7d8d2d86ed590a15f5",
+    "value": "SO4kz3m5fiQcEYCIkaFoxnpeiiUuAgetPd9CpFBD2vUnQnYjAH/5orIH4HwayQ4oX4mdCW6b3a0spbgsh4l/Dw=="
+  }
+}

@@ -1,0 +1,265 @@
+use super::{validate_non_empty, CharioxUserConfig, DaemonConfig};
+use crate::error::DaemonError;
+use std::path::{Component, Path, PathBuf};
+
+fn validate_credential_vault_path(path: &str) -> Result<(), DaemonError> {
+    let expanded = if path == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else if let Some(suffix) = path.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(suffix))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    };
+    if !expanded.is_absolute()
+        || expanded
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "credential_vault.path",
+            message:
+                "path must be absolute (or use ~) and must not contain parent-directory components",
+        });
+    }
+    if expanded == Path::new("/") || expanded.parent() == Some(Path::new("/")) {
+        return Err(DaemonError::InvalidConfig {
+            field: "credential_vault.path",
+            message:
+                "path must not be a direct child of filesystem root; use a protected directory",
+        });
+    }
+    Ok(())
+}
+
+impl DaemonConfig {
+    pub fn validate(&self) -> Result<(), DaemonError> {
+        if self.lease_worker_home_caller_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "lease_worker_home_caller",
+                message: "invalid home caller binding",
+            });
+        }
+        if let Some(home) = &self.lease_worker_home_caller {
+            if self.kernel_runtime_role != super::KernelRuntimeRole::RemoteLeaseWorker
+                || [
+                    &home.kernel_id,
+                    &home.realm_id,
+                    &home.user_id,
+                    &home.relay_public_key,
+                ]
+                .iter()
+                .any(|value| value.trim().is_empty())
+            {
+                return Err(DaemonError::InvalidConfig {
+                    field: "lease_worker_home_caller",
+                    message: "selected home requires worker role and nonempty identity",
+                });
+            }
+        }
+        if let Some(message) = self.kernel_runtime_role_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_runtime_role",
+                message,
+            });
+        }
+        if let Some(message) = self.remote_lease_capacity_parse_error {
+            return Err(DaemonError::InvalidConfig {
+                field: "remote_lease_capacity",
+                message,
+            });
+        }
+        if self.kernel_runtime_role == super::KernelRuntimeRole::RemoteLeaseWorker
+            && self
+                .remote_lease_capacity
+                .is_none_or(|capacity| capacity == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "remote_lease_capacity",
+                message: "must be a positive integer for a remote lease worker",
+            });
+        }
+        validate_non_empty("daemon_id", &self.daemon_id)?;
+        validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        if let Some(binding) = &self.room_environment_worker_binding {
+            binding.validate(&self.daemon_id, &self.host_machine_id)?;
+        }
+        self.validate_publication_control_state_root()?;
+        if self
+            .relay_url
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+            && self.relay_token.is_none()
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_token",
+                message: "value must be set when relay_url is configured",
+            });
+        }
+        validate_non_empty("os_user", &self.os_user)?;
+        self.user_config.validate()?;
+        if self.local_socket_path.as_os_str().is_empty() {
+            return Err(DaemonError::InvalidConfig {
+                field: "local_socket_path",
+                message: "value must not be empty",
+            });
+        }
+        super::validate_local_socket_path(&self.local_socket_path).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "validate local Unix socket path",
+                message: error.to_string(),
+            }
+        })?;
+        validate_non_empty("os_name", &self.os_name)?;
+        validate_non_empty("kernel_websocket_host", &self.kernel_websocket_host)?;
+        if self.kernel_websocket_port == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_websocket_port",
+                message: "value must not be zero",
+            });
+        }
+        if self.kernel_websocket_queue_capacity == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "kernel_websocket_queue_capacity",
+                message: "value must not be zero",
+            });
+        }
+        validate_non_empty("runtime_mcp_host", &self.runtime_mcp_host)?;
+        if self.runtime_mcp_port == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "runtime_mcp_port",
+                message: "value must not be zero",
+            });
+        }
+        if self.session_history_root().as_os_str().is_empty() {
+            return Err(DaemonError::InvalidConfig {
+                field: "session_history_root",
+                message: "value must not be empty",
+            });
+        }
+        if self
+            .user_config
+            .workflow
+            .max_queues_per_workflow
+            .is_some_and(|value| value == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "workflow.max_queues_per_workflow",
+                message: "value must not be zero",
+            });
+        }
+        if self
+            .user_config
+            .workflow
+            .session_default_max_agents
+            .is_some_and(|value| value == 0)
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "workflow.session_default_max_agents",
+                message: "value must not be zero",
+            });
+        }
+        validate_workflow_code_limits(&self.user_config.workflow)?;
+        validate_non_empty("relay_public_key", &self.relay_public_key)?;
+        validate_non_empty("relay_private_key", &self.relay_private_key)?;
+        if self.relay_heartbeat_ms == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_heartbeat_ms",
+                message: "value must not be zero",
+            });
+        }
+        if self.relay_request_timeout_ms == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "relay_request_timeout_ms",
+                message: "value must not be zero",
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_workflow_code_limits(
+    workflow: &crate::config::UserWorkflowConfig,
+) -> Result<(), DaemonError> {
+    let Some(code) = workflow.code.as_ref() else {
+        return Ok(());
+    };
+    validate_optional_nonzero("workflow.code.max_concurrent", code.max_concurrent)?;
+    validate_optional_nonzero("workflow.code.max_nodes", code.max_nodes)?;
+    validate_optional_nonzero("workflow.code.max_agents", code.max_agents)?;
+    validate_optional_nonzero("workflow.code.max_edges", code.max_edges)?;
+    validate_optional_nonzero("workflow.code.max_endpoints", code.max_endpoints)?;
+    validate_optional_nonzero("workflow.code.max_queues", code.max_queues)?;
+    validate_optional_nonzero("workflow.code.max_watchdogs", code.max_watchdogs)?;
+    validate_optional_nonzero("workflow.code.max_schema_bytes", code.max_schema_bytes)?;
+    validate_optional_nonzero(
+        "workflow.code.max_generated_prompt_bytes",
+        code.max_generated_prompt_bytes,
+    )?;
+    validate_optional_nonzero_u64("workflow.code.script_timeout_ms", code.script_timeout_ms)?;
+    validate_optional_nonzero_u64(
+        "workflow.code.script_memory_bytes",
+        code.script_memory_bytes,
+    )?;
+    Ok(())
+}
+
+fn validate_optional_nonzero(field: &'static str, value: Option<u32>) -> Result<(), DaemonError> {
+    if value.is_some_and(|value| value == 0) {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(())
+}
+
+fn validate_optional_nonzero_u64(
+    field: &'static str,
+    value: Option<u64>,
+) -> Result<(), DaemonError> {
+    if value.is_some_and(|value| value == 0) {
+        return Err(DaemonError::InvalidConfig {
+            field,
+            message: "value must not be zero",
+        });
+    }
+    Ok(())
+}
+
+impl CharioxUserConfig {
+    pub fn validate(&self) -> Result<(), DaemonError> {
+        self.providers.workspace_live_sync.validate()?;
+        self.history.validate()?;
+        self.artifacts.validate()?;
+        self.state.validate()?;
+        self.slices.validate()?;
+        self.kernel_access.validate()?;
+        validate_non_empty("credential_vault.service", &self.credential_vault.service)?;
+        validate_non_empty("credential_vault.path", &self.credential_vault.path)?;
+        validate_credential_vault_path(&self.credential_vault.path)?;
+        if self.credential_vault.default_ttl_minutes == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.default_ttl_minutes",
+                message: "value must not be zero",
+            });
+        }
+        if self.credential_vault.max_ttl_minutes == 0 {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.max_ttl_minutes",
+                message: "value must not be zero",
+            });
+        }
+        if self.credential_vault.default_ttl_minutes > self.credential_vault.max_ttl_minutes {
+            return Err(DaemonError::InvalidConfig {
+                field: "credential_vault.default_ttl_minutes",
+                message: "value must be less than or equal to credential_vault.max_ttl_minutes",
+            });
+        }
+        Ok(())
+    }
+}

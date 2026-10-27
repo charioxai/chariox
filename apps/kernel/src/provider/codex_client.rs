@@ -1,0 +1,1473 @@
+use crate::error::DaemonError;
+use crate::mcp::CharioxMcpServerConfig;
+use crate::provider::{ProviderNativeInteractionBridge, ProviderWriteAccessMode};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use super::resolve_codex_executable;
+
+mod approval_bodies;
+mod auth;
+mod catalog;
+mod health;
+mod interrupt_cleanup;
+mod json_rpc;
+mod json_rpc_transport;
+mod mcp_reload;
+mod notifications;
+mod permission;
+mod runtime_mcp;
+mod runtime_trace;
+mod server_requests;
+mod socket_io;
+mod thread_runtime;
+
+mod mcp_config;
+
+#[cfg(test)]
+#[path = "codex_client/permission_regression_tests.rs"]
+mod permission_regression_tests;
+
+use json_rpc::JsonRpcMessage;
+#[cfg(test)]
+use notifications::parse_notification;
+
+#[cfg(test)]
+pub(super) fn fixture_codex_notification(method: &str, params: Value) -> CodexNotification {
+    notifications::parse_notification(JsonRpcMessage {
+        id: None,
+        method: Some(method.to_string()),
+        params: Some(params),
+        result: None,
+        error: None,
+    })
+    .expect("recognized Codex fixture notification")
+}
+#[cfg(test)]
+use permission::{codex_permission_policy, workspace_live_sync_codex_permission_grant};
+
+pub(crate) use auth::normalize_codex_usage;
+pub use auth::{ProviderAuthStatus, ProviderLoginStart};
+pub use health::{codex_endpoint_is_healthy, CODEX_ENDPOINT_STARTUP_TIMEOUT};
+pub(crate) use notifications::codex_error_text;
+pub use notifications::CodexNotification;
+pub use socket_io::CodexSocket;
+pub use thread_runtime::{CodexThread, CodexThreadStartResponse};
+
+#[derive(Clone)]
+pub struct CodexClient {
+    provider_run_id: String,
+    session_id: Option<String>,
+    agent_id: Option<String>,
+    endpoint: String,
+    runtime_mcp_server_url: Option<String>,
+    runtime_mcp_auth_token: Option<String>,
+    native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
+    native_approval_turn_id: Option<String>,
+    native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
+    mcp_servers: Vec<CharioxMcpServerConfig>,
+    provider_config_overrides: BTreeMap<String, Value>,
+    write_access_mode: ProviderWriteAccessMode,
+    workspace_live_sync_roots: Vec<PathBuf>,
+    discovery_read_root: Option<PathBuf>,
+    /// Discovery utility turns use the tracked launch mode for Codex's
+    /// read-only sandbox, but must not inherit its ordinary permission reply
+    /// policy. This flag is intentionally client-local and never serialized.
+    read_only_discovery_permissions: bool,
+    metadata_only_discovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexRunSelection {
+    pub model: Option<String>,
+    pub variant: Option<String>,
+}
+
+impl CodexClient {
+    pub(crate) fn with_metadata_only_discovery(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
+        self.metadata_only_discovery = true;
+        self.discovery_read_root = None;
+        self
+    }
+
+    pub fn new(
+        provider_run_id: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> Result<Self, DaemonError> {
+        Ok(Self {
+            provider_run_id: provider_run_id.into(),
+            session_id: None,
+            agent_id: None,
+            endpoint: endpoint.into(),
+            runtime_mcp_server_url: None,
+            runtime_mcp_auth_token: None,
+            native_interaction_bridge: None,
+            native_approval_origin: None,
+            native_approval_turn_id: None,
+            mcp_servers: Vec::new(),
+            provider_config_overrides: BTreeMap::new(),
+            write_access_mode: ProviderWriteAccessMode::Unrestricted,
+            workspace_live_sync_roots: Vec::new(),
+            discovery_read_root: None,
+            read_only_discovery_permissions: false,
+            metadata_only_discovery: false,
+        })
+    }
+
+    pub fn with_runtime_context(
+        mut self,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+    ) -> Self {
+        self.session_id = session_id.map(str::to_string);
+        self.agent_id = agent_id.map(str::to_string);
+        self
+    }
+
+    pub fn with_runtime_mcp_binding(
+        mut self,
+        server_url: Option<&str>,
+        auth_token: Option<&str>,
+    ) -> Self {
+        self.runtime_mcp_server_url = server_url.map(str::to_string);
+        self.runtime_mcp_auth_token = auth_token.map(str::to_string);
+        self
+    }
+
+    pub fn with_mcp_servers(mut self, mcp_servers: &[CharioxMcpServerConfig]) -> Self {
+        self.mcp_servers = mcp_servers.to_vec();
+        self
+    }
+
+    pub fn with_provider_config_overrides(mut self, overrides: &BTreeMap<String, Value>) -> Self {
+        self.provider_config_overrides = overrides.clone();
+        self
+    }
+
+    pub(crate) fn with_native_approval_context(
+        mut self,
+        origin: Option<crate::session::NativeInteractionOrigin>,
+        turn_id: Option<String>,
+    ) -> Self {
+        self.native_approval_origin = origin;
+        self.native_approval_turn_id = turn_id;
+        self
+    }
+
+    pub(crate) fn with_native_interaction_bridge(
+        mut self,
+        bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
+    ) -> Self {
+        self.native_interaction_bridge = bridge;
+        self
+    }
+
+    pub fn with_write_access_mode(mut self, write_access_mode: ProviderWriteAccessMode) -> Self {
+        self.write_access_mode = write_access_mode;
+        self
+    }
+
+    pub fn with_workspace_live_sync_roots(mut self, roots: &[PathBuf]) -> Self {
+        self.workspace_live_sync_roots = roots.to_vec();
+        self
+    }
+
+    pub(crate) fn with_read_only_discovery_permissions(mut self) -> Self {
+        self.read_only_discovery_permissions = true;
+        // Discovery never needs provider MCPs. Clear both the direct and
+        // runtime bindings so an accidental server request cannot reach a
+        // mutating tool even if it arrives after thread/start.
+        self.runtime_mcp_server_url = None;
+        self.runtime_mcp_auth_token = None;
+        self.mcp_servers.clear();
+        self
+    }
+
+    pub(crate) fn with_discovery_read_root(mut self, root: Option<&std::path::Path>) -> Self {
+        self.discovery_read_root = root.map(std::path::Path::to_path_buf);
+        self
+    }
+
+    pub(super) fn protocol_error(&self, operation: &'static str, message: String) -> DaemonError {
+        DaemonError::ProviderProtocol {
+            provider_run_id: self.provider_run_id.clone(),
+            operation,
+            message,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::mcp::CharioxMcpServerConfig;
+    use crate::provider::{
+        AgentExecutionMode, AgentPermissionLevel, ProviderRunTokenUsage, ProviderWriteAccessMode,
+    };
+
+    use super::{
+        codex_permission_policy, parse_notification, workspace_live_sync_codex_permission_grant,
+        CodexClient, CodexNotification, JsonRpcMessage,
+    };
+
+    #[test]
+    fn provusage_codex_scoped_updates_replace_refreshed_meters_and_keep_other_limits() {
+        crate::test_support::isolated_env_test!();
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed("local", "codex", "Scope updates")
+            .unwrap();
+        let refreshed = serde_json::json!({"rateLimitsByLimitId": {"codex": {"primary": {"usedPercent":1,"windowDurationMins":300}}}});
+        registry
+            .update_usage(
+                "local",
+                "codex",
+                &profile.profile_id,
+                super::normalize_codex_usage(&profile.profile_id, Some(&refreshed), None),
+            )
+            .unwrap();
+        let updates = [("codex", 7), ("codex-spark", 30), ("codex", 8)].into_iter().map(|(id, percent)| {
+            let Some(CodexNotification::AccountRateLimitsUpdated { rate_limits }) = parse_notification(JsonRpcMessage {
+                id: None, method: Some("account/rateLimits/updated".into()),
+                params: Some(serde_json::json!({"rateLimits": {"limitId":id, "primary":{"usedPercent":percent,"windowDurationMins":300}}})), result: None, error: None,
+            }) else { panic!("expected account update") };
+            rate_limits
+        }).collect();
+        let merged = registry
+            .update_usage(
+                "local",
+                "codex",
+                &profile.profile_id,
+                super::normalize_codex_usage(
+                    &profile.profile_id,
+                    Some(&serde_json::Value::Array(updates)),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            merged.usage.meters.len(),
+            2,
+            "native limit IDs must match refreshed identities and preserve each limit"
+        );
+        assert_eq!(
+            merged
+                .usage
+                .meters
+                .iter()
+                .find(|m| m.meter_id == "rolling/300/codex")
+                .unwrap()
+                .used_percent,
+            Some(8.0)
+        );
+        assert_eq!(
+            merged
+                .usage
+                .meters
+                .iter()
+                .find(|m| m.meter_id == "rolling/300/codex-spark")
+                .unwrap()
+                .used_percent,
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn provusage_codex_account_rate_limits_notification_is_not_dropped() {
+        let parsed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("account/rateLimits/updated".into()),
+            params: Some(
+                serde_json::json!({ "rateLimits": { "primary": { "usedPercent": 7, "windowDurationMins": 300, "resetsAt": 2000000000 } } }),
+            ),
+            result: None,
+            error: None,
+        });
+        let Some(CodexNotification::AccountRateLimitsUpdated { rate_limits }) = parsed else {
+            panic!("official account rate-limit updates must reach the account usage cache");
+        };
+        let usage = super::normalize_codex_usage("work", Some(&rate_limits), None);
+        assert_eq!(usage.profile_id, "work");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(7.0));
+        assert_eq!(usage.meters[0].window_duration_minutes, Some(300));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(2_000_000_000_000));
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_policy_uses_platform_fenced_sandbox() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(policy.sandbox, "danger-full-access");
+            assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(policy.sandbox, "read-only");
+            assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+            assert_eq!(
+                policy.config_overrides.get("include_apply_patch_tool"),
+                Some(&json!(false))
+            );
+            assert_eq!(
+                policy.config_overrides.get("features.apply_patch_freeform"),
+                Some(&json!(false))
+            );
+        }
+        #[cfg(target_os = "macos")]
+        assert!(policy.config_overrides.is_empty());
+    }
+
+    #[test]
+    fn unrestricted_required_policy_uses_strict_native_approval() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        );
+
+        assert_eq!(policy.approval_policy, json!("untrusted"));
+        assert_eq!(policy.sandbox, "workspace-write");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "workspaceWrite" }));
+    }
+
+    #[test]
+    fn tracked_live_sync_build_policy_does_not_sandbox_outside_repositories() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        );
+
+        assert_eq!(policy.approval_policy, json!("untrusted"));
+        assert_eq!(policy.sandbox, "danger-full-access");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+        assert!(policy.config_overrides.is_empty());
+    }
+
+    #[test]
+    fn tracked_live_sync_thread_start_uses_full_access_payload() {
+        let client =
+            CodexClient::new("run-1", "ws://127.0.0.1:43123").expect("client should construct");
+
+        let params = client
+            .thread_start_params(
+                Some("/repo/selected"),
+                Some("gpt-5.2"),
+                ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Required,
+                None,
+            )
+            .expect("thread start params should render");
+
+        assert_eq!(params.get("approvalPolicy"), Some(&json!("untrusted")));
+        assert_eq!(params.get("sandbox"), Some(&json!("danger-full-access")));
+        assert_eq!(params.get("sandboxPolicy"), None);
+        assert_eq!(params.get("cwd"), Some(&json!("/repo/selected")));
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.2")));
+    }
+
+    #[test]
+    fn tracked_live_sync_plan_policy_remains_read_only() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+        assert_eq!(
+            policy.config_overrides.get("include_apply_patch_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.apply_patch_freeform"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("tui.mode"),
+            Some(&json!("plan"))
+        );
+    }
+
+    #[test]
+    fn unrestricted_yolo_build_policy_uses_full_filesystem_access() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "danger-full-access");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "dangerFullAccess" }));
+    }
+
+    #[test]
+    fn unrestricted_yolo_plan_policy_remains_read_only() {
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        assert_eq!(policy.approval_policy, json!("never"));
+        assert_eq!(policy.sandbox, "read-only");
+        assert_eq!(policy.sandbox_policy, json!({ "type": "readOnly" }));
+        assert_eq!(
+            policy.config_overrides.get("include_apply_patch_tool"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("features.apply_patch_freeform"),
+            Some(&json!(false))
+        );
+        assert_eq!(
+            policy.config_overrides.get("tui.mode"),
+            Some(&json!("plan"))
+        );
+    }
+
+    #[test]
+    fn codex_turn_start_omits_session_scoped_hidden_context() {
+        let params = CodexClient::turn_start_params(
+            "thread-1",
+            vec![json!({"type": "text", "text": "visible"})],
+            Some("/tmp/worktree"),
+            Some("gpt-5.5"),
+            Some("low"),
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+            Some("hidden system context"),
+        );
+
+        assert_eq!(params.get("threadId"), Some(&json!("thread-1")));
+        assert_eq!(
+            params.get("sandboxPolicy"),
+            Some(&json!({ "type": "readOnly" }))
+        );
+        assert_eq!(params.get("developerInstructions"), None);
+        assert_eq!(params.get("collaborationMode"), None);
+        assert_eq!(params.get("summary"), Some(&json!("detailed")));
+    }
+
+    #[test]
+    fn codex_turn_start_omits_reasoning_summary_for_spark_models() {
+        let params = CodexClient::turn_start_params(
+            "thread-1",
+            vec![json!({"type": "text", "text": "visible"})],
+            Some("/tmp/worktree"),
+            Some("gpt-5.3-codex-spark"),
+            Some("low"),
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+            None,
+        );
+
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.3-codex-spark")));
+        assert_eq!(params.get("summary"), None);
+    }
+
+    #[test]
+    fn codex_turn_steer_targets_the_authoritative_active_turn() {
+        let params = CodexClient::turn_steer_params(
+            "thread-1",
+            "turn-active",
+            vec![json!({"type": "text", "text": "updated task"})],
+        );
+
+        assert_eq!(params.get("threadId"), Some(&json!("thread-1")));
+        assert_eq!(params.get("expectedTurnId"), Some(&json!("turn-active")));
+        assert_eq!(
+            params.get("input"),
+            Some(&json!([{"type": "text", "text": "updated task"}]))
+        );
+        assert_eq!(params.as_object().map(|value| value.len()), Some(3));
+    }
+
+    #[test]
+    fn codex_thread_start_creates_durable_threads() {
+        let client =
+            CodexClient::new("run-1", "ws://127.0.0.1:43123").expect("client should construct");
+
+        let params = client
+            .thread_start_params(
+                Some("/tmp/worktree"),
+                Some("gpt-5.5"),
+                ProviderWriteAccessMode::Unrestricted,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Yolo,
+                Some("hidden at thread start"),
+            )
+            .expect("params should build");
+
+        assert_eq!(params.get("ephemeral"), Some(&json!(false)));
+        assert_eq!(params.get("persistExtendedHistory"), Some(&json!(true)));
+        assert_eq!(params.get("serviceName"), Some(&json!("chariox")));
+        assert_eq!(params.get("cwd"), Some(&json!("/tmp/worktree")));
+        assert_eq!(params.get("model"), Some(&json!("gpt-5.5")));
+        assert_eq!(
+            params.get("developerInstructions"),
+            Some(&json!("hidden at thread start"))
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_removes_filesystem_write() {
+        let requested = json!({
+            "network": {
+                "enabled": true
+            },
+            "fileSystem": {
+                "read": ["/tmp/input"],
+                "write": ["/repo/main/output"]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
+            ),
+            json!({
+                "network": {
+                    "enabled": true
+                },
+                "fileSystem": {
+                    "read": ["/tmp/input"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_denies_write_only_request() {
+        let requested = json!({
+            "fileSystem": {
+                "write": ["/repo/main/output"]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
+            ),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_allows_writes_outside_protected_roots() {
+        let requested = json!({
+            "fileSystem": {
+                "write": [
+                    "/repo/main/src/lib.rs",
+                    "/repo/main/../main/src/config.rs",
+                    "/other-repo/src/lib.rs"
+                ]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                None,
+            ),
+            json!({
+                "fileSystem": {
+                    "write": ["/other-repo/src/lib.rs"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_permission_grant_resolves_relative_writes_against_cwd() {
+        let requested = json!({
+            "fileSystem": {
+                "write": [
+                    "src/lib.rs",
+                    "../main/src/config.rs"
+                ]
+            }
+        });
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                Some(std::path::Path::new("/repo/other")),
+            ),
+            json!({
+                "fileSystem": {
+                    "write": ["src/lib.rs"]
+                }
+            })
+        );
+
+        assert_eq!(
+            workspace_live_sync_codex_permission_grant(
+                &requested,
+                &[std::path::PathBuf::from("/repo/main")],
+                Some(std::path::Path::new("/repo/main")),
+            ),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn workspace_live_sync_client_does_not_approve_codex_filesystem_writes() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged)
+            .with_workspace_live_sync_roots(&[std::path::PathBuf::from("/repo/main")]);
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["/repo/main/output"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {},
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn pr364_read_only_discovery_client_denies_unscoped_permission_requests() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncTracked)
+            .with_read_only_discovery_permissions();
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "permissions": {
+                    "network": true,
+                    "fileSystem": {
+                        "read": ["/repo/selected"],
+                        "write": ["/repo/selected/output"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {},
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn read_only_discovery_thread_config_omits_runtime_and_granted_mcp_bindings() {
+        let mut server =
+            CharioxMcpServerConfig::stdio("mutating-tool", "project-mcp", vec!["serve".into()]);
+        server.required = true;
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert(
+            "mcp_servers.injected.command".to_string(),
+            json!("arbitrary-mcp"),
+        );
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
+            .with_mcp_servers(&[server])
+            .with_provider_config_overrides(&provider_overrides)
+            .with_read_only_discovery_permissions();
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Required,
+        );
+
+        let overrides = client
+            .thread_config_overrides(&policy)
+            .expect("read-only discovery config should render");
+
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+        assert_eq!(overrides.get("mcp_servers"), Some(&json!({})));
+        assert!(overrides
+            .keys()
+            .all(|key| key == "mcp_servers" || !key.starts_with("mcp_servers.")));
+    }
+
+    #[test]
+    fn workspace_live_sync_client_approves_relative_writes_outside_protected_roots() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_write_access_mode(ProviderWriteAccessMode::WorkspaceLiveSyncManaged)
+            .with_workspace_live_sync_roots(&[std::path::PathBuf::from("/repo/main")]);
+        let message = JsonRpcMessage {
+            id: Some(json!(1)),
+            method: Some("item/permissions/requestApproval".to_string()),
+            params: Some(json!({
+                "cwd": "/repo/other",
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["src/lib.rs", "../main/src/lib.rs"]
+                    }
+                }
+            })),
+            result: None,
+            error: None,
+        };
+
+        assert_eq!(
+            client.permissions_approval_response(&message),
+            json!({
+                "permissions": {
+                    "fileSystem": {
+                        "write": ["src/lib.rs"]
+                    }
+                },
+                "scope": "turn"
+            })
+        );
+    }
+
+    #[test]
+    fn thread_config_overrides_include_provider_config_overrides() {
+        let mut provider_overrides = std::collections::BTreeMap::new();
+        provider_overrides.insert("features.multi_agent".to_string(), json!(false));
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_provider_config_overrides(&provider_overrides);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Plan,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(overrides.get("tui.mode"), Some(&json!("plan")));
+        assert_eq!(overrides.get("features.multi_agent"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn thread_config_overrides_include_runtime_mcp_binding() {
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"));
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.url"),
+            Some(&json!("http://127.0.0.1:43120/mcp"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.transport"),
+            Some(&json!("streamable_http"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.http_headers.Authorization"),
+            Some(&json!("Bearer token-123"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.bearer_token_env_var"),
+            None
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox.tool_timeout_sec"),
+            Some(&json!(300))
+        );
+        assert_eq!(overrides.get("features.shell_tool"), None);
+    }
+
+    #[test]
+    fn thread_config_overrides_include_granted_mcp_servers() {
+        let mut server =
+            CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+        server.required = true;
+        server.tool_timeout_sec = Some(25);
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_mcp_servers(&[server]);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::Unrestricted,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(
+            overrides.get("mcp_servers.browser.command"),
+            Some(&json!("npx"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.args"),
+            Some(&json!(["@playwright/mcp@latest"]))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.browser.tool_timeout_sec"),
+            Some(&json!(25))
+        );
+    }
+
+    #[test]
+    fn thread_config_overrides_proxy_granted_mcp_servers_when_runtime_mcp_is_bound() {
+        let mut server =
+            CharioxMcpServerConfig::stdio("browser", "npx", vec!["@playwright/mcp@latest".into()]);
+        server.required = true;
+        server.tool_timeout_sec = Some(25);
+        let client = CodexClient::new("run-1", "ws://127.0.0.1:43123")
+            .expect("client should construct")
+            .with_runtime_mcp_binding(Some("http://127.0.0.1:43120/mcp"), Some("token-123"))
+            .with_mcp_servers(&[server]);
+        let policy = codex_permission_policy(
+            ProviderWriteAccessMode::WorkspaceLiveSyncManaged,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Yolo,
+        );
+
+        let overrides = client.thread_config_overrides(&policy).unwrap();
+
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.url"),
+            Some(&json!("http://127.0.0.1:43120/mcp/proxy/browser"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.transport"),
+            Some(&json!("streamable_http"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.http_headers.Authorization"),
+            Some(&json!("Bearer token-123"))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.bearer_token_env_var"),
+            None
+        );
+        assert_eq!(overrides.get("mcp_servers.browser.command"), None);
+        assert_eq!(overrides.get("mcp_servers.browser.args"), None);
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.required"),
+            Some(&json!(true))
+        );
+        assert_eq!(
+            overrides.get("mcp_servers.chariox_mcp_browser.tool_timeout_sec"),
+            Some(&json!(25))
+        );
+    }
+
+    #[test]
+    fn parse_notification_recognizes_reasoning_and_tool_events() {
+        let reasoning = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/reasoning/textDelta".to_string()),
+            params: Some(json!({
+                "itemId": "reason-1",
+                "delta": "thinking"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            reasoning,
+            Some(CodexNotification::ReasoningTextDelta {
+                item_id: "reason-1".to_string(),
+                delta: "thinking".to_string(),
+            })
+        );
+
+        let item_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/started".to_string()),
+            params: Some(json!({
+                "item": {
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "status": "inProgress",
+                    "commandActions": []
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert!(matches!(
+            item_started,
+            Some(CodexNotification::ItemStarted { item })
+                if item.get("id").and_then(serde_json::Value::as_str) == Some("cmd-1")
+        ));
+
+        let progress = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("item/mcpToolCall/progress".to_string()),
+            params: Some(json!({
+                "itemId": "mcp-1",
+                "message": "running"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            progress,
+            Some(CodexNotification::McpToolCallProgress {
+                item_id: "mcp-1".to_string(),
+                message: "running".to_string(),
+            })
+        );
+
+        let exec_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_begin".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_begin",
+                    "call_id": "cmd-event-1",
+                    "command": "/bin/zsh -lc 'pwd'",
+                    "cwd": "/tmp"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_started,
+            Some(CodexNotification::ExecCommandStarted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+            })
+        );
+
+        let exec_output_delta = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_output_delta".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_output_delta",
+                    "call_id": "cmd-event-1",
+                    "chunk": "b2s=",
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_output_delta,
+            Some(CodexNotification::ExecCommandOutputDelta {
+                call_id: "cmd-event-1".to_string(),
+                chunk: "b2s=".to_string(),
+            })
+        );
+
+        let exec_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/exec_command_end".to_string()),
+            params: Some(json!({
+                "msg": {
+                    "type": "exec_command_end",
+                    "call_id": "cmd-event-1",
+                    "command": "/bin/zsh -lc 'pwd'",
+                    "cwd": "/tmp",
+                    "aggregated_output": "ok\n",
+                    "exit_code": 0,
+                    "success": true
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            exec_completed,
+            Some(CodexNotification::ExecCommandCompleted {
+                call_id: "cmd-event-1".to_string(),
+                command: json!("/bin/zsh -lc 'pwd'"),
+                cwd: Some("/tmp".to_string()),
+                output: Some("ok\n".to_string()),
+                exit_code: Some(0),
+                success: Some(true),
+                stderr: None,
+            })
+        );
+
+        let token_usage = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("thread/tokenUsage/updated".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 42100,
+                        "inputTokens": 40000,
+                        "cachedInputTokens": 12000,
+                        "outputTokens": 2100,
+                        "reasoningOutputTokens": 800
+                    },
+                    "last": {
+                        "totalTokens": 8900,
+                        "inputTokens": 7600,
+                        "cachedInputTokens": 2000,
+                        "outputTokens": 1300,
+                        "reasoningOutputTokens": 500
+                    },
+                    "modelContextWindow": 128000
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            token_usage,
+            Some(CodexNotification::TokenUsageUpdated {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: Some(42100),
+                    last_tokens: Some(8900),
+                    context_tokens: Some(8900),
+                    context_window: Some(128000),
+                },
+            })
+        );
+
+        let impossible_context_usage = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("thread/tokenUsage/updated".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-2",
+                "tokenUsage": {
+                    "total": {
+                        "totalTokens": 36000000
+                    },
+                    "last": {
+                        "totalTokens": 36000000
+                    },
+                    "modelContextWindow": 128000
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            impossible_context_usage,
+            Some(CodexNotification::TokenUsageUpdated {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-2".to_string(),
+                usage: ProviderRunTokenUsage {
+                    total_tokens: Some(36_000_000),
+                    last_tokens: Some(36_000_000),
+                    context_tokens: None,
+                    context_window: Some(128_000),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parse_notification_frames_codex_errors_with_their_structured_code() {
+        let parse = |method: &str, params: serde_json::Value| {
+            parse_notification(JsonRpcMessage {
+                id: None,
+                method: Some(method.to_string()),
+                params: Some(params),
+                result: None,
+                error: None,
+            })
+        };
+        let at_capacity = "Selected model is at capacity. Please try a different model.";
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "willRetry": false,
+                    "error": {"message": at_capacity, "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::TurnScoped {
+                turn_id: "turn-1".to_string(),
+                notification: Box::new(CodexNotification::Error {
+                    message: format!("Codex error [server_overloaded]: {at_capacity}"),
+                }),
+            })
+        );
+        assert_eq!(
+            parse(
+                "turn/completed",
+                json!({
+                    "threadId": "thread-1",
+                    "turn": {
+                        "id": "turn-1",
+                        "status": "failed",
+                        "error": {
+                            "message": "stream closed",
+                            "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 502}}
+                        }
+                    }
+                })
+            ),
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "failed".to_string(),
+                error_message: Some(
+                    "Codex error [http_connection_failed]: stream closed".to_string()
+                ),
+                items: Vec::new(),
+            })
+        );
+        // The rollout spelling carries the same code.
+        assert_eq!(
+            parse(
+                "error",
+                json!({"error": {"message": at_capacity, "codex_error_info": "server_overloaded"}})
+            ),
+            Some(CodexNotification::Error {
+                message: format!("Codex error [server_overloaded]: {at_capacity}"),
+            })
+        );
+        // A retried error is progress and keeps its text as sent.
+        assert_eq!(
+            parse(
+                "error",
+                json!({
+                    "willRetry": true,
+                    "error": {"message": "Reconnecting... 1/5", "codexErrorInfo": "serverOverloaded"}
+                })
+            ),
+            Some(CodexNotification::Error {
+                message: "Reconnecting... 1/5".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn parse_notification_recognizes_codex_terminal_events() {
+        let v2_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turn": {
+                    "id": "turn-1",
+                    "status": "completed",
+                    "items": [{
+                        "type": "agentMessage",
+                        "id": "message-1",
+                        "text": "done"
+                    }]
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            v2_completed,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+                items: vec![json!({
+                    "type": "agentMessage",
+                    "id": "message-1",
+                    "text": "done"
+                })],
+            })
+        );
+
+        let v2_completed_without_id = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turn": {
+                    "status": "completed",
+                    "items": []
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(v2_completed_without_id, None);
+
+        let v2_started_without_id = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/started".to_string()),
+            params: Some(json!({"threadId": "thread-1"})),
+            result: None,
+            error: None,
+        });
+        assert_eq!(v2_started_without_id, None);
+
+        let legacy_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-legacy-1",
+                "status": "completed",
+                "error_message": null,
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "message-legacy-1",
+                    "text": "done"
+                }]
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            legacy_completed,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-legacy-1".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+                items: vec![json!({
+                    "type": "agentMessage",
+                    "id": "message-legacy-1",
+                    "text": "done"
+                })],
+            })
+        );
+
+        let legacy_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/started".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-legacy-1"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            legacy_started,
+            Some(CodexNotification::TurnStarted {
+                turn_id: "turn-legacy-1".to_string(),
+            })
+        );
+
+        let raw_task_complete = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/task_complete".to_string()),
+            params: Some(json!({
+                "id": "turn-raw-1",
+                "msg": {
+                    "type": "task_complete"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            raw_task_complete,
+            Some(CodexNotification::TaskComplete {
+                turn_id: Some("turn-raw-1".to_string()),
+            })
+        );
+
+        let raw_turn_aborted = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("codex/event/turn_aborted".to_string()),
+            params: Some(json!({
+                "id": "turn-raw-2",
+                "msg": {
+                    "type": "turn_aborted",
+                    "reason": "interrupted"
+                }
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            raw_turn_aborted,
+            Some(CodexNotification::TurnAborted {
+                reason: Some("interrupted".to_string()),
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod metadata_discovery_tests {
+    use super::*;
+    #[test]
+    fn review971_assessment_denies_native_shell_file_network_and_mcp_requests() {
+        use std::{net::TcpListener, thread};
+        use tokio_tungstenite::tungstenite::{accept, connect};
+        let methods = [
+            (
+                "item/commandExecution/requestApproval",
+                serde_json::json!({"decision":"decline"}),
+            ),
+            (
+                "item/fileChange/requestApproval",
+                serde_json::json!({"decision":"decline"}),
+            ),
+            (
+                "execCommandApproval",
+                serde_json::json!({"decision":"denied"}),
+            ),
+            (
+                "applyPatchApproval",
+                serde_json::json!({"decision":"denied"}),
+            ),
+            (
+                "item/permissions/requestApproval",
+                serde_json::json!({"permissions":{},"scope":"turn"}),
+            ),
+            (
+                "item/tool/call",
+                serde_json::json!({"success":false,"contentItems":[]}),
+            ),
+            (
+                "mcpServer/elicitation/request",
+                serde_json::json!({"action":"decline","content":null,"_meta":null}),
+            ),
+        ];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            for (method, expected) in methods {
+                let response: serde_json::Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(
+                    response["result"], expected,
+                    "{method} must deny native work without an approval bridge"
+                );
+            }
+        });
+        let client = CodexClient::new("assessment", &endpoint)
+            .unwrap()
+            .with_metadata_only_discovery();
+        let (mut socket, _) = connect(&endpoint).unwrap();
+        for method in [
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "execCommandApproval",
+            "applyPatchApproval",
+            "item/permissions/requestApproval",
+            "item/tool/call",
+            "mcpServer/elicitation/request",
+        ] {
+            let request = serde_json::from_value(serde_json::json!({
+                "id": 1, "method": method,
+                "params": {"command":"touch unauthorized", "permissions":{"network":{"enabled":true},"fileSystem":{"write":["/project"]}}}
+            })).unwrap();
+            assert!(client
+                .respond_to_server_request(&mut socket, &request)
+                .unwrap());
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn mp08_mp11_source_discovery_does_not_require_a_durable_rollout() {
+        let client = CodexClient::new("discovery", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_read_only_discovery_permissions();
+        let params = client
+            .thread_start_params(
+                Some("/workspace"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["persistExtendedHistory"], false);
+        assert_eq!(params["sandbox"], "read-only");
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["features.shell_tool"], true);
+    }
+
+    #[test]
+    fn mp08_metadata_discovery_disables_host_context_tools_and_permissions() {
+        let client = CodexClient::new("metadata", "ws://127.0.0.1:1")
+            .unwrap()
+            .with_provider_config_overrides(&BTreeMap::from([(
+                "features.shell_tool".into(),
+                serde_json::json!(true),
+            )]))
+            .with_metadata_only_discovery();
+        let params = client
+            .thread_start_params(
+                Some("/tmp"),
+                None,
+                crate::provider::ProviderWriteAccessMode::WorkspaceLiveSyncTracked,
+                crate::provider::AgentExecutionMode::Plan,
+                crate::provider::AgentPermissionLevel::Required,
+                None,
+            )
+            .unwrap();
+        assert_eq!(params["ephemeral"], true);
+        assert_eq!(params["config"]["features.shell_tool"], false);
+        assert_eq!(params["config"]["features.unified_exec"], false);
+        assert_eq!(params["config"]["tools.view_image"], false);
+        assert_eq!(params["config"]["mcp_servers"], serde_json::json!({}));
+        assert_eq!(params["config"]["project_doc_max_bytes"], 0);
+        assert_eq!(params["config"]["web_search"], "disabled");
+    }
+}
+
+#[cfg(test)]
+#[path = "codex_client/thread_history_tests.rs"]
+mod thread_history_tests;

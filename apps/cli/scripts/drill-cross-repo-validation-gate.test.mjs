@@ -1,0 +1,5 @@
+import './drill-cross-repo-validation-gate.test/combined-evidence.test.mjs'
+import './drill-cross-repo-validation-gate.test/default-inputs.test.mjs'
+import './drill-cross-repo-validation-gate.test/registry-parity.test.mjs'
+import './drill-cross-repo-validation-gate.test/generated-evidence.test.mjs'
+import './drill-cross-repo-validation-gate.test/unsupported-options.test.mjs'

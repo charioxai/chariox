@@ -1,0 +1,547 @@
+use crate::error::DaemonError;
+use crate::runtime::state::KernelRuntimeState;
+use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+
+use super::*;
+
+#[path = "remote_extension_refresh_result.rs"]
+mod remote_extension_refresh_result;
+
+#[cfg(test)]
+type CapabilityResponsePause = (
+    tokio::sync::oneshot::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+static CAPABILITY_RESPONSE_PAUSES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, CapabilityResponsePause>>,
+> = std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+static CAPABILITY_PUSH_LOCK_OBSERVERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, tokio::sync::oneshot::Sender<bool>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+static FORWARDED_META_REQUEST_PAUSES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<usize, CapabilityResponsePause>>,
+> = std::sync::LazyLock::new(Default::default);
+
+impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn pause_forwarded_meta_request_for_test(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        FORWARDED_META_REQUEST_PAUSES.lock().unwrap().insert(
+            std::sync::Arc::as_ptr(&self.app) as usize,
+            (entered, release),
+        );
+    }
+
+    #[cfg(test)]
+    fn pause_forwarded_meta_request_before_dispatch_for_test(&self) {
+        let pause = FORWARDED_META_REQUEST_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            match release.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("forwarded meta request test barrier timed out");
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_capability_response_before_apply_for_test(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) {
+        CAPABILITY_RESPONSE_PAUSES.lock().unwrap().insert(
+            std::sync::Arc::as_ptr(&self.app) as usize,
+            (entered, release),
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_capability_response_pause_for_test(&self) {
+        CAPABILITY_RESPONSE_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_capability_push_lock_for_test(
+        &self,
+        observer: tokio::sync::oneshot::Sender<bool>,
+    ) {
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .insert(std::sync::Arc::as_ptr(&self.app) as usize, observer);
+    }
+
+    #[cfg(test)]
+    pub(in crate::runtime::state) fn take_capability_push_lock_observer_for_test(
+        &self,
+    ) -> Option<tokio::sync::oneshot::Sender<bool>> {
+        CAPABILITY_PUSH_LOCK_OBSERVERS
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize))
+    }
+
+    #[cfg(test)]
+    fn pause_capability_response_before_apply(&self) {
+        let pause = CAPABILITY_RESPONSE_PAUSES
+            .lock()
+            .unwrap()
+            .remove(&(std::sync::Arc::as_ptr(&self.app) as usize));
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            match release.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("capability response application barrier timed out");
+                }
+            }
+        }
+    }
+
+    pub(crate) async fn try_dispatch_remote_meta_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let Some(remote_context) = self.leased_forward_context(provider_run).await? else {
+            return Ok(None);
+        };
+        self.forward_meta_runtime_tool(remote_context, tool_name, arguments, Default::default())
+            .await
+            .map(Some)
+    }
+
+    /// The home-bound context of a leased worker run, or `None` when local.
+    pub(crate) async fn leased_forward_context(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<Option<crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext>, DaemonError>
+    {
+        let workspace_context = self
+            .workspace_live_sync_workspace_for_provider_run(provider_run)
+            .await?;
+        let remote_context = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workspace_live_sync_context_for_provider_run(
+                        provider_run.id(),
+                        workspace_context.identity.clone(),
+                    )
+            })
+            .await;
+        Ok(remote_context)
+    }
+
+    pub(crate) async fn forward_meta_runtime_tool(
+        &self,
+        remote_context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        min_response_timeout: std::time::Duration,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        // Home may call back into this worker while handling the forwarded
+        // tool. Snapshot configuration under the app lock, then release it
+        // before waiting for the relay round trip.
+        let config = self.config_snapshot().await;
+        let home_kernel_id = remote_context.home_kernel_id.clone();
+        let response = self
+            .send_worker_home_runtime_request(
+                &config,
+                &home_kernel_id,
+                RelayPeerRequest::ForwardMetaRuntimeTool {
+                    context: remote_context,
+                    tool_name: tool_name.to_string(),
+                    arguments,
+                },
+                std::time::Duration::from_millis(config.relay_request_timeout_ms)
+                    .max(min_response_timeout),
+            )
+            .await?;
+        match response {
+            RelayPeerResponse::MetaRuntimeToolHandled { result } => Ok(result),
+            other => Err(DaemonError::LocalTransport {
+                operation: "forward leased metaagent runtime tool",
+                message: format!("unexpected forwarded metaagent response: {other:?}"),
+            }),
+        }
+    }
+
+    pub(crate) async fn dispatch_forwarded_meta_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
+        #[cfg(test)]
+        self.pause_forwarded_meta_request_before_dispatch_for_test();
+        self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
+            .await?;
+        if let Some(name) =
+            crate::transport::runtime_tools::canonical_agent_event_tool_name(&tool_name)
+        {
+            return self
+                .dispatch_leased_agent_event_tool(&context, name, arguments)
+                .await;
+        }
+        // A10: room tools of a leased agent act with its lease-verified origin.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            .dispatch_meta_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+            )
+            .await
+    }
+
+    pub(super) async fn try_dispatch_remote_capability_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
+        let workspace_context = self
+            .workspace_live_sync_workspace_for_provider_run(provider_run)
+            .await?;
+        let remote_context = self
+            .with_app_side_effect(|app| {
+                crate::app::RemoteLeaseRuntime::new(app)
+                    .leased_workspace_live_sync_context_for_provider_run(
+                        provider_run.id(),
+                        workspace_context.identity.clone(),
+                    )
+            })
+            .await;
+        let Some(remote_context) = remote_context else {
+            return Ok(None);
+        };
+        if !workspace_context.valid {
+            return Ok(Some(workspace_live_sync_workspace_identity_rejected(
+                &workspace_context,
+            )));
+        }
+        let mut forwarded_arguments = arguments.clone();
+        if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+            == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+        {
+            let worker_origin = arguments
+                .get("origin_prompt_id")
+                .and_then(serde_json::Value::as_str);
+            let origin_is_current = match provider_run.agent_instance_id().zip(worker_origin) {
+                Some((agent_id, prompt_id)) => self.agent_message_sender_prompt_is_running(
+                    provider_run.session_id(),
+                    agent_id,
+                    prompt_id,
+                )?,
+                None => false,
+            };
+            let Some(home_prompt_id) = remote_context.home_prompt_id.as_deref() else {
+                return Ok(Some(agent_message_origin_rejected()));
+            };
+            if !origin_is_current {
+                return Ok(Some(agent_message_origin_rejected()));
+            }
+            // The worker and home allocate different prompt IDs. Validate the
+            // worker's turn before translating it to the leased home turn.
+            forwarded_arguments["origin_prompt_id"] = serde_json::json!(home_prompt_id);
+        }
+        let config = self.config_snapshot().await;
+        let mut original_response = None;
+        let refresh = async {
+            for attempt in 0..3 {
+                let revision = self
+                    .owned
+                    .provider_store
+                    .get_run(provider_run.id())?
+                    .remote_extension_manifest_revision();
+                // Home may call back into this worker to install a grant. Do not
+                // hold the worker app mutex across that outbound request.
+                let response =
+                    self.send_worker_home_runtime_request(
+                        &config,
+                        &remote_context.home_kernel_id,
+                        RelayPeerRequest::ForwardCapabilityRuntimeTool {
+                            context: remote_context.clone(),
+                            tool_name: if attempt == 0 {
+                                tool_name.to_string()
+                            } else {
+                                // Refresh must stay read-only: never replay the
+                                // original mutation after a revision conflict.
+                                crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL.to_string()
+                            },
+                            arguments: if attempt == 0 {
+                                forwarded_arguments.clone()
+                            } else {
+                                serde_json::json!({})
+                            },
+                        },
+                        std::time::Duration::from_millis(config.relay_request_timeout_ms),
+                    )
+                    .await?;
+                let RelayPeerResponse::CapabilityRuntimeToolHandled {
+                    result,
+                    skill_package,
+                    remote_extension_manifest,
+                } = response
+                else {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "forward leased capability runtime tool",
+                        message: format!("unexpected forwarded capability response: {response:?}"),
+                    });
+                };
+                if original_response.is_none() {
+                    original_response = Some((result, skill_package));
+                }
+                #[cfg(test)]
+                self.pause_capability_response_before_apply();
+                let applied = self
+                    .with_app_side_effect(|_| {
+                        let updated = self
+                            .owned
+                            .provider_store
+                            .compare_update_run_remote_extension_manifest(
+                                provider_run.id(),
+                                revision,
+                                remote_extension_manifest,
+                            )?;
+                        if let Some(updated) = updated {
+                            self.owned.provider_run_projection.update(updated);
+                            Ok::<_, DaemonError>(true)
+                        } else {
+                            Ok(false)
+                        }
+                    })
+                    .await?;
+                if applied {
+                    break;
+                }
+                // An intervening push invalidates the response snapshot, even if
+                // its contents later become equal again. Refresh with a read-only
+                // request; never replay the original tool's side effects.
+                if attempt == 2 {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "refresh forwarded capability manifest",
+                        message: "original tool completed, but concurrent manifest updates prevented refresh; original tool was not replayed".to_string(),
+                    });
+                }
+            }
+            Ok::<_, DaemonError>(())
+        }.await;
+        let (result, skill_package) =
+            remote_extension_refresh_result::preserve_original_result(original_response, refresh)?;
+        let result = self.apply_remote_skill_package_response(
+            &workspace_context.root,
+            &remote_context.home_kernel_id,
+            result,
+            skill_package,
+        )?;
+        Ok(Some(result))
+    }
+
+    pub(crate) async fn dispatch_forwarded_capability_runtime_tool_call(
+        &self,
+        context: crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        tool_name: String,
+        arguments: serde_json::Value,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Option<crate::skill::CharioxSkillPackage>,
+            crate::extension::RemoteExtensionManifest,
+        ),
+        DaemonError,
+    > {
+        self.with_app_side_effect(|_| {
+            self.authorize_forwarded_workspace_context(&context)?;
+            // Agent messages retain the exact home-turn origin contract.
+            if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(&tool_name)
+                == Some(crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL)
+                && context.home_prompt_id.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch forwarded agent message",
+                    message: "sender prompt or leased worker binding is no longer current".into(),
+                });
+            }
+            Ok(())
+        })
+        .await?;
+        // A10: a leased sender acts with its lease-verified origin, as a local
+        // provider turn does.
+        let run = crate::provider::projected_leased_provider_run_id(
+            &context.leased_agent_id,
+            &context.worker_provider_run_id,
+        );
+        let (result, package) = self
+            .with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
+            .dispatch_capability_runtime_tool_call_for_agent(
+                &context.home_session_id,
+                &context.home_agent_id,
+                &tool_name,
+                arguments,
+                true,
+            )
+            .await?;
+        let agent = self.owned.agent_store.get_agent(&context.home_agent_id)?;
+        let manifest = self.remote_extension_manifest_for_agent(&agent)?;
+        Ok((result, package, manifest))
+    }
+
+    pub(super) async fn dispatch_capability_runtime_tool_call(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                ok: false,
+                payload: serde_json::json!({
+                    "error": "capability tools require an agent-scoped provider run"
+                }),
+            });
+        };
+        let session_id = provider_run.session_id().to_string();
+        // MP-11 SB-03: retain the authenticated run across capability waits.
+        let state = self
+            .with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()));
+        state.authorize_current_external_command()?;
+        let (result, _) = state
+            .dispatch_capability_runtime_tool_call_for_agent(
+                &session_id,
+                &agent_id,
+                tool_name,
+                arguments,
+                false,
+            )
+            .await?;
+        Ok(result)
+    }
+
+    async fn dispatch_capability_runtime_tool_call_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        include_skill_package: bool,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            Option<crate::skill::CharioxSkillPackage>,
+        ),
+        DaemonError,
+    > {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let agent = self.owned.agent_store.get_agent(agent_id)?;
+        // MD-4: inactive registrations must not reserve their large futures for a read/message.
+        match tool_name {
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok((
+                self.handle_list_session_agents_runtime_tool(&session, &agent),
+                None,
+            )),
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL => Ok((
+                self.handle_get_session_agent_runtime_tool(&session, &agent, arguments),
+                None,
+            )),
+            crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL => Ok((
+                Box::pin(self.handle_send_agent_message_runtime_tool(&session, &agent, arguments))
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL => {
+                self.handle_list_extensions_runtime_tool(&session, &agent, arguments)
+            }
+            crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL => {
+                Box::pin(self.handle_request_extension_runtime_tool(
+                    &session,
+                    &agent,
+                    session_id,
+                    arguments,
+                    include_skill_package,
+                ))
+                .await
+            }
+            crate::transport::runtime_tools::REGISTER_MCP_TOOL => Ok((
+                Box::pin(self.handle_register_mcp_runtime_tool(&session, &agent, arguments))
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL => Ok((
+                Box::pin(self.handle_register_skill_path_runtime_tool(&session, &agent, arguments))
+                    .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL => Ok((
+                Box::pin(
+                    self.handle_register_environment_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL => Ok((
+                Box::pin(
+                    self.handle_register_script_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL => Ok((
+                Box::pin(
+                    self.handle_register_connector_path_runtime_tool(&session, &agent, arguments),
+                )
+                .await?,
+                None,
+            )),
+            crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL => Ok((
+                Box::pin(self.handle_register_connector_adapter_path_runtime_tool(
+                    &session, &agent, arguments,
+                ))
+                .await?,
+                None,
+            )),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "dispatch_capability_runtime_tool_call",
+                message: format!("unknown capability runtime tool `{tool_name}`"),
+            }),
+        }
+    }
+}
+
+fn agent_message_origin_rejected() -> crate::transport::runtime_tools::RuntimeToolResult {
+    crate::transport::runtime_tools::RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "error": "agent message belongs to a different sender turn; message was not sent"
+        }),
+    }
+}

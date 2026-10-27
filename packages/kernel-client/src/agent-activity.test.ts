@@ -1,0 +1,846 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  agentLegacyProcessingStateIsBusy,
+  agentRuntimeActiveTurnIsBusy,
+  agentRuntimeActivityHasTurnWork,
+  agentRuntimeActivityIsBusy,
+  agentRuntimeActivityProjectionHasTurnWork,
+  agentRuntimeActivityProjectionHasExternalActiveTurn,
+  agentRuntimeActivityProjectionResolvedStatus,
+  agentRuntimeActivityResolvedStatus,
+  agentRuntimeCompletedTurnAlreadyUndone,
+  agentRuntimeCompletedTurnCanRestoreUndoAvailability,
+  agentRuntimeCompletedTurnIsNewer,
+  agentRuntimePromptStatusIsActive,
+  agentRuntimePromptStatusIsActivePrompt,
+  type AgentRuntimeCompletedTurnActionProjection,
+  normalizeAgentRuntimeActivityProjectionStatus,
+  normalizeAgentRuntimeActivityStatus,
+  normalizeAgentRuntimeProviderId,
+  normalizeAgentRuntimePromptProjectionStatus,
+  normalizeAgentRuntimePromptStatus,
+  projectAgentRuntimeActivity,
+  readAgentRuntimeCompletedTurn,
+  reconcileAgentRuntimeLastCompletedTurn,
+} from "./agent-activity.js"
+
+test("legacy processing helper preserves old agent busy fallback semantics", () => {
+  assert.equal(agentLegacyProcessingStateIsBusy(null), false)
+  assert.equal(agentLegacyProcessingStateIsBusy(undefined), false)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Idle" }), false)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: true, state: "Idle" }), true)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Working" }), true)
+  assert.equal(agentLegacyProcessingStateIsBusy({ is_processing: false, state: "Error" }), false)
+})
+
+test("agent activity busy helper follows kernel projected activity semantics", () => {
+  assert.equal(agentRuntimeActivityIsBusy(null), false)
+  assert.equal(agentRuntimeActivityIsBusy(undefined), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "working",
+    prompt_status: "none",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: " Working ",
+    prompt_status: "none",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "settling",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "dispatching",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: " Cancelling ",
+    busy: false,
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "completed",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "cancelled",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "canceled",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "failed",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "unknown",
+    busy: false,
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1" },
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "running" },
+  }), true)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "completed" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "cancelled" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "canceled" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "failed" },
+  }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: { prompt_id: "prompt-1", status: "queued" },
+  }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1" }), true)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "queued" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "dispatching" }), true)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "completed" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "canceled" }), false)
+  assert.equal(agentRuntimeActiveTurnIsBusy({ prompt_id: "prompt-1", status: "failed" }), false)
+  assert.equal(agentRuntimeActivityIsBusy({
+    status: "idle",
+    prompt_status: "none",
+    busy: true,
+  }), true)
+})
+
+test("agent activity helpers normalize status vocabulary", () => {
+  assert.equal(normalizeAgentRuntimeActivityStatus(" Working "), "working")
+  assert.equal(normalizeAgentRuntimeActivityStatus(""), null)
+  assert.equal(normalizeAgentRuntimePromptStatus(" Cancelling "), "cancelling")
+  assert.equal(normalizeAgentRuntimePromptStatus(""), null)
+  assert.equal(normalizeAgentRuntimeProviderId(" CODEX "), "codex")
+  assert.equal(normalizeAgentRuntimeProviderId(""), null)
+  assert.equal(normalizeAgentRuntimeActivityProjectionStatus(" focused "), "idle")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" completed "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" Dispatching "), "dispatching")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" cancelled "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" canceled "), "none")
+  assert.equal(normalizeAgentRuntimePromptProjectionStatus(" failed "), "none")
+  assert.equal(agentRuntimePromptStatusIsActive("queued"), true)
+  assert.equal(agentRuntimePromptStatusIsActive("dispatching"), true)
+  assert.equal(agentRuntimePromptStatusIsActive("completed"), false)
+  assert.equal(agentRuntimePromptStatusIsActivePrompt("queued"), false)
+  assert.equal(agentRuntimePromptStatusIsActivePrompt("dispatching"), true)
+  assert.equal(agentRuntimePromptStatusIsActivePrompt("running"), true)
+  assert.equal(agentRuntimePromptStatusIsActivePrompt("cancelled"), false)
+})
+
+test("agent activity resolved status follows error, busy, then idle", () => {
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "error", busy: false }), "error")
+  assert.equal(agentRuntimeActivityResolvedStatus({ error: true, status: "idle", busy: false }), "error")
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "working", busy: false }), "working")
+  assert.equal(agentRuntimeActivityResolvedStatus({ active_prompt_count: 1 }), "working")
+  assert.equal(agentRuntimeActivityResolvedStatus({ status: "idle", busy: false }), "idle")
+  assert.equal(agentRuntimeActivityResolvedStatus(null), "idle")
+  assert.equal(agentRuntimeActivityProjectionResolvedStatus(projectAgentRuntimeActivity({
+    error: true,
+    status: "idle",
+    busy: false,
+  })), "error")
+})
+
+test("agent activity turn-work helper distinguishes active turns from queued-only work", () => {
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "running",
+    busy: true,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "queued",
+    busy: true,
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+  }), false)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "none",
+    busy: true,
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "working",
+    prompt_status: "none",
+    busy: true,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "running",
+      phase: "streaming",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      status: "running",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      external_provider: " CODEX ",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), true)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "queued",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 1,
+  }), false)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      status: "cancelled",
+      phase: "settled",
+    },
+    active_prompt_count: 0,
+    queued_prompt_count: 0,
+  }), false)
+  assert.equal(agentRuntimeActivityHasTurnWork({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+  }), false)
+})
+
+test("agent activity projection busy state mirrors projected turn-work policy", () => {
+  const cases = [
+    {
+      status: "working",
+      prompt_status: "queued",
+      busy: true,
+      active_prompt_count: 0,
+      queued_prompt_count: 1,
+    },
+    {
+      status: "idle",
+      prompt_status: "none",
+      busy: false,
+      active_turn: {
+        prompt_id: "prompt-1",
+        status: "running",
+      },
+    },
+    {
+      status: "working",
+      prompt_status: "none",
+      busy: false,
+      active_prompt_count: 0,
+      queued_prompt_count: 0,
+    },
+  ]
+
+  for (const value of cases) {
+    const projection = projectAgentRuntimeActivity(value)
+    assert.equal(projection.busy, agentRuntimeActivityProjectionHasTurnWork(projection))
+  }
+})
+
+test("agent activity projection preserves kernel counts as activity source", () => {
+  assert.deepEqual(projectAgentRuntimeActivity({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_prompt_count: 0,
+    queued_prompt_count: 2,
+  }), {
+    status: "idle",
+    promptStatus: "none",
+    busy: false,
+    activeTurn: null,
+    activePromptCount: 0,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 2,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  })
+})
+
+test("agent activity projection unwraps nested activity and normalizes settled statuses", () => {
+  const activeTurn = { prompt_id: "prompt-1", status: "completed" }
+  assert.deepEqual(projectAgentRuntimeActivity({
+    activity: {
+      status: "focused",
+      prompt_status: "cancelled",
+      busy: false,
+      active_turn: activeTurn,
+    },
+  }), {
+    status: "idle",
+    promptStatus: "none",
+    busy: false,
+    activeTurn,
+    activePromptCount: 0,
+    activePromptCountExplicit: false,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
+    error: false,
+    unreadIdleOutput: false,
+  })
+})
+
+test("agent activity projection exposes live active turn identity", () => {
+  const externalProjection = projectAgentRuntimeActivity({
+    status: "idle",
+    prompt_status: "none",
+    busy: false,
+    active_turn: {
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      source_attachment_id: "attachment-1",
+      prompt_origin: " external ",
+      external_provider: " CODEX ",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      status: " Running ",
+      phase: "streaming",
+      started_at_ms: 123,
+    },
+  })
+  assert.deepEqual(externalProjection, {
+    status: "idle",
+    promptStatus: "none",
+    busy: true,
+    activeTurn: {
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      source_attachment_id: "attachment-1",
+      prompt_origin: " external ",
+      external_provider: " CODEX ",
+      external_provider_session_id: "thread-1",
+      external_provider_turn_id: "turn-1",
+      status: " Running ",
+      phase: "streaming",
+      started_at_ms: 123,
+    },
+    activeTurnPromptId: "prompt-1",
+    activeTurnProviderRunId: "run-1",
+    activeTurnSourceAttachmentId: "attachment-1",
+    activeTurnPromptOrigin: "external",
+    activeTurnExternalProvider: "codex",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activeTurnExternalProviderTurnId: "turn-1",
+    activeTurnStatus: "running",
+    activeTurnPhase: "streaming",
+    activeTurnStartedAtMs: 123,
+    activePromptCount: 1,
+    activePromptCountExplicit: false,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
+    error: false,
+    unreadIdleOutput: false,
+  })
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(externalProjection), true)
+
+  assert.deepEqual(projectAgentRuntimeActivity({
+    status: "working",
+    prompt_status: "running",
+    busy: true,
+    active_turn: {
+      prompt_id: "external:codex:thread-1:turn-1",
+      status: "running",
+    },
+  }), {
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: {
+      prompt_id: "external:codex:thread-1:turn-1",
+      status: "running",
+    },
+    activeTurnPromptId: "external:codex:thread-1:turn-1",
+    activeTurnStatus: "running",
+    activePromptCount: 1,
+    activePromptCountExplicit: false,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: false,
+    error: false,
+    unreadIdleOutput: false,
+  })
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-completed",
+      status: "completed",
+    },
+  }).activeTurnPromptId, undefined)
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-null-attachment",
+      source_attachment_id: null,
+      status: "running",
+    },
+  }).activeTurnSourceAttachmentId, null)
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-external",
+      external_provider: "codex",
+      external_provider_session_id: "thread-1",
+      status: "running",
+    },
+  }).activeTurnPromptOrigin, undefined)
+
+  assert.equal(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-external",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+    },
+  }).activeTurnPromptOrigin, undefined)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-external",
+      external_provider_turn_id: "turn-1",
+      status: "running",
+    },
+  })), false)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(projectAgentRuntimeActivity({
+    active_turn: {
+      prompt_id: "prompt-chariox",
+      prompt_origin: "chariox",
+      status: "running",
+    },
+  })), false)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn({
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: null,
+    activeTurnExternalProviderSessionId: "thread-1",
+    activePromptCount: 1,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  }), false)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn({
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: null,
+    activeTurnPromptOrigin: "external",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activePromptCount: 1,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  }), true)
+  assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn({
+    status: "working",
+    promptStatus: "running",
+    busy: true,
+    activeTurn: null,
+    activeTurnPromptOrigin: "chariox",
+    activeTurnExternalProviderSessionId: "thread-1",
+    activePromptCount: 1,
+    activePromptCountExplicit: true,
+    queuedPromptCount: 0,
+    queuedPromptCountExplicit: true,
+    error: false,
+    unreadIdleOutput: false,
+  }), false)
+})
+
+test("agent activity projection exposes completed turn action metadata", () => {
+  const activity = {
+    last_completed_turn: {
+      turn_id: "turn-1",
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      agent_id: "agent-1",
+      source_attachment_id: "attachment-1",
+      prompt_origin: "external",
+      external_provider: " CODEX ",
+      external_provider_session_id: " thread-1 ",
+      external_provider_turn_id: " user-1 ",
+      completed_at_ms: 500,
+      settlement_status: "failed",
+      provider_termination: {
+        category: "process_exit",
+        reason: "provider process exited with status 137",
+        timestamp_ms: 499,
+        secret_future_field: "must not survive projection",
+      },
+      duration_ms: 120,
+      changed_paths: ["src/a.ts", 42, "src/b.ts"],
+      undo_available: false,
+      undo_unavailable_reason: "turn already undone",
+    },
+  }
+
+  assert.deepEqual(readAgentRuntimeCompletedTurn(activity), {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    sourceAttachmentId: "attachment-1",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    completedAtMs: 500,
+    settlementStatus: "failed",
+    providerTermination: {
+      category: "process_exit",
+      reason: "provider process exited with status 137",
+      timestampMs: 499,
+    },
+    durationMs: 120,
+    changedPaths: ["src/a.ts", "src/b.ts"],
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  assert.deepEqual(projectAgentRuntimeActivity(activity).lastCompletedTurn, {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    sourceAttachmentId: "attachment-1",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    completedAtMs: 500,
+    settlementStatus: "failed",
+    providerTermination: {
+      category: "process_exit",
+      reason: "provider process exited with status 137",
+      timestampMs: 499,
+    },
+    durationMs: 120,
+    changedPaths: ["src/a.ts", "src/b.ts"],
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  assert.deepEqual(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "turn-2",
+      prompt_id: "external:codex:thread-2:user-2",
+      provider_run_id: "run-2",
+      agent_id: "agent-1",
+      completed_at_ms: 600,
+    },
+  }), {
+    turnId: "turn-2",
+    promptId: "external:codex:thread-2:user-2",
+    providerRunId: "run-2",
+    agentId: "agent-1",
+    completedAtMs: 600,
+    settlementStatus: null,
+    providerTermination: null,
+    durationMs: null,
+    changedPaths: [],
+    undoAvailable: false,
+    undoUnavailableReason: null,
+  })
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "turn-1",
+    },
+  }), null)
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "turn-invalid-termination",
+      prompt_id: "prompt-invalid-termination",
+      provider_run_id: "run-invalid-termination",
+      agent_id: "agent-1",
+      completed_at_ms: 700,
+      settlement_status: "failed",
+      provider_termination: {
+        category: "process_exit",
+        reason: `unsafe\n${"x".repeat(300)}`,
+        timestamp_ms: 699,
+      },
+    },
+  })?.providerTermination, null)
+  assert.equal(readAgentRuntimeCompletedTurn({
+    last_completed_turn: {
+      turn_id: "",
+      prompt_id: "prompt-1",
+      provider_run_id: "run-1",
+      agent_id: "agent-1",
+      completed_at_ms: 500,
+    },
+  }), null)
+})
+
+test("agent activity projection accepts every provider termination category", () => {
+  const categories = [
+    "process_exit",
+    "signal",
+    "explicit_provider_error",
+    "runtime_failure",
+    "transport_failure",
+    "unknown",
+  ] as const
+
+  for (const [index, category] of categories.entries()) {
+    const reason = `termination-${category}`
+    assert.deepEqual(readAgentRuntimeCompletedTurn({
+      last_completed_turn: {
+        turn_id: `turn-${category}`,
+        prompt_id: `prompt-${category}`,
+        provider_run_id: `run-${category}`,
+        agent_id: "agent-1",
+        completed_at_ms: 800 + index,
+        settlement_status: "failed",
+        provider_termination: {
+          category,
+          reason,
+          timestamp_ms: 799 + index,
+        },
+      },
+    })?.providerTermination, {
+      category,
+      reason,
+      timestampMs: 799 + index,
+    })
+  }
+})
+
+test("completed turn reconciliation preserves local already-undone state for the same turn", () => {
+  const alreadyUndone = completedTurnAction({
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  const incoming = completedTurnAction({
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(agentRuntimeCompletedTurnAlreadyUndone(alreadyUndone), true)
+  assert.equal(agentRuntimeCompletedTurnAlreadyUndone(incoming), false)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(alreadyUndone, incoming), alreadyUndone)
+})
+
+test("completed turn reconciliation does not preserve already-undone state across conflicting external turns", () => {
+  const alreadyUndone = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+  const incoming = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(alreadyUndone, incoming), incoming)
+})
+
+test("completed turn reconciliation keeps incoming snapshots unless current is already undone", () => {
+  const current = completedTurnAction({
+    completedAtMs: 100,
+    settlementStatus: "completed",
+    providerTermination: null,
+    undoAvailable: false,
+    undoUnavailableReason: "not latest turn",
+  })
+  const incoming = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(null, incoming), incoming)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, incoming), incoming)
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, null), current)
+})
+
+test("completed turn reconciliation preserves same-turn prompt ownership when incoming snapshot is sparse", () => {
+  const current = completedTurnAction({
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+    completedAtMs: 100,
+    undoAvailable: false,
+    undoUnavailableReason: "not latest turn",
+  })
+  const incoming = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+
+  assert.deepEqual(reconcileAgentRuntimeLastCompletedTurn(current, incoming), {
+    ...incoming,
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+})
+
+test("completed turn reconciliation does not preserve prompt ownership across different turns", () => {
+  const current = completedTurnAction({
+    turnId: "turn-1",
+    promptOrigin: "external",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+  const incoming = completedTurnAction({
+    turnId: "turn-2",
+    promptId: "prompt-2",
+    providerRunId: "run-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+  })
+
+  assert.equal(reconcileAgentRuntimeLastCompletedTurn(current, incoming), incoming)
+})
+
+test("completed turn helpers compare freshness and undo restoration eligibility", () => {
+  const current = completedTurnAction({
+    completedAtMs: 100,
+    undoAvailable: false,
+    undoUnavailableReason: "pending snapshot",
+  })
+  const newerSameTurn = completedTurnAction({
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+  const newerDifferentTurn = completedTurnAction({
+    turnId: "turn-2",
+    completedAtMs: 200,
+    undoAvailable: true,
+    undoUnavailableReason: null,
+  })
+  const alreadyUndone = completedTurnAction({
+    undoAvailable: false,
+    undoUnavailableReason: "turn already undone",
+  })
+
+  assert.equal(agentRuntimeCompletedTurnIsNewer(null, current), true)
+  assert.equal(agentRuntimeCompletedTurnIsNewer(newerSameTurn, current), false)
+  assert.equal(agentRuntimeCompletedTurnIsNewer(current, newerSameTurn), true)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(current, newerSameTurn), true)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(current, newerDifferentTurn), false)
+  assert.equal(agentRuntimeCompletedTurnCanRestoreUndoAvailability(alreadyUndone, newerSameTurn), false)
+})
+
+test("agent activity projection exposes unread idle output", () => {
+  assert.equal(projectAgentRuntimeActivity({
+    activity: {
+      status: "idle",
+      prompt_status: "none",
+      busy: false,
+      unread_idle_output: true,
+    },
+  }).unreadIdleOutput, true)
+  assert.equal(projectAgentRuntimeActivity({
+    activity: {
+      unread_idle_output: false,
+    },
+  }).unreadIdleOutput, false)
+})
+
+test("agent activity projection preserves previous error only when kernel omits error state", () => {
+  assert.equal(projectAgentRuntimeActivity({}, { previousError: true }).error, true)
+  assert.equal(projectAgentRuntimeActivity({ status: "error" }, { previousError: false }).error, true)
+  assert.equal(projectAgentRuntimeActivity({ status: "idle" }, { previousError: true }).error, false)
+  assert.equal(projectAgentRuntimeActivity({ error: false }, { previousError: true }).error, false)
+})
+
+function completedTurnAction(
+  overrides: Partial<AgentRuntimeCompletedTurnActionProjection> = {},
+): AgentRuntimeCompletedTurnActionProjection {
+  return {
+    turnId: "turn-1",
+    promptId: "prompt-1",
+    providerRunId: "run-1",
+    agentId: "agent-1",
+    completedAtMs: 100,
+    durationMs: 50,
+    changedPaths: [],
+    settlementStatus: "completed",
+    providerTermination: null,
+    undoAvailable: false,
+    undoUnavailableReason: null,
+    ...overrides,
+  }
+}

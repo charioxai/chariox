@@ -1,0 +1,1063 @@
+import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
+import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
+import { getManagedContextTransferStatus } from "./managed-environment-api.js"
+import { getCloudClientControlProfile } from "./cloud-client-control.js"
+import { appHostOperationIds, type AppHostTerminal } from "./app-host-action.js"
+import { getAppInstallationRequest } from "@chariox/kernel-client/ipc-requests"
+import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types"
+import type { AppDevLoop } from "./app-dev-loop.js"
+import type { AppFileInstaller } from "./app-install-file.js"
+import type { AppPublisherEnrollment } from "./app-publisher-file.js"
+import type { BootstrapState, RuntimeSession } from "./cli-types.js"
+import type { CharioxLogger } from "./logging.js"
+import { createCommandActionHandlers } from "./command-actions.js"
+import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
+import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
+import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
+import { importExternalProviderAgent } from "./external-provider-session-api.js"
+import { openExternalUrl } from "./external-url.js"
+import type { ProviderLoginLinkOptions } from "./provider-login-link.js"
+import type { SessionSelection } from "./session-lifecycle.js"
+import { formatAgentLabel } from "./agent-label.js"
+import { grantAgentApp, revokeAgentApp } from "./app-binding-api.js"
+import {
+  defaultRoomScreenshotOutputRoot,
+  downloadRoomEnvironmentScreenshot,
+} from "./room-screenshot-api.js"
+import {
+  aliasAgent,
+  cycleAgentFocus as cycleAgentFocusApi,
+  destroyAgent as destroyAgentApi,
+  focusAgent as focusAgentApi,
+  forkAgent as forkAgentApi,
+  spawnAgent as spawnAgentApi,
+  spawnAgents as spawnAgentsApi,
+  undoTurn as undoTurnApi,
+  updateAgentConfig,
+  updateAgentProfile,
+  updateAgentSubstitutes,
+} from "./agent-api.js"
+import {
+  createSessionInvite,
+  joinSessionInvite,
+} from "./cloud-session-api.js"
+import {
+  getUserConfig,
+  getUserConfigSchema,
+  getCredentialVaultStatus,
+  lockCredentialVault,
+  manageCredentialVault,
+  setCredentialSecret,
+  setWorkspaceLiveSyncMode,
+  setUserConfigValue,
+  unsetUserConfigValue,
+} from "./config-api.js"
+import {
+  getMcpServer,
+  getConnector,
+  getConnectorAdapter,
+  getCredential,
+  getEnvironment,
+  getScript,
+  getSkill,
+  grantAgentMcp,
+  grantAgentConnector,
+  grantAgentScript,
+  grantAgentSkill,
+  importMcpServers,
+  importSkills,
+  installMcpServer,
+  installSkill,
+  listEnvironments,
+  listConnectors,
+  listConnectorAdapters,
+  listCredentials,
+  listMcpServers,
+  listHomeExtensionAudit,
+  listScripts,
+  listSkills,
+  registerEnvironment,
+  registerConnector,
+  registerConnectorAdapter,
+  registerCredential,
+  registerScript,
+  removeEnvironment,
+  removeConnector,
+  removeConnectorAdapter,
+  removeCredential,
+  removeScript,
+  revokeAgentMcp,
+  revokeAgentConnector,
+  revokeAgentScript,
+  revokeAgentSkill,
+  syncRemoteExtensionManifest,
+  uninstallMcpServer,
+  uninstallSkill,
+  updateMcpServer,
+  updateSkill,
+  validateScript,
+  testConnector,
+} from "./extension-api.js"
+import { deleteKernel, exportDebugBundle, extendKernelSudo, getDaemonHealth, listKernelAccessGrants, revokeKernelAccessGrant } from "./kernel-api.js"
+import {
+  mergeRelayCloudProfile,
+  mergeUiPreferences,
+  relayCloudProfile,
+  saveRelayCloudProfile,
+  saveUiPreferences,
+} from "./preferences.js"
+import type { CloudClient } from "./cloud-client.js"
+import { hasLocalKernel, startLocalKernelSetup } from "./local-kernel-setup.js"
+import { createCloudClientCommands } from "./cloud-client-command.js"
+import {
+  getProviderAuthStatus,
+  getProviderCatalog,
+  getProviderLoginStatus,
+  listProviderAccountProfiles,
+  createProviderAccountProfile,
+  linkProviderAccountProfile,
+  importNativeProviderAccountProfile,
+  renameProviderAccountProfile,
+  setDefaultProviderAccountProfile,
+  refreshProviderAccountProfile,
+  removeProviderAccountProfile,
+  deleteProviderAccountProfileData,
+  getProviderRun,
+  launchProviderRun,
+  launchProviderRuns,
+  listProviderProcesses,
+  logoutProvider,
+  cancelProviderLogin,
+  sendProviderLoginInput,
+  storeProviderSetupToken,
+  runProviderSetupToken,
+  startProviderLogin,
+  teardownProviderProcesses,
+  updateSessionConfig,
+} from "./provider-api.js"
+import {
+  addSshMachine,
+  removeSshMachine,
+  approveRemoteMachine,
+  forgetRemoteMachine,
+  listRemoteMachineKernels,
+  listRemoteMachines,
+  renameRemoteMachine,
+} from "./remote-machine-api.js"
+import { forgetGatewayKernel, joinKernelLink, listGatewayKernels } from "./kernel-gateway-api.js"
+import {
+  configureRelay,
+  connectKernelCloudRelay,
+  getKernelCloudRelayProfile,
+  getRelayStatus,
+  logoutCloudRelay,
+  pairKernelCloudRelayClient,
+  pairKernelCloudRelayMachine,
+  pollCloudRelayLogin,
+  startCloudRelayLogin,
+} from "./relay-api.js"
+import {
+  aliasSession,
+  abortMetaagentTask,
+  createSession,
+  deleteSessionByRef,
+  getSessionState,
+  listSessions,
+  pauseMetaagentTask,
+  resolveSession,
+  resumeMetaagentTask,
+  updateMetaagentTask,
+} from "./session-api.js"
+import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
+import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { formatSessionList } from "./sessions.js"
+import {
+  createSlice,
+  createSliceBackup,
+  deleteSlice,
+  getSlice,
+  getSliceDisplayEndpoint,
+  getSliceLogs,
+  getSliceStateStatus,
+  importSliceProviderAuth,
+  listSliceAudit,
+  listSlices,
+  removeSliceProviderAuth,
+  resetSliceState,
+  restoreSliceBackup,
+  saveSliceState,
+  startSliceProviderLogin,
+  startSlice,
+  stopSlice,
+} from "./slice-api.js"
+import {
+  attachWorkspaceLink,
+  createWorkspaceLink,
+  detachWorkspaceLink,
+  getWorkspaceLiveSyncStatus,
+  listWorkspaceLiveSyncAudit,
+  listWorkspaceLinks,
+  showWorkspaceLink,
+} from "./workspace-link-api.js"
+
+type AnyFn = (...args: any[]) => any
+
+export type CliCommandActionCompositionDeps = {
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
+  cloudClient?: CloudClient
+  kernelConnected?: () => boolean
+  appHostTerminal?: AppHostTerminal
+  roomTerminalScreen?: import("./room-terminal-slash.js").RoomTerminalScreen
+  lastViewedAppHostOperationId?: () => string | undefined
+  appFileInstaller?: AppFileInstaller
+  appDevLoop?: AppDevLoop
+  appPublisherEnrollment?: AppPublisherEnrollment
+  client: BootstrapState["client"]
+  options: BootstrapState["options"]
+  preferencesState: AnyFn
+  setPreferencesState: AnyFn
+  initialWorkspaceTarget: string
+  initialWorktreeTarget: string
+  pendingWorkspaceTarget: AnyFn
+  pendingWorktreeTarget: AnyFn
+  editWaitingRoomWorkspace: (path: string) => Promise<void>
+  setPendingWorkspaceTarget: AnyFn
+  setPendingWorktreeTarget: AnyFn
+  isAttached: AnyFn
+  sessionState: AnyFn
+  attachmentState: AnyFn
+  providerRunState: AnyFn
+  currentModelId: AnyFn
+  currentVariantId: AnyFn
+  focusedAgentId: AnyFn
+  multiAgentResponseLayout: AnyFn
+  maxAgentsPerScreen: AnyFn
+  flashFooter: AnyFn
+  appendNotice: AnyFn
+  readSecret?: AnyFn
+  showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
+  providerLoginInteractions?: { track: (login: { login_id: string; provider: string; account_profile: string }) => void }
+  appendCloudNotice: AnyFn
+  formatError: AnyFn
+  attachBinding: AnyFn
+  beginSessionSelection?: (session: { id: string }) => SessionSelection | null
+  transitionToNoSession: AnyFn
+  applyProviderSelection: AnyFn
+  applyAccountSelection: AnyFn
+  applyModelSelection: AnyFn
+  applyVariantSelection: AnyFn
+  applyModeSelection: AnyFn
+  applyPermissionSelection: AnyFn
+  currentExecutionMode: AnyFn
+  currentPermissionLevel: AnyFn
+  refreshWaitingRoomData: AnyFn
+  reimageManagedEnvironment?: AnyFn
+  remoteMachinesState: AnyFn
+  setRemoteMachinesState: AnyFn
+  reconcileWaitingRoom: AnyFn
+  setSlicesState: AnyFn
+  appLogger: CharioxLogger | null | undefined
+  setMultiAgentResponseLayout: AnyFn
+  applyResponseLayout: AnyFn
+  applySessionState: AnyFn
+  refreshAgentPanes: AnyFn
+  setWorkspaceLiveSyncStatus?: AnyFn
+  openWorkflowNodeInstructionsEditor: AnyFn
+  closeWorkflowNodeInstructionsEditor: AnyFn
+  getWorkflowNodeInstructionsDraft: AnyFn
+  getWorkflowNodeInstructionsContext: AnyFn
+  openWorkflowTerminalPanel: AnyFn
+  rebuildTranscript: AnyFn
+  requestRootRender: AnyFn
+  scheduleTimer: (callback: () => void, delayMs: number) => unknown
+  logViewDebug: AnyFn
+  describeRenderableDebug: AnyFn
+  currentFocusedRenderable: AnyFn
+  trackAgentFocusTransition: AnyFn
+  setProviderRunState: AnyFn
+  resolveSessionAgent: AnyFn
+  workflowScreenActive: AnyFn
+  showWorkflowScreen: AnyFn
+  selectedWorkflowId: AnyFn
+  selectWorkflowCanvas: AnyFn
+  replaceWorkflowDefinitions: AnyFn
+  upsertWorkflowDefinition: AnyFn
+  createWorkflow: AnyFn
+  createAgentWorkflow: AnyFn
+  listWorkflows: AnyFn
+  resolveWorkflow: AnyFn
+  assignWorkflowAlias: AnyFn
+  deleteWorkflow: AnyFn
+  createWorkflowEndpoint: AnyFn
+  assignWorkflowEndpointAlias: AnyFn
+  bindWorkflowEndpoint: AnyFn
+  setWorkflowEndpointMaxInstances: AnyFn
+  removeWorkflowEndpoint: AnyFn
+  addWorkflowNode: AnyFn
+  removeWorkflowNode: AnyFn
+  addWorkflowEdge: AnyFn
+  removeWorkflowEdge: AnyFn
+  updateWorkflowNodeInstructions: AnyFn
+  setWorkflowNodeCanCompleteRun: AnyFn
+  setWorkflowNodeCanEmitIntermediateOutput: AnyFn
+  setWorkflowNodeWaitForAllInputs: AnyFn
+  setWorkflowNodeIntermediateOutputSchema: AnyFn
+  setWorkflowNodeMaxTurns: AnyFn
+  invokeWorkflowEndpoint: AnyFn
+  runWorkflowRegistryEntry: AnyFn
+  listWorkflowPromptQueues: AnyFn
+  createWorkflowPromptQueue: AnyFn
+  updateWorkflowPromptQueue: AnyFn
+  removeWorkflowPromptQueue: AnyFn
+  listQueuedWorkflowPrompts: AnyFn
+  updateQueuedWorkflowPrompt: AnyFn
+  removeQueuedWorkflowPrompt: AnyFn
+  clearWorkflowPromptQueue: AnyFn
+  createWorkflowWatchdog: AnyFn
+  listWorkflowWatchdogs: AnyFn
+  setWorkflowWatchdogEnabled: AnyFn
+  removeWorkflowWatchdog: AnyFn
+  createWorkflowSchedule: AnyFn
+  listWorkflowSchedules: AnyFn
+  setWorkflowScheduleEnabled: AnyFn
+  removeWorkflowSchedule: AnyFn
+  setWorkflowFlushContext: AnyFn
+  setWorkflowRunOutputSchema: AnyFn
+  listWorkflowRuns: AnyFn
+  getWorkflowRun: AnyFn
+  cancelWorkflowRun: AnyFn
+  pauseWorkflowRun: AnyFn
+  resumeWorkflowRun: AnyFn
+  refreshSplitPaneFocusRepaint: AnyFn
+}
+
+export function createCliCommandActionComposition(deps: CliCommandActionCompositionDeps) {
+  const {
+    client,
+    options,
+    preferencesState,
+    setPreferencesState,
+    initialWorkspaceTarget,
+    initialWorktreeTarget,
+    pendingWorkspaceTarget,
+    pendingWorktreeTarget,
+    setPendingWorkspaceTarget,
+    setPendingWorktreeTarget,
+    isAttached,
+    sessionState,
+    attachmentState,
+    providerRunState,
+    currentModelId,
+    currentVariantId,
+    focusedAgentId,
+    multiAgentResponseLayout,
+    maxAgentsPerScreen,
+    flashFooter,
+    appendNotice,
+    readSecret,
+    appendCloudNotice,
+    formatError,
+    attachBinding,
+    transitionToNoSession,
+    applyProviderSelection,
+    applyAccountSelection,
+    applyModelSelection,
+    applyVariantSelection,
+    applyModeSelection,
+    applyPermissionSelection,
+    currentExecutionMode,
+    currentPermissionLevel,
+    refreshWaitingRoomData,
+    reimageManagedEnvironment,
+    remoteMachinesState,
+    setRemoteMachinesState,
+    reconcileWaitingRoom,
+    setSlicesState,
+    appLogger,
+    setMultiAgentResponseLayout,
+    applyResponseLayout,
+    applySessionState,
+    refreshAgentPanes,
+    setWorkspaceLiveSyncStatus,
+    openWorkflowNodeInstructionsEditor,
+    closeWorkflowNodeInstructionsEditor,
+    getWorkflowNodeInstructionsDraft,
+    getWorkflowNodeInstructionsContext,
+    openWorkflowTerminalPanel,
+    rebuildTranscript,
+    requestRootRender,
+    scheduleTimer,
+    logViewDebug,
+    describeRenderableDebug,
+    currentFocusedRenderable,
+    trackAgentFocusTransition,
+    setProviderRunState,
+    resolveSessionAgent,
+    workflowScreenActive,
+    showWorkflowScreen,
+    selectedWorkflowId,
+    selectWorkflowCanvas,
+    replaceWorkflowDefinitions,
+    upsertWorkflowDefinition,
+    createWorkflow,
+    createAgentWorkflow,
+    listWorkflows,
+    resolveWorkflow,
+    assignWorkflowAlias,
+    deleteWorkflow,
+    createWorkflowEndpoint,
+    assignWorkflowEndpointAlias,
+    bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
+    removeWorkflowEndpoint,
+    addWorkflowNode,
+    removeWorkflowNode,
+    addWorkflowEdge,
+    removeWorkflowEdge,
+    updateWorkflowNodeInstructions,
+    setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeWaitForAllInputs,
+    setWorkflowNodeIntermediateOutputSchema,
+    setWorkflowNodeMaxTurns,
+    invokeWorkflowEndpoint,
+    runWorkflowRegistryEntry,
+    listWorkflowPromptQueues,
+    createWorkflowPromptQueue,
+    updateWorkflowPromptQueue,
+    removeWorkflowPromptQueue,
+    listQueuedWorkflowPrompts,
+    updateQueuedWorkflowPrompt,
+    removeQueuedWorkflowPrompt,
+    clearWorkflowPromptQueue,
+    createWorkflowWatchdog,
+    listWorkflowWatchdogs,
+    setWorkflowWatchdogEnabled,
+    removeWorkflowWatchdog,
+    createWorkflowSchedule,
+    listWorkflowSchedules,
+    setWorkflowScheduleEnabled,
+    removeWorkflowSchedule,
+    setWorkflowFlushContext,
+    setWorkflowRunOutputSchema,
+    listWorkflowRuns,
+    getWorkflowRun,
+    cancelWorkflowRun,
+    pauseWorkflowRun,
+    resumeWorkflowRun,
+    refreshSplitPaneFocusRepaint,
+  } = deps
+
+  const openRoomViewer = async (target: { sessionId: string; agentId: string; sliceId: string }) => {
+    const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
+      ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
+    if (!apiUrl) return null
+    const url = buildHostedCloudViewUrl(apiUrl, target)
+    return { url, opened: await openExternalUrl(url) }
+  }
+  const handlers = createCommandActionHandlers({
+    ...(resolveConfiguredCloudRelayApiUrl(preferencesState())
+      ? { cloudRelayApiUrl: resolveConfiguredCloudRelayApiUrl(preferencesState()) }
+      : {}),
+    workspace: initialWorkspaceTarget,
+    worktree: initialWorktreeTarget,
+    getWorkspaceTarget: pendingWorkspaceTarget,
+    getWorktreeTarget: pendingWorktreeTarget,
+    setWorkspaceTarget: (path: string) => {
+      if (isAttached()) {
+        setPendingWorkspaceTarget(path)
+        return
+      }
+      void deps.editWaitingRoomWorkspace(path)
+        .then(() => deps.rebuildTranscript())
+        .catch(error => flashFooter(deps.formatError(error), "error"))
+    },
+    setWorktreeTarget: setPendingWorktreeTarget,
+    accountProfile: options.accountProfile,
+    clientId: options.clientId,
+    isAttached,
+    sessionState,
+    attachmentState,
+    providerRunState,
+    currentModelId,
+    currentVariantId,
+    currentProviderId: () => options.provider ?? "opencode",
+    currentExecutionMode,
+    currentPermissionLevel,
+    submitGoalPrompt: async (text, targetAgentId) => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("goal needs an attached terminal")
+      const response = await client.send<{ PromptSubmitted?: { session: RuntimeSession }; SessionState?: { session: RuntimeSession }; AgentTaskUpdated?: { session_id: string; task: AgentTaskExecution } }>(submitPromptRequest(sessionState().id, attachment.id, targetAgentId, text, []))
+      if (response.AgentTaskUpdated) {
+        const update = response.AgentTaskUpdated
+        if (update.session_id !== sessionState().id || update.task.agent_id !== targetAgentId) throw new Error("foreign goal control confirmation")
+        deps.applySessionState(withAgentTaskUpdate(sessionState(), update.session_id, update.task))
+        requestRootRender()
+        return
+      }
+      const payload = response.PromptSubmitted ?? response.SessionState
+      if (!payload?.session) throw new Error("goal admission did not return session state")
+      deps.applySessionState(payload.session)
+      await deps.refreshAgentPanes(payload.session)
+      deps.rebuildTranscript()
+      requestRootRender()
+    },
+    focusedAgentId,
+    multiAgentResponseLayout,
+    maxAgentsPerScreen,
+    isRelayConnection: () => client.isRelayTransport(),
+    createViewerPublicKey: async () => client.isRelayTransport()
+      ? client.getRelayClientIdentity()?.publicKeyBase64 ?? null
+      : null,
+    flashFooter,
+    appendNotice,
+    sendRoomEnvironmentRequest: (request) => client.send(request),
+    reconnectRoomEventStream: async () => {
+      if (!client.supportsKernelEvents()) return false
+      await client.restartKernelEventStream()
+      return true
+    },
+    openRoomViewer,
+    ...(deps.roomTerminalScreen ? { roomTerminalScreen: deps.roomTerminalScreen } : {}),
+    captureRoomScreenshot: async () => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
+      return downloadRoomEnvironmentScreenshot({
+        sessionId: sessionState().id,
+        attachmentId: attachment.id,
+        outputRoot: defaultRoomScreenshotOutputRoot(),
+        send: (request) => client.send(request),
+      })
+    },
+    sendWorkflowEventPublicationRequest: (request) => client.send(request),
+    sendAppRequest: (request) => client.send(request),
+    ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
+    ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
+    ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),
+    ...(deps.appPublisherEnrollment ? { appPublisherEnrollment: deps.appPublisherEnrollment } : {}),
+    ...(deps.appHostTerminal ? { appHostTerminal: deps.appHostTerminal } : {}),
+    ...(deps.lastViewedAppHostOperationId ? { lastViewedAppHostOperationId: deps.lastViewedAppHostOperationId } : {}),
+    currentAppHostOperationIds: () => isAttached() ? appHostOperationIds(sessionState()) : [],
+    currentAppSessionId: () => isAttached() ? sessionState().id : undefined,
+    appendCloudNotice,
+    formatError,
+    createSession: (workspace, worktree, alias, agentDefaults, worktreePlacement) =>
+      createSession(client, workspace, worktree, alias, agentDefaults, undefined, undefined, undefined, worktreePlacement),
+    createSessionInvite: (sessionId, expiresInMs, maxUses, collaborationLevel) =>
+      createSessionInvite(client, sessionId, expiresInMs, maxUses, collaborationLevel),
+    joinSessionInvite: (inviteToken, userId) => joinSessionInvite(client, inviteToken, userId),
+    attachBinding: (session, createdSession) => attachBinding(session, createdSession),
+    beginSessionSelection: reference => deps.beginSessionSelection?.({ id: reference }) ?? null,
+    resolveSession: (reference, workspace) => resolveSession(client, reference, workspace),
+    listSessions: () => listSessions(client),
+    deleteSessionByRef: (reference, workspace) => deleteSessionByRef(client, reference, workspace),
+    deleteKernel: () => deleteKernel(client),
+    getDaemonHealth: () => getDaemonHealth(client),
+    getContextTransferStatus: contextId => getManagedContextTransferStatus(client, contextId),
+    listKernelAccessGrants: () => listKernelAccessGrants(client),
+    revokeKernelAccessGrant: (id) => revokeKernelAccessGrant(client, id),
+    sendExtendKernelSudo: (request) => extendKernelSudo(client, request),
+    exportDebugBundle: (sessionId, label) => exportDebugBundle(client, sessionId, label),
+    assignSessionAlias: (sessionId, alias) => aliasSession(client, sessionId, alias),
+    aliasAgent: (sessionId, agentId, alias) => aliasAgent(client, sessionId, agentId, alias),
+    updateAgentProfile: (sessionId, agentId, options) =>
+      updateAgentProfile(client, sessionId, agentId, options),
+    getProviderCatalogForAgent: async (agent, provider, accountProfile) => {
+      const slices = await listSlices(client).catch(() => [])
+      const slice = slices.find((entry) =>
+        entry.agent_ids?.includes(agent.id)
+        || (agent.remote_execution?.worker_kernel_id
+          && entry.worker_kernel_id === agent.remote_execution.worker_kernel_id),
+      )
+      const workerRef = agent.remote_execution?.worker_kernel_id?.trim()
+      return getProviderCatalog(client, appLogger, {
+        provider,
+        accountProfile,
+        executionLocation: slice
+          ? { kind: "slice", slice_ref: slice.id }
+          : workerRef
+            ? { kind: "worker", kernel_ref: workerRef }
+            : { kind: "local" },
+      }, false)
+    },
+    transitionToNoSession,
+    applyProviderSelection,
+    applyAccountSelection,
+    applyModelSelection,
+    applyVariantSelection,
+    applyModeSelection,
+    applyPermissionSelection,
+    getProviderAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    startProviderLogin: (provider, accountProfile, method) =>
+      startProviderLogin(client, provider, accountProfile, method),
+    runProviderSetupToken: (profile, replace) => runProviderSetupToken(client, profile, replace, {
+      sessionId: sessionState().id,
+    }),
+    getProviderLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
+    sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
+    cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
+    ...(readSecret ? { readSecret } : {}),
+    ...(deps.showProviderLoginLink ? { showProviderLoginLink: deps.showProviderLoginLink } : {}),
+    ...(deps.providerLoginInteractions ? { trackProviderLogin: deps.providerLoginInteractions.track } : {}),
+    storeProviderSetupToken: (profile, value, replace) => storeProviderSetupToken(client, profile, value, replace, {
+      ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
+    }),
+    logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
+    listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
+    createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
+    linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
+    importNativeProviderAccountProfile: (provider) => importNativeProviderAccountProfile(client, provider),
+    renameProviderAccountProfile: (provider, profile, label) => renameProviderAccountProfile(client, provider, profile, label),
+    setDefaultProviderAccountProfile: (provider, profile) => setDefaultProviderAccountProfile(client, provider, profile),
+    refreshProviderAccountProfile: (provider, profile) => refreshProviderAccountProfile(client, provider, profile),
+    removeProviderAccountProfile: (provider, profile) => removeProviderAccountProfile(client, provider, profile),
+    deleteProviderAccountProfileData: (provider, profile) => deleteProviderAccountProfileData(client, provider, profile),
+    getRelayStatus: () => getRelayStatus(client),
+    sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
+    sendDeploymentSetupKernelRequest: (request) => client.send(request),
+    configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
+    ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
+      offerSetup: async () => { if (!await hasLocalKernel()) appendCloudNotice("Set up a Chariox kernel on this machine? Run /cloud setup to continue.") },
+      setup: profile => startLocalKernelSetup(profile, appendCloudNotice),
+      client: deps.cloudClient,
+      isKernelConnected: () => deps.kernelConnected?.() ?? true,
+      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
+      notice: appendCloudNotice,
+      saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
+      refresh: refreshWaitingRoomData,
+      openUrl: openExternalUrl,
+      // MP-08 / MP-11: loopback is owner-authenticated; over relay only the session owner's own terminal reads kernel status.
+      ownsKernel: profile => !client.isRelayTransport() || Boolean(profile?.userId && isAttached() && sessionState().owner_user_id === profile.userId),
+    }) } : {}),
+    getCloudRelayProfile: async () => deps.kernelConnected?.() === false
+      ? await deps.cloudClient?.profile() ?? null
+      : await getKernelCloudRelayProfile(client),
+    getCloudControlProfile: () => getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected?.() === false ? undefined : client),
+    getCloudCollaborationProfile: () => getCloudClientControlProfile(deps.cloudClient),
+    connectCloudRelay: () => connectKernelCloudRelay(client),
+    saveCloudRelayProfile: async (profile) => {
+      await saveRelayCloudProfile(profile)
+      setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile))
+    },
+    startCloudDeviceLogin: (apiUrl, input) => startCloudRelayLogin(client, apiUrl, input),
+    pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
+    openExternalUrl,
+    logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
+    pairCloudRelayClient: (_profile, clientId, alias) =>
+      pairKernelCloudRelayClient(client, clientId, alias),
+    pairCloudRelayMachine: (_profile, machineId, alias) =>
+      pairKernelCloudRelayMachine(client, machineId, alias),
+    issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
+    ...(deps.cloudClient ? {
+      createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),
+      acceptCloudSessionInvite: (inviteToken: string) => deps.cloudClient!.collaboration.acceptSessionInvite(inviteToken),
+      listCloudSessionMembers: (sessionId: string) => deps.cloudClient!.collaboration.sessionMembers(sessionId),
+      listCloudCollaborators: () => deps.cloudClient!.collaboration.collaborators(),
+    } : {}),
+    getUserConfig: () => getUserConfig(client),
+    getUserConfigSchema: () => getUserConfigSchema(client),
+    setUserConfigValue: (path, value) => setUserConfigValue(client, path, value),
+    setWorkspaceLiveSyncMode: (sessionId, mode) => setWorkspaceLiveSyncMode(client, sessionId, mode),
+    unsetUserConfigValue: (path) => unsetUserConfigValue(client, path),
+    refreshWaitingRoomData,
+    ...(reimageManagedEnvironment ? { reimageManagedEnvironment } : {}),
+    getRemoteMachines: remoteMachinesState,
+    setRemoteMachines: setRemoteMachinesState,
+    reconcileWaitingRoom: () => reconcileWaitingRoom(),
+    addSshMachine: (host, options) => addSshMachine(client, host, options),
+    removeSshMachine: (installId) => removeSshMachine(client, installId),
+    listRemoteMachines: () => listRemoteMachines(client),
+    listRemoteMachineKernels: (machineRef) => listRemoteMachineKernels(client, machineRef),
+    approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
+    forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
+    renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
+    joinKernelLink: (link, relayToken) => joinKernelLink(client, link, relayToken),
+    listGatewayKernels: () => listGatewayKernels(client),
+    forgetGatewayKernel: (name) => forgetGatewayKernel(client, name),
+    listSlices: async () => {
+      const slices = await listSlices(client)
+      setSlicesState(slices)
+      return slices
+    },
+    createSlice: async (sliceOptions) => {
+      const slice = await createSlice(client, sliceOptions)
+      setSlicesState(await listSlices(client))
+      return slice
+    },
+    getSlice: async (sliceRef) => getSlice(client, sliceRef),
+    startSlice: async (sliceRef) => {
+      const slice = await startSlice(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return slice
+    },
+    stopSlice: async (sliceRef) => {
+      const slice = await stopSlice(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return slice
+    },
+    deleteSlice: async (sliceRef) => {
+      const slice = await deleteSlice(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return slice
+    },
+    importSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await importSliceProviderAuth(client, sliceRef, provider, accountProfile)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    removeSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await removeSliceProviderAuth(client, sliceRef, provider, accountProfile)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    startSliceProviderLogin: async (sliceRef, provider, accountProfile) => {
+      const result = await startSliceProviderLogin(client, sliceRef, provider, accountProfile)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    getSliceDisplayEndpoint: async (sliceRef, room) => getSliceDisplayEndpoint(client, sliceRef, room),
+    getSliceLogs: async (sliceRef, tailLines) => getSliceLogs(client, sliceRef, tailLines),
+    listSliceAudit: async (sliceRef, limit) => listSliceAudit(client, sliceRef, limit),
+    saveSliceState: async (sliceRef, mode, scope) => {
+      const result = await saveSliceState(client, sliceRef, mode, scope)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    getSliceStateStatus: async (sliceRef) => getSliceStateStatus(client, sliceRef),
+    resetSliceState: async (sliceRef) => {
+      const result = await resetSliceState(client, sliceRef)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    createSliceBackup: async (sliceRef, name) => {
+      const result = await createSliceBackup(client, sliceRef, name)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    restoreSliceBackup: async (sliceRef, backupRef) => {
+      const result = await restoreSliceBackup(client, sliceRef, backupRef)
+      setSlicesState(await listSlices(client))
+      return result
+    },
+    listProviderProcesses: (provider) => listProviderProcesses(client, provider),
+    teardownProviderProcesses: (provider) => teardownProviderProcesses(client, provider),
+    listMcpServers: () => listMcpServers(client, pendingWorkspaceTarget()),
+    installMcpServer: (config) => installMcpServer(client, pendingWorkspaceTarget(), config),
+    updateMcpServer: (config) => updateMcpServer(client, pendingWorkspaceTarget(), config),
+    uninstallMcpServer: (name) => uninstallMcpServer(client, pendingWorkspaceTarget(), name),
+    importMcpServers: (provider, name) => importMcpServers(client, pendingWorkspaceTarget(), provider, name),
+    getMcpServer: (name) => getMcpServer(client, pendingWorkspaceTarget(), name),
+    grantAgentMcp: (agentRef, name) => grantAgentMcp(client, pendingWorkspaceTarget(), agentRef, name),
+    revokeAgentMcp: (agentRef, name) => revokeAgentMcp(client, agentRef, name),
+    listSkills: () => listSkills(client, pendingWorkspaceTarget()),
+    installSkill: (sourcePath) => installSkill(client, pendingWorkspaceTarget(), sourcePath),
+    updateSkill: (sourcePath) => updateSkill(client, pendingWorkspaceTarget(), sourcePath),
+    uninstallSkill: (name) => uninstallSkill(client, pendingWorkspaceTarget(), name),
+    importSkills: (provider, name) => importSkills(client, pendingWorkspaceTarget(), provider, name),
+    getSkill: (name) => getSkill(client, pendingWorkspaceTarget(), name),
+    grantAgentSkill: (agentRef, name) => grantAgentSkill(client, pendingWorkspaceTarget(), agentRef, name),
+    revokeAgentSkill: (agentRef, name) => revokeAgentSkill(client, agentRef, name),
+    listEnvironments: () => listEnvironments(client, pendingWorkspaceTarget()),
+    getEnvironment: (name) => getEnvironment(client, pendingWorkspaceTarget(), name),
+    registerEnvironment: (config) => registerEnvironment(client, pendingWorkspaceTarget(), config),
+    removeEnvironment: (name) => removeEnvironment(client, pendingWorkspaceTarget(), name),
+    listScripts: () => listScripts(client, pendingWorkspaceTarget()),
+    getScript: (name) => getScript(client, pendingWorkspaceTarget(), name),
+    validateScript: (sourcePath, environment, name) => validateScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
+    registerScript: (sourcePath, environment, name) => registerScript(client, pendingWorkspaceTarget(), sourcePath, environment, name),
+    removeScript: (name) => removeScript(client, pendingWorkspaceTarget(), name),
+    grantAgentScript: (agentRef, name, environment) => grantAgentScript(client, pendingWorkspaceTarget(), agentRef, name, environment),
+    getAppInstallation: async (installationId) => {
+      const response = await client.send<Record<string, unknown>>(getAppInstallationRequest(installationId))
+      const value = (response.AppInstallation as { installation: AppInstallationSummary } | undefined)?.installation
+      if (value) return value
+      if ((response.AppRequestFailed as { code: string } | undefined)?.code === "not_found") return null
+      throw new Error("App installation status unavailable")
+    },
+    grantAgentApp: (agentRef, installationId) => grantAgentApp(client, pendingWorkspaceTarget(), agentRef, installationId),
+    revokeAgentApp: (agentRef, installationId) => revokeAgentApp(client, agentRef, installationId),
+    revokeAgentScript: (agentRef, name) => revokeAgentScript(client, agentRef, name),
+    listCredentials: () => listCredentials(client),
+    getCredential: (id) => getCredential(client, id),
+    setCredentialSecret: (key, value) => setCredentialSecret(client, key, value, {
+      sessionId: sessionState().id,
+      agentId: focusedAgentId(),
+    }),
+    getCredentialVaultStatus: () => getCredentialVaultStatus(client),
+    lockCredentialVault: () => lockCredentialVault(client),
+    manageCredentialVault: () => manageCredentialVault(client, sessionState().id, focusedAgentId()),
+    registerCredential: (sourcePath) => registerCredential(client, sourcePath),
+    removeCredential: (id) => removeCredential(client, id),
+    listConnectors: () => listConnectors(client),
+    getConnector: (name) => getConnector(client, name),
+    registerConnector: (sourcePath) => registerConnector(client, sourcePath),
+    removeConnector: (name) => removeConnector(client, name),
+    listConnectorAdapters: () => listConnectorAdapters(client),
+    getConnectorAdapter: (name) => getConnectorAdapter(client, name),
+    registerConnectorAdapter: (sourcePath) => registerConnectorAdapter(client, sourcePath),
+    removeConnectorAdapter: (name) => removeConnectorAdapter(client, name),
+    testConnector: (name, operation, input, credential, allow) => testConnector(client, name, operation, input, credential, allow),
+    grantAgentConnector: (agentRef, name, credential, maxSafety) => grantAgentConnector(client, pendingWorkspaceTarget(), agentRef, name, credential, maxSafety),
+    revokeAgentConnector: (agentRef, name) => revokeAgentConnector(client, agentRef, name),
+    syncRemoteExtensionManifest: (agentRef) => syncRemoteExtensionManifest(client, agentRef),
+    listHomeExtensionAudit: (agentRef, limit) => listHomeExtensionAudit(client, agentRef, limit),
+    logViewCommand: (fields) => {
+      appLogger?.info("handling view command", fields)
+      logViewDebug("view command:after set layout", fields)
+    },
+    setMultiAgentResponseLayout,
+    applyResponseLayout,
+    updateSessionResponseLayout: (sessionId, attachmentId, layout) =>
+      updateSessionConfig(
+        client,
+        sessionId,
+        attachmentId,
+        { [SESSION_CONFIG_RESPONSE_LAYOUT_KEY]: layout },
+        false,
+      ),
+    updateSessionConfig: (sessionId, attachmentId, values, requiresIdle) =>
+      updateSessionConfig(client, sessionId, attachmentId, values, requiresIdle),
+    updateAgentConfig: (sessionId, agentId, options) =>
+      updateAgentConfig(client, sessionId, agentId, options),
+    updateAgentSubstitutes: (sessionId, agentId, action) =>
+      updateAgentSubstitutes(client, sessionId, agentId, action),
+    updateMetaagentTask: (sessionId, metaagentId, updates) =>
+      updateMetaagentTask(client, sessionId, metaagentId, updates),
+    pauseMetaagentTask: (sessionId, metaagentId) =>
+      pauseMetaagentTask(client, sessionId, metaagentId),
+    resumeMetaagentTask: (sessionId, metaagentId) =>
+      resumeMetaagentTask(client, sessionId, metaagentId),
+    abortMetaagentTask: (sessionId, metaagentId, reason) =>
+      abortMetaagentTask(client, sessionId, metaagentId, reason),
+    createAgentPromptSchedule: async (sessionId, agentId, kind, intervalSeconds, prompt) => {
+      const response = await client.send<Record<string, unknown>>(
+        createAgentPromptScheduleRequest({
+          sessionId,
+          agentId,
+          kind,
+          intervalSeconds,
+          prompt,
+        }),
+      )
+      const payload = "AgentPromptScheduleCreated" in response
+        ? response.AgentPromptScheduleCreated as { session?: RuntimeSession }
+        : null
+      if (!payload?.session) {
+        throw new Error("kernel did not return the scheduled session")
+      }
+      return { session: payload.session }
+    },
+    applySessionState,
+    refreshAgentPanes,
+    createWorkspaceLink: (name) => createWorkspaceLink(client, sessionState().id, name),
+    listWorkspaceLinks: () => listWorkspaceLinks(client, sessionState().id),
+    showWorkspaceLink: (linkRef) => showWorkspaceLink(client, sessionState().id, linkRef),
+    attachWorkspaceLink: (linkRef, repoRoot) => attachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
+    detachWorkspaceLink: (linkRef, repoRoot) => detachWorkspaceLink(client, sessionState().id, linkRef, repoRoot),
+    getWorkspaceLiveSyncStatus: () => getWorkspaceLiveSyncStatus(client, sessionState().id),
+    listWorkspaceLiveSyncAudit: (sessionId, limit) => listWorkspaceLiveSyncAudit(client, sessionId, limit),
+    ...(setWorkspaceLiveSyncStatus ? { setWorkspaceLiveSyncStatus } : {}),
+    openWorkflowNodeInstructionsEditor,
+    closeWorkflowNodeInstructionsEditor,
+    getWorkflowNodeInstructionsDraft,
+    getWorkflowNodeInstructionsContext,
+    openWorkflowTerminalPanel,
+    saveUiPreferences: async (prefs) => {
+      await saveUiPreferences(prefs)
+      setPreferencesState((current: any) => mergeUiPreferences(current, prefs))
+    },
+    rebuildTranscript,
+    requestRender: requestRootRender,
+    afterViewRender: (layout) => {
+      scheduleTimer(() => {
+        logViewDebug("view command:post render tick", {
+          requested_layout: layout,
+          current_focus: describeRenderableDebug(currentFocusedRenderable()),
+        })
+      }, 0)
+    },
+    cycleAgentFocus: async () => {
+      return trackAgentFocusTransition(async () => {
+        const agent = await cycleAgentFocusApi(client, sessionState().id)
+        const session = await getSessionState(client, sessionState().id)
+        if (session.active_provider_run_id) {
+          setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
+        } else {
+          setProviderRunState(null)
+        }
+        return {
+          agent,
+          session,
+        }
+      })
+    },
+    launchAgentProviderRun: (provider, model, variant, agentId, accountProfile) =>
+      launchProviderRun(
+        client,
+        sessionState().id,
+        provider,
+        accountProfile || "default",
+        model,
+        variant,
+        agentId,
+      ),
+    setProviderRunState,
+    refreshSessionState: (sessionId) => getSessionState(client, sessionId),
+    undoTurn: (agentRef, turnRef) => undoTurnApi(client, sessionState().id, agentRef, turnRef),
+    forkAgent: (sourceAgentRef, alias) => forkAgentApi(client, sessionState().id, sourceAgentRef, alias),
+    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, accountProfile) => {
+      const agent = await spawnAgentApi(
+        client,
+        sessionState().id,
+        {
+          provider,
+          accountProfile,
+          alias,
+          model,
+          effort,
+          worktreeId,
+          kernelRef: machineRef,
+          worktreePlacement,
+          sliceRef,
+        },
+      )
+      return {
+        agent,
+        session: await getSessionState(client, sessionState().id),
+      }
+    },
+    spawnAgents: async (agents) => {
+      const spawned = await spawnAgentsApi(
+        client,
+        sessionState().id,
+        {
+          agents: agents.map((agent) => ({
+            provider: agent.provider,
+            accountProfile: agent.accountProfile,
+            alias: agent.alias,
+            model: agent.model,
+            effort: agent.effort,
+            worktreeId: agent.worktreeId,
+            kernelRef: agent.machineRef,
+            worktreePlacement: agent.worktreePlacement,
+            sliceRef: agent.sliceRef,
+          })),
+        },
+      )
+      return {
+        agents: spawned,
+        session: await getSessionState(client, sessionState().id),
+      }
+    },
+    launchAgentProviderRuns: async (provider, model, variant, agentIds, accountProfile) => {
+      const result = await launchProviderRuns(
+        client,
+        agentIds.map((agentId) => ({
+          sessionId: sessionState().id,
+          provider,
+          accountProfile: accountProfile || "default",
+          model,
+          effort: variant,
+          agentId,
+        })),
+        Math.min(8, Math.max(1, agentIds.length)),
+      )
+      return {
+        runs: result.providerRuns,
+        failures: result.failures,
+      }
+    },
+    importExternalProviderAgent: async (externalSessionId) => {
+      const payload = await importExternalProviderAgent(client, sessionState().id, externalSessionId)
+      if (payload.providerRun) {
+        setProviderRunState(payload.providerRun)
+      }
+      return {
+        agent: payload.agent,
+        session: payload.session,
+        providerRun: payload.providerRun,
+      }
+    },
+    destroyAgent: async (agentId) => {
+      await destroyAgentApi(client, sessionState().id, agentId)
+      return getSessionState(client, sessionState().id)
+    },
+    focusAgent: async (agentId) => {
+      return trackAgentFocusTransition(async () => {
+        const agent = await focusAgentApi(client, sessionState().id, agentId)
+        const session = await getSessionState(client, sessionState().id)
+        if (session.active_provider_run_id) {
+          setProviderRunState(await getProviderRun(client, session.active_provider_run_id))
+        } else {
+          setProviderRunState(null)
+        }
+        return {
+          agent,
+          session,
+        }
+      })
+    },
+    resolveSessionAgent: (reference) => {
+      const resolved = resolveSessionAgent(reference)
+      return resolved.error
+        ? { agent: resolved.agent ?? null, error: resolved.error }
+        : { agent: resolved.agent ?? null }
+    },
+    workflowScreenActive,
+    showWorkflowScreen,
+    selectedWorkflowId,
+    selectWorkflowCanvas,
+    replaceWorkflowDefinitions,
+    upsertWorkflowDefinition,
+    createWorkflow,
+    createAgentWorkflow,
+    listWorkflows,
+    resolveWorkflow,
+    assignWorkflowAlias,
+    deleteWorkflow,
+    createWorkflowEndpoint,
+    assignWorkflowEndpointAlias,
+    bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
+    removeWorkflowEndpoint,
+    addWorkflowNode,
+    removeWorkflowNode,
+    addWorkflowEdge,
+    removeWorkflowEdge,
+    updateWorkflowNodeInstructions,
+    setWorkflowNodeCanCompleteRun,
+    setWorkflowNodeCanEmitIntermediateOutput,
+    setWorkflowNodeWaitForAllInputs,
+    setWorkflowNodeIntermediateOutputSchema,
+    setWorkflowNodeMaxTurns,
+    invokeWorkflowEndpoint,
+    runWorkflowRegistryEntry,
+    listWorkflowPromptQueues,
+    createWorkflowPromptQueue,
+    updateWorkflowPromptQueue,
+    removeWorkflowPromptQueue,
+    listQueuedWorkflowPrompts,
+    updateQueuedWorkflowPrompt,
+    removeQueuedWorkflowPrompt,
+    clearWorkflowPromptQueue,
+    createWorkflowWatchdog,
+    listWorkflowWatchdogs,
+    setWorkflowWatchdogEnabled,
+    removeWorkflowWatchdog,
+    createWorkflowSchedule,
+    listWorkflowSchedules,
+    setWorkflowScheduleEnabled,
+    removeWorkflowSchedule,
+    setWorkflowFlushContext,
+    setWorkflowRunOutputSchema,
+    listWorkflowRuns,
+    getWorkflowRun,
+    cancelWorkflowRun,
+    pauseWorkflowRun,
+    resumeWorkflowRun,
+    formatAgentLabel,
+    refreshSplitPaneFocusRepaint,
+    formatSessionList: (sessions, currentSessionId) => formatSessionList(sessions, currentSessionId ?? undefined),
+  })
+  return { ...handlers, openRoomViewer }
+}

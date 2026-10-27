@@ -1,0 +1,230 @@
+use crate::error::DaemonError;
+use crate::execution_lease::RemoteWorkflowTurnContext;
+use crate::transport::relay_peer::{
+    RemoteExtensionInvocationContext, RemoteNativeInteractionContext,
+    RemoteWorkspaceLiveSyncContext,
+};
+
+use super::RemoteLeaseRuntime;
+
+impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn native_interaction_context_for_backing_agent(
+        &mut self,
+        backing_session_id: &str,
+        backing_agent_id: &str,
+        worker_provider_run_id: &str,
+    ) -> Option<(String, RemoteNativeInteractionContext)> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .values()
+            .find(|agent| {
+                agent.backing_session_id == backing_session_id
+                    && agent.backing_agent_id == backing_agent_id
+            })?
+            .clone();
+        let lease = self
+            .app
+            .execution_leases
+            .get(&leased_agent.lease_id)?
+            .clone();
+        // Native input originates in the backing worker prompt owner. Its
+        // projection retains that ID on the home, while home-origin dispatches
+        // continue to use their explicit home/backing binding.
+        let home_prompt_id = leased_agent.active_home_prompt_id.clone().or_else(|| {
+            self.app
+                .prompt_owner_active_prompt_for_agent(backing_session_id, backing_agent_id)
+                .ok()
+                .flatten()
+                .map(|prompt| prompt.id().to_string())
+        });
+        Some((
+            lease.home_kernel_id,
+            RemoteNativeInteractionContext {
+                home_session_id: lease.home_session_id,
+                home_agent_id: lease.home_agent_id,
+                home_prompt_id,
+                leased_agent_id: leased_agent.id,
+                worker_provider_run_id: worker_provider_run_id.to_string(),
+            },
+        ))
+    }
+
+    /// A10: the worker-local backing (session, agent) of one leased agent.
+    pub(crate) fn leased_agent_backing(&self, leased_agent_id: &str) -> Option<(String, String)> {
+        self.app.leased_agents.get(leased_agent_id).map(|leased| {
+            (
+                leased.backing_session_id.clone(),
+                leased.backing_agent_id.clone(),
+            )
+        })
+    }
+
+    pub(crate) fn leased_agent_provider_run_id(
+        &self,
+        leased_agent_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let leased_agent = self
+            .app
+            .leased_agents
+            .get(leased_agent_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            })?;
+        Ok(self
+            .app
+            .providers
+            .get_run_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .or_else(|| {
+                self.app.providers.get_latest_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+            })
+            .map(|run| run.id().to_string()))
+    }
+
+    pub(crate) fn leased_agent_provider_termination(
+        &self,
+        leased_agent_id: &str,
+        provider_run_id: &str,
+    ) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+        let leased_agent = self.app.leased_agents.get(leased_agent_id).ok_or_else(|| {
+            DaemonError::LeasedAgentNotFound {
+                leased_agent_id: leased_agent_id.to_string(),
+            }
+        })?;
+        Ok(self
+            .app
+            .completed_git_turn_snapshot_store()
+            .latest_projection_for_agent(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+            )
+            .filter(|turn| turn.provider_run_id == provider_run_id)
+            .and_then(|turn| turn.provider_termination))
+    }
+
+    pub(crate) fn leased_workflow_turn_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<RemoteWorkflowTurnContext> {
+        self.app
+            .leased_workflow_turns
+            .values()
+            .find(|binding| {
+                binding.provider_run_id == provider_run_id
+                    && self
+                        .app
+                        .leased_agents
+                        .get(&binding.leased_agent_id)
+                        .and_then(|agent| agent.active_home_prompt_id.as_deref())
+                        == Some(binding.home_prompt_id.as_str())
+            })
+            .map(|binding| binding.context.clone())
+    }
+
+    pub(crate) fn leased_workspace_live_sync_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+        worker_workspace_identity: crate::io::WorkspaceIdentity,
+    ) -> Option<RemoteWorkspaceLiveSyncContext> {
+        let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
+            self.app
+                .providers
+                .get_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+                .map(|run| run.id() == provider_run_id)
+                .unwrap_or(false)
+        })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        let backing_session = self
+            .app
+            .sessions
+            .get_session(&leased_agent.backing_session_id)
+            .ok()?;
+        Some(RemoteWorkspaceLiveSyncContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            home_prompt_id: leased_agent.active_home_prompt_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_kernel_id: lease.worker_kernel_id.clone(),
+            worker_machine_id: lease.machine_id.clone(),
+            worker_provider_run_id: provider_run_id.to_string(),
+            worker_worktree_path: backing_session.worktree_id().to_string(),
+            worker_workspace_identity,
+        })
+    }
+
+    pub(crate) fn leased_extension_invocation_context_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<RemoteExtensionInvocationContext> {
+        let leased_agent = self.app.leased_agents.values().find(|leased_agent| {
+            self.app
+                .providers
+                .get_run_for_agent(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                )
+                .map(|run| run.id() == provider_run_id)
+                .unwrap_or(false)
+        })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        Some(RemoteExtensionInvocationContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_provider_run_id: provider_run_id.to_string(),
+            worker_kernel_id: Some(lease.worker_kernel_id.clone()),
+            worker_machine_id: Some(lease.machine_id.clone()),
+        })
+    }
+
+    pub(crate) fn leased_extension_invocation_context_for_runtime_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+    ) -> Option<RemoteExtensionInvocationContext> {
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return self.leased_extension_invocation_context_for_provider_run(provider_run.id());
+        };
+        let leased_agent = self
+            .app
+            .leased_agents
+            .values()
+            .find(|leased_agent| {
+                leased_agent.backing_session_id == provider_run.session_id()
+                    && leased_agent.backing_agent_id == agent_id
+            })
+            .or_else(|| {
+                self.app.leased_agents.values().find(|leased_agent| {
+                    self.app
+                        .providers
+                        .get_run_for_agent(
+                            &leased_agent.backing_session_id,
+                            &leased_agent.backing_agent_id,
+                        )
+                        .map(|run| run.id() == provider_run.id())
+                        .unwrap_or(false)
+                })
+            })?;
+        let lease = self.app.execution_leases.get(&leased_agent.lease_id)?;
+        Some(RemoteExtensionInvocationContext {
+            home_kernel_id: lease.home_kernel_id.clone(),
+            home_session_id: lease.home_session_id.clone(),
+            home_agent_id: lease.home_agent_id.clone(),
+            leased_agent_id: leased_agent.id.clone(),
+            worker_provider_run_id: provider_run.id().to_string(),
+            worker_kernel_id: Some(lease.worker_kernel_id.clone()),
+            worker_machine_id: Some(lease.machine_id.clone()),
+        })
+    }
+}

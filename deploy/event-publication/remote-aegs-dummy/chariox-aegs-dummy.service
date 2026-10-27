@@ -1,0 +1,18 @@
+[Unit]
+Description=Chariox dummy Event Generation Server (staging)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/chariox-aegs-dummy-staging
+ExecStart=/usr/bin/docker compose --env-file /etc/chariox/aegs-dummy.env -f compose.yaml up --detach --wait --remove-orphans
+ExecReload=/usr/bin/docker compose --env-file /etc/chariox/aegs-dummy.env -f compose.yaml up --detach --wait --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/chariox/aegs-dummy.env -f compose.yaml down
+TimeoutStartSec=180
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

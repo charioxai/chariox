@@ -1,0 +1,323 @@
+import assert from "node:assert/strict"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import test from "node:test"
+
+import { matrixValidationGateCheck } from "./drill-validation-gate-matrix-check.mjs"
+
+test("skips matrix validation when no matrix evidence or requirements are configured", async () => {
+  const check = await matrixValidationGateCheck({
+    matrixReports: [],
+    matrixRoots: [],
+  }, matrixOptions())
+
+  assert.deepEqual(check, {
+    status: "skipped",
+    roots: [],
+    inputs: [],
+    reportPaths: [],
+    requireComplete: false,
+    requiredMatrixMaxAgeMs: null,
+    staleMatrixReports: [],
+    requiredMatrices: [],
+    missingMatrices: [],
+    requiredMatrixClassifications: [],
+    missingMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    missingMatrixRuntimeSignals: [],
+    requiredMatrixRuntimeSignalScenarios: {},
+    requiredDeploymentPresets: [],
+    missingDeploymentPresets: [],
+    requiredProviders: [],
+    missingProviders: [],
+    requiredScenarios: [],
+    missingScenarios: [],
+  })
+})
+
+test("fails when matrix coverage is required but no reports are found", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const check = await matrixValidationGateCheck({
+      matrixReports: [],
+      matrixRoots: [rootDir],
+    }, matrixOptions({
+      requiredMatrices: ["workspace-live-sync-matrix"],
+      requiredProviders: ["codex"],
+    }))
+
+    assert.equal(check.status, "failed")
+    assert.equal(check.error, "no matrix reports found")
+    assert.deepEqual(check.missingMatrices, ["workspace-live-sync-matrix"])
+    assert.deepEqual(check.missingProviders, ["codex"])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("passes with matrix, classification, deployment, provider, and scenario coverage", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "matrices", "workspace.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      matrix: "workspace-live-sync-matrix",
+      metadata: {
+        deploymentPresets: "local,self-hosted-relay",
+        providers: "codex,opencode",
+      },
+      scenarios: [
+        scenario("managed", "passed", { classification: "workspace-live-sync-conflict", runtimeSignals: ["workspace-live-sync-state"] }),
+        scenario("permission", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] }),
+      ],
+    }))
+
+    const check = await matrixValidationGateCheck({
+      matrixReports: [],
+      matrixRoots: [rootDir],
+    }, matrixOptions({
+      requiredMatrices: ["workspace-live-sync-matrix"],
+      requiredMatrixClassifications: ["kernel-authority", "workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["session-authority", "workspace-live-sync-state"],
+      requiredDeploymentPresets: ["local"],
+      requiredProviders: ["codex"],
+      requiredScenarios: ["managed"],
+    }))
+
+    assert.equal(check.status, "passed")
+    assert.deepEqual(check.reportPaths, [reportPath])
+    assert.deepEqual(check.missingMatrices, [])
+    assert.deepEqual(check.missingMatrixClassifications, [])
+    assert.deepEqual(check.missingMatrixRuntimeSignals, [])
+    assert.deepEqual(check.requiredMatrixRuntimeSignalScenarios, {
+      "session-authority": [{
+        matrix: "workspace-live-sync-matrix",
+        source: reportPath,
+        id: "permission",
+        status: "passed",
+      }],
+      "workspace-live-sync-state": [{
+        matrix: "workspace-live-sync-matrix",
+        source: reportPath,
+        id: "managed",
+        status: "passed",
+      }],
+    })
+    assert.deepEqual(check.missingDeploymentPresets, [])
+    assert.deepEqual(check.missingProviders, [])
+    assert.deepEqual(check.missingScenarios, [])
+    assert.deepEqual(check.aggregate.matrixNames, { "workspace-live-sync-matrix": 1 })
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("gates matrix reports by required freshness", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "matrix.json")
+    const completedAt = new Date(Date.now() - 500).toISOString()
+    const startedAt = new Date(Date.parse(completedAt) - 1000).toISOString()
+    await writeMatrixReport(reportPath, matrixReport({
+      startedAt,
+      completedAt,
+      durationMs: 1000,
+    }))
+
+    const fresh = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({
+      requiredMatrixMaxAgeMs: 3_600_000,
+    }))
+    assert.equal(fresh.status, "passed")
+    assert.equal(fresh.requiredMatrixMaxAgeMs, 3_600_000)
+    assert.deepEqual(fresh.staleMatrixReports, [])
+
+    const stale = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({
+      requiredMatrixMaxAgeMs: 100,
+    }))
+    assert.equal(stale.status, "failed")
+    assert.equal(stale.staleMatrixReports.length, 1)
+    assert.equal(stale.staleMatrixReports[0].source, reportPath)
+    assert.equal(stale.staleMatrixReports[0].matrix, "test-matrix")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails incomplete dry-run reports only when complete execution is required", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "dry-run.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      status: "dry-run",
+      dryRun: true,
+      durationMs: 0,
+      completedAt: "2026-06-13T00:00:00.000Z",
+      scenarios: [scenario("managed", "dry-run")],
+    }))
+
+    const permissive = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions())
+    const strict = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({ requireComplete: true }))
+
+    assert.equal(permissive.status, "passed")
+    assert.equal(strict.status, "failed")
+    assert.equal(strict.aggregate.status, "dry-run")
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("fails unresolved exit criteria only when complete execution is required", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "criteria.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      scenarios: [scenario("projection", "passed", {
+        exitCriteria: ["worker projection acknowledgement is observed"],
+        exitCriteriaEvidence: [{
+          id: "projection:exit-01",
+          criterion: "worker projection acknowledgement is observed",
+          status: "dry-run",
+          reason: "scenario command was selected but not executed",
+        }],
+      })],
+    }))
+
+    const permissive = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions())
+    const strict = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({ requireComplete: true }))
+
+    assert.equal(permissive.status, "passed")
+    assert.equal(strict.status, "failed")
+    assert.deepEqual(strict.aggregate.exitCriteria, { "dry-run": 1 })
+    assert.deepEqual(strict.aggregate.incompleteExitCriteria.map((criterion) => ({
+      matrix: criterion.matrix,
+      id: criterion.id,
+      status: criterion.status,
+    })), [{
+      matrix: "test-matrix",
+      id: "projection:exit-01",
+      status: "dry-run",
+    }])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test("reports missing matrix coverage dimensions from otherwise valid evidence", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-validation-gate-matrix-"))
+  try {
+    const reportPath = path.join(rootDir, "workspace.json")
+    await writeMatrixReport(reportPath, matrixReport({
+      metadata: {
+        deploymentPresets: "local",
+        providers: "codex",
+      },
+      scenarios: [scenario("managed", "passed", { classification: "kernel-authority", runtimeSignals: ["session-authority"] })],
+    }))
+
+    const check = await matrixValidationGateCheck({
+      matrixReports: [reportPath],
+      matrixRoots: [],
+    }, matrixOptions({
+      requiredMatrices: ["workspace-live-sync-matrix"],
+      requiredMatrixClassifications: ["workspace-live-sync-conflict"],
+      requiredMatrixRuntimeSignals: ["workspace-live-sync-state"],
+      requiredDeploymentPresets: ["hosted-cloud"],
+      requiredProviders: ["claude"],
+      requiredScenarios: ["tracked"],
+    }))
+
+    assert.equal(check.status, "failed")
+    assert.deepEqual(check.missingMatrices, ["workspace-live-sync-matrix"])
+    assert.deepEqual(check.missingMatrixClassifications, ["workspace-live-sync-conflict"])
+    assert.deepEqual(check.missingMatrixRuntimeSignals, ["workspace-live-sync-state"])
+    assert.deepEqual(check.requiredMatrixRuntimeSignalScenarios, { "workspace-live-sync-state": [] })
+    assert.deepEqual(check.missingDeploymentPresets, ["hosted-cloud"])
+    assert.deepEqual(check.missingProviders, ["claude"])
+    assert.deepEqual(check.missingScenarios, ["tracked"])
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+function matrixOptions(overrides = {}) {
+  return {
+    maxDepth: 8,
+    requireComplete: false,
+    requiredMatrices: [],
+    requiredMatrixClassifications: [],
+    requiredMatrixRuntimeSignals: [],
+    requiredDeploymentPresets: [],
+    requiredProviders: [],
+    requiredScenarios: [],
+    requiredMatrixMaxAgeMs: null,
+    ...overrides,
+  }
+}
+
+async function writeMatrixReport(file, report) {
+  await mkdir(path.dirname(file), { recursive: true })
+  await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, "utf8")
+}
+
+function matrixReport(overrides = {}) {
+  const scenarios = overrides.scenarios ?? [scenario("local", "passed")]
+  const status = overrides.status ?? matrixStatusForScenarios(scenarios)
+  const dryRun = overrides.dryRun ?? status === "dry-run"
+  const startedAt = overrides.startedAt ?? "2026-06-13T00:00:00.000Z"
+  const durationMs = overrides.durationMs ?? 1000
+  const completedAt = overrides.completedAt ?? new Date(Date.parse(startedAt) + durationMs).toISOString()
+  return {
+    schema: "chariox.drill.matrix.v1",
+    matrix: "test-matrix",
+    status,
+    dryRun,
+    startedAt,
+    completedAt,
+    durationMs,
+    metadata: {},
+    scenarios,
+    ...overrides,
+  }
+}
+
+function matrixStatusForScenarios(scenarios) {
+  if (scenarios.some((entry) => entry.status === "failed")) return "failed"
+  if (scenarios.length > 0 && scenarios.every((entry) => entry.status === "dry-run")) return "dry-run"
+  return "passed"
+}
+
+function scenario(id, status, overrides = {}) {
+  return {
+    id,
+    description: `${id} scenario`,
+    requires: [],
+    exitCriteria: [],
+    status,
+    expectedFailure: false,
+    classification: null,
+    durationMs: status === "skipped" || status === "dry-run" ? 0 : 10,
+    reason: status === "skipped" ? "not run" : null,
+    command: "node",
+    args: [`${id}.mjs`],
+    artifactHints: [],
+    ...overrides,
+  }
+}

@@ -1,0 +1,96 @@
+export type TranscriptScrollMonitorDecision = {
+  shouldLoadOlderHistory: boolean
+  nextLastScrollTop: number
+}
+
+type TranscriptScrollMonitorOptions = {
+  hasScrollbox: boolean
+  pendingHistoryScrollRestore: number
+  currentScrollTop: number
+  lastTranscriptScrollTop: number
+  hasMoreHistory: boolean
+  loadingHistory: boolean
+  historyLoadingSuppressed?: boolean
+}
+
+type ShortViewportHistoryOptions = {
+  hasScrollbox: boolean
+  attached: boolean
+  loadingHistory: boolean
+  hasMoreHistory: boolean
+  historyLoadingSuppressed?: boolean
+  scrollTop: number
+  scrollHeight: number
+  viewportHeight: number
+}
+
+type TranscriptRebuildScrollOptions = {
+  previousScrollTop: number
+  previousScrollHeight: number
+  nextScrollHeight: number
+  viewportHeight: number
+}
+
+export function evaluateTranscriptScrollMonitor(
+  options: TranscriptScrollMonitorOptions,
+): TranscriptScrollMonitorDecision {
+  if (!options.hasScrollbox || options.pendingHistoryScrollRestore > 0) {
+    return {
+      shouldLoadOlderHistory: false,
+      nextLastScrollTop: options.lastTranscriptScrollTop,
+    }
+  }
+  if (options.historyLoadingSuppressed) {
+    return {
+      shouldLoadOlderHistory: false,
+      nextLastScrollTop: options.currentScrollTop,
+    }
+  }
+
+  return {
+    shouldLoadOlderHistory:
+      options.currentScrollTop === 0
+      && options.lastTranscriptScrollTop > 0
+      && options.hasMoreHistory
+      && !options.loadingHistory,
+    nextLastScrollTop: options.currentScrollTop,
+  }
+}
+
+export function shouldLoadShortViewportHistory(
+  options: ShortViewportHistoryOptions,
+): boolean {
+  if (
+    !options.hasScrollbox
+    || !options.attached
+    || options.loadingHistory
+    || !options.hasMoreHistory
+    || options.historyLoadingSuppressed
+  ) {
+    return false
+  }
+  return options.scrollTop === 0 && options.scrollHeight <= options.viewportHeight
+}
+
+export function computeTranscriptRebuildScrollTop(
+  options: TranscriptRebuildScrollOptions,
+): number {
+  const previousMaxScrollTop = Math.max(0, options.previousScrollHeight - options.viewportHeight)
+  const nextMaxScrollTop = Math.max(0, options.nextScrollHeight - options.viewportHeight)
+  const wasAtBottom = previousMaxScrollTop === 0 || options.previousScrollTop >= previousMaxScrollTop - 1
+  if (wasAtBottom) {
+    return nextMaxScrollTop
+  }
+  return Math.max(0, Math.min(options.previousScrollTop, nextMaxScrollTop))
+}
+
+export function nextWaitingRoomIntroStep(
+  attached: boolean,
+  introStep: number,
+  maxIntroStep = 12,
+): number | null {
+  if (attached || introStep >= maxIntroStep) {
+    return null
+  }
+  return introStep + 1
+}

@@ -1,0 +1,2354 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use tokio::sync::Notify;
+
+use super::input_backlog::PtyInputBacklog;
+use crate::error::DaemonError;
+use crate::provider::RuntimeProviderRun;
+
+const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
+const PTY_INPUT_QUEUE_LIMIT: usize = 64;
+const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
+const PTY_READER_STACK_BYTES: usize = 256 * 1024;
+const PTY_WRITER_STACK_BYTES: usize = 128 * 1024;
+/// Input is written in slices so an interrupt can cancel the rest of a large
+/// paste while one slice waits for the program to read.
+const PTY_INPUT_SLICE_BYTES: usize = 1024;
+/// How long an interrupt waits for the writer to drop the input it cancelled.
+const PTY_INTERRUPT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+type PtyOutputFilter = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
+
+// MP-08 / MP-10 / MP-11: retain the terminal descriptor in the ordered input
+// writer so cancelling an owned, unacknowledged composer also discards unread
+// prompt/Enter bytes. Provider-native drafts never use this operation.
+#[cfg(unix)]
+fn clone_input_terminal(master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::fd::BorrowedFd;
+    master
+        .as_raw_fd()
+        .map(|fd| {
+            // The master remains alive throughout this clone.
+            unsafe { BorrowedFd::borrow_raw(fd) }
+                .try_clone_to_owned()
+                .map(Into::into)
+        })
+        .transpose()
+}
+
+#[cfg(not(unix))]
+fn clone_input_terminal(_master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn discard_unread_input(terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let terminal =
+        terminal.ok_or_else(|| std::io::Error::other("PTY input flush is unavailable"))?;
+    // Flush the slave's unread input, never the master's input (provider output).
+    // Open only for this operation so provider exit still produces PTY EOF.
+    #[cfg(target_os = "linux")]
+    let slave_fd = unsafe {
+        libc::ioctl(
+            terminal.as_raw_fd(),
+            libc::TIOCGPTPEER,
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    let slave_fd = {
+        static NAME_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = NAME_LOCK
+            .lock()
+            .map_err(|_| std::io::Error::other("PTY name lock is poisoned"))?;
+        let name = unsafe { libc::ptsname(terminal.as_raw_fd()) };
+        if name.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        unsafe { libc::open(name, libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) }
+    };
+    if slave_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+    if unsafe { libc::tcflush(slave.as_raw_fd(), libc::TCIFLUSH) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()> {
+    Err(std::io::Error::other("PTY input flush is unavailable"))
+}
+
+#[cfg(unix)]
+fn disable_pty_input_echo(
+    master: &dyn MasterPty,
+    provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    let fd = master.as_raw_fd().ok_or_else(|| DaemonError::PtySpawn {
+        provider_run_id: provider_run_id.to_string(),
+        message: "managed PTY did not expose a terminal descriptor".to_string(),
+    })?;
+    let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+    if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+        return Err(DaemonError::PtySpawn {
+            provider_run_id: provider_run_id.to_string(),
+            message: format!(
+                "failed to read managed PTY terminal attributes: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    let mut attributes = unsafe { attributes.assume_init() };
+    attributes.c_lflag &= !(libc::ECHO | libc::ECHONL);
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &attributes) } != 0 {
+        return Err(DaemonError::PtySpawn {
+            provider_run_id: provider_run_id.to_string(),
+            message: format!(
+                "failed to disable managed PTY input echo: {}",
+                std::io::Error::last_os_error()
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn disable_pty_input_echo(
+    _master: &dyn MasterPty,
+    _provider_run_id: &str,
+) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn terminate_pty_process_group(master: &dyn MasterPty, process_group: Option<i32>) {
+    let Some(process_group) = process_group else {
+        return;
+    };
+    // MP-08/MP-10: the recorded leader must still reserve this PID. The
+    // foreground group may disappear once the leader exits, before reaping.
+    for process_group in [master.process_group_leader(), Some(process_group)]
+        .into_iter()
+        .flatten()
+        .filter(|group| *group > 0)
+    {
+        let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    }
+}
+
+/// Discard what was written to the master and the program has not read yet:
+/// the pending buffers of the slave side (flushed from the master) and the
+/// slave's line-discipline read buffer. Returns whether both were flushed.
+#[cfg(unix)]
+fn discard_unread_input_after_interrupt(master_fd: std::os::fd::RawFd) -> bool {
+    use std::os::fd::FromRawFd;
+    if unsafe { libc::tcflush(master_fd, libc::TCOFLUSH) } != 0 {
+        return false;
+    }
+    // Borrowed for this call only; the manager still owns the descriptor.
+    let master = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(master_fd) });
+    discard_unread_input(Some(&master)).is_ok()
+}
+
+#[cfg(not(unix))]
+fn terminate_pty_process_group(_master: &dyn MasterPty, _process_group: Option<i32>) {}
+
+#[derive(Clone)]
+pub(crate) struct PtyInputWriter {
+    provider_run_id: String,
+    input_tx: SyncSender<PtyInputRequest>,
+    /// Input queued or mid-write: pending while the writer may be stuck behind
+    /// a program that does not read it.
+    backlog: Arc<PtyInputBacklog>,
+}
+
+struct PtyInputRequest {
+    provider_run_id: String,
+    /// The backlog generation it was queued under.
+    generation: u64,
+    bytes: Vec<u8>,
+    discard_unread: bool,
+    completion_tx: Option<SyncSender<Result<(), String>>>,
+}
+
+pub struct PtyManager {
+    process_aliases: BTreeMap<String, String>,
+    processes: BTreeMap<String, PtyProcess>,
+    output_signal: PtyOutputSignal,
+}
+
+pub struct PtySpawnRequest {
+    pub process_key: String,
+    pub provider_run_id: String,
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub env_remove: Vec<String>,
+    pub working_directory: Option<PathBuf>,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PtyOutputChunk {
+    pub provider_run_id: String,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PtyOutputSignal {
+    inner: Arc<PtyOutputSignalState>,
+}
+
+#[derive(Debug, Default)]
+struct PtyOutputSignalState {
+    sequence: AtomicU64,
+    notify: Notify,
+    provider_runs_by_process: Mutex<BTreeMap<String, BTreeSet<String>>>,
+    preferred_provider_run_by_process: Mutex<BTreeMap<String, String>>,
+    ready_processes: Mutex<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PtyProcessState {
+    Running,
+    Exited {
+        exit_code: Option<u32>,
+        signal: Option<String>,
+    },
+}
+
+impl PtyProcessState {
+    pub fn is_exited(&self) -> bool {
+        matches!(self, Self::Exited { .. })
+    }
+}
+
+struct PtyProcess {
+    discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
+    child: Box<dyn Child + Send + Sync>,
+    master: Box<dyn MasterPty + Send>,
+    process_group: Option<i32>,
+    input_writer: PtyInputWriter,
+    output_rx: Receiver<Vec<u8>>,
+    diagnostic_tail: Arc<Mutex<VecDeque<u8>>>,
+    exit_code: Option<u32>,
+    signal: Option<String>,
+    reference_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PtyProcessExit {
+    exit_code: Option<u32>,
+    signal: Option<String>,
+}
+
+fn observe_pty_process_exit(status: portable_pty::ExitStatus) -> PtyProcessExit {
+    // portable-pty 0.8.1 keeps ExitStatus::signal private and exposes only
+    // success/exit_code; use its Display form ("Terminated by ...") for the
+    // signal detail available to this integration. The real-PTY signal
+    // regression below guards this dependency assumption during upgrades.
+    let display = status.to_string();
+    if let Some(signal) = display.strip_prefix("Terminated by ") {
+        return PtyProcessExit {
+            exit_code: None,
+            signal: Some(sanitize_pty_signal(signal).unwrap_or_else(|| "unknown".to_string())),
+        };
+    }
+    PtyProcessExit {
+        exit_code: Some(status.exit_code()),
+        signal: None,
+    }
+}
+
+fn sanitize_pty_signal(signal: &str) -> Option<String> {
+    let signal = signal.trim();
+    if signal.is_empty()
+        || signal.chars().count() > 64
+        || !signal.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, ' ' | '-' | '_' | '(' | ')' | '/')
+        })
+    {
+        return None;
+    }
+    Some(signal.to_string())
+}
+
+fn cached_pty_process_state(process: &PtyProcess) -> PtyProcessState {
+    PtyProcessState::Exited {
+        exit_code: process.exit_code,
+        signal: process.signal.clone(),
+    }
+}
+
+fn cache_pty_process_exit(process: &mut PtyProcess, status: portable_pty::ExitStatus) {
+    let exit = observe_pty_process_exit(status);
+    process.exit_code = exit.exit_code;
+    process.signal = exit.signal;
+    process.process_group = None;
+}
+
+fn try_wait_pty_process(
+    process: &mut PtyProcess,
+) -> Result<Option<portable_pty::ExitStatus>, String> {
+    #[cfg(unix)]
+    if let Some(pid) = process.child.process_id() {
+        // MP-08/MP-10/MP-11: observe without reaping, so the zombie still
+        // reserves its PGID while we terminate any surviving descendants.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ECHILD) {
+                return Err(error.to_string());
+            }
+            // Another owner already reaped it. Never use the recorded group.
+            process.process_group = None;
+        } else if info.si_signo == 0 {
+            return Ok(None);
+        } else {
+            terminate_pty_process_group(process.master.as_ref(), process.process_group);
+        }
+    }
+    let status = process
+        .child
+        .try_wait()
+        .map_err(|error| error.to_string())?;
+    if status.is_some() {
+        process.process_group = None;
+    }
+    Ok(status)
+}
+
+fn append_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>, bytes: &[u8]) {
+    let mut tail = tail.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for byte in bytes {
+        if tail.len() == PTY_DIAGNOSTIC_TAIL_LIMIT {
+            tail.pop_front();
+        }
+        tail.push_back(*byte);
+    }
+}
+
+fn snapshot_pty_diagnostic_tail(tail: &Mutex<VecDeque<u8>>) -> Vec<u8> {
+    tail.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .copied()
+        .collect()
+}
+
+impl PtyManager {
+    pub fn new() -> Self {
+        Self {
+            process_aliases: BTreeMap::new(),
+            processes: BTreeMap::new(),
+            output_signal: PtyOutputSignal::default(),
+        }
+    }
+
+    pub(crate) fn output_signal(&self) -> PtyOutputSignal {
+        self.output_signal.clone()
+    }
+
+    pub fn spawn_for_run(&mut self, run: &RuntimeProviderRun) -> Result<(), DaemonError> {
+        self.spawn_for_run_with_credentials(
+            run,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+        )
+    }
+
+    pub(crate) fn spawn_for_run_with_credentials(
+        &mut self,
+        run: &RuntimeProviderRun,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+    ) -> Result<(), DaemonError> {
+        if let Some(process_key) = self.process_aliases.get(run.id()) {
+            self.output_signal.prefer_alias(process_key, run.id());
+            return Ok(());
+        }
+
+        let process_key = run.pty_target().unwrap_or(run.id()).to_string();
+        if let Some(process) = self.processes.get_mut(&process_key) {
+            process.reference_count += 1;
+            self.process_aliases
+                .insert(run.id().to_string(), process_key.clone());
+            self.output_signal
+                .register_alias(&process_key, run.id().to_string());
+            return Ok(());
+        }
+
+        let program = run.pty_program().ok_or_else(|| DaemonError::PtySpawn {
+            provider_run_id: run.id().to_string(),
+            message: "provider run does not define a managed PTY program".to_string(),
+        })?;
+
+        let mut env = run.pty_env().clone();
+        crate::provider::apply_opencode_discovery_environment(run, &mut env)?;
+        if run.read_only_discovery() {
+            for name in crate::provider::managed_provider_parent_credential_env_remove() {
+                env.remove(*name);
+            }
+        }
+        env.insert(
+            "CHARIOX_MANAGED_PROVIDER_PROCESS".to_string(),
+            "1".to_string(),
+        );
+        env.insert("CHARIOX_PROVIDER_RUN_ID".to_string(), run.id().to_string());
+        env.insert(
+            crate::provider::PROVIDER_OWNER_PID_ENV.to_string(),
+            std::process::id().to_string(),
+        );
+        env.insert(
+            "CHARIOX_PROVIDER_PROCESS_KEY".to_string(),
+            process_key.clone(),
+        );
+
+        let mut env_remove = run.pty_env_remove().to_vec();
+        let discovery_config = crate::provider::isolate_opencode_discovery_configuration(
+            run,
+            &mut env,
+            &mut env_remove,
+        )?;
+        if run.read_only_discovery() {
+            env_remove.extend(
+                crate::provider::managed_provider_parent_credential_env_remove()
+                    .iter()
+                    .map(|name| (*name).to_string()),
+            );
+            env_remove.sort();
+            env_remove.dedup();
+        }
+        let mut args = run.pty_args().to_vec();
+        if let Some(discovery_config) = discovery_config.as_ref() {
+            discovery_config.apply_to_launch_args(run, &mut args)?;
+        }
+        let request = PtySpawnRequest {
+            process_key: process_key.clone(),
+            provider_run_id: run.id().to_string(),
+            program: program.to_string(),
+            args,
+            env,
+            env_remove,
+            working_directory: run.working_directory().cloned(),
+            cols: 120,
+            rows: 40,
+        };
+
+        self.spawn_with_credentials(request, credentials, false)?;
+        if let Some(process) = self.processes.get_mut(&process_key) {
+            process.discovery_config = discovery_config;
+        }
+        Ok(())
+    }
+
+    pub fn spawn(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
+        self.spawn_with_credentials(
+            request,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+            true,
+        )
+    }
+
+    fn spawn_with_credentials(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
+    ) -> Result<(), DaemonError> {
+        self.spawn_with_output_filter(request, credentials, scrub_ambient_credentials, None)
+    }
+
+    /// Spawn a program whose tty keeps the kernel's input echo, for a person
+    /// or an agent typing into a shell. Provider PTYs never echo. It is the
+    /// user's own shell, so it keeps their SSH agent and Git settings.
+    pub fn spawn_interactive(&mut self, request: PtySpawnRequest) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            &crate::provider::ProviderCredentialEnvironment::default(),
+            false,
+            None,
+            true,
+        )
+    }
+
+    pub(crate) fn spawn_with_output_filter(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
+        output_filter: Option<PtyOutputFilter>,
+    ) -> Result<(), DaemonError> {
+        self.spawn_pty(
+            request,
+            credentials,
+            scrub_ambient_credentials,
+            output_filter,
+            false,
+        )
+    }
+
+    fn spawn_pty(
+        &mut self,
+        request: PtySpawnRequest,
+        credentials: &crate::provider::ProviderCredentialEnvironment,
+        scrub_ambient_credentials: bool,
+        mut output_filter: Option<PtyOutputFilter>,
+        keep_input_echo: bool,
+    ) -> Result<(), DaemonError> {
+        if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
+            self.output_signal
+                .prefer_alias(process_key, &request.provider_run_id);
+            return Ok(());
+        }
+        if let Some(process) = self.processes.get_mut(&request.process_key) {
+            process.reference_count += 1;
+            self.process_aliases
+                .insert(request.provider_run_id.clone(), request.process_key.clone());
+            self.output_signal
+                .register_alias(&request.process_key, request.provider_run_id);
+            return Ok(());
+        }
+
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: request.rows,
+                cols: request.cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
+        if !keep_input_echo {
+            disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
+        }
+        let input_terminal =
+            clone_input_terminal(pair.master.as_ref()).map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
+
+        let mut command = CommandBuilder::new(request.program);
+        for arg in request.args {
+            command.arg(arg);
+        }
+        for (name, _) in std::env::vars() {
+            if crate::secret::secret_like_env_name(&name) {
+                command.env_remove(name);
+            }
+        }
+        for key in request.env_remove {
+            command.env_remove(key);
+        }
+        for (key, value) in request.env {
+            command.env(key, value);
+        }
+        if scrub_ambient_credentials {
+            for name in crate::provider::managed_provider_parent_credential_env_remove() {
+                command.env_remove(name);
+            }
+        }
+        for (key, value) in credentials.iter() {
+            command.env(key, value);
+        }
+        if let Some(working_directory) = request.working_directory {
+            command.cwd(working_directory);
+        }
+
+        // portable-pty calls setsid before exec on Unix, including sandbox
+        // wrappers. Keep its controlling-terminal and isolation setup intact.
+        let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
+            DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            }
+        })?;
+
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|error| DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: error.to_string(),
+            })?;
+        let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let backlog = Arc::new(PtyInputBacklog::default());
+        let writer_backlog = backlog.clone();
+        let writer_provider_run_id = request.provider_run_id.clone();
+        let writer_process_key = request.process_key.clone();
+        let writer_output_signal = self.output_signal.clone();
+        let writer_thread = thread::Builder::new()
+            .name(format!("chariox-pty-writer-{}", request.provider_run_id))
+            .stack_size(PTY_WRITER_STACK_BYTES)
+            .spawn(move || {
+                run_pty_writer(
+                    writer,
+                    input_terminal,
+                    input_rx,
+                    writer_process_key,
+                    writer_output_signal,
+                    writer_backlog,
+                )
+            });
+        if let Err(error) = writer_thread {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: format!("failed to spawn bounded PTY writer: {error}"),
+            });
+        }
+        let input_writer = PtyInputWriter {
+            provider_run_id: writer_provider_run_id,
+            input_tx,
+            backlog,
+        };
+
+        let (output_tx, output_rx) = mpsc::sync_channel(PTY_OUTPUT_QUEUE_LIMIT);
+        let diagnostic_tail = Arc::new(Mutex::new(VecDeque::with_capacity(
+            PTY_DIAGNOSTIC_TAIL_LIMIT,
+        )));
+
+        self.output_signal
+            .register_alias(&request.process_key, request.provider_run_id.clone());
+        let output_signal = self.output_signal.clone();
+        let output_process_key = request.process_key.clone();
+        let reader_diagnostic_tail = Arc::clone(&diagnostic_tail);
+        let reader_thread = thread::Builder::new()
+            .name(format!("chariox-pty-reader-{}", request.provider_run_id))
+            .stack_size(PTY_READER_STACK_BYTES)
+            .spawn(move || {
+                let mut buffer = [0_u8; 4096];
+
+                while let Ok(size) = reader.read(&mut buffer) {
+                    if size == 0 {
+                        break;
+                    }
+
+                    // Sensitive utilities filter before queues, diagnostics or projections.
+                    let bytes = if let Some(filter) = output_filter.as_mut() {
+                        let bytes = filter(&buffer[..size]);
+                        zeroize::Zeroize::zeroize(&mut buffer[..size]);
+                        bytes
+                    } else {
+                        buffer[..size].to_vec()
+                    };
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() && output_tx.send(bytes).is_err() {
+                        break;
+                    }
+                    output_signal.record_output(&output_process_key);
+                }
+                if let Some(filter) = output_filter.as_mut() {
+                    let bytes = filter(&[]);
+                    append_pty_diagnostic_tail(&reader_diagnostic_tail, &bytes);
+                    if !bytes.is_empty() {
+                        let _ = output_tx.send(bytes);
+                    }
+                }
+                output_signal.record_output(&output_process_key);
+            });
+        if let Err(error) = reader_thread {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(DaemonError::PtySpawn {
+                provider_run_id: request.provider_run_id.clone(),
+                message: format!("failed to spawn bounded PTY reader: {error}"),
+            });
+        }
+
+        // portable-pty creates a new Unix session whose leader is the child.
+        // Record it while owned, before exit can detach the controlling TTY.
+        #[cfg(unix)]
+        let process_group = child.process_id().and_then(|pid| i32::try_from(pid).ok());
+        #[cfg(not(unix))]
+        let process_group = None;
+        self.processes.insert(
+            request.process_key.clone(),
+            PtyProcess {
+                discovery_config: None,
+                child,
+                master: pair.master,
+                process_group,
+                input_writer,
+                output_rx,
+                diagnostic_tail,
+                exit_code: None,
+                signal: None,
+                reference_count: 1,
+            },
+        );
+        self.process_aliases
+            .insert(request.provider_run_id, request.process_key);
+
+        Ok(())
+    }
+
+    pub fn write_input(&mut self, provider_run_id: &str, input: &[u8]) -> Result<(), DaemonError> {
+        self.input_writer(provider_run_id)?.write_input(input)
+    }
+
+    pub(crate) fn input_writer(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<PtyInputWriter, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        let mut writer = process.input_writer.clone();
+        writer.provider_run_id = provider_run_id.to_string();
+        Ok(writer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn input_writer_for_test(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<PtyInputWriter, DaemonError> {
+        self.input_writer(provider_run_id)
+    }
+}
+
+impl PtyInputWriter {
+    pub(crate) fn write_input(&self, input: &[u8]) -> Result<(), DaemonError> {
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        self.send_request(input, Some(completion_tx), false)?;
+        completion_rx
+            .recv()
+            .map_err(|error| DaemonError::PtyWrite {
+                provider_run_id: self.provider_run_id.clone(),
+                message: format!("PTY writer stopped before confirming input: {error}"),
+            })?
+            .map_err(|message| DaemonError::PtyWrite {
+                provider_run_id: self.provider_run_id.clone(),
+                message,
+            })
+    }
+
+    pub(crate) fn enqueue_input(&self, input: &[u8]) -> Result<(), DaemonError> {
+        self.send_request(input, None, false)
+    }
+
+    pub(crate) fn enqueue_owned_composer_abort(&self, input: &[u8]) -> Result<(), DaemonError> {
+        self.send_request(input, None, true)
+    }
+
+    fn send_request(
+        &self,
+        input: &[u8],
+        completion_tx: Option<SyncSender<Result<(), String>>>,
+        discard_unread: bool,
+    ) -> Result<(), DaemonError> {
+        let request = PtyInputRequest {
+            provider_run_id: self.provider_run_id.clone(),
+            generation: self.backlog.queued(),
+            bytes: input.to_vec(),
+            discard_unread,
+            completion_tx,
+        };
+        self.input_tx.try_send(request).map_err(|error| {
+            self.backlog.unqueued();
+            let message = match error {
+                TrySendError::Full(_) => {
+                    format!("PTY input queue reached its {PTY_INPUT_QUEUE_LIMIT}-request limit")
+                }
+                TrySendError::Disconnected(_) => "PTY input writer has stopped".to_string(),
+            };
+            DaemonError::PtyWrite {
+                provider_run_id: self.provider_run_id.clone(),
+                message,
+            }
+        })
+    }
+}
+
+fn run_pty_writer(
+    mut writer: Box<dyn Write + Send>,
+    input_terminal: Option<std::fs::File>,
+    input_rx: Receiver<PtyInputRequest>,
+    process_key: String,
+    output_signal: PtyOutputSignal,
+    backlog: Arc<PtyInputBacklog>,
+) {
+    while let Ok(request) = input_rx.recv() {
+        output_signal.prefer_alias(&process_key, &request.provider_run_id);
+        let mut written = 0;
+        let mut result = if request.discard_unread {
+            discard_unread_input(input_terminal.as_ref()).map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            for slice in request.bytes.chunks(PTY_INPUT_SLICE_BYTES) {
+                if backlog.is_cancelled(request.generation) {
+                    break;
+                }
+                if let Err(error) = writer.write_all(slice).and_then(|_| writer.flush()) {
+                    result = Err(error.to_string());
+                    break;
+                }
+                written += slice.len();
+            }
+        }
+        let failed = result.is_err();
+        if result.is_ok() && written < request.bytes.len() {
+            backlog.finished_cancelled(request.bytes.len() - written);
+            result = Err("input cancelled by an interrupt".to_string());
+        } else {
+            backlog.finished();
+        }
+        if let Some(completion_tx) = request.completion_tx {
+            let _ = completion_tx.send(result);
+        }
+        if failed {
+            break;
+        }
+    }
+}
+
+impl PtyManager {
+    pub fn resize(
+        &mut self,
+        provider_run_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process = self.processes.get_mut(&process_key).ok_or_else(|| {
+            DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            }
+        })?;
+
+        process
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|error| DaemonError::PtyResize {
+                provider_run_id: provider_run_id.to_string(),
+                cols,
+                rows,
+                message: error.to_string(),
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn size(&self, provider_run_id: &str) -> Option<(u16, u16)> {
+        let process_key = self.resolve_process_key(provider_run_id).ok()?;
+        let process = self.processes.get(&process_key)?;
+        let size = process.master.get_size().ok()?;
+        Some((size.cols, size.rows))
+    }
+
+    pub fn drain_output(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<Vec<PtyOutputChunk>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process = self.processes.get_mut(&process_key).ok_or_else(|| {
+            DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            }
+        })?;
+
+        let mut chunks = Vec::new();
+
+        while let Ok(bytes) = process.output_rx.try_recv() {
+            chunks.push(PtyOutputChunk {
+                provider_run_id: provider_run_id.to_string(),
+                bytes,
+            });
+        }
+
+        if process.exit_code.is_none() && process.signal.is_none() {
+            let status =
+                try_wait_pty_process(process).map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.to_string(),
+                    message: error.to_string(),
+                })?;
+            if let Some(status) = status {
+                cache_pty_process_exit(process, status);
+            }
+        }
+        if process.exit_code.is_some() || process.signal.is_some() {
+            if let Ok(bytes) = process
+                .output_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+            {
+                chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.to_string(),
+                    bytes,
+                });
+            }
+            while let Ok(bytes) = process.output_rx.try_recv() {
+                chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.to_string(),
+                    bytes,
+                });
+            }
+        }
+
+        Ok(chunks)
+    }
+
+    /// Return a sanitized tail when the managed child exited before its
+    /// endpoint became ready. The tail is retained independently of the
+    /// public output queue so launch-failure cleanup cannot erase the only
+    /// useful Bubblewrap/provider diagnostic.
+    pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        self.exited_output_diagnostic(provider_run_id).or_else(|| {
+            self.poll_process_state(provider_run_id)
+                .ok()?
+                .is_exited()
+                .then(|| "managed provider process exited before endpoint readiness".to_string())
+        })
+    }
+
+    /// A bounded retained tail, including when the output pump already drained
+    /// the queue. An empty exit must not manufacture an endpoint-startup cause.
+    pub(crate) fn exited_output_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+        let state = self.poll_process_state(provider_run_id).ok()?;
+        if !state.is_exited() {
+            return None;
+        }
+
+        // Give the reader a short bounded window to publish bytes that were
+        // written immediately before the child closed its PTY.
+        let _ = self.drain_output(provider_run_id);
+        let process_key = self.resolve_process_key(provider_run_id).ok()?;
+        let process = self.processes.get(&process_key)?;
+        let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
+        let raw = String::from_utf8_lossy(&bytes);
+        let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
+        (!diagnostic.is_empty()).then_some(diagnostic)
+    }
+
+    pub fn poll_process_state(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<PtyProcessState, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process = self.processes.get_mut(&process_key).ok_or_else(|| {
+            DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            }
+        })?;
+
+        if process.exit_code.is_some() || process.signal.is_some() {
+            return Ok(cached_pty_process_state(process));
+        }
+
+        let status = try_wait_pty_process(process).map_err(|error| DaemonError::PtyCleanup {
+            provider_run_id: provider_run_id.to_string(),
+            message: error.to_string(),
+        })?;
+
+        if let Some(status) = status {
+            cache_pty_process_exit(process, status);
+            Ok(cached_pty_process_state(process))
+        } else {
+            Ok(PtyProcessState::Running)
+        }
+    }
+
+    pub fn has_process(&self, provider_run_id: &str) -> bool {
+        self.process_aliases.contains_key(provider_run_id)
+    }
+
+    pub(crate) fn has_process_key(&self, process_key: &str) -> bool {
+        self.processes.contains_key(process_key)
+    }
+
+    pub fn process_key(&self, provider_run_id: &str) -> Result<String, DaemonError> {
+        self.resolve_process_key(provider_run_id)
+    }
+
+    pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        Ok(process.child.process_id())
+    }
+
+    /// The foreground process group of the PTY, or `None` once the session
+    /// has no controlling terminal left (the child exited).
+    #[cfg(unix)]
+    pub fn foreground_process_group(
+        &self,
+        provider_run_id: &str,
+    ) -> Result<Option<i32>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        Ok(process.master.process_group_leader())
+    }
+
+    /// Deliver an interrupt, quit or suspend key as the signal the terminal
+    /// would raise, when earlier input is stuck unread in the writer queue and
+    /// the key would only wait behind it. Like the terminal itself, this also
+    /// discards the input that was still unread, unless the program set
+    /// NOFLSH. Returns the bytes of input dropped when `key` was consumed;
+    /// `None` means the caller writes it as ordinary input.
+    #[cfg(unix)]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        provider_run_id: &str,
+        key: u8,
+    ) -> Result<Option<usize>, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get(&process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.to_string(),
+                })?;
+        let backlog = &process.input_writer.backlog;
+        if !backlog.is_pending() {
+            return Ok(None);
+        }
+        let Some(fd) = process.master.as_raw_fd() else {
+            return Ok(None);
+        };
+        let mut attributes = std::mem::MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+            return Ok(None);
+        }
+        let attributes = unsafe { attributes.assume_init() };
+        if attributes.c_lflag & libc::ISIG == 0 {
+            return Ok(None);
+        }
+        let signal = [
+            (libc::VINTR, libc::SIGINT),
+            (libc::VQUIT, libc::SIGQUIT),
+            (libc::VSUSP, libc::SIGTSTP),
+        ]
+        .into_iter()
+        .find(|(index, _)| attributes.c_cc[*index] == key)
+        .map(|(_, signal)| signal);
+        let (Some(signal), Some(group)) = (signal, process.master.process_group_leader()) else {
+            return Ok(None);
+        };
+        // Never signal a group id that could mean "every process".
+        if group <= 1 {
+            return Ok(None);
+        }
+        let flush = attributes.c_lflag & libc::NOFLSH == 0;
+        let mut discarded = true;
+        if flush {
+            // The writer drops what is queued and the rest of the request it
+            // is writing. Discarding in between frees the slice it waits on,
+            // and discarding again removes that slice, so no stale input is
+            // left for whatever reads the terminal next.
+            backlog.cancel();
+            discarded &= discard_unread_input_after_interrupt(fd);
+            discarded &= backlog.wait_until_idle(PTY_INTERRUPT_DRAIN_TIMEOUT);
+            discarded &= discard_unread_input_after_interrupt(fd);
+        }
+        let dropped = backlog.take_dropped_bytes();
+        if unsafe { libc::killpg(group, signal) } != 0 {
+            return Ok(None);
+        }
+        if !discarded {
+            return Err(DaemonError::PtyWrite {
+                provider_run_id: provider_run_id.to_string(),
+                message:
+                    "the interrupt was delivered, but earlier input could not be fully discarded"
+                        .to_string(),
+            });
+        }
+        Ok(Some(dropped))
+    }
+
+    #[cfg(not(unix))]
+    pub fn signal_key_behind_blocked_input(
+        &self,
+        _provider_run_id: &str,
+        _key: u8,
+    ) -> Result<Option<usize>, DaemonError> {
+        Ok(None)
+    }
+
+    pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
+            return Ok(false);
+        };
+        self.output_signal
+            .unregister_alias(&process_key, provider_run_id);
+
+        self.remove_process_by_key(&process_key, Some(provider_run_id))
+    }
+
+    pub fn remove_process_by_key(
+        &mut self,
+        process_key: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let Some(process) = self.processes.get_mut(process_key) else {
+            return Ok(false);
+        };
+        if process.reference_count > 1 && provider_run_id.is_some() {
+            process.reference_count -= 1;
+            return Ok(true);
+        }
+
+        self.output_signal.unregister_process(process_key);
+        self.process_aliases
+            .retain(|_, alias_process_key| alias_process_key != process_key);
+        let mut process =
+            self.processes
+                .remove(process_key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                })?;
+
+        let status = if process.exit_code.is_some() || process.signal.is_some() {
+            // Already reaped by output drain or liveness polling.
+            return Ok(true);
+        } else {
+            try_wait_pty_process(&mut process).map_err(|error| DaemonError::PtyCleanup {
+                provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                message: error.to_string(),
+            })?
+        };
+
+        if status.is_none() {
+            terminate_pty_process_group(process.master.as_ref(), process.process_group);
+            process
+                .child
+                .kill()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                    message: error.to_string(),
+                })?;
+            process
+                .child
+                .wait()
+                .map_err(|error| DaemonError::PtyCleanup {
+                    provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
+                    message: error.to_string(),
+                })?;
+        }
+
+        Ok(true)
+    }
+
+    fn resolve_process_key(&self, provider_run_id: &str) -> Result<String, DaemonError> {
+        self.process_aliases
+            .get(provider_run_id)
+            .cloned()
+            .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            })
+    }
+}
+
+impl PtyOutputSignal {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.inner.sequence.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn wait_for_change_after(&self, sequence: u64) {
+        if self.sequence() != sequence {
+            return;
+        }
+        let notified = self.inner.notify.notified();
+        if self.sequence() != sequence {
+            return;
+        }
+        notified.await;
+    }
+
+    pub(crate) fn take_ready_provider_run_ids(&self) -> BTreeSet<String> {
+        let ready_processes = {
+            let mut ready = self
+                .inner
+                .ready_processes
+                .lock()
+                .expect("PTY ready-process set poisoned");
+            std::mem::take(&mut *ready)
+        };
+        let preferred = self
+            .inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned");
+        ready_processes
+            .into_iter()
+            .filter_map(|process_key| preferred.get(&process_key).cloned())
+            .collect()
+    }
+
+    fn register_alias(&self, process_key: &str, provider_run_id: String) {
+        self.inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned")
+            .entry(process_key.to_string())
+            .or_default()
+            .insert(provider_run_id.clone());
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .insert(process_key.to_string(), provider_run_id);
+    }
+
+    fn prefer_alias(&self, process_key: &str, provider_run_id: &str) {
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .insert(process_key.to_string(), provider_run_id.to_string());
+    }
+
+    fn unregister_alias(&self, process_key: &str, provider_run_id: &str) {
+        let mut aliases = self
+            .inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned");
+        let fallback = if let Some(provider_runs) = aliases.get_mut(process_key) {
+            provider_runs.remove(provider_run_id);
+            if provider_runs.is_empty() {
+                aliases.remove(process_key);
+                None
+            } else {
+                provider_runs.last().cloned()
+            }
+        } else {
+            None
+        };
+        drop(aliases);
+        let mut preferred = self
+            .inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned");
+        if preferred.get(process_key).map(String::as_str) == Some(provider_run_id) {
+            if let Some(fallback) = fallback {
+                preferred.insert(process_key.to_string(), fallback);
+            } else {
+                preferred.remove(process_key);
+            }
+        }
+    }
+
+    fn unregister_process(&self, process_key: &str) {
+        self.inner
+            .provider_runs_by_process
+            .lock()
+            .expect("PTY process-alias map poisoned")
+            .remove(process_key);
+        self.inner
+            .preferred_provider_run_by_process
+            .lock()
+            .expect("PTY preferred process-alias map poisoned")
+            .remove(process_key);
+        self.inner
+            .ready_processes
+            .lock()
+            .expect("PTY ready-process set poisoned")
+            .remove(process_key);
+    }
+
+    fn record_output(&self, process_key: &str) {
+        self.inner
+            .ready_processes
+            .lock()
+            .expect("PTY ready-process set poisoned")
+            .insert(process_key.to_string());
+        self.inner.sequence.fetch_add(1, Ordering::AcqRel);
+        self.inner.notify.notify_waiters();
+    }
+}
+
+impl Default for PtyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+
+    use super::{
+        mpsc, run_pty_writer, PtyInputBacklog, PtyInputRequest, PtyInputWriter, PtyManager,
+        PtyOutputSignal, PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+    };
+
+    struct AttributionProbeWriter {
+        process_key: String,
+        output_signal: PtyOutputSignal,
+        observed_tx: mpsc::SyncSender<std::collections::BTreeSet<String>>,
+    }
+
+    impl std::io::Write for AttributionProbeWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.output_signal.record_output(&self.process_key);
+            self.observed_tx
+                .send(self.output_signal.take_ready_provider_run_ids())
+                .expect("probe observation receiver should remain connected");
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_run() -> RuntimeProviderRun {
+        RuntimeProviderRun::new(
+            "provider-run-1",
+            &LaunchProviderRequest::new(
+                "session-1",
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "dev-stub:test".to_string(),
+                pty_target: Some("stub-pty:session-1".to_string()),
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-lc".to_string(), "cat".to_string()],
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+
+    fn environment_probe_run(
+        id: &str,
+        read_only_discovery: bool,
+        include_selected_bindings: bool,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "session-environment-probe",
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        );
+        let mut run = RuntimeProviderRun::new(
+            id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: format!("dev-stub:{id}"),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-lc".to_string(),
+                    "printf '%s|%s\\n' \"${GIT_SSH_COMMAND:-}\" \"${SSH_AUTH_SOCK:-}\"".to_string(),
+                ],
+                pty_env: if include_selected_bindings {
+                    std::collections::BTreeMap::from([
+                        ("GIT_SSH_COMMAND".to_string(), "selected-ssh".to_string()),
+                        ("SSH_AUTH_SOCK".to_string(), "selected-agent".to_string()),
+                    ])
+                } else {
+                    std::collections::BTreeMap::new()
+                },
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        if read_only_discovery {
+            run.set_read_only_discovery(true);
+        }
+        run
+    }
+
+    fn shared_target_run(id: &str) -> RuntimeProviderRun {
+        RuntimeProviderRun::new(
+            id,
+            &LaunchProviderRequest::new(
+                "session-1",
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            ),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: format!("dev-stub:{id}"),
+                pty_target: Some("stub-pty:session-1".to_string()),
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec!["-lc".to_string(), "cat".to_string()],
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        )
+    }
+
+    #[test]
+    fn spawns_writes_and_resizes_a_pty_process() {
+        let run = test_run();
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&run)
+            .expect("pty-backed provider process should spawn");
+        manager
+            .resize(run.id(), 100, 30)
+            .expect("pty resize should succeed");
+        manager
+            .write_input(run.id(), b"hello from pty\n")
+            .expect("pty input should be written");
+
+        let output = wait_for_output(&mut manager, run.id());
+
+        assert!(!output.is_empty());
+        let combined = output
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<u8>>();
+        let combined = String::from_utf8_lossy(&combined);
+        assert!(combined.contains("hello from pty"));
+
+        manager
+            .remove_process(run.id())
+            .expect("pty process cleanup should succeed");
+        assert!(!manager.has_process(run.id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ordinary_managed_pty_preserves_selected_ssh_bindings_while_discovery_scrubs_them() {
+        crate::test_support::isolated_env_test!();
+        let _environment = crate::env_lock::lock();
+        let previous_git_ssh_command = std::env::var_os("GIT_SSH_COMMAND");
+        let previous_ssh_auth_sock = std::env::var_os("SSH_AUTH_SOCK");
+        std::env::set_var("GIT_SSH_COMMAND", "ambient-ssh");
+        std::env::set_var("SSH_AUTH_SOCK", "ambient-agent");
+
+        let ordinary_run = environment_probe_run("provider-run-ordinary-env", false, true);
+        let discovery_run = environment_probe_run("provider-run-discovery-env", true, false);
+        let mut ordinary_manager = PtyManager::new();
+        let mut discovery_manager = PtyManager::new();
+
+        ordinary_manager
+            .spawn_for_run(&ordinary_run)
+            .expect("ordinary managed PTY should spawn");
+        discovery_manager
+            .spawn_for_run(&discovery_run)
+            .expect("discovery managed PTY should spawn");
+
+        let ordinary_output = wait_for_output(&mut ordinary_manager, ordinary_run.id())
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+        let discovery_output = wait_for_output(&mut discovery_manager, discovery_run.id())
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            String::from_utf8_lossy(&ordinary_output).trim(),
+            "selected-ssh|selected-agent",
+            "ordinary managed providers must retain selected Git/SSH bindings",
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&discovery_output).trim(),
+            "|",
+            "read-only discovery must not inherit Git/SSH controls",
+        );
+
+        ordinary_manager
+            .remove_process(ordinary_run.id())
+            .expect("ordinary managed PTY should clean up");
+        discovery_manager
+            .remove_process(discovery_run.id())
+            .expect("discovery managed PTY should clean up");
+
+        match previous_git_ssh_command {
+            Some(value) => std::env::set_var("GIT_SSH_COMMAND", value),
+            None => std::env::remove_var("GIT_SSH_COMMAND"),
+        }
+        match previous_ssh_auth_sock {
+            Some(value) => std::env::set_var("SSH_AUTH_SOCK", value),
+            None => std::env::remove_var("SSH_AUTH_SOCK"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires Bubblewrap and Linux user namespaces; run explicitly on the managed host"]
+    fn sandboxed_pty_survives_launching_thread_exit() {
+        const RUN: &str = "provider-launch-thread-lifetime";
+        let caller = thread::spawn(|| {
+            let mut manager = PtyManager::new();
+            manager
+                .spawn(PtySpawnRequest {
+                    process_key: RUN.into(),
+                    provider_run_id: RUN.into(),
+                    program: "/usr/bin/bwrap".into(),
+                    args: [
+                        "--die-with-parent",
+                        "--new-session",
+                        "--unshare-user",
+                        "--unshare-pid",
+                        "--uid",
+                        "0",
+                        "--gid",
+                        "0",
+                        "--ro-bind",
+                        "/",
+                        "/",
+                        "--",
+                        "/bin/sh",
+                        "-c",
+                        "printf 'ready\\n'; exec sleep 30",
+                    ]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                    env: Default::default(),
+                    env_remove: Vec::new(),
+                    working_directory: None,
+                    cols: 80,
+                    rows: 24,
+                })
+                .expect("real sandbox should launch");
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut output = Vec::new();
+            while std::time::Instant::now() < deadline {
+                output.extend(
+                    manager
+                        .drain_output(RUN)
+                        .unwrap()
+                        .into_iter()
+                        .flat_map(|c| c.bytes),
+                );
+                if String::from_utf8_lossy(&output).contains("ready") {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            (manager, output)
+        });
+        // Joining retires the actual spawning thread while the kernel process lives.
+        let (mut manager, output) = caller.join().expect("launching caller should return");
+        thread::sleep(Duration::from_secs(2));
+        let state = manager.poll_process_state(RUN).unwrap();
+        manager
+            .remove_process(RUN)
+            .expect("sandbox must be cleaned up before assertions");
+        assert!(
+            String::from_utf8_lossy(&output).contains("ready"),
+            "sandbox never became ready: {output:?}"
+        );
+        assert_eq!(
+            state,
+            PtyProcessState::Running,
+            "retiring a caller must not terminate its provider"
+        );
+        assert!(!manager.has_process(RUN));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_pty_reap_preserves_exit_code_separate_from_untrusted_output() {
+        let provider_run_id = "provider-run-real-exit-code";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:real-exit-code".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'UNTRUSTED_STDERR_PAYLOAD\\n' >&2; exit 1".to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("real exit-code PTY process should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        assert_eq!(
+            state,
+            PtyProcessState::Exited {
+                exit_code: Some(1),
+                signal: None,
+            }
+        );
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("UNTRUSTED_STDERR_PAYLOAD"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("reaped PTY process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn early_exit_diagnostic_retains_a_sanitized_tail_after_output_drain() {
+        let provider_run_id = "provider-run-early-exit-diagnostic";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:early-exit-diagnostic".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'bwrap: child setup failed api_key=sk-live-secret prompt=private prompt\\n' >&2; exit 1"
+                        .to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("early-exit diagnostic PTY process should spawn");
+
+        let _ = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        assert!(state.is_exited());
+
+        let diagnostic = manager
+            .early_exit_diagnostic(provider_run_id)
+            .expect("exited PTY should expose an early-exit diagnostic");
+        assert!(diagnostic.contains("bwrap:"));
+        assert!(
+            diagnostic.contains("api_key[redacted]"),
+            "unexpected sanitized diagnostic: {diagnostic:?}"
+        );
+        assert!(!diagnostic.contains("sk-live-secret"));
+        assert!(!diagnostic.contains("private prompt"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("early-exit diagnostic PTY cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn real_pty_reap_preserves_signal_without_mislabeling_status_one() {
+        let provider_run_id = "provider-run-real-signal";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:real-signal".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "printf 'UNTRUSTED_SIGNAL_STDERR_PAYLOAD\\n' >&2; kill -TERM $$".to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("real signal PTY process should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id);
+        let state = wait_for_exit(&mut manager, provider_run_id);
+        let PtyProcessState::Exited { exit_code, signal } = state else {
+            panic!("signal process should be reaped");
+        };
+        assert_eq!(exit_code, None, "a signal must not be reported as status 1");
+        assert!(signal.as_deref().is_some_and(|value| !value.is_empty()));
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("UNTRUSTED_SIGNAL_STDERR_PAYLOAD"));
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("signal-reaped PTY process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_pty_process_terminates_its_descendants() {
+        use std::io::{Read, Write};
+
+        const PROBE: &str = "CHARIOX_PTY_DESCENDANT_PROBE";
+        const TEST: &str = "pty::manager::tests::removing_a_pty_process_terminates_its_descendants";
+        if let Ok(endpoint) = std::env::var(PROBE) {
+            // This process is the shell's descendant. Retain this connection
+            // until killed; EOF on the parent side is its exit event, including
+            // while init has not yet reaped a zombie PID.
+            let mut socket = std::net::TcpStream::connect(endpoint).unwrap();
+            socket.write_all(&std::process::id().to_be_bytes()).unwrap();
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            return;
+        }
+
+        const RUN: &str = "provider-run-with-descendant";
+        struct PtyFixture(PtyManager);
+        impl Drop for PtyFixture {
+            fn drop(&mut self) {
+                let _ = self.0.remove_process(RUN);
+            }
+        }
+        let mut fixture = PtyFixture(PtyManager::new());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = listener.local_addr().unwrap().to_string();
+        fixture
+            .0
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:with-descendant".to_string(),
+                provider_run_id: RUN.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    format!("trap '' HUP TERM; \"$CHARIOX_PTY_FIXTURE_EXE\" --exact {TEST} --nocapture & wait"),
+                ],
+                env: std::collections::BTreeMap::from([
+                    (PROBE.to_string(), endpoint),
+                    (
+                        "CHARIOX_PTY_FIXTURE_EXE".to_string(),
+                        std::env::current_exe().unwrap().display().to_string(),
+                    ),
+                ]),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("PTY process with a descendant should spawn");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut socket, child_pid) = runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            tokio::time::timeout(Duration::from_secs(30), async {
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut pid = [0; 4];
+                socket.read_exact(&mut pid).await.unwrap();
+                (socket, u32::from_be_bytes(pid))
+            })
+            .await
+            .expect("PTY descendant did not acknowledge readiness")
+        });
+        struct DescendantGuard(Option<u32>);
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                if let Some(pid) = self.0 {
+                    if let Some(pid) = i32::try_from(pid).ok().filter(|pid| *pid > 1) {
+                        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+                    }
+                }
+            }
+        }
+        let mut guard = DescendantGuard(Some(child_pid));
+        assert!(crate::runtime::process_health::process_running(child_pid));
+        assert_eq!(
+            unsafe { libc::getpgid(child_pid as libc::pid_t) },
+            fixture.0.process_id(RUN).unwrap().unwrap() as libc::pid_t,
+            "probe must belong to the managed PTY process group"
+        );
+        fixture
+            .0
+            .remove_process(RUN)
+            .expect("PTY process tree cleanup should succeed");
+
+        // SIGKILL delivery and descendant reaping are asynchronous. Observe the
+        // owned child's connection closing rather than requiring instant PID
+        // disappearance. Killing only the leader leaves this wait unsatisfied.
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            let mut byte = [0];
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(30), socket.read(&mut byte))
+                    .await
+                    .expect("removing the provider PTY left its descendant alive")
+                    .unwrap(),
+                0
+            );
+        });
+        guard.0 = None;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_an_exited_pty_process_terminates_its_descendants() {
+        let provider_run_id = "provider-run-with-orphan-descendant";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:with-orphan-descendant".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    "trap '' HUP TERM; sleep 30 & printf 'CHILD_PID=%s\\n' \"$!\"; wait"
+                        .to_string(),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("PTY process with a descendant should spawn");
+
+        let output = wait_for_output(&mut manager, provider_run_id)
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<_>>();
+        let child_pid = String::from_utf8_lossy(&output)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("CHILD_PID="))
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .expect("descendant PID should be reported");
+        struct DescendantGuard(u32);
+        impl Drop for DescendantGuard {
+            fn drop(&mut self) {
+                let _ = crate::runtime::process_health::terminate_process_tree(self.0);
+            }
+        }
+        let _guard = DescendantGuard(child_pid);
+
+        // MP-08/MP-10: an abrupt native harness exit must not leave its children alive.
+        let leader = manager.process_id(provider_run_id).unwrap().unwrap();
+        let leader = i32::try_from(leader)
+            .ok()
+            .filter(|pid| *pid > 1)
+            .expect("fixture PTY leader must be a positive process PID");
+        assert_eq!(unsafe { libc::kill(leader, libc::SIGKILL) }, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !manager
+            .poll_process_state(provider_run_id)
+            .unwrap()
+            .is_exited()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "PTY leader did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Polling terminates the group before it reaps the leader.
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("PTY process tree cleanup should succeed");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::runtime::process_health::process_running(child_pid)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !crate::runtime::process_health::process_running(child_pid),
+            "removing the provider PTY left descendant PID {child_pid} running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_removal_after_reaping_does_not_signal_a_reused_group() {
+        use std::os::unix::process::CommandExt;
+        let mut probe = std::process::Command::new("/bin/sh");
+        probe.args(["-c", "sleep 30"]);
+        unsafe {
+            probe.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let probe = probe.spawn().unwrap();
+        struct Probe(std::process::Child);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                if matches!(self.0.try_wait(), Ok(None)) {
+                    // The fixture's child and OS descendants belong to this
+                    // run; positive-PID traversal avoids process-group signals.
+                    crate::runtime::process_health::terminate_process_tree(self.0.id());
+                    let _ = self.0.wait();
+                }
+            }
+        }
+        let mut probe = Probe(probe);
+        let mut manager = PtyManager::new();
+        let id = "mp08-mp10-reaped-leader";
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: id.into(),
+                provider_run_id: id.into(),
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "exit 0".into()],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        assert!(wait_for_exit(&mut manager, id).is_exited());
+        // Deterministically model the recorded PGID being reused after reap.
+        manager.processes.get_mut(id).unwrap().process_group = Some(probe.0.id() as i32);
+        manager.remove_process(id).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            probe.0.try_wait().unwrap().is_none(),
+            "cleanup signalled an unrelated group after reap"
+        );
+    }
+
+    #[test]
+    fn cloned_input_writer_can_write_without_borrowing_the_manager() {
+        let run = test_run();
+        let mut manager = PtyManager::new();
+        manager
+            .spawn_for_run(&run)
+            .expect("PTY-backed provider process should spawn");
+        let writer = manager
+            .input_writer_for_test(run.id())
+            .expect("input writer should clone");
+
+        writer
+            .write_input(b"detached writer\n")
+            .expect("detached writer should write");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        while std::time::Instant::now() < deadline && output.is_empty() {
+            output.extend(
+                manager
+                    .drain_output(run.id())
+                    .expect("PTY output should drain")
+                    .into_iter()
+                    .flat_map(|chunk| chunk.bytes),
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(String::from_utf8_lossy(&output).contains("detached writer"));
+        manager
+            .remove_process(run.id())
+            .expect("PTY process should stop");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_composer_abort_discards_unread_prompt_but_keeps_provider_output() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut master_fd = -1;
+        let mut slave_fd = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let mut slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+        let mut attrs = std::mem::MaybeUninit::<libc::termios>::uninit();
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), attrs.as_mut_ptr()) },
+            0
+        );
+        let mut attrs = unsafe { attrs.assume_init() };
+        unsafe { libc::cfmakeraw(&mut attrs) };
+        assert_eq!(
+            unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attrs) },
+            0
+        );
+        master.write_all(b"owned unacknowledged prompt\r").unwrap();
+        slave.write_all(b"retained provider output").unwrap();
+        // Wait for the PTY line discipline, without allowing the provider to read.
+        thread::sleep(Duration::from_millis(30));
+        super::discard_unread_input(Some(&master)).unwrap();
+        master.write_all(b"\x03\x15").unwrap();
+        let mut abort = [0; 2];
+        slave.read_exact(&mut abort).unwrap();
+        assert_eq!(abort, [3, 21]);
+        let mut output = [0; 24];
+        master.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"retained provider output");
+    }
+
+    #[test]
+    fn enqueued_input_is_bounded_without_waiting_for_a_blocked_writer() {
+        let (input_tx, _input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
+        let writer = PtyInputWriter {
+            provider_run_id: "provider-run-blocked".to_string(),
+            input_tx,
+            backlog: Arc::new(PtyInputBacklog::default()),
+        };
+
+        for _ in 0..PTY_INPUT_QUEUE_LIMIT {
+            writer
+                .enqueue_input(b"queued input")
+                .expect("bounded input queue should accept available capacity");
+        }
+        let error = writer
+            .enqueue_input(b"one input too many")
+            .expect_err("full input queue should fail without blocking");
+
+        assert!(error.to_string().contains("input queue reached"));
+    }
+
+    #[tokio::test]
+    async fn pty_output_signal_wakes_when_reader_enqueues_output() {
+        let run = test_run();
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&run)
+            .expect("pty-backed provider process should spawn");
+        let signal = manager.output_signal();
+        let sequence = signal.sequence();
+        manager
+            .write_input(run.id(), b"wake from pty\n")
+            .expect("pty input should be written");
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            signal.wait_for_change_after(sequence),
+        )
+        .await
+        .expect("PTY output signal should wake after reader enqueues bytes");
+        assert_eq!(
+            signal.take_ready_provider_run_ids(),
+            [run.id().to_string()].into_iter().collect()
+        );
+
+        let output = wait_for_output(&mut manager, run.id());
+        let combined = output
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<u8>>();
+        assert!(String::from_utf8_lossy(&combined).contains("wake from pty"));
+
+        manager
+            .remove_process(run.id())
+            .expect("pty process cleanup should succeed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_pty_disables_input_echo_before_child_initialization() {
+        let provider_run_id = "provider-run-no-echo";
+        let prompt = "PROMPT_MUST_NOT_APPEAR_AS_PROVIDER_OUTPUT";
+        let response = "provider-ready";
+        let mut manager = PtyManager::new();
+        manager
+            .spawn(PtySpawnRequest {
+                process_key: "stub-pty:no-echo".to_string(),
+                provider_run_id: provider_run_id.to_string(),
+                program: "/bin/sh".to_string(),
+                args: vec![
+                    "-lc".to_string(),
+                    format!("sleep 0.2; stty -echo; IFS= read -r _line; printf '%s\\n' {response}"),
+                ],
+                env: std::collections::BTreeMap::new(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 120,
+                rows: 40,
+            })
+            .expect("delayed no-echo provider should spawn");
+
+        manager
+            .write_input(provider_run_id, format!("{prompt}\n").as_bytes())
+            .expect("prompt should be written immediately after spawn");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut output = Vec::new();
+        loop {
+            for chunk in manager
+                .drain_output(provider_run_id)
+                .expect("provider output should be readable")
+            {
+                output.extend(chunk.bytes);
+            }
+            if String::from_utf8_lossy(&output).contains(response) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for delayed provider response"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains(response));
+        assert!(
+            !output.contains(prompt),
+            "PTY driver echoed an injected prompt before the provider disabled echo: {output:?}"
+        );
+
+        manager
+            .remove_process(provider_run_id)
+            .expect("provider process cleanup should succeed");
+    }
+
+    #[test]
+    fn shared_pty_selects_the_input_alias_before_the_child_can_emit_output() {
+        let process_key = "stub-pty:shared";
+        let first_run = "provider-run-1";
+        let second_run = "provider-run-2";
+        let output_signal = PtyOutputSignal::default();
+        output_signal.register_alias(process_key, first_run.to_string());
+        output_signal.register_alias(process_key, second_run.to_string());
+        let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+        let probe = AttributionProbeWriter {
+            process_key: process_key.to_string(),
+            output_signal: output_signal.clone(),
+            observed_tx,
+        };
+        let (input_tx, input_rx) = mpsc::sync_channel(1);
+        let (completion_tx, completion_rx) = mpsc::sync_channel(1);
+        let backlog = Arc::new(PtyInputBacklog::default());
+        let generation = backlog.queued();
+        let writer_thread = thread::spawn({
+            let output_signal = output_signal.clone();
+            move || {
+                run_pty_writer(
+                    Box::new(probe),
+                    None,
+                    input_rx,
+                    process_key.to_string(),
+                    output_signal,
+                    backlog,
+                )
+            }
+        });
+
+        input_tx
+            .send(PtyInputRequest {
+                provider_run_id: first_run.to_string(),
+                generation,
+                bytes: b"first input".to_vec(),
+                discard_unread: false,
+                completion_tx: Some(completion_tx),
+            })
+            .expect("probe input should queue");
+        completion_rx
+            .recv()
+            .expect("probe completion should arrive")
+            .expect("probe input should write");
+        assert_eq!(
+            observed_rx.recv().expect("probe observation should arrive"),
+            [first_run.to_string()].into_iter().collect()
+        );
+
+        drop(input_tx);
+        writer_thread.join().expect("probe writer should stop");
+    }
+
+    #[test]
+    fn retained_shared_pty_writer_attributes_output_when_input_is_dispatched() {
+        let first_run = shared_target_run("provider-run-1");
+        let second_run = shared_target_run("provider-run-2");
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&first_run)
+            .expect("first shared PTY run should spawn");
+        manager
+            .spawn_for_run(&second_run)
+            .expect("second shared PTY run should reuse the existing process");
+        let first_writer = manager
+            .input_writer_for_test(first_run.id())
+            .expect("first retained writer should clone");
+        let _second_writer = manager
+            .input_writer_for_test(second_run.id())
+            .expect("second retained writer should clone");
+
+        first_writer
+            .write_input(b"first retained writer\n")
+            .expect("first retained writer should dispatch after the second is acquired");
+        let output = wait_for_output(&mut manager, first_run.id());
+        assert!(String::from_utf8_lossy(
+            &output
+                .into_iter()
+                .flat_map(|chunk| chunk.bytes)
+                .collect::<Vec<u8>>()
+        )
+        .contains("first retained writer"));
+        assert_eq!(
+            manager.output_signal().take_ready_provider_run_ids(),
+            [first_run.id().to_string()].into_iter().collect()
+        );
+
+        manager
+            .remove_process(first_run.id())
+            .expect("first alias cleanup should succeed");
+        manager
+            .remove_process(second_run.id())
+            .expect("second alias cleanup should succeed");
+    }
+
+    #[test]
+    fn reuses_shared_pty_targets_until_last_provider_run_is_removed() {
+        let first_run = shared_target_run("provider-run-1");
+        let second_run = shared_target_run("provider-run-2");
+        let mut manager = PtyManager::new();
+
+        manager
+            .spawn_for_run(&first_run)
+            .expect("first shared PTY run should spawn");
+        manager
+            .spawn_for_run(&second_run)
+            .expect("second shared PTY run should reuse the existing process");
+
+        assert_eq!(manager.processes.len(), 1);
+        assert_eq!(manager.process_aliases.len(), 2);
+
+        manager
+            .write_input(first_run.id(), b"shared pty\n")
+            .expect("shared PTY should accept input from the first run alias");
+        let output = wait_for_output(&mut manager, first_run.id());
+        let combined = output
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect::<Vec<u8>>();
+        assert!(String::from_utf8_lossy(&combined).contains("shared pty"));
+        assert_eq!(
+            manager.output_signal().take_ready_provider_run_ids(),
+            [first_run.id().to_string()].into_iter().collect()
+        );
+
+        manager
+            .remove_process(first_run.id())
+            .expect("removing first alias should succeed");
+        assert!(!manager.has_process(first_run.id()));
+        assert!(manager.has_process(second_run.id()));
+        assert_eq!(manager.processes.len(), 1);
+
+        manager
+            .remove_process(second_run.id())
+            .expect("removing final alias should stop the shared process");
+        assert!(!manager.has_process(second_run.id()));
+        assert!(manager.processes.is_empty());
+        assert!(manager.process_aliases.is_empty());
+    }
+
+    fn wait_for_output(
+        manager: &mut PtyManager,
+        provider_run_id: &str,
+    ) -> Vec<super::PtyOutputChunk> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let output = manager
+                .drain_output(provider_run_id)
+                .expect("pty output should be readable");
+            if !output.is_empty() {
+                return output;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for PTY output"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for_exit(manager: &mut PtyManager, provider_run_id: &str) -> PtyProcessState {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            let state = manager
+                .poll_process_state(provider_run_id)
+                .expect("PTY process state should be readable");
+            if state.is_exited() {
+                return state;
+            }
+
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for PTY process exit"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}

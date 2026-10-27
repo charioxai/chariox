@@ -1,0 +1,737 @@
+use super::*;
+
+pub(crate) enum ProviderLaunchStartOutcome {
+    Reused(crate::provider::RuntimeProviderRun),
+    Started(crate::app::StartedProviderLaunch, u64),
+}
+
+impl KernelRuntimeState {
+    pub(crate) async fn launch_provider_for_remote_lease_detached(
+        &self,
+        launch_request: crate::provider::LaunchProviderRequest,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        let runtime_init_delay_ms;
+        let started = {
+            let owned = &self.owned;
+            let config = owned.config_projection.snapshot();
+            let agent = launch_request
+                .agent_id
+                .as_deref()
+                .and_then(|agent_id| owned.agent_store.get_agent(agent_id).ok());
+            let launch_request =
+                crate::app::apply_metaagent_launch_policy(launch_request, agent.as_ref());
+            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
+                owned
+                    .provider_run_projection
+                    .mark_leased_provider_run(run.id());
+                return Ok(run);
+            }
+            if crate::provider::canonical_provider_family(&launch_request.provider)
+                == Some("claude")
+                && provider_launch_credential.is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "launch remote provider without credential",
+                    message: format!(
+                        "{}: the worker must cold-launch the selected Claude profile",
+                        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                    ),
+                });
+            }
+            let launch_request = apply_remote_provider_launch_credential(
+                launch_request,
+                provider_launch_credential,
+            )?;
+            let launch_request = self
+                .prepare_leased_provider_launch_request_with_vault(
+                    launch_request,
+                    "launch remote lease provider run",
+                )
+                .await?;
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "launching remote lease provider run",
+                serde_json::json!({
+                    "adapter_key": launch_request.adapter_key.clone(),
+                    "agent_id": launch_request.agent_id.clone(),
+                    "provider": launch_request.provider.clone(),
+                    "session_id": launch_request.session_id.clone(),
+                }),
+            );
+            let started = owned.start_provider_launch(launch_request)?;
+            let run = started.run.clone();
+            // Lease identity must be visible before the provider's first MCP
+            // request, which can arrive immediately after the PTY is spawned.
+            owned
+                .provider_run_projection
+                .mark_leased_provider_run(run.id());
+            if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
+                    owned.provider_run_projection.update(previous_run);
+                }
+            }
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "prepared remote lease provider run endpoint metadata",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "endpoint_mode": run.endpoint_mode().to_string(),
+                    "session_id": run.session_id(),
+                    "provider": run.provider(),
+                }),
+            );
+            if let Err(error) = self
+                .with_app_side_effect(|app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
+                })
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "PTY spawn failed for remote lease provider run",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                if let Ok(outcome) = owned
+                    .provider_store
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    let _ = owned.clear_active_provider_run_session_pointer(
+                        run.session_id(),
+                        outcome.run().id(),
+                    );
+                    owned.provider_run_projection.update(outcome.into_run());
+                }
+                return Err(error);
+            }
+            owned.provider_run_projection.update(run);
+            runtime_init_delay_ms = config.provider_runtime_init_delay_ms;
+            started
+        };
+
+        let accepted = started.run.clone();
+        let state = self.clone();
+        tokio::spawn(async move {
+            if runtime_init_delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(runtime_init_delay_ms)).await;
+            }
+            let run = started.run.clone();
+            let provider_credential_env = started.provider_credential_env.clone();
+            let binding = tokio::task::spawn_blocking(move || {
+                crate::provider::ProviderProcessService::initialize_runtime_binding_with_credentials(
+                    &run,
+                    &provider_credential_env,
+                )
+            })
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "initialize remote lease provider runtime",
+                message: error.to_string(),
+            });
+
+            match binding {
+                Ok(Ok(binding)) => state.finish_provider_launch(&started, binding).await,
+                Ok(Err(error)) => state.fail_provider_launch(&started, &error).await,
+                Err(error) => state.fail_provider_launch(&started, &error).await,
+            }
+        });
+        Ok(accepted)
+    }
+
+    pub(crate) async fn launch_remote_native_provider_run(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        caller_user_id: &str,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        self.launch_remote_native_provider_run_with_grant(request, caller_user_id, None)
+            .await
+    }
+
+    pub(crate) async fn launch_remote_native_provider_run_with_grant(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        caller_user_id: &str,
+        external_grant_id: Option<&str>,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, request)?;
+        if !request.native_tui {
+            return Ok(None);
+        }
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        let agent_id = request
+            .agent_id
+            .clone()
+            .or_else(|| session.focused_agent_id().map(str::to_string))
+            .or_else(|| {
+                self.owned
+                    .agent_store
+                    .get_focused_agent(&request.session_id)
+                    .map(|agent| agent.id().to_string())
+            });
+        let Some(agent_id) = agent_id else {
+            return Ok(None);
+        };
+        let agent = self.owned.agent_store.get_agent(&agent_id)?;
+        if agent.session_id() != request.session_id {
+            return Err(DaemonError::AgentNotInSession {
+                session_id: request.session_id.clone(),
+                agent_id,
+            });
+        }
+        if agent.owner_user_id() != caller_user_id {
+            return Err(DaemonError::OwnershipAccessDenied {
+                user_id: caller_user_id.to_string(),
+                owner_user_id: agent.owner_user_id().to_string(),
+                resource: format!("provider run for agent `{agent_id}`"),
+                operation: "launch provider run",
+            });
+        }
+        let Some(remote_execution) = agent.remote_execution().cloned() else {
+            return Ok(None);
+        };
+        super::remote_native_provider_launch::ensure_compatible_binding(&remote_execution)?;
+        let credential_state = self.clone();
+        let credential_session_id = request.session_id.clone();
+        let credential_agent_id = agent_id.clone();
+        let send_state = self.clone();
+        let send_request = request.clone();
+        let send_agent_id = agent_id.clone();
+        let send_grant_id = external_grant_id.map(str::to_owned);
+        let refresh_request = LocalDaemonRequest::LaunchProviderRun(request.clone());
+        let refresh_state = self
+            .with_external_command_authority(external_grant_id.map(|id| (id, &refresh_request)));
+        let refresh_agent_id = agent_id.clone();
+        let refresh_session_id = request.session_id.clone();
+        let refresh_caller_user_id = caller_user_id.to_string();
+        let (response, remote_execution) =
+            super::remote_native_provider_launch::launch_with_one_binding_refresh(
+                remote_execution,
+                move || {
+                    let state = credential_state.clone();
+                    let session_id = credential_session_id.clone();
+                    let agent_id = credential_agent_id.clone();
+                    Box::pin(async move {
+                        state
+                            .resolve_remote_provider_launch_credential(
+                                &session_id,
+                                &agent_id,
+                                "launch remote native provider run",
+                            )
+                            .await
+                    })
+                },
+                move |binding, credential| {
+                    let state = send_state.clone();
+                    let request = send_request.clone();
+                    let grant_id = send_grant_id.clone();
+                    let agent_id = send_agent_id.clone();
+                    Box::pin(async move {
+                        state
+                            .send_remote_native_provider_launch_attempt(
+                                &request,
+                                &agent_id,
+                                &binding,
+                                credential,
+                                grant_id.as_deref(),
+                            )
+                            .await
+                    })
+                },
+                move || {
+                    let state = refresh_state.clone();
+                    let agent_id = refresh_agent_id.clone();
+                    let session_id = refresh_session_id.clone();
+                    let caller_user_id = refresh_caller_user_id.clone();
+                    Box::pin(async move {
+                        let agent = state.refresh_remote_agent_binding_authorized(&agent_id).await?;
+                        if agent.session_id() != session_id {
+                            return Err(DaemonError::AgentNotInSession {
+                                session_id,
+                                agent_id,
+                            });
+                        }
+                        if agent.owner_user_id() != caller_user_id {
+                            return Err(DaemonError::OwnershipAccessDenied {
+                                user_id: caller_user_id,
+                                owner_user_id: agent.owner_user_id().to_string(),
+                                resource: format!("provider run for agent `{agent_id}`"),
+                                operation: "launch provider run",
+                            });
+                        }
+                        agent.remote_execution().cloned().ok_or_else(|| {
+                            DaemonError::LocalTransport {
+                                operation: "refresh remote native provider binding",
+                                message: format!(
+                                    "agent `{agent_id}` did not have remote execution after binding refresh"
+                                ),
+                            }
+                        })
+                    })
+                },
+            )
+            .await?;
+        let leased_agent_id = remote_execution.leased_agent_id.clone();
+        match response {
+            RelayPeerResponse::LeasedNativeProviderRunLaunched { provider_run } => {
+                let home_agent_id = agent_id.clone();
+                let (worker_provider_run_id, projected_run) = provider_run
+                    .project_leased_for_home_agent(
+                        &leased_agent_id,
+                        request.session_id.clone(),
+                        agent_id,
+                    );
+                let _ = self
+                    .owned
+                    .agent_store
+                    .set_remote_execution_active_worker_provider_run_id(
+                        &home_agent_id,
+                        Some(worker_provider_run_id),
+                    )?;
+                self.owned
+                    .provider_run_projection
+                    .update(projected_run.clone());
+                self.owned.session_store.set_active_provider_run(
+                    &request.session_id,
+                    Some(projected_run.id().to_string()),
+                )?;
+                let _ = self.owned.session_snapshot(&request.session_id)?;
+                Ok(Some(
+                    crate::local::LocalDaemonResponse::ProviderRunLaunched {
+                        provider_run: projected_run.into(),
+                    },
+                ))
+            }
+            other => Err(DaemonError::LocalTransport {
+                operation: "launch remote native provider run",
+                message: format!("unexpected remote native provider launch response: {other:?}"),
+            }),
+        }
+    }
+
+    pub(in crate::runtime::state) async fn send_remote_native_provider_launch_attempt(
+        &self,
+        request: &crate::local::LaunchProviderRunRequest,
+        agent_id: &str,
+        remote_execution: &crate::agent::RemoteAgentBinding,
+        provider_launch_credential: Option<
+            crate::transport::relay_peer::RemoteProviderLaunchCredential,
+        >,
+        external_grant_id: Option<&str>,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, request)?;
+        let grant_id = external_grant_id.map(str::to_owned);
+        let state = self.clone();
+        let request = request.clone();
+        let expected_leased_agent_id = remote_execution.leased_agent_id.clone();
+        self.with_current_remote_extension_manifest(
+            agent_id,
+            &expected_leased_agent_id,
+            move |agent, remote_execution, manifest| async move {
+                state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
+                super::remote_native_provider_launch::ensure_compatible_binding(
+                    &remote_execution,
+                )?;
+                let required_mcps =
+                    state.required_remote_mcps_for_native_provider_launch(&agent)?;
+                let required_skills =
+                    state.required_remote_skills_for_native_provider_launch(&agent)?;
+                if !required_mcps.is_empty() {
+                    state
+                        .ensure_remote_mcp_requirements_available_for_agent(
+                            &agent,
+                            required_mcps.clone(),
+                        )
+                        .await?;
+                }
+                if state.remote_agent_is_home_managed_slice(&agent) {
+                    state.ensure_slice_project_environment(&agent).await?;
+                    state.ensure_remote_skill_packages_for_agent(&agent).await?;
+                }
+                let mut relay_config = state.owned.config_projection.snapshot();
+                if let (Some(relay_url), Some(relay_token)) = (
+                    remote_execution.relay_url.clone(),
+                    remote_execution.relay_token.clone(),
+                ) {
+                    relay_config.apply_remote_relay_override(relay_url, relay_token);
+                }
+                let leased_agent_id = remote_execution.leased_agent_id.clone();
+                let target = ClientTarget {
+                    daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+                    daemon_alias: None,
+                };
+                let peer_request = RelayPeerRequest::LaunchLeasedNativeProviderRun {
+                    leased_agent_id,
+                    adapter_key: crate::provider::adapter_key_for_provider(&request.adapter_key)
+                        .to_string(),
+                    provider: request.provider.clone(),
+                    account_profile: request.account_profile.clone(),
+                    model: request.model.clone(),
+                    variant: request.variant.clone(),
+                    structured_endpoint: request.structured_endpoint.clone(),
+                    provider_session_id: request.provider_session_id.clone(),
+                    required_mcps,
+                    required_skills: Some(required_skills),
+                    remote_extension_manifest: manifest,
+                    provider_launch_credential,
+                };
+                let relay_state = state.connected_relay_state_for_config(&relay_config).await;
+                state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?;
+                match relay_state {
+                    Some(relay_state) => {
+                        crate::transport::relay_client::enqueue_peer_request_via_connected_relay_authorized(
+                            &relay_config,
+                            &relay_state,
+                            target,
+                            peer_request,
+                            std::time::Duration::from_millis(
+                                relay_config.relay_request_timeout_ms,
+                            ),
+                            || state.authorize_provider_launch_grant(grant_id.as_deref(), &request),
+                        )
+                        .await
+                    }
+                    None => {
+                        // Preserve serialized ordering when there is no shared relay sender.
+                        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                            &relay_config,
+                            target,
+                            peer_request,
+                            std::time::Duration::from_millis(
+                                relay_config.relay_request_timeout_ms,
+                            ),
+                            || state.authorize_provider_launch_grant(grant_id.as_deref(), &request),
+                        )
+                        .await?;
+                        Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready(
+                            response,
+                        ))
+                    }
+                }
+            },
+        )
+        .await?
+        .wait()
+        .await
+    }
+
+    pub(crate) async fn start_provider_launch(
+        &self,
+        request: crate::local::LaunchProviderRunRequest,
+        caller_user_id: String,
+    ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
+        self.start_provider_launch_with_grant(request, caller_user_id, None)
+            .await
+    }
+
+    pub(crate) fn authorize_provider_launch_grant(
+        &self,
+        external_grant_id: Option<&str>,
+        request: &crate::local::LaunchProviderRunRequest,
+    ) -> Result<(), DaemonError> {
+        if let Some(grant_id) = external_grant_id {
+            self.authorize_external_request(
+                grant_id,
+                &crate::local::LocalDaemonRequest::LaunchProviderRun(request.clone()),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn start_provider_launch_with_grant(
+        &self,
+        request: crate::local::LaunchProviderRunRequest,
+        caller_user_id: String,
+        external_grant_id: Option<&str>,
+    ) -> Result<ProviderLaunchStartOutcome, DaemonError> {
+        self.authorize_provider_launch_grant(external_grant_id, &request)?;
+        let launch_request = self
+            .owned
+            .launch_provider_request_from_local_request(request.clone());
+        {
+            let owned = &self.owned;
+            if launch_request.owner_user_id != caller_user_id {
+                return Err(DaemonError::OwnershipAccessDenied {
+                    user_id: caller_user_id,
+                    owner_user_id: launch_request.owner_user_id.clone(),
+                    resource: format!(
+                        "provider run for agent `{}`",
+                        launch_request.agent_id.as_deref().unwrap_or("<focused>")
+                    ),
+                    operation: "launch provider run",
+                });
+            }
+            let config = owned.config_projection.snapshot();
+            let launch_request = self
+                .prepare_provider_launch_request_with_vault(launch_request, "launch provider run")
+                .await?;
+            self.authorize_provider_launch_grant(external_grant_id, &request)?;
+            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
+                return Ok(ProviderLaunchStartOutcome::Reused(run));
+            }
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "launching provider run",
+                serde_json::json!({
+                    "adapter_key": launch_request.adapter_key.clone(),
+                    "agent_id": launch_request.agent_id.clone(),
+                    "provider": launch_request.provider.clone(),
+                    "session_id": launch_request.session_id.clone(),
+                }),
+            );
+            let started = owned.start_provider_launch(launch_request)?;
+            let run = started.run.clone();
+            if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                if let Ok(previous_run) = owned.provider_store.get_run(previous_active_run_id) {
+                    owned.provider_run_projection.update(previous_run);
+                }
+            }
+            crate::logging::info_with_fields(
+                "daemon.app",
+                "prepared provider run endpoint metadata",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "endpoint_mode": run.endpoint_mode().to_string(),
+                    "session_id": run.session_id(),
+                    "provider": run.provider(),
+                }),
+            );
+            if let Err(error) = self
+                .with_app_side_effect(|app| {
+                    self.authorize_provider_launch_grant(external_grant_id, &request)?;
+                    crate::app::ProviderLaunchProcessRuntime::new(app)
+                        .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
+                })
+                .await
+            {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "PTY spawn failed for provider run",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                if let Ok(outcome) = owned
+                    .provider_store
+                    .terminate_run_provider_only(run.session_id(), run.id())
+                {
+                    let _ = owned.clear_active_provider_run_session_pointer(
+                        run.session_id(),
+                        outcome.run().id(),
+                    );
+                    owned.provider_run_projection.update(outcome.into_run());
+                }
+                if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
+                    let recipients = owned
+                        .attachment_store
+                        .list_session_attachment_ids(run.session_id());
+                    match owned
+                        .resume_provider_run_for_session(run.session_id(), previous_active_run_id)
+                    {
+                        Ok(resumed_run) => {
+                            owned.record_notice(
+                                run.session_id(),
+                                Some(resumed_run.id()),
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}`. Chariox resumed the previous provider run `{}` automatically.",
+                                    run.session_id(),
+                                    resumed_run.id()
+                                ),
+                            );
+                        }
+                        Err(resume_error) => {
+                            owned.record_notice(
+                                run.session_id(),
+                                None,
+                                recipients,
+                                format!(
+                                    "Provider switch failed for session `{}` and Chariox could not resume the previous provider run: {}",
+                                    run.session_id(),
+                                    resume_error
+                                ),
+                            );
+                        }
+                    }
+                }
+                return Err(error);
+            }
+            owned.provider_run_projection.update(run);
+            Ok(ProviderLaunchStartOutcome::Started(
+                started,
+                config.provider_runtime_init_delay_ms,
+            ))
+        }
+    }
+
+    pub(crate) async fn finish_provider_launch(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) {
+        let _permit = self.provider_runtime_lanes.acquire(started.run.id()).await;
+        self.finish_provider_launch_in_lane(started, binding).await;
+    }
+
+    async fn finish_provider_launch_in_lane(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        binding: Option<crate::provider::ProviderRuntimeBinding>,
+    ) {
+        if let Ok(run) = self.owned.provider_store.get_run(started.run.id()) {
+            if provider_launch_completion_is_stale(run.state()) {
+                crate::logging::info_with_fields(
+                    "daemon.provider",
+                    "ignoring stale provider runtime launch completion",
+                    serde_json::json!({
+                        "provider_run_id": run.id(),
+                        "session_id": run.session_id(),
+                        "state": format!("{:?}", run.state()),
+                    }),
+                );
+                return;
+            }
+        }
+        let mut retry_metaagent_event_dispatches = WorkflowPromptDispatches::default();
+        {
+            let owned = &self.owned;
+            let result = owned.finish_provider_launch_success(started, binding);
+            match result {
+                Ok(run) => {
+                    if let Some(agent_id) = run.agent_instance_id() {
+                        match owned.advance_next_queued_prompt_dispatch(
+                            run.session_id(),
+                            agent_id,
+                            run.id(),
+                        ) {
+                            Ok(Some(dispatch)) => {
+                                if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
+                                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                self.fail_provider_launch_in_lane(started, &error).await;
+                                return;
+                            }
+                        }
+                        match owned.retry_pending_metaagent_event_prompts_for_provider_run(&run) {
+                            Ok(dispatches) => {
+                                retry_metaagent_event_dispatches = dispatches;
+                            }
+                            Err(error) => {
+                                self.fail_provider_launch_in_lane(started, &error).await;
+                                return;
+                            }
+                        }
+                        let _ = owned.session_snapshot(run.session_id());
+                    }
+                }
+                Err(error) => {
+                    self.fail_provider_launch_in_lane(started, &error).await;
+                }
+            }
+        }
+        self.spawn_workflow_prompt_dispatches(retry_metaagent_event_dispatches);
+    }
+}
+
+fn apply_remote_provider_launch_credential(
+    request: crate::provider::LaunchProviderRequest,
+    credential: Option<crate::transport::relay_peer::RemoteProviderLaunchCredential>,
+) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+    let Some(credential) = credential else {
+        return Ok(request);
+    };
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude")
+        || credential.provider != "claude"
+        || credential.account_profile != request.account_profile
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "apply remote provider launch credential",
+            message: "remote provider launch credential does not match the leased agent profile"
+                .to_string(),
+        });
+    }
+    let token = credential.secret_input.into_zeroizing();
+    if token.trim().is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "apply remote provider launch credential",
+            message: "remote Claude launch credential is empty".to_string(),
+        });
+    }
+    let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+    environment.insert(crate::provider::CLAUDE_OAUTH_TOKEN_ENV, token);
+    Ok(request.with_provider_credential_env(environment))
+}
+
+fn provider_launch_completion_is_stale(state: crate::provider::ProviderRunState) -> bool {
+    state != crate::provider::ProviderRunState::Starting
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_remote_provider_launch_credential, provider_launch_completion_is_stale};
+    use crate::provider::{LaunchProviderRequest, ProviderRunState};
+    use crate::transport::relay_peer::{
+        RemoteCredentialSecretInput, RemoteProviderLaunchCredential,
+    };
+
+    #[test]
+    fn duplicate_or_cancelled_provider_launch_completion_is_stale() {
+        assert!(!provider_launch_completion_is_stale(
+            ProviderRunState::Starting
+        ));
+        assert!(provider_launch_completion_is_stale(
+            ProviderRunState::Running
+        ));
+        assert!(provider_launch_completion_is_stale(
+            ProviderRunState::Parked
+        ));
+        assert!(provider_launch_completion_is_stale(ProviderRunState::Ended));
+    }
+
+    #[test]
+    fn remote_claude_setup_token_is_bound_to_profile_and_kept_out_of_wire_shape() {
+        let request = LaunchProviderRequest::new("session-1", "claude", "claude", "work", "sonnet");
+        let credential = RemoteProviderLaunchCredential {
+            provider: "claude".to_string(),
+            account_profile: "work".to_string(),
+            secret_input: RemoteCredentialSecretInput::new("setup-token-secret".to_string()),
+        };
+        let debug = format!("{credential:?}");
+        assert!(!debug.contains("setup-token-secret"));
+
+        let prepared = apply_remote_provider_launch_credential(request, Some(credential))
+            .expect("matching remote Claude credential");
+        assert_eq!(
+            prepared.provider_credential_env.iter().collect::<Vec<_>>(),
+            vec![("CLAUDE_CODE_OAUTH_TOKEN", "setup-token-secret")]
+        );
+        let encoded = serde_json::to_string(&prepared).expect("serialize launch request");
+        assert!(!encoded.contains("setup-token-secret"));
+        assert!(!encoded.contains("CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
+    fn remote_provider_launch_credential_rejects_profile_mismatch() {
+        let request = LaunchProviderRequest::new("session-1", "claude", "claude", "work", "sonnet");
+        let credential = RemoteProviderLaunchCredential {
+            provider: "claude".to_string(),
+            account_profile: "personal".to_string(),
+            secret_input: RemoteCredentialSecretInput::new("setup-token-secret".to_string()),
+        };
+        let error = apply_remote_provider_launch_credential(request, Some(credential))
+            .expect_err("mismatched remote credential must be rejected");
+        assert!(error.to_string().contains("does not match"));
+        assert!(!error.to_string().contains("setup-token-secret"));
+    }
+}

@@ -1,0 +1,914 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  applyExternalProviderObservedTranscriptMetadata,
+  applyExternalProviderObservedTurnMetadata,
+  externalProviderObservedCompletionAtMs,
+  externalProviderObservedCoalescedTranscriptIdentityFields,
+  externalProviderObservedEntryIsPassiveTelemetry,
+  externalProviderObservedExactIdentityConflicts,
+  externalProviderObservedExactIdentityKey,
+  externalProviderObservedExactIdentityMatches,
+  externalProviderObservedHistoryExactIdentityConflicts,
+  externalProviderObservedHistoryRefreshSignal,
+  externalProviderObservedIdentityFields,
+  externalProviderObservedIdentityIsPresent,
+  externalProviderObservedIdentityKey,
+  externalProviderObservedIdentityMatches,
+  externalProviderObservedPresentIdentityFields,
+  externalProviderObservedPresentExplicitIdentityFields,
+  externalProviderObservedProviderStatusShouldRender,
+  externalProviderObservedStatusSettlesActivePrompt,
+  externalProviderObservedTranscriptExactIdentityConflicts,
+  externalProviderObservedTranscriptIdentityFields,
+  historyEntryExternalProviderObservedMetadata,
+  mergeExternalProviderObservedHistoryFields,
+  mergeExternalProviderObservedSource,
+  mergeExternalProviderObservedTranscriptFields,
+  mergeExternalProviderObservation,
+  promptOriginExternalProviderObservedMetadata,
+  sessionHistoryEntryIsExternalProviderObserved,
+  transcriptExternalProviderObservedTurnMarker,
+  transcriptExternalProviderObservedTurnMetadata,
+  type ExternalProviderObservedMutableKernelFields,
+} from "./external-provider-observation.js"
+
+test("external provider observed identity matching normalizes provider and trims ids", () => {
+  assert.equal(externalProviderObservedIdentityIsPresent({
+    externalProvider: "codex",
+  }), false)
+  assert.equal(externalProviderObservedIdentityIsPresent({
+    externalProviderSessionId: " thread-1 ",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({}, {
+    externalProvider: " codex ",
+    externalProviderSessionId: "thread-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityKey({}), null)
+  assert.equal(externalProviderObservedExactIdentityKey({}), null)
+  assert.equal(externalProviderObservedExactIdentityKey({
+    externalProviderSessionId: "thread-1",
+  }), null)
+  assert.equal(externalProviderObservedExactIdentityKey({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), null)
+  assert.equal(externalProviderObservedExactIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), false)
+  assert.equal(externalProviderObservedExactIdentityMatches({
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " user-1 ",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedExactIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedExactIdentityConflicts({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedExactIdentityConflicts({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedHistoryExactIdentityConflicts({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-2",
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedHistoryExactIdentityConflicts({
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-2",
+  }, {
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedTranscriptExactIdentityConflicts({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " user-1 ",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), true)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }, {}), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "user-1",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({}, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-2",
+  }), false)
+  assert.equal(externalProviderObservedIdentityMatches({
+    externalProvider: "codex",
+  }, {
+    externalProvider: "codex",
+  }), false)
+  assert.deepEqual(externalProviderObservedPresentIdentityFields({
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  })
+  assert.deepEqual(externalProviderObservedPresentIdentityFields({
+    externalProvider: null,
+    externalProviderTurnId: "",
+  }), {})
+  assert.deepEqual(externalProviderObservedPresentExplicitIdentityFields({
+    external_provider: " CODEX ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: " user-1 ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "user-1",
+  })
+  assert.deepEqual(externalProviderObservedPresentExplicitIdentityFields({
+    id: "external:codex:thread-1:user-1",
+  }), {})
+})
+
+test("external provider observed predicate requires kernel observed source", () => {
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }), true)
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `,
+  }), true)
+  assert.equal(sessionHistoryEntryIsExternalProviderObserved({
+    source: null,
+  }), false)
+})
+
+test("external provider observed metadata projects kernel history fields", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 123,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 123,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+})
+
+test("external provider observed metadata treats merge keys as opaque", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:CODEX:thread-1:item-1",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+    observedAtMs: null,
+    externalObservation: null,
+  })
+  assert.equal(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:item-1",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "item-2",
+  })?.externalProvider, "opencode")
+  assert.equal(historyEntryExternalProviderObservedMetadata({
+    source: "provider_output",
+    merge_key: "external:codex:thread-1:item-1",
+  }), null)
+})
+
+test("external provider observed metadata normalizes nullable fields", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: " CODEX ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: "",
+    observed_at_ms: Number.NaN,
+    external_observation: {
+      settles_active_prompt: "true" as unknown as boolean,
+      passive_telemetry: true,
+    },
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+    observedAtMs: null,
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+})
+
+test("external provider observed metadata treats settlement as non-passive", () => {
+  assert.deepEqual(historyEntryExternalProviderObservedMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  })?.externalObservation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
+test("external provider observed metadata projects prompt-origin turn fields", () => {
+  assert.deepEqual(promptOriginExternalProviderObservedMetadata({
+    prompt_origin: " External ",
+    external_provider: " CODEX ",
+    external_provider_session_id: " thread-1 ",
+    external_provider_turn_id: " turn-1 ",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    external_provider: " codex ",
+    external_provider_session_id: " thread-1 ",
+  }), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    id: "external:codex:thread-1:turn-from-id",
+  }), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({}), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    id: "external:codex:thread-1:turn-1",
+    prompt_origin: "external",
+  }), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    prompt_id: "external:codex:thread-2:turn-2",
+    prompt_origin: "external",
+  }), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    prompt_origin: "external",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+  }), null)
+  assert.equal(promptOriginExternalProviderObservedMetadata({
+    prompt_origin: "chariox",
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+  }), null)
+})
+
+test("external provider observed metadata derives identity from durable external prompt ids", () => {
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external: CODEX : thread-1 : turn:1 ",
+  }), {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn:1",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    id: "external:claude:thread-2:user-1",
+  }), {
+    externalProvider: "claude",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "user-1",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external:codex:thread-1:from-id",
+    external_provider: "opencode",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "explicit",
+  }), {
+    externalProvider: "opencode",
+    externalProviderSessionId: "thread-2",
+    externalProviderTurnId: "explicit",
+  })
+  assert.deepEqual(externalProviderObservedIdentityFields({
+    prompt_id: "external:codex",
+  }), {})
+})
+
+test("external provider observed transcript identity fields preserve explicit nulls", () => {
+  assert.deepEqual(externalProviderObservedTranscriptIdentityFields({
+    externalProvider: null,
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  }), {
+    externalProvider: null,
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: null,
+  })
+})
+
+test("external provider observed coalesced transcript identity fields prefer primary fields", () => {
+  assert.deepEqual(externalProviderObservedCoalescedTranscriptIdentityFields({
+    externalProvider: null,
+    externalProviderSessionId: "thread-primary",
+  }, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-fallback",
+    externalProviderTurnId: "turn-fallback",
+  }), {
+    externalProvider: null,
+    externalProviderSessionId: "thread-primary",
+    externalProviderTurnId: "turn-fallback",
+  })
+})
+
+test("external provider observed metadata projects transcript turn fields", () => {
+  assert.deepEqual(transcriptExternalProviderObservedTurnMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: " CODEX ",
+    externalProviderSessionId: " thread-1 ",
+    externalProviderTurnId: " turn-1 ",
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+  })
+  assert.deepEqual(transcriptExternalProviderObservedTurnMetadata({
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "",
+    externalProviderSessionId: null,
+    externalProviderTurnId: undefined,
+  }), {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+  })
+  assert.equal(transcriptExternalProviderObservedTurnMetadata({
+    source: "provider_output",
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+  }), null)
+})
+
+test("external provider observed history refresh signal requires observed provider status", () => {
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, ` ${EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS}\n`), true)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: null,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), false)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_output",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS), false)
+  assert.equal(externalProviderObservedHistoryRefreshSignal({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }, "OpenCode status: reconnecting"), false)
+})
+
+test("external provider observed status render policy requires observed non-passive status", () => {
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:token-count-1",
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "claude ai-title {\"title\":\"x\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "claude",
+  }), true)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex token_count {\"total\":42}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_status",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: null,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+  assert.equal(externalProviderObservedProviderStatusShouldRender({
+    kind: "provider_output",
+    text: "codex event turn_aborted {\"reason\":\"user\"}",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+})
+
+test("external provider observed passive telemetry helper accepts history and transcript fields", () => {
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    text: "codex token_count {\"total\":42}",
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    merge_key: "external:codex:thread-1:token-count-1",
+    text: "codex token_count {\"total\":42}",
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    role: "status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "claude",
+    text: "claude last-prompt {\"lastPrompt\":\"hello\"}",
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    role: "status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "prompt_echo",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    kind: "provider_output",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), false)
+  assert.equal(externalProviderObservedEntryIsPassiveTelemetry({
+    source: "provider_output",
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }), false)
+})
+
+test("external provider observed settlement helper accepts provider status records and entries", () => {
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), true)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    role: "status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: true,
+    },
+  }), true)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    role: "assistant",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+  assert.equal(externalProviderObservedStatusSettlesActivePrompt({
+    kind: "provider_status",
+    source: "provider_output",
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  }), false)
+})
+
+test("external provider observed completion time prefers observation time then creation time", () => {
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: 2_000,
+    observed_at_ms: 1_500,
+    createdAtMs: 1_000,
+  }, () => 3_000), 2_000)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observed_at_ms: 1_500,
+    createdAtMs: 1_000,
+  }, () => 3_000), 1_500)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: Number.NaN,
+    createdAtMs: 1_000,
+  }, () => 3_000), 1_000)
+  assert.equal(externalProviderObservedCompletionAtMs({
+    observedAtMs: Number.POSITIVE_INFINITY,
+    createdAtMs: Number.NaN,
+  }, () => 3_000), 3_000)
+  assert.equal(externalProviderObservedCompletionAtMs({}, () => 3_000), 3_000)
+})
+
+test("external provider observation merge preserves settlement over passive telemetry", () => {
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  }), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  }, {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation(null, {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  }), {
+    settles_active_prompt: false,
+    passive_telemetry: true,
+  })
+  assert.deepEqual(mergeExternalProviderObservation(null, {
+    settles_active_prompt: "true",
+    passive_telemetry: "yes",
+  } as never), {
+    settles_active_prompt: false,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: true,
+    passive_telemetry: true,
+  } as never, null), {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+  assert.deepEqual(mergeExternalProviderObservation({
+    settles_active_prompt: "true",
+    passive_telemetry: "yes",
+  } as never, {
+    settles_active_prompt: false,
+    passive_telemetry: false,
+  }), {
+    settles_active_prompt: false,
+    passive_telemetry: false,
+  })
+})
+
+test("external provider observed source merge preserves observed source", () => {
+  assert.equal(
+    mergeExternalProviderObservedSource("provider_output", EXTERNAL_PROVIDER_OBSERVED_SOURCE),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
+    mergeExternalProviderObservedSource("provider_output", ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
+    mergeExternalProviderObservedSource(EXTERNAL_PROVIDER_OBSERVED_SOURCE, "provider_output"),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(
+    mergeExternalProviderObservedSource(` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `, "provider_output"),
+    EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  )
+  assert.equal(mergeExternalProviderObservedSource(null, "provider_output"), "provider_output")
+})
+
+test("external provider observed history field merge preserves first stable metadata", () => {
+  const target: ExternalProviderObservedMutableKernelFields & {
+    kind: string
+    text: string
+  } = {
+    kind: "provider_output",
+    text: "native ",
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-2",
+    external_provider_turn_id: "item-2",
+    observed_at_ms: 2_000,
+  })
+
+  assert.deepEqual(target, {
+    kind: "provider_output",
+    text: "native ",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  })
+})
+
+test("external provider observed history field merge canonicalizes observed source", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {}
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: ` ${EXTERNAL_PROVIDER_OBSERVED_SOURCE.toUpperCase()} `,
+  })
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: "provider_output",
+  })
+
+  assert.equal(target.source, EXTERNAL_PROVIDER_OBSERVED_SOURCE)
+})
+
+test("external provider observed history field merge recovers split identity metadata", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "item-1",
+    observed_at_ms: 1_000,
+  })
+})
+
+test("external provider observed history field merge lets settlement override passive telemetry", () => {
+  const target = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_observation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+
+  assert.deepEqual(target.external_observation, {
+    settles_active_prompt: true,
+    passive_telemetry: false,
+  })
+})
+
+test("external provider observed transcript field merge preserves identity and settlement metadata", () => {
+  const target: {
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+    externalObservation?: { settles_active_prompt: boolean; passive_telemetry: boolean }
+  } = {}
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+    externalObservation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+  }, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+
+  assert.deepEqual(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+    externalObservation: {
+      settles_active_prompt: true,
+      passive_telemetry: false,
+    },
+  })
+})
+
+test("external provider observed transcript field merge recovers split source and identity metadata", () => {
+  const target: {
+    source?: string | null
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+  } = {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+  }
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+})
+
+test("external provider observed transcript field merge fills null identity fields", () => {
+  const target: {
+    externalProvider?: string | null
+    externalProviderSessionId?: string | null
+    externalProviderTurnId?: string | null
+    observedAtMs?: number | null
+  } = {
+    externalProvider: null,
+    externalProviderSessionId: null,
+    externalProviderTurnId: null,
+    observedAtMs: null,
+  }
+
+  mergeExternalProviderObservedTranscriptFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+
+  assert.deepEqual(target, {
+    externalProvider: "codex",
+    externalProviderSessionId: "thread-1",
+    externalProviderTurnId: "turn-1",
+    observedAtMs: 100,
+  })
+})
+
+test("external provider observed history field merge fills null identity fields", () => {
+  const target: ExternalProviderObservedMutableKernelFields = {
+    external_provider: null,
+    external_provider_session_id: null,
+    external_provider_turn_id: null,
+    observed_at_ms: null,
+  }
+
+  mergeExternalProviderObservedHistoryFields(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 100,
+  })
+
+  assert.deepEqual(target, {
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "turn-1",
+    observed_at_ms: 100,
+  })
+})

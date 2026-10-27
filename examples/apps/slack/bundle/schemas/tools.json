@@ -1,0 +1,99 @@
+{
+  "tools": [
+    {
+      "name": "list_notifications",
+      "description": "List the latest Slack notifications this App received, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mentioned",
+              "channel_message",
+              "reaction_added"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "clear_notifications",
+      "description": "Forget the stored Slack notifications.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reply",
+      "description": "Reply to a Slack notification in its thread. mode channel posts to the channel instead, only for a message that is not already in a thread (a threaded message is always answered in its thread). Uses the Slack connection the owner granted this App.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "pattern": "\\S"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "thread",
+              "channel"
+            ]
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "Reuse the same id to retry safely: the action happens at most once per id."
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "react",
+      "description": "Add an emoji reaction (for example eyes or white_check_mark) to the Slack message behind a notification. A failure can mean the reaction is already there; do not retry it repeatedly.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_+-]{1,64}$"
+          },
+          "request_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "description": "Reuse the same id to retry safely: the action happens at most once per id."
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

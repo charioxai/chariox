@@ -1,0 +1,58 @@
+kind: connector
+name: gmail_readonly
+description: Gmail read-only connector.
+adapter: http
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: profile
+    description: Get the authenticated Gmail user's profile.
+    safety: read
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    config:
+      base_url: https://gmail.googleapis.com
+      method: GET
+      path: /gmail/v1/users/me/profile
+
+  - name: list_messages
+    description: List Gmail messages matching a Gmail search query.
+    safety: read
+    input_schema:
+      type: object
+      properties:
+        q:
+          type: string
+        maxResults:
+          type: integer
+          minimum: 1
+          maximum: 20
+      additionalProperties: false
+    config:
+      base_url: https://gmail.googleapis.com
+      method: GET
+      path: /gmail/v1/users/me/messages
+      query:
+        q: "{{q}}"
+        maxResults: "{{maxResults}}"
+
+  - name: get_message
+    description: Get Gmail message metadata by message id.
+    safety: read
+    input_schema:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+      additionalProperties: false
+    config:
+      base_url: https://gmail.googleapis.com
+      method: GET
+      path: /gmail/v1/users/me/messages/{{id}}
+      query:
+        format: metadata

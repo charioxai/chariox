@@ -1,0 +1,1487 @@
+#![allow(unused_imports)]
+use super::support::*;
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug, Clone, Copy)]
+enum ControlledWorkspaceLiveSyncAction {
+    BusinessRejection,
+    Disconnect,
+    Success,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing run_controlled_workspace_live_sync_target operation signature and explicit context arguments"
+)]
+async fn run_controlled_workspace_live_sync_target(
+    relay_url: String,
+    registration: chariox_relay::protocol::DaemonRegistration,
+    private_key: String,
+    registry: Arc<RwLock<chariox_relay::server::RelayRegistry>>,
+    actions: Arc<Mutex<VecDeque<ControlledWorkspaceLiveSyncAction>>>,
+    request_count: Arc<AtomicUsize>,
+    attempts: Arc<Mutex<Vec<u32>>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let (mut socket, _) = connect_async(&relay_url)
+            .await
+            .expect("controlled workspace target should connect to relay");
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                    registration: registration.clone(),
+                })
+                .expect("controlled target registration should serialize")
+                .into(),
+            ))
+            .await
+            .expect("controlled target registration should send");
+
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        let _ = socket.close(None).await;
+                        return;
+                    }
+                }
+                message = socket.next() => {
+                    let Some(message) = message else {
+                        panic!("controlled workspace target disconnected before its plan completed");
+                    };
+                    let message = message.expect("controlled target relay frame should be readable");
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    let RelayEnvelope::DaemonIncomingPeerRequest {
+                        relay_request_id,
+                        encrypted_request,
+                        ..
+                    } = serde_json::from_str(&text)
+                        .expect("controlled target should decode incoming peer request")
+                    else {
+                        continue;
+                    };
+                    let decrypted = relay_crypto::decrypt_payload_for_private_key(
+                        &private_key,
+                        &encrypted_request,
+                    )
+                    .expect("controlled target should decrypt the workspace request");
+                    let request = serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext)
+                        .expect("controlled target should decode the workspace request");
+                    let (attempt, tool_name, home_kernel_id) = match request {
+                        RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
+                            context,
+                            metadata,
+                            tool_name,
+                            ..
+                        } => (metadata.attempt, tool_name, context.home_kernel_id),
+                        other => panic!("unexpected public workspace request: {other:?}"),
+                    };
+                    assert_eq!(
+                        tool_name,
+                        crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+                        "public fixture should exercise workspace live-sync dispatch"
+                    );
+                    assert_eq!(
+                        home_kernel_id, registration.daemon_id,
+                        "request should be addressed to the authenticated target"
+                    );
+                    request_count.fetch_add(1, Ordering::SeqCst);
+                    attempts.lock().await.push(attempt);
+                    let action = actions
+                        .lock()
+                        .await
+                        .pop_front()
+                        .expect("controlled target action plan should cover every request");
+                    match action {
+                        ControlledWorkspaceLiveSyncAction::BusinessRejection => {
+                            socket
+                                .send(Message::Text(
+                                    serde_json::to_string(
+                                        &RelayEnvelope::DaemonIncomingPeerResponse {
+                                            relay_request_id,
+                                            encrypted_response: None,
+                                            error: Some(chariox_relay::protocol::RelayError {
+                                                code: "transport_error".to_string(),
+                                                message: "controlled workspace live-sync business rejection".to_string(),
+                                                retryable: true,
+                                            }),
+                                        },
+                                    )
+                                    .expect("controlled business rejection should serialize")
+                                    .into(),
+                                ))
+                                .await
+                                .expect("controlled business rejection should send");
+                        }
+                        ControlledWorkspaceLiveSyncAction::Disconnect => {
+                            break;
+                        }
+                        ControlledWorkspaceLiveSyncAction::Success => {
+                            let response = RelayPeerResponse::WorkspaceLiveSyncRuntimeToolHandled {
+                                result: crate::transport::runtime_tools::RuntimeToolResult {
+                                    ok: true,
+                                    payload: serde_json::json!({"controlled": "recovered"}),
+                                },
+                                final_artifact_states: Vec::new(),
+                            };
+                            let encrypted_response = relay_crypto::encrypt_payload_for_peer(
+                                &private_key,
+                                &decrypted.sender_public_key,
+                                &serde_json::to_vec(&response)
+                                    .expect("controlled success should serialize"),
+                            )
+                            .expect("controlled success should encrypt");
+                            socket
+                                .send(Message::Text(
+                                    serde_json::to_string(
+                                        &RelayEnvelope::DaemonIncomingPeerResponse {
+                                            relay_request_id,
+                                            encrypted_response: Some(encrypted_response),
+                                            error: None,
+                                        },
+                                    )
+                                    .expect("controlled success should serialize")
+                                    .into(),
+                                ))
+                                .await
+                                .expect("controlled success should send");
+                        }
+                    }
+                }
+            }
+        }
+
+        drop(socket);
+        loop {
+            if *shutdown.borrow() {
+                return;
+            }
+            if registry
+                .read()
+                .await
+                .daemon(&registration.daemon_id)
+                .is_none()
+            {
+                break;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+#[test]
+fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let mut materialization = crate::account_profile::ProviderAccountMaterialization {
+        profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-1".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "work".to_string(),
+            label: "Work".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+            is_default: false,
+        },
+        files: Vec::new(),
+        generated_at_ms: 1_234,
+    };
+    let request = RelayPeerRequest::EnsureRemoteProviderAccount {
+        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+            home_kernel_id: "home".to_string(),
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+        },
+        materialization: materialization.clone(),
+    };
+    let value = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        value.pointer("/kind"),
+        Some(&serde_json::json!("ensure_remote_provider_account"))
+    );
+    assert_eq!(
+        value.pointer("/materialization/profile/profile_id"),
+        Some(&serde_json::json!("work"))
+    );
+    assert!(value.pointer("/materialization/profile/locator").is_none());
+
+    materialization
+        .files
+        .push(crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "auth.json".to_string(),
+            contents_base64: "bmV2ZXItbG9nLXRoaXM=".to_string(),
+        });
+    assert!(!format!("{materialization:?}").contains("bmV2ZXItbG9nLXRoaXM"));
+}
+
+#[test]
+fn remote_provider_launch_credential_peer_shape_is_versioned_and_debug_redacted() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let request = RelayPeerRequest::SubmitLeasedPrompt {
+        leased_agent_id: "leased-agent-1".to_string(),
+        expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+            provider: "claude".to_string(),
+            account_profile: "work".to_string(),
+            model: None,
+            effort: None,
+        },
+        provider_resume_state: None,
+        prompt: "continue".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        workflow_context: None,
+        git_context: None,
+        required_mcps: Vec::new(),
+        required_skills: None,
+        remote_extension_manifest: Default::default(),
+        provider_launch_credential: Some(
+            crate::transport::relay_peer::RemoteProviderLaunchCredential {
+                provider: "claude".to_string(),
+                account_profile: "work".to_string(),
+                secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                    "setup-token-secret".to_string(),
+                ),
+            },
+        ),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("setup-token-secret"));
+    let mut value = serde_json::to_value(&request).expect("request should serialize");
+    assert_eq!(
+        value.pointer("/provider_launch_credential/provider"),
+        Some(&serde_json::json!("claude"))
+    );
+    assert_eq!(
+        value.pointer("/provider_launch_credential/account_profile"),
+        Some(&serde_json::json!("work"))
+    );
+    assert_eq!(
+        value.pointer("/provider_launch_credential/secret_input"),
+        Some(&serde_json::json!("setup-token-secret"))
+    );
+
+    value
+        .as_object_mut()
+        .expect("request object")
+        .remove("provider_launch_credential");
+    let legacy_shape: RelayPeerRequest =
+        serde_json::from_value(value).expect("missing optional credential stays compatible");
+    assert!(matches!(
+        legacy_shape,
+        RelayPeerRequest::SubmitLeasedPrompt {
+            provider_launch_credential: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
+    use crate::transport::relay_peer::{
+        RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextImportReceipt,
+        RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
+        RelayManagedContextTransferStatus, RelayManagedKernelContextImportReceipt,
+    };
+
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let request = RelayPeerRequest::UploadManagedContextChunk {
+        transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        capability: RelayManagedContextCapability::new("capability-canary".to_string()),
+        offset: 0,
+        data_base64: RelayManagedContextChunk::new("chunk-canary".to_string()),
+        chunk_sha256: "a".repeat(64),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("capability-canary"));
+    assert!(!debug.contains("chunk-canary"));
+    let value = serde_json::to_value(&request).expect("managed context request should serialize");
+    assert_eq!(
+        value.pointer("/kind"),
+        Some(&serde_json::json!("upload_managed_context_chunk"))
+    );
+    assert_eq!(
+        value.pointer("/capability"),
+        Some(&serde_json::json!("capability-canary"))
+    );
+    let arm_plan = crate::managed_bootstrap::ManagedKernelContextPlan::empty_for_tests("context-1")
+        .package_binding();
+    let arm_plan_digest = arm_plan.plan_digest.clone();
+    let arm = serde_json::to_value(RelayPeerRequest::ArmManagedContextImport {
+        destination: None,
+        plan: arm_plan,
+        target_environment_id: "environment-1".to_string(),
+        target_kernel_id: "target-kernel-1".to_string(),
+        target_key_thumbprint: "d".repeat(64),
+        capability: RelayManagedContextCapability::new("arm-capability-canary".to_string()),
+        archive_sha256: "e".repeat(64),
+        archive_size_bytes: 42,
+    })
+    .expect("managed context arm should serialize");
+    assert_eq!(
+        arm.pointer("/plan/contextId"),
+        Some(&serde_json::json!("context-1"))
+    );
+    assert!(arm.pointer("/context_id").is_none());
+    assert_eq!(
+        arm.pointer("/plan/planDigest"),
+        Some(&serde_json::json!(arm_plan_digest))
+    );
+
+    let response = RelayPeerResponse::ManagedContextImportStatus {
+        status: RelayManagedContextTransferStatus {
+            transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            phase: RelayManagedContextTransferPhase::Consumed,
+            accepted_bytes: 42,
+            archive_size_bytes: 42,
+            expires_at_ms: 1_000,
+            receipt: Some(RelayManagedContextImportReceipt {
+                destination: None,
+                transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                archive_sha256: "a".repeat(64),
+                plan_digest: format!("sha256:{}", "f".repeat(64)),
+                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
+                    project_id: "project-1".to_string(),
+                    destination_root: "/managed/context".to_string(),
+                    primary_repository_id: "repo-primary".to_string(),
+                    repositories: vec![RelayManagedContextImportedRepository {
+                        workspace_kind:
+                            crate::managed_context::development::DevelopmentWorkspaceKind::Git,
+                        repository_id: "repo-primary".to_string(),
+                        role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        destination_path: "/managed/context/primary".to_string(),
+                        head_sha: "b".repeat(40),
+                    }],
+                },
+                kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+                receipt_sha256: "c".repeat(64),
+            }),
+        },
+    };
+    let value = serde_json::to_value(&response).expect("managed context response should serialize");
+    assert_eq!(
+        value.pointer("/status/phase"),
+        Some(&serde_json::json!("consumed"))
+    );
+    assert_eq!(
+        value.pointer("/status/receipt/development/repositories/0/role"),
+        Some(&serde_json::json!("primary"))
+    );
+    assert_eq!(
+        value.pointer("/status/receipt/kernel_context/kind"),
+        Some(&serde_json::json!("empty"))
+    );
+    let failure = serde_json::to_value(RelayPeerResponse::ManagedContextImportFailed {
+        code: "invalid_managed_context".to_string(),
+        retryable: false,
+    })
+    .expect("managed context failure should serialize");
+    assert_eq!(
+        failure.pointer("/kind"),
+        Some(&serde_json::json!("managed_context_import_failed"))
+    );
+    assert_eq!(failure.pointer("/message"), None);
+}
+
+#[test]
+fn execution_lease_created_response_advertises_relay_peer_protocol_version() {
+    let lease = crate::execution_lease::ExecutionLease {
+        id: "lease-1".to_string(),
+        home_kernel_id: "home".to_string(),
+        home_session_id: "session-1".to_string(),
+        home_agent_id: "agent-1".to_string(),
+        home_agent_metaagent: false,
+        owner_user_id: "user-1".to_string(),
+        worker_kernel_id: "worker".to_string(),
+        machine_id: "machine-worker".to_string(),
+        created_at_ms: 1,
+        last_heartbeat_at_ms: 1,
+    };
+    let response = RelayPeerResponse::ExecutionLeaseCreated {
+        lease: lease.clone(),
+        relay_peer_protocol_version: crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+    };
+
+    let value = serde_json::to_value(&response).expect("response should serialize");
+    assert_eq!(
+        value.pointer("/relay_peer_protocol_version"),
+        Some(&serde_json::json!(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        ))
+    );
+
+    let legacy = serde_json::json!({
+        "kind": "execution_lease_created",
+        "lease": lease,
+    });
+    let decoded: RelayPeerResponse =
+        serde_json::from_value(legacy).expect("legacy response should decode with version 0");
+    assert!(matches!(
+        decoded,
+        RelayPeerResponse::ExecutionLeaseCreated {
+            relay_peer_protocol_version: 0,
+            ..
+        }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxied_peer_requests_are_handled_through_relay() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config_a = DaemonConfig::for_tests();
+    config_a.daemon_id = "daemon-a".to_string();
+    config_a.daemon_alias = Some("alpha".to_string());
+    config_a.host_machine_id = "machine-a".to_string();
+    config_a.host_machine_alias = Some("machine-alpha".to_string());
+    config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_a.relay_token = Some("secret".to_string());
+    config_a.relay_heartbeat_ms = 50;
+    let app_a = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_a.clone()).expect("daemon A should bootstrap"),
+    ));
+    let state_a = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
+    let connector_a = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_a),
+        Arc::clone(&state_a),
+        shutdown_a_rx,
+    ));
+
+    let mut config_b = DaemonConfig::for_tests();
+    config_b.daemon_id = "daemon-b".to_string();
+    config_b.daemon_alias = Some("beta".to_string());
+    config_b.host_machine_id = "machine-b".to_string();
+    config_b.host_machine_alias = Some("machine-beta".to_string());
+    config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_b.relay_token = Some("secret".to_string());
+    config_b.relay_heartbeat_ms = 50;
+    let app_b = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_b.clone()).expect("daemon B should bootstrap"),
+    ));
+    let state_b = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_b_tx, shutdown_b_rx) = watch::channel(false);
+    let connector_b = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_b),
+        Arc::clone(&state_b),
+        shutdown_b_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
+    wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
+
+    let kernel = relay_discovery::get_live_kernel(&config_a, "beta")
+        .await
+        .expect("live kernel lookup should succeed");
+    assert_eq!(kernel.kernel_id, config_b.daemon_id);
+    assert_eq!(kernel.public_key, config_b.relay_public_key);
+
+    let response = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("beta".to_string()),
+        },
+        RelayPeerRequest::Ping {
+            value: "hello-remote-kernel".to_string(),
+        },
+    )
+    .await
+    .expect("peer request should succeed");
+    assert_eq!(
+        response,
+        RelayPeerResponse::Pong {
+            value: "hello-remote-kernel".to_string(),
+            daemon_id: config_b.daemon_id.clone(),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            ),
+        }
+    );
+
+    let missing_lease = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("beta".to_string()),
+        },
+        RelayPeerRequest::SubmitLeasedPrompt {
+            leased_agent_id: "missing-leased-agent".to_string(),
+            expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile {
+                provider: "claude".to_string(),
+                account_profile: "work".to_string(),
+                model: None,
+                effort: None,
+            },
+            provider_resume_state: None,
+            prompt: "continue".to_string(),
+            hidden_system_context: String::new(),
+            attachments: Vec::new(),
+            workflow_context: None,
+            git_context: None,
+            required_mcps: Vec::new(),
+            required_skills: None,
+            remote_extension_manifest: Default::default(),
+            provider_launch_credential: Some(
+                crate::transport::relay_peer::RemoteProviderLaunchCredential {
+                    provider: "claude".to_string(),
+                    account_profile: "work".to_string(),
+                    secret_input: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                        "relay-secret-canary".to_string(),
+                    ),
+                },
+            ),
+        },
+    )
+    .await
+    .expect_err("the worker should reject an unknown leased agent");
+    let crate::error::DaemonError::RelayTransport {
+        code, retryable, ..
+    } = &missing_lease
+    else {
+        panic!("relay error should retain structured metadata: {missing_lease:?}");
+    };
+    assert_eq!(code, "unauthorized");
+    assert!(!retryable);
+    let diagnostic = missing_lease.to_string();
+    assert!(
+        diagnostic.contains("unauthorized"),
+        "real relay error code should survive peer transport: {missing_lease:?}"
+    );
+    assert!(diagnostic.contains("unauthorized"), "{diagnostic}");
+    assert!(!diagnostic.contains("relay-secret-canary"));
+
+    let _ = shutdown_a_tx.send(true);
+    let _ = shutdown_b_tx.send(true);
+    connector_a.await.expect("connector A should join");
+    connector_b.await.expect("connector B should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+
+/// A worker kernel with one leased run whose workspace live sync forwards
+/// through a real relay to a controlled home target.
+struct ControlledWorkspaceLiveSyncWorker {
+    app: Arc<Mutex<DaemonApp>>,
+    router: crate::runtime::router::CommandRouter,
+    runtime_auth_token: String,
+    lease_id: String,
+    actions: Arc<Mutex<VecDeque<ControlledWorkspaceLiveSyncAction>>>,
+    request_count: Arc<AtomicUsize>,
+    attempts: Arc<Mutex<Vec<u32>>>,
+    target_shutdown_tx: watch::Sender<bool>,
+    target_task: tokio::task::JoinHandle<()>,
+    server_shutdown_tx: oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<()>,
+}
+
+impl ControlledWorkspaceLiveSyncWorker {
+    async fn start(
+        test_root: &std::path::Path,
+        actions: impl IntoIterator<Item = ControlledWorkspaceLiveSyncAction>,
+    ) -> Self {
+        let server = RelayServer::new(RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: Some("secret".to_string()),
+        });
+        let listener = server
+            .bind_listener()
+            .await
+            .expect("relay listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let server = Arc::new(RelayServer::new(RelayConfig {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            shared_token: Some("secret".to_string()),
+        }));
+        let registry = server.registry();
+        let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+        let server_task = {
+            let server = Arc::clone(&server);
+            tokio::spawn(async move {
+                server
+                    .run_listener_until(listener, async {
+                        let _ = server_shutdown_rx.await;
+                    })
+                    .await
+                    .expect("relay server should run");
+            })
+        };
+
+        let mut target_config = DaemonConfig::for_tests();
+        target_config.daemon_id = "public-live-sync-target".to_string();
+        target_config.host_machine_id = "public-live-sync-machine".to_string();
+        let target_registration = chariox_relay::protocol::DaemonRegistration {
+            auth_token: "secret".to_string(),
+            daemon_id: target_config.daemon_id.clone(),
+            machine_id: target_config.host_machine_id.clone(),
+            machine_alias: Some("public-live-sync-machine".to_string()),
+            os_name: Some(target_config.os_name.clone()),
+            kernel_started_at_ms: crate::session::unix_epoch_ms(),
+            daemon_alias: Some("public-live-sync-target".to_string()),
+            kernel_alias: Some("public-live-sync-target".to_string()),
+            public_key: target_config.relay_public_key.clone(),
+            capabilities: vec![
+                "kernel_websocket".to_string(),
+                "relay_peer_transport".to_string(),
+            ],
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 0,
+        };
+        let actions = Arc::new(Mutex::new(actions.into_iter().collect::<VecDeque<_>>()));
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let attempts = Arc::new(Mutex::new(Vec::<u32>::new()));
+        let (target_shutdown_tx, target_shutdown_rx) = watch::channel(false);
+        let target_task = tokio::spawn(run_controlled_workspace_live_sync_target(
+            format!("ws://{}:{}", addr.ip(), addr.port()),
+            target_registration.clone(),
+            target_config.relay_private_key.clone(),
+            registry.clone(),
+            Arc::clone(&actions),
+            Arc::clone(&request_count),
+            Arc::clone(&attempts),
+            target_shutdown_rx,
+        ));
+        wait_for_daemon_registration(registry.clone(), &target_config.daemon_id).await;
+
+        let mut worker_config = DaemonConfig::for_tests();
+        worker_config.daemon_id = "public-live-sync-worker".to_string();
+        worker_config.host_machine_id = "public-live-sync-worker-machine".to_string();
+        worker_config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+        worker_config.relay_token = Some("secret".to_string());
+        worker_config.relay_request_timeout_ms = 500;
+        worker_config.accept_remote_leases = true;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(worker_config).expect("worker daemon should bootstrap"),
+        ));
+        let (lease_id, runtime_auth_token) = {
+            let mut app = app.lock().await;
+            let lease = RemoteLeaseRuntime::new(&mut app)
+                .create_execution_lease(
+                    &target_config.daemon_id,
+                    "public-live-sync-session",
+                    "public-live-sync-agent",
+                    false,
+                    "public-live-sync-user",
+                )
+                .expect("worker execution lease should be created");
+            let leased_agent = RemoteLeaseRuntime::new(&mut app)
+                .create_leased_agent_from_base_directory(
+                    test_root,
+                    &lease.id,
+                    "managed-dev-stub",
+                    "default",
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+                    Some(test_root.display().to_string()),
+                    None,
+                )
+                .expect("worker leased agent should be created");
+            let (provider_run_id, _) = RemoteLeaseRuntime::new(&mut app)
+                .submit_leased_prompt(&leased_agent.id, "public live-sync request", Vec::new())
+                .expect("worker provider run should be started");
+            let runtime_auth_token = app
+                .providers()
+                .get_run(&provider_run_id)
+                .expect("worker provider run should remain available")
+                .runtime_mcp_auth_token()
+                .expect("worker provider run should expose runtime auth")
+                .to_string();
+            (lease.id, runtime_auth_token)
+        };
+        let router =
+            crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(&app), 2);
+        Self {
+            app,
+            router,
+            runtime_auth_token,
+            lease_id,
+            actions,
+            request_count,
+            attempts,
+            target_shutdown_tx,
+            target_task,
+            server_shutdown_tx,
+            server_task,
+        }
+    }
+
+    async fn read_artifact(
+        &self,
+        timeout: Duration,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, crate::error::DaemonError> {
+        let dispatch = self.router.dispatch_authenticated_runtime_tool_call(
+            &self.runtime_auth_token,
+            crate::transport::runtime_tools::READ_ARTIFACT_TOOL,
+            serde_json::json!({"path": "artifact.txt", "domain": "text"}),
+        );
+        // MP-08 / MP-10 / MP-11: ordinary artifact calls must not carry every owner/tool future.
+        assert!(std::mem::size_of_val(&dispatch) <= 1024);
+        tokio::time::timeout(timeout, dispatch)
+            .await
+            .expect("worker read_artifact should remain bounded")
+    }
+
+    async fn shutdown(self) {
+        assert!(self.actions.lock().await.is_empty());
+        self.target_shutdown_tx
+            .send(true)
+            .expect("controlled target shutdown should be delivered");
+        self.target_task
+            .await
+            .expect("controlled target should join");
+        RemoteLeaseRuntime::new(&mut *self.app.lock().await)
+            .destroy_execution_lease(&self.lease_id)
+            .expect("worker execution lease should be cleaned up");
+        self.server_shutdown_tx
+            .send(())
+            .expect("relay server shutdown should be delivered");
+        self.server_task.await.expect("relay server should join");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn public_authenticated_workspace_live_sync_business_error_fails_fast_and_disconnect_recovers(
+) {
+    crate::test_support::isolated_env_test!();
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
+    let test_root = std::env::temp_dir().join(format!(
+        "chariox-public-workspace-live-sync-recovery-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&test_root).expect("test workspace should be created");
+    std::fs::write(test_root.join("artifact.txt"), "stable\n")
+        .expect("test artifact should be written");
+    let worker = ControlledWorkspaceLiveSyncWorker::start(
+        &test_root,
+        [
+            ControlledWorkspaceLiveSyncAction::BusinessRejection,
+            ControlledWorkspaceLiveSyncAction::Disconnect,
+            ControlledWorkspaceLiveSyncAction::Success,
+        ],
+    )
+    .await;
+
+    let started = std::time::Instant::now();
+    let business_error = worker
+        .read_artifact(Duration::from_secs(2))
+        .await
+        .expect_err("transport_error business rejection should reach the authenticated caller");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "business rejection should not enter the recovery delay: {business_error:?}"
+    );
+    match &business_error {
+        crate::error::DaemonError::RelayTransport {
+            code, retryable, ..
+        } => {
+            assert_eq!(code, "transport_error");
+            assert!(*retryable);
+        }
+        other => panic!("business rejection should retain relay error metadata: {other:?}"),
+    }
+    assert_eq!(worker.request_count.load(Ordering::SeqCst), 1);
+    assert_eq!(*worker.attempts.lock().await, vec![1]);
+
+    let recovered = worker
+        .read_artifact(Duration::from_secs(4))
+        .await
+        .expect("target disconnect should be recovered by the authenticated dispatch");
+    assert!(recovered.ok, "recovered runtime tool should succeed");
+    assert_eq!(recovered.payload["controlled"], "recovered");
+    assert_eq!(worker.request_count.load(Ordering::SeqCst), 3);
+    assert_eq!(*worker.attempts.lock().await, vec![1, 1, 2]);
+
+    worker.shutdown().await;
+    std::fs::remove_dir_all(&test_root).expect("test workspace should be removed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leased_worker_workspace_live_sync_keeps_forwarding_after_worker_commits() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _test_home = RelayTestHome::new();
+    let test_root = std::env::temp_dir().join(format!(
+        "chariox-leased-workspace-live-sync-commit-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&test_root).expect("test workspace should be created");
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Chariox Test",
+                "-c",
+                "user.email=test@chariox.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&test_root)
+            .output()
+            .expect("git should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    git(&["init", "-b", "main"]);
+    std::fs::write(test_root.join("artifact.txt"), "first\n")
+        .expect("test artifact should be written");
+    git(&["add", "artifact.txt"]);
+    git(&["commit", "-m", "first"]);
+    let worker = ControlledWorkspaceLiveSyncWorker::start(
+        &test_root,
+        [
+            ControlledWorkspaceLiveSyncAction::Success,
+            ControlledWorkspaceLiveSyncAction::Success,
+        ],
+    )
+    .await;
+
+    let before_commit = worker
+        .read_artifact(Duration::from_secs(4))
+        .await
+        .expect("first worker read should forward");
+    assert!(before_commit.ok, "{:?}", before_commit.payload);
+
+    std::fs::write(test_root.join("artifact.txt"), "second\n")
+        .expect("test artifact should be updated");
+    git(&["commit", "-am", "second"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    let after_commit = worker
+        .read_artifact(Duration::from_secs(4))
+        .await
+        .expect("worker read after a commit should forward");
+    assert!(after_commit.ok, "{:?}", after_commit.payload);
+    assert_eq!(after_commit.payload["controlled"], "recovered");
+    assert_eq!(after_commit.payload["workspace"]["identity_valid"], true);
+    assert_eq!(after_commit.payload["workspace"]["identity_changed"], false);
+    assert_eq!(after_commit.payload["workspace"]["head_commit"], head);
+    assert_eq!(worker.request_count.load(Ordering::SeqCst), 2);
+
+    git(&["checkout", "-b", "other"]);
+    let after_branch_switch = worker
+        .read_artifact(Duration::from_secs(4))
+        .await
+        .expect("worker read after a branch switch should return a rejection");
+    assert!(!after_branch_switch.ok);
+    assert_eq!(
+        after_branch_switch.payload["reason"]["kind"],
+        "workspace_identity_changed"
+    );
+    assert_eq!(worker.request_count.load(Ordering::SeqCst), 2);
+
+    worker.shutdown().await;
+    std::fs::remove_dir_all(&test_root).expect("test workspace should be removed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_live_sync_changes_apply_to_linked_peer_worktree_through_relay() {
+    crate::test_support::isolated_env_test!();
+    let _relay_test_guard = relay_client_test_guard().await;
+    let test_root = std::env::temp_dir().join(format!(
+        "chariox-relay-workspace-live-sync-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_millis()
+    ));
+    let source_root = test_root.join("source");
+    let target_root = test_root.join("target");
+    let target_src = target_root.join("src");
+    std::fs::create_dir_all(&source_root).expect("source root should be created");
+    std::fs::create_dir_all(&target_src).expect("target src should be created");
+    std::fs::write(target_src.join("lib.rs"), "old\n").expect("target file should be seeded");
+
+    for repository in [&source_root, &target_root] {
+        let status = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repository)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=MP fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial fixture",
+            ])
+            .current_dir(repository)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config_home = DaemonConfig::for_tests();
+    config_home.daemon_id = "daemon-home".to_string();
+    config_home.daemon_alias = Some("home".to_string());
+    config_home.host_machine_id = "machine-home".to_string();
+    config_home.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_home.relay_token = Some("secret".to_string());
+    config_home.relay_heartbeat_ms = 50;
+    let app_home = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_home.clone()).expect("home daemon should bootstrap"),
+    ));
+    let state_home = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_home_tx, shutdown_home_rx) = watch::channel(false);
+    let connector_home = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_home),
+        Arc::clone(&state_home),
+        shutdown_home_rx,
+    ));
+
+    let mut config_worker = DaemonConfig::for_tests();
+    config_worker.daemon_id = "daemon-worker".to_string();
+    config_worker.daemon_alias = Some("worker".to_string());
+    config_worker.host_machine_id = "machine-worker".to_string();
+    config_worker.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_worker.relay_token = Some("secret".to_string());
+    config_worker.relay_heartbeat_ms = 50;
+    let app_worker = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_worker.clone()).expect("worker daemon should bootstrap"),
+    ));
+    let state_worker = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_worker_tx, shutdown_worker_rx) = watch::channel(false);
+    let connector_worker = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_worker),
+        Arc::clone(&state_worker),
+        shutdown_worker_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config_home.daemon_id).await;
+    wait_for_daemon_registration(registry.clone(), &config_worker.daemon_id).await;
+
+    // MP-11: prove the home key by a normal encrypted response before accepting
+    // its filesystem mutation on this shared-token self-hosted relay.
+    let handshake = send_peer_request_via_relay(
+        &app_worker,
+        &state_worker,
+        ClientTarget {
+            daemon_id: Some(config_home.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::Ping {
+            value: "workspace-link-handshake".into(),
+        },
+    )
+    .await
+    .expect("authenticate the source home through the product peer path");
+    assert!(matches!(handshake, RelayPeerResponse::Pong { .. }));
+
+    {
+        let mut app = app_worker.lock().await;
+        let session_id = create_test_session(
+            &mut app,
+            target_root.to_string_lossy().as_ref(),
+            target_root.to_string_lossy().as_ref(),
+        );
+        let (_, link) = app
+            .sessions_mut()
+            .create_workspace_link(&session_id, "team-sync".to_string(), "user-2".to_string())
+            .expect("worker link should be created");
+        app.sessions_mut()
+            .attach_workspace_link(
+                &session_id,
+                link.link_id(),
+                "user-2".to_string(),
+                config_worker.host_machine_id.clone(),
+                config_worker.daemon_id.clone(),
+                target_root.to_string_lossy().to_string(),
+                None,
+                None,
+            )
+            .expect("worker target should attach to workspace link");
+        app.sessions_mut()
+            .attach_workspace_link(
+                &session_id,
+                link.link_id(),
+                "user-1".to_string(),
+                config_home.host_machine_id.clone(),
+                config_home.daemon_id.clone(),
+                source_root.to_string_lossy().to_string(),
+                None,
+                None,
+            )
+            .expect("authenticated source should attach to the same workspace link");
+    }
+
+    let change = crate::git_observer::WorkspaceLiveSyncChange {
+        session_id: "home-session-1".to_string(),
+        agent_id: "agent-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        prompt_id: "prompt-1".to_string(),
+        repo_root: source_root.to_string_lossy().to_string(),
+        worktree_path: source_root.to_string_lossy().to_string(),
+        branch: Some("main".to_string()),
+        changed_paths: vec!["src/lib.rs".to_string()],
+        file_changes: vec![crate::git_observer::WorkspaceLiveSyncFileChange {
+            path: "src/lib.rs".to_string(),
+            previous_path: None,
+            kind: crate::git_observer::WorkspaceLiveSyncFileChangeKind::Modified,
+            before_content_base64: Some("b2xkCg==".to_string()),
+            after_content_base64: Some("bmV3Cg==".to_string()),
+            binary: false,
+        }],
+        status_fingerprint: "tracked_workspace_live_sync".to_string(),
+    };
+    let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
+        home_session_id: "home-session-1".to_string(),
+        link_id: "workspace-link-1".to_string(),
+        link_name: "team-sync".to_string(),
+        source_agent_id: "agent-1".to_string(),
+        source_worktree_path: source_root.to_string_lossy().to_string(),
+        target_user_id: "user-2".to_string(),
+        target_machine_id: config_worker.host_machine_id.clone(),
+        target_kernel_id: config_worker.daemon_id.clone(),
+        target_repo_root: target_root.to_string_lossy().to_string(),
+    };
+
+    let response = send_peer_request_via_relay(
+        &app_home,
+        &state_home,
+        ClientTarget {
+            daemon_id: Some(config_worker.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::ApplyWorkspaceLiveSyncChange { context, change },
+    )
+    .await
+    .expect("workspace live sync apply should cross relay");
+    let target_result = match response {
+        RelayPeerResponse::WorkspaceLiveSyncChangeApplied { target_result } => target_result,
+        other => panic!("unexpected peer response: {other:?}"),
+    };
+    assert_eq!(target_result.target_user_id, "user-2");
+    assert_eq!(target_result.target_kernel_id, config_worker.daemon_id);
+    assert_eq!(target_result.path_results.len(), 1);
+    assert_eq!(
+        target_result.path_results[0].status,
+        crate::git_observer::WorkspaceLiveSyncApplyStatus::Applied,
+        "{}",
+        target_result.path_results[0].message
+    );
+    assert_eq!(
+        std::fs::read_to_string(target_src.join("lib.rs")).expect("target file should be readable"),
+        "new\n"
+    );
+
+    let _ = shutdown_home_tx.send(true);
+    let _ = shutdown_worker_tx.send(true);
+    connector_home.await.expect("home connector should join");
+    connector_worker
+        .await
+        .expect("worker connector should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+    std::fs::remove_dir_all(&test_root).expect("test root should be removed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn execution_leases_are_managed_through_peer_transport() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config_a = DaemonConfig::for_tests();
+    config_a.daemon_id = "daemon-home".to_string();
+    config_a.daemon_alias = Some("home".to_string());
+    config_a.host_machine_id = "machine-home".to_string();
+    config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_a.relay_token = Some("secret".to_string());
+    config_a.relay_heartbeat_ms = 50;
+    let app_a = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_a.clone()).expect("home daemon should bootstrap"),
+    ));
+    let state_a = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
+    let connector_a = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_a),
+        Arc::clone(&state_a),
+        shutdown_a_rx,
+    ));
+
+    let mut config_b = DaemonConfig::for_tests();
+    config_b.daemon_id = "daemon-worker".to_string();
+    config_b.daemon_alias = Some("worker".to_string());
+    config_b.host_machine_id = "machine-worker".to_string();
+    config_b.host_machine_alias = Some("remote-builder".to_string());
+    config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_b.relay_token = Some("secret".to_string());
+    config_b.relay_heartbeat_ms = 50;
+    config_b.accept_remote_leases = true;
+    let app_b = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_b.clone()).expect("worker daemon should bootstrap"),
+    ));
+    let state_b = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_b_tx, shutdown_b_rx) = watch::channel(false);
+    let connector_b = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_b),
+        Arc::clone(&state_b),
+        shutdown_b_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
+    wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
+
+    let created = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("worker".to_string()),
+        },
+        RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: config_a.daemon_id.clone(),
+            home_session_id: "session-remote-1".to_string(),
+            home_agent_id: "agent-remote-1".to_string(),
+            home_agent_metaagent: false,
+            owner_user_id: "user-home".to_string(),
+        },
+    )
+    .await
+    .expect("execution lease should be created remotely");
+    let lease = match created {
+        RelayPeerResponse::ExecutionLeaseCreated {
+            lease,
+            relay_peer_protocol_version,
+        } => {
+            assert_eq!(
+                relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            );
+            lease
+        }
+        other => panic!("unexpected peer response: {other:?}"),
+    };
+    assert_eq!(lease.home_kernel_id, config_a.daemon_id);
+    assert_eq!(lease.worker_kernel_id, config_b.daemon_id);
+    assert_eq!(lease.machine_id, config_b.host_machine_id);
+    {
+        let mut app = app_b.lock().await;
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
+    }
+
+    let destroyed = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::DestroyExecutionLease {
+            lease_id: lease.id.clone(),
+        },
+    )
+    .await
+    .expect("execution lease should be destroyed remotely");
+    assert_eq!(
+        destroyed,
+        RelayPeerResponse::ExecutionLeaseDestroyed {
+            lease_id: lease.id.clone(),
+        }
+    );
+    {
+        let mut app = app_b.lock().await;
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
+    }
+
+    let _ = shutdown_a_tx.send(true);
+    let _ = shutdown_b_tx.send(true);
+    connector_a.await.expect("connector A should join");
+    connector_b.await.expect("connector B should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    }));
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+
+    let mut config_a = DaemonConfig::for_tests();
+    config_a.daemon_id = "daemon-home".to_string();
+    config_a.daemon_alias = Some("home".to_string());
+    config_a.host_machine_id = "machine-home".to_string();
+    config_a.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_a.relay_token = Some("secret".to_string());
+    config_a.relay_heartbeat_ms = 50;
+    let app_a = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_a.clone()).expect("home daemon should bootstrap"),
+    ));
+    let (home_session_id, home_agent_id) = {
+        let mut app = app_a.lock().await;
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+            .expect("home session should be created");
+        (session.id().to_string(), agent.id().to_string())
+    };
+    let state_a = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_a_tx, shutdown_a_rx) = watch::channel(false);
+    let connector_a = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_a),
+        Arc::clone(&state_a),
+        shutdown_a_rx,
+    ));
+
+    let mut config_b = DaemonConfig::for_tests();
+    config_b.daemon_id = "daemon-worker".to_string();
+    config_b.daemon_alias = Some("worker".to_string());
+    config_b.host_machine_id = "machine-worker".to_string();
+    config_b.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
+    config_b.relay_token = Some("secret".to_string());
+    config_b.relay_heartbeat_ms = 50;
+    config_b.accept_remote_leases = true;
+    let app_b = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config_b.clone()).expect("worker daemon should bootstrap"),
+    ));
+    let state_b = Arc::new(RwLock::new(RelayClientState::default()));
+    let (shutdown_b_tx, shutdown_b_rx) = watch::channel(false);
+    let connector_b = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&app_b),
+        Arc::clone(&state_b),
+        shutdown_b_rx,
+    ));
+
+    wait_for_daemon_registration(registry.clone(), &config_a.daemon_id).await;
+    wait_for_daemon_registration(registry.clone(), &config_b.daemon_id).await;
+
+    let lease = match send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::CreateExecutionLease {
+            home_kernel_id: config_a.daemon_id.clone(),
+            home_session_id: home_session_id.clone(),
+            home_agent_id: home_agent_id.clone(),
+            home_agent_metaagent: false,
+            owner_user_id: "user-home".to_string(),
+        },
+    )
+    .await
+    .expect("execution lease should be created remotely")
+    {
+        RelayPeerResponse::ExecutionLeaseCreated {
+            lease,
+            relay_peer_protocol_version,
+        } => {
+            assert_eq!(
+                relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+            );
+            lease
+        }
+        other => panic!("unexpected peer response: {other:?}"),
+    };
+
+    let leased_agent = match send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: None,
+            daemon_alias: Some("worker".to_string()),
+        },
+        RelayPeerRequest::SpawnLeasedAgent {
+            lease_id: lease.id.clone(),
+            provider: "opencode".to_string(),
+            account_profile: "work".to_string(),
+            model: Some("kimi2.5".to_string()),
+            effort: Some("medium".to_string()),
+            execution_mode: None,
+            permission_level: None,
+            workspace_live_sync_mode: Some(crate::config::WorkspaceLiveSyncMode::Tracked),
+            worktree_id: None,
+            worktree_placement: None,
+        },
+    )
+    .await
+    .expect("leased agent should be spawned remotely")
+    {
+        RelayPeerResponse::LeasedAgentSpawned { leased_agent } => leased_agent,
+        other => panic!("unexpected peer response: {other:?}"),
+    };
+    assert_eq!(leased_agent.lease_id, lease.id);
+    assert_eq!(leased_agent.provider, "opencode");
+    {
+        let mut app = app_b.lock().await;
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 1);
+    }
+
+    let destroyed = send_peer_request_via_relay(
+        &app_a,
+        &state_a,
+        ClientTarget {
+            daemon_id: Some(config_b.daemon_id.clone()),
+            daemon_alias: None,
+        },
+        RelayPeerRequest::DestroyLeasedAgent {
+            leased_agent_id: leased_agent.id.clone(),
+        },
+    )
+    .await
+    .expect("leased agent should be destroyed remotely");
+    assert_eq!(
+        destroyed,
+        RelayPeerResponse::LeasedAgentDestroyed {
+            leased_agent_id: leased_agent.id.clone(),
+        }
+    );
+    {
+        let mut app = app_b.lock().await;
+        assert_eq!(RemoteLeaseRuntime::new(&mut app).leased_agent_count(), 0);
+    }
+
+    let _ = shutdown_a_tx.send(true);
+    let _ = shutdown_b_tx.send(true);
+    connector_a.await.expect("connector A should join");
+    connector_b.await.expect("connector B should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}

@@ -1,0 +1,368 @@
+import {
+  BoxRenderable,
+  TextareaRenderable,
+  TextAttributes,
+  TextRenderable,
+  type SyntaxStyle,
+  type RGBA,
+} from "@opentui/core"
+import type { useRenderer } from "@opentui/solid"
+
+import type {
+  AgentInstance,
+  RuntimeSession,
+  TranscriptEntry,
+  WorkflowDefinition,
+  WorkflowEndpointRuntimeInstance,
+  WorkflowRun,
+} from "./cli-types.js"
+import type { ProviderCatalog } from "./provider-catalog.js"
+import { SESSION_NEW_HELP_TEXT, type SessionListEntry } from "./sessions.js"
+import { SplitBorder, theme } from "./theme.js"
+import type { ThemeRegistry } from "./theme-registry.js"
+import {
+  buildTranscriptEntryRenderable,
+  type TranscriptSurfaceTone,
+} from "./transcript-render.js"
+import type { WaitingRoomRemoteState, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
+import type { WorkflowComponentSelection } from "./workflow-component-selection.js"
+import {
+  charioxArtFrame,
+  waitingRoomMenuMinWidth,
+  waitingRoomRows,
+} from "./waiting-room.js"
+import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
+import { buildWorkflowOutlineRenderable as buildWorkflowOutlinePaneRenderable } from "./workflow-outline/render.js"
+
+type RenderContext = ReturnType<typeof useRenderer>
+
+export function buildEmptyTranscriptRenderable(renderer: RenderContext) {
+  return buildAsciiCanvasRenderable(renderer, "Type your first prompt below.", theme.textMuted)
+}
+
+export function buildLoadingTranscriptRenderable(renderer: RenderContext, label?: string) {
+  return buildAsciiCanvasRenderable(renderer, label ? `Loading session ${label}…` : "Loading session...", theme.warning)
+}
+
+export function buildWorkflowOutlineRenderable(
+  renderer: RenderContext,
+  options: {
+    workflows: WorkflowDefinition[]
+    agents: AgentInstance[]
+    workflowRuns: WorkflowRun[]
+    workflowRuntimeInstances?: WorkflowEndpointRuntimeInstance[]
+    selectedWorkflowId: string | null
+    selectedNodeId: string | null
+    selectedComponent?: WorkflowComponentSelection | null
+    onSelectNode: (nodeId: string | null) => void
+    onSelectComponent?: (selection: WorkflowComponentSelection, backingNodeId: string | null) => void
+    inspector?: {
+      title: string
+      meta: string[]
+      body?: string | null
+      draft?: string
+      placeholder?: string | null
+      hint?: string | null
+      onDraftChange?: ((draft: string) => void) | null
+      onEditorRef?: ((editor: TextareaRenderable | null) => void) | null
+      transcriptAgentId?: string | null
+      transcriptEntries?: TranscriptEntry[]
+      mode?: "logs" | "trace" | "edit"
+    } | null
+    transcriptRendering?: {
+      syntaxStyle: SyntaxStyle
+      onToggleTurn: (turnId: number | null | undefined, toggleEntryId?: number) => void
+      onToggleBlob: (entryId: number, collapsed: boolean) => void
+      surfaceTone: TranscriptSurfaceTone
+    }
+  },
+) {
+  const outline = buildWorkflowOutlinePaneRenderable(renderer, options)
+  if (!outline) {
+    return buildAsciiCanvasRenderable(renderer, "type /workflow to start creating a workflow", theme.warning)
+  }
+  let mainPane = outline
+  if (options.inspector) {
+    const wrapper = new BoxRenderable(renderer, {
+      flexDirection: "row",
+      width: "100%",
+      gap: 0,
+    })
+    const left = new BoxRenderable(renderer, {
+      flexGrow: 2,
+      minWidth: 40,
+    })
+    left.add(outline)
+    wrapper.add(left)
+
+    const inspectorConfig = options.inspector
+    const inspector = new BoxRenderable(renderer, {
+      flexGrow: 1,
+      minWidth: 32,
+      border: ["left"],
+      borderColor: theme.borderSubtle,
+      customBorderChars: SplitBorder.customBorderChars,
+      paddingLeft: 1,
+      paddingRight: 1,
+      paddingTop: 1,
+      paddingBottom: 1,
+      flexDirection: "column",
+      gap: 1,
+    })
+    inspector.add(
+      new TextRenderable(renderer, {
+        content: inspectorConfig.title,
+        fg: theme.primary,
+        attributes: TextAttributes.BOLD,
+        wrapMode: "word",
+      }),
+    )
+    if (inspectorConfig.mode) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: formatWorkflowDetailModeTabs(inspectorConfig.mode),
+          fg: theme.textMuted,
+          wrapMode: "none",
+        }),
+      )
+    }
+    if (inspectorConfig.meta.length > 0) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.meta.join("\n"),
+          fg: theme.textMuted,
+          wrapMode: "word",
+        }),
+      )
+    }
+    if (inspectorConfig.onDraftChange) {
+      const textarea = new TextareaRenderable(renderer, {
+        flexGrow: 1,
+        minHeight: 8,
+        wrapMode: "word",
+        initialValue: inspectorConfig.draft ?? "",
+        backgroundColor: theme.backgroundPanel,
+        textColor: theme.text,
+        placeholder: inspectorConfig.placeholder ?? "Type instructions here",
+        placeholderColor: theme.textMuted,
+        onContentChange: () => {
+          inspectorConfig.onDraftChange?.(textarea.plainText)
+        },
+      })
+      textarea.onMouseUp = () => {
+        textarea.focus()
+      }
+      inspectorConfig.onEditorRef?.(textarea)
+      inspector.add(textarea)
+    } else if (inspectorConfig.transcriptEntries && inspectorConfig.transcriptEntries.length > 0 && options.transcriptRendering) {
+      const transcript = new BoxRenderable(renderer, {
+        flexGrow: 1,
+        minHeight: 8,
+        width: "100%",
+        flexDirection: "column",
+      })
+      for (const entry of inspectorConfig.transcriptEntries) {
+        const renderable = buildTranscriptEntryRenderable(
+          renderer,
+          entry,
+          options.transcriptRendering.syntaxStyle,
+          options.transcriptRendering.onToggleTurn,
+          options.transcriptRendering.onToggleBlob,
+          options.transcriptRendering.surfaceTone,
+        )
+        transcript.add(renderable.wrapper)
+      }
+      inspector.add(transcript)
+    } else if (inspectorConfig.body) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.body,
+          fg: theme.text,
+          wrapMode: "word",
+        }),
+      )
+    }
+    if (inspectorConfig.hint) {
+      inspector.add(
+        new TextRenderable(renderer, {
+          content: inspectorConfig.hint,
+          fg: theme.textMuted,
+          wrapMode: "word",
+        }),
+      )
+    }
+    wrapper.add(inspector)
+    mainPane = wrapper
+  }
+  return mainPane
+}
+
+function formatWorkflowDetailModeTabs(mode: "logs" | "trace" | "edit") {
+  return [
+    mode === "logs" ? "[logs]" : " logs ",
+    mode === "trace" ? "[traces]" : " traces ",
+    mode === "edit" ? "[edit]" : " edit ",
+  ].join("  ")
+}
+
+export function buildNoSessionRenderable(
+  renderer: RenderContext,
+  state: WaitingRoomState,
+  sessions: SessionListEntry[],
+  catalog: ProviderCatalog,
+  remote: WaitingRoomRemoteState = {},
+  targets?: WaitingRoomTargetState,
+  themeRegistry?: ThemeRegistry,
+  maxMenuWidth = terminalColumnWidth(),
+) {
+  const wrapper = new BoxRenderable(renderer, {
+    marginBottom: 0,
+    flexGrow: 1,
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 1,
+  })
+  const rows = waitingRoomRows(state, sessions, catalog, remote, targets, themeRegistry)
+  const noSessionText = "No session attached. Dial in and choose your next run."
+  const sessionWarning = theme.warning
+  const menuRows = rows.map((row) => formatWaitingRoomMenuRow(row, maxMenuWidth))
+  const baseMenuWidth = Math.max(
+    menuRows.reduce((width, row) => Math.max(width, row.length), 0),
+    waitingRoomMenuMinWidth(sessions),
+  )
+  const warningWidth = Math.max(baseMenuWidth, noSessionText.length)
+  const centeredNoSessionLine = centerTextToWidth(noSessionText, warningWidth)
+  const menuAlignOffset = Math.max(0, Math.floor((warningWidth - noSessionText.length) / 2))
+
+  const intro = new BoxRenderable(renderer, {
+    width: "100%",
+    flexDirection: "column",
+    alignItems: "center",
+  })
+  intro.add(
+    new TextRenderable(renderer, {
+      content: charioxArtFrame(state.introStep),
+      fg: theme.primary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    })
+  )
+  wrapper.add(intro)
+  const renderedRows = rows.map((row, index) => ({
+    row,
+    content: menuRows[index] ?? "",
+  }))
+  const finalMenuWidth = Math.max(
+    renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
+  )
+  const content = new BoxRenderable(renderer, {
+    width: Math.max(warningWidth, menuAlignOffset + finalMenuWidth),
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 1,
+  })
+  content.add(
+    new TextRenderable(renderer, {
+      content: centeredNoSessionLine,
+      fg: sessionWarning,
+      wrapMode: "none",
+    })
+  )
+
+  const menu = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 0,
+    border: ["left"],
+    borderColor: theme.secondary,
+    customBorderChars: SplitBorder.customBorderChars,
+    paddingLeft: 0,
+    marginLeft: menuAlignOffset,
+    width: finalMenuWidth,
+  })
+  for (const entry of renderedRows) {
+    menu.add(
+      new TextRenderable(renderer, {
+        content: entry.content,
+        fg: entry.row.focused ? theme.primary : entry.row.selectable ? theme.text : theme.textMuted,
+        attributes: entry.row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
+        wrapMode: "none",
+      }),
+    )
+  }
+  content.add(menu)
+  const helpTextContainer = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    marginLeft: menuAlignOffset + 1,
+  })
+  helpTextContainer.add(
+    new TextRenderable(renderer, {
+      content: SESSION_NEW_HELP_TEXT,
+      fg: theme.textMuted,
+      wrapMode: "word",
+    })
+  )
+  content.add(helpTextContainer)
+  wrapper.add(content)
+  return wrapper
+}
+
+function terminalColumnWidth() {
+  return process.stdout.isTTY && Number.isFinite(process.stdout.columns)
+    ? process.stdout.columns
+    : Number.POSITIVE_INFINITY
+}
+
+function buildAsciiCanvasRenderable(
+  renderer: RenderContext,
+  promptText: string,
+  promptColor: RGBA,
+) {
+  const art = charioxArtFrame(12)
+  const prompt = centerTextToWidth(promptText, maxLineWidth(art))
+  const wrapper = new BoxRenderable(renderer, {
+    marginBottom: 0,
+    flexDirection: "column",
+    gap: 1,
+    paddingLeft: 2,
+    paddingRight: 2,
+    paddingTop: 2,
+  })
+  const artContainer = new BoxRenderable(renderer, {
+    flexDirection: "column",
+    gap: 1,
+    alignItems: "center",
+    width: "100%",
+  })
+  artContainer.add(
+    new TextRenderable(renderer, {
+      content: art,
+      fg: theme.primary,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    }),
+  )
+  artContainer.add(
+    new TextRenderable(renderer, {
+      content: prompt,
+      fg: promptColor,
+      wrapMode: "none",
+    }),
+  )
+  wrapper.add(artContainer)
+  return wrapper
+}
+
+function maxLineWidth(content: string) {
+  return content.split("\n").reduce((width, line) => Math.max(width, line.length), 0)
+}
+
+function centerTextToWidth(content: string, width: number) {
+  if (content.length >= width) {
+    return content
+  }
+  const padding = width - content.length
+  const leftPadding = Math.floor(padding / 2)
+  const rightPadding = padding - leftPadding
+  return `${" ".repeat(leftPadding)}${content}${" ".repeat(rightPadding)}`
+}

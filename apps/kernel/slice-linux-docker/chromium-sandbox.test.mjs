@@ -1,0 +1,90 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import test from "node:test";
+
+test("Chromium container profile changes only the three namespace syscall rules", async () => {
+  const profile = JSON.parse(await readFile(new URL("./chromium-seccomp.json", import.meta.url), "utf8"));
+  const namespaces = profile.syscalls.pop();
+  assert.deepEqual(namespaces.names, ["clone", "setns", "unshare"]);
+  assert.equal(namespaces.action, "SCMP_ACT_ALLOW");
+  assert.equal(profile.defaultAction, "SCMP_ACT_ERRNO");
+  // Canonical JSON of upstream moby/profiles at the documented revision. This
+  // guards every other rule, including blocked syscalls and capability checks.
+  assert.equal(createHash("sha256").update(JSON.stringify(profile)).digest("hex"),
+    "afb4934b023cfceaaec1a9d752ca3f801aaa96eb2e59abe6e7ea16976948e080");
+});
+
+test("headed, URL fallback and smoke launch paths never disable the renderer sandbox", async () => {
+  for (const file of ["./docker/slice-screen.sh", "./provision-linux-docker-slice.sh"]) {
+    const source = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /--(?:no-sandbox|disable-setuid-sandbox|disable-seccomp-filter-sandbox)/);
+  }
+});
+
+test("managed Chromium never promotes an insecure origin to a secure context", async () => {
+  const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /--unsafely-treat-insecure-origin-as-secure/);
+  assert.doesNotMatch(source, /CHROME_TRUSTED_INSECURE_ORIGINS/);
+});
+
+test("desktop startup and URL fallback share one Chromium launch configuration", async () => {
+  const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  // One argv serves the supervised owned lifetime and URL forwarding to it.
+  assert.equal((source.match(/nohup chromium/g) ?? []).length, 1);
+  assert.equal((source.match(/browser-lifecycle\.py" start/g) ?? []).length, 1);
+  assert.equal((source.match(/--remote-debugging-port=9222/g) ?? []).length, 1);
+  assert.match(source, /run_chromium owned "\$@"/);
+  assert.match(source, /run_chromium forward "\$@"/);
+  assert.match(source, /launch_chromium \|\| return \$\?/);
+  assert.match(source, /launch_chromium "\$1"/);
+  assert.match(source, /chrome_startup_target_args\+=\(--new-window -- "\$@"\)/);
+  assert.match(source, /chrome_startup_target_args=\(-- "\$CHROME_URL"\)/);
+  assert.match(source, /--remote-debugging-address=127\.0\.0\.1/);
+  assert.match(source, /--remote-debugging-port=9222/);
+});
+
+test("managed startup leaves local credentials under Chromium ownership", async () => {
+  const source = await readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /configure_chromium_profile_preferences/);
+  assert.doesNotMatch(source, /signin\["allowed"\]/);
+  assert.doesNotMatch(source, /prefs\.setdefault\("sync"/);
+  assert.doesNotMatch(source, /credentials_enable_service/);
+  assert.doesNotMatch(source, /password_manager_enabled/);
+  assert.doesNotMatch(source, /password_manager_leak_detection/);
+  assert.match(source, /--password-store=basic/);
+  assert.match(source, /--disable-sync/);
+});
+
+test("browser recovery drill uses the production task cap without extra swap", async () => {
+  const provisioner = await readFile(new URL("./provision-linux-docker-slice.sh", import.meta.url), "utf8");
+  const drill = await readFile(new URL("./live-browser-profile-drill.mjs", import.meta.url), "utf8");
+  assert.equal(drill.match(/"--pids-limit", "(\d+)"/)[1], provisioner.match(/CHARIOX_SLICE_DOCKER_PIDS_LIMIT:-(\d+)/)[1]);
+  assert.equal(drill.match(/"--memory", "([^"]+)"/)[1], drill.match(/"--memory-swap", "([^"]+)"/)[1]);
+});
+
+test("browser profile drill runs the image-selected display server with its helper files", async () => {
+  const [screen, drill, helpers] = await Promise.all([
+    readFile(new URL("./docker/slice-screen.sh", import.meta.url), "utf8"),
+    readFile(new URL("./slice-browser-profile.drill.mjs", import.meta.url), "utf8"),
+    readdir(new URL("./docker/", import.meta.url)),
+  ]);
+  // The drill repoints CHARIOX_SLICE_ROOT at a copy, so every helper the desktop
+  // script names must be in that copy (Xorg aborts without its config). Names
+  // count whether they are `$ROOT/<file>` paths or joined in inline Python.
+  const filter = drill.match(/const runtimeFile = \/(.+)\/;/);
+  assert.ok(filter, "the drill declares one runtime copy filter");
+  const runtimeFile = new RegExp(filter[1]);
+  for (const [, name] of screen.matchAll(/\$ROOT\/([A-Za-z0-9_.-]+)/g)) {
+    if (name !== "logs") assert.ok(helpers.includes(name), `${name} ships from docker/`);
+  }
+  const named = helpers.filter((name) => name !== "slice-screen.sh" && screen.includes(name));
+  for (const name of ["xorg-dummy.conf", "canonical-display.py", "browser-cdp.mjs", "tint2rc"]) {
+    assert.ok(named.includes(name), `slice-screen.sh names ${name}`);
+  }
+  for (const name of named) assert.match(name, runtimeFile, `drill runtime copy omits ${name}`);
+  // Recovery must keep the same display process, whichever server the image selects.
+  assert.doesNotMatch(drill, /"pgrep", \["-x", "Xvfb"\]/);
+  assert.match(drill, /const displayServer = env\.CHARIOX_SLICE_DISPLAY_SERVER \|\| "Xvfb";/);
+  assert.equal(drill.match(/"pgrep", \["-x", displayServer\]/g)?.length, 2);
+});

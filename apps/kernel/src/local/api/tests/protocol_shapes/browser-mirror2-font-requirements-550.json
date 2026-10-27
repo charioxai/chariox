@@ -1,0 +1,114 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "local_protocol": 636,
+  "peer_protocol": 239,
+  "allocation": "coordinator-authorized additive unreleased539/147",
+  "reset": {
+    "font_failures": [],
+    "nodes": [
+      {
+        "id": "n1",
+        "parent": null,
+        "kind": "document"
+      },
+      {
+        "id": "n2",
+        "parent": "n1",
+        "kind": "element",
+        "tag": "html"
+      },
+      {
+        "id": "n3",
+        "parent": "n2",
+        "kind": "element",
+        "tag": "body"
+      },
+      {
+        "id": "n4",
+        "parent": "n3",
+        "kind": "frame",
+        "tag": "iframe"
+      },
+      {
+        "id": "n5",
+        "parent": "n4",
+        "kind": "document"
+      },
+      {
+        "id": "n6",
+        "parent": "n5",
+        "kind": "element",
+        "tag": "html"
+      },
+      {
+        "id": "n7",
+        "parent": "n6",
+        "kind": "element",
+        "tag": "body"
+      }
+    ],
+    "root": "n1",
+    "ops": [
+      {
+        "op": "fonts",
+        "id": "n1",
+        "required": [
+          "10485f6e853ed68dddaea6ba28f8d8fb335ecbfa8a35d8f55ec43017e08221a4"
+        ]
+      },
+      {
+        "op": "fonts",
+        "id": "n5",
+        "required": null
+      }
+    ]
+  },
+  "ready_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "ops": [
+      {
+        "op": "fonts",
+        "id": "n5",
+        "required": [
+          "10485f6e853ed68dddaea6ba28f8d8fb335ecbfa8a35d8f55ec43017e08221a4"
+        ]
+      }
+    ]
+  },
+  "cleared_delta": {
+    "wire": 2,
+    "sequence": 3,
+    "ops": [
+      {
+        "op": "fonts",
+        "id": "n1",
+        "required": []
+      }
+    ]
+  },
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2,
+        "font_requirements": true
+      }
+    }
+  },
+  "subscribed": {
+    "subscription_id": "s",
+    "generation": 1,
+    "tab_id": "t",
+    "device_scale_factor": 1,
+    "wire": 2,
+    "font_requirements": true
+  }
+}

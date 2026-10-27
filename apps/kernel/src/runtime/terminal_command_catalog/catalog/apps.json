@@ -1,0 +1,411 @@
+[
+  {
+    "id": "app",
+    "label": "/app",
+    "description": "Inspect, run and automate your installed Apps",
+    "value": "/app",
+    "surfaces": [
+      "session",
+      "waiting_room"
+    ],
+    "children": [
+      {
+        "id": "app-list",
+        "label": "list",
+        "description": "List App installations with bounded paging",
+        "value": "/app list",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-set",
+        "label": "set",
+        "description": "Show this kernel's App set: releases, approved capabilities and configuration",
+        "value": "/app set",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-status",
+        "label": "status",
+        "description": "Inspect one installation's active and pending release",
+        "value": "/app status ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-journal",
+        "label": "journal",
+        "description": "Show retained installation update history",
+        "value": "/app journal ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-logs",
+        "label": "logs",
+        "description": "Show an App's own log entries",
+        "value": "/app logs ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-worker",
+        "label": "worker",
+        "description": "Show whether an App is running, dormant or stopped",
+        "value": "/app worker ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-start",
+        "label": "start",
+        "description": "Start an App now",
+        "value": "/app start ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-stop",
+        "label": "stop",
+        "description": "Stop an App until you start it again",
+        "value": "/app stop ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-restart",
+        "label": "restart",
+        "description": "Restart an App",
+        "value": "/app restart ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-open",
+        "label": "open",
+        "description": "Open an App's view as a Tab in this session's Room browser",
+        "value": "/app open ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-uninstall",
+        "label": "uninstall",
+        "description": "Stop an App and remove its installation; its data is kept",
+        "value": "/app uninstall ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ]
+      },
+      {
+        "id": "app-install",
+        "label": "install",
+        "description": "Install an App from a local .cxapp package",
+        "value": "/app install",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app install \"./My App.cxapp\""
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-update",
+        "label": "update",
+        "description": "Replace an installed App's release with a local .cxapp package; its data is kept",
+        "value": "/app update ",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app update todo \"./My App.cxapp\""
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-dev",
+        "label": "dev",
+        "description": "Pack an App source directory, install or update it, and repeat on every change; its data is kept",
+        "value": "/app dev ",
+        "execution_target": "terminal_local",
+        "examples": [
+          "/app dev ./my-app",
+          "/app dev ./my-app --key ./private"
+        ],
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-dev-stop",
+        "label": "dev stop",
+        "description": "End the /app dev loop running in this terminal",
+        "value": "/app dev stop",
+        "execution_target": "terminal_local",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-operation",
+        "label": "operation",
+        "description": "Show the progress of an App install or update by its operation ID (the TUI defaults to the one it started last)",
+        "value": "/app operation ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-cancel",
+        "label": "cancel",
+        "description": "Cancel an App install or update before it completes, by its operation ID (the TUI defaults to the one it started last)",
+        "value": "/app cancel ",
+        "surfaces": [
+          "session"
+        ]
+      },
+      {
+        "id": "app-publisher",
+        "label": "publisher",
+        "description": "Trust an App publisher's signing key in this kernel",
+        "value": "/app publisher ",
+        "execution_target": "terminal_local",
+        "surfaces": [
+          "session"
+        ],
+        "children": [
+          {
+            "id": "app-publisher-enroll",
+            "label": "enroll",
+            "description": "Ask this kernel to trust a publisher's public key file; you approve it in the approval panel",
+            "value": "/app publisher enroll ",
+            "execution_target": "terminal_local",
+            "examples": [
+              "/app publisher enroll \"./publisher.json\""
+            ],
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-publisher-status",
+            "label": "status",
+            "description": "Show a publisher enrollment review: this terminal's last one, or the review you name",
+            "value": "/app publisher status",
+            "execution_target": "terminal_local",
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-publisher-cancel",
+            "label": "cancel",
+            "description": "Cancel a publisher enrollment review before it is approved",
+            "value": "/app publisher cancel",
+            "execution_target": "terminal_local",
+            "surfaces": [
+              "session"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-automation",
+        "label": "automation",
+        "description": "Route an App event to a workflow",
+        "value": "/app automation ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-automation-list",
+            "label": "list",
+            "description": "List an App's automations",
+            "value": "/app automation list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-automation-add",
+            "label": "add",
+            "description": "Route an App event to a workflow endpoint",
+            "value": "/app automation add ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-automation-disable",
+            "label": "disable",
+            "description": "Disable an App automation",
+            "value": "/app automation disable ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-inbox",
+        "label": "inbox",
+        "description": "Route external events to an App",
+        "value": "/app inbox ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-inbox-list",
+            "label": "list",
+            "description": "List an App's inbox routes",
+            "value": "/app inbox list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-add",
+            "label": "add",
+            "description": "Route an external event type to an App's incoming event",
+            "value": "/app inbox add ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-remove",
+            "label": "remove",
+            "description": "Remove an App inbox route",
+            "value": "/app inbox remove ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-inbox-test",
+            "label": "test",
+            "description": "Send a test occurrence through an inbox route",
+            "value": "/app inbox test ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-connection",
+        "label": "connection",
+        "description": "Let an App act through one of your event connections",
+        "value": "/app connection ",
+        "surfaces": [
+          "session",
+          "waiting_room"
+        ],
+        "children": [
+          {
+            "id": "app-connection-list",
+            "label": "list",
+            "description": "List the connections an App may act through",
+            "value": "/app connection list ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-connection-grant",
+            "label": "grant",
+            "description": "Let an App act through one of your connections (GENERATOR/CONNECTION)",
+            "value": "/app connection grant ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          },
+          {
+            "id": "app-connection-revoke",
+            "label": "revoke",
+            "description": "Revoke an App's use of a connection",
+            "value": "/app connection revoke ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "app-file",
+        "label": "file",
+        "description": "Answer an App's file request or offer, or revoke its requests",
+        "value": "/app file ",
+        "surfaces": [
+          "session"
+        ],
+        "children": [
+          {
+            "id": "app-file-grant",
+            "label": "grant",
+            "description": "Share local files with an App that asked for them",
+            "value": "/app file grant ",
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-file-save",
+            "label": "save",
+            "description": "Save a file an App offered",
+            "value": "/app file save ",
+            "surfaces": [
+              "session"
+            ]
+          },
+          {
+            "id": "app-file-revoke",
+            "label": "revoke",
+            "description": "End an App's file requests and the files it has not imported",
+            "value": "/app file revoke ",
+            "surfaces": [
+              "session",
+              "waiting_room"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,507 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rand::RngCore;
+use tokio::time::{sleep, Duration, Instant as TokioInstant};
+
+use crate::config::UserArchiveHistoryConfig;
+use crate::error::DaemonError;
+use crate::local::{
+    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, AgentUtilityResult,
+    GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ProjectEnvironmentSetupUtilityInput, RunAgentUtilityRequest, SemanticRecallSearchUtilityInput,
+    WorkspaceCommitMessageUtilityInput,
+};
+use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy, RuntimeProviderRun};
+use crate::runtime::history_requests::{
+    knn_semantic_recall_search, semantic_recall_request_from_utility_input,
+};
+use crate::runtime::project_environment_setup_utility::{
+    parse_project_environment_setup_utility_output,
+    parse_project_environment_setup_utility_output_for_repair,
+    project_environment_setup_utility_prompt_assembly,
+};
+use crate::runtime::projection::DaemonConfigProjectionStore;
+use crate::runtime::semantic_recall_utility::{
+    parse_semantic_recall_search_utility_output, semantic_recall_search_utility_prompt_assembly,
+};
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
+
+pub(crate) const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
+// Project discovery can need the same bounded budget as setup/validation.
+// Lightweight metadata discovery and ordinary utilities retain their limit.
+const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
+    match policy {
+        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
+        ProviderUtilityExecutionPolicy::ExistingRun
+        | ProviderUtilityExecutionPolicy::SessionCommand
+        | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
+    }
+}
+const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub(crate) async fn execute_run_agent_utility_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: RunAgentUtilityRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let result =
+        run_agent_utility(runtime_state, archive_config(config_projection), request).await?;
+    Ok(LocalDaemonResponse::AgentUtilityCompleted { result })
+}
+
+pub(crate) async fn execute_generate_workspace_commit_message_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: GenerateWorkspaceCommitMessageRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let result = run_agent_utility(
+        runtime_state,
+        archive_config(config_projection),
+        RunAgentUtilityRequest {
+            session_id: request.session_id,
+            agent_id: request.agent_id,
+            kind: AgentUtilityKind::WorkspaceCommitMessage,
+            input: AgentUtilityInput::WorkspaceCommitMessage(WorkspaceCommitMessageUtilityInput {
+                workspace_id: request.workspace_id,
+                worktree_id: request.worktree_id,
+                compare_ref: request.compare_ref,
+            }),
+        },
+    )
+    .await?;
+    let AgentUtilityOutput::WorkspaceCommitMessage { message } = result.output else {
+        return Err(DaemonError::LocalTransport {
+            operation: "generate workspace commit message",
+            message: "workspace commit message utility returned unexpected output".to_string(),
+        });
+    };
+    Ok(LocalDaemonResponse::WorkspaceCommitMessageGenerated { message })
+}
+
+pub(crate) async fn execute_agent_utility_request(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    match request {
+        LocalDaemonRequest::RunAgentUtility(request) => {
+            execute_run_agent_utility_request(runtime_state, config_projection, request).await
+        }
+        LocalDaemonRequest::GenerateWorkspaceCommitMessage(request) => {
+            execute_generate_workspace_commit_message_request(
+                runtime_state,
+                config_projection,
+                request,
+            )
+            .await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "agent utility request",
+            message: "unsupported agent utility request".to_string(),
+        }),
+    }
+}
+
+fn archive_config(config_projection: &DaemonConfigProjectionStore) -> UserArchiveHistoryConfig {
+    config_projection.snapshot().user_config.history.archive
+}
+
+pub(crate) async fn run_agent_utility(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+) -> Result<AgentUtilityResult, DaemonError> {
+    let (_agent, provider_run) = assert_agent_utility_can_run(
+        runtime_state,
+        &request.session_id,
+        &request.agent_id,
+        &request.kind,
+    )
+    .await?;
+    run_agent_utility_on_provider_run(runtime_state, archive_config, request, provider_run).await
+}
+
+pub(crate) async fn run_agent_utility_on_provider_run(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+) -> Result<AgentUtilityResult, DaemonError> {
+    run_agent_utility_on_provider_run_with_policy(
+        runtime_state,
+        archive_config,
+        request,
+        provider_run,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn run_agent_utility_on_provider_run_for_project_environment_repair(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+) -> Result<AgentUtilityResult, DaemonError> {
+    run_agent_utility_on_provider_run_with_policy(
+        runtime_state,
+        archive_config,
+        request,
+        provider_run,
+        true,
+    )
+    .await
+}
+
+async fn run_agent_utility_on_provider_run_with_policy(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    request: RunAgentUtilityRequest,
+    provider_run: RuntimeProviderRun,
+    allow_project_environment_repair: bool,
+) -> Result<AgentUtilityResult, DaemonError> {
+    if provider_run.session_id() != request.session_id.as_str()
+        || provider_run.agent_instance_id() != Some(request.agent_id.as_str())
+        || provider_run.state() != ProviderRunState::Running
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: agent_utility_operation(&request.kind),
+            message: "pinned provider runtime does not match the utility target".to_string(),
+        });
+    }
+    let output = match (&request.kind, request.input) {
+        (
+            AgentUtilityKind::WorkspaceCommitMessage,
+            AgentUtilityInput::WorkspaceCommitMessage(input),
+        ) => AgentUtilityOutput::WorkspaceCommitMessage {
+            message: run_workspace_commit_message_utility(runtime_state, provider_run, input)
+                .await?,
+        },
+        (
+            AgentUtilityKind::SemanticRecallSearch,
+            AgentUtilityInput::SemanticRecallSearch(input),
+        ) => {
+            run_semantic_recall_search_utility(runtime_state, archive_config, provider_run, input)
+                .await?
+        }
+        (
+            AgentUtilityKind::ProjectEnvironmentSetup,
+            AgentUtilityInput::ProjectEnvironmentSetup(input),
+        ) => {
+            run_project_environment_setup_utility(
+                runtime_state,
+                provider_run,
+                input,
+                allow_project_environment_repair,
+            )
+            .await?
+        }
+        (kind, _) => {
+            return Err(DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: "agent utility input kind did not match requested utility".to_string(),
+            });
+        }
+    };
+    Ok(AgentUtilityResult {
+        utility_run_id: format!("utility-{}", random_hex_id()),
+        session_id: request.session_id,
+        agent_id: request.agent_id,
+        kind: request.kind,
+        output,
+        generated_at_ms: current_unix_ms(),
+    })
+}
+
+pub(crate) async fn assert_agent_utility_can_run(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    kind: &AgentUtilityKind,
+) -> Result<(crate::agent::AgentInstance, RuntimeProviderRun), DaemonError> {
+    let started_at = TokioInstant::now();
+    loop {
+        let (agent, provider_run) = runtime_state
+            .agent_utility_provider_run(session_id, agent_id, agent_utility_operation(kind))
+            .await?;
+        if provider_run.state() == ProviderRunState::Running {
+            return Ok((agent, provider_run));
+        }
+        let state = provider_run.state();
+        if state != ProviderRunState::Starting
+            || started_at.elapsed() >= AGENT_UTILITY_PROVIDER_READY_TIMEOUT
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: agent_utility_operation(kind),
+                message: format!("agent `{agent_id}` provider runtime is not running ({state:?})",),
+            });
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn run_workspace_commit_message_utility(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    input: WorkspaceCommitMessageUtilityInput,
+) -> Result<String, DaemonError> {
+    let prompt = workspace_commit_message_utility_prompt_assembly(&input)?;
+    run_provider_utility_prompt(
+        runtime_state,
+        provider_run,
+        prompt.into(),
+        "run workspace commit message utility",
+        ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
+    )
+    .await
+}
+
+async fn run_semantic_recall_search_utility(
+    runtime_state: &KernelRuntimeState,
+    archive_config: UserArchiveHistoryConfig,
+    provider_run: RuntimeProviderRun,
+    input: SemanticRecallSearchUtilityInput,
+) -> Result<AgentUtilityOutput, DaemonError> {
+    let requested_limit = input.limit.unwrap_or(20).clamp(1, 50);
+    let search_request = semantic_recall_request_from_utility_input(&input);
+    let (candidates, _next_cursor, unavailable_reason) =
+        knn_semantic_recall_search(archive_config, search_request, requested_limit).await?;
+    if let Some(reason) = unavailable_reason {
+        return Err(DaemonError::LocalTransport {
+            operation: "run semantic recall search utility",
+            message: reason,
+        });
+    }
+    // MP-08/MP-11: archived candidates must be protected before entering utility model context.
+    let candidates = runtime_state.protect_semantic_recall_candidates(candidates);
+    let prompt = semantic_recall_search_utility_prompt_assembly(&input, &candidates)?;
+    let output = run_provider_utility_prompt(
+        runtime_state,
+        provider_run,
+        prompt.into(),
+        "run semantic recall search utility",
+        ProviderUtilityExecutionPolicy::ExistingRun,
+        AGENT_UTILITY_TIMEOUT,
+    )
+    .await?;
+    let parsed = parse_semantic_recall_search_utility_output(&output, &candidates)?;
+    Ok(AgentUtilityOutput::SemanticRecallSearch {
+        answer: parsed.answer,
+        matches: parsed.matches,
+    })
+}
+
+async fn run_project_environment_setup_utility(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    input: ProjectEnvironmentSetupUtilityInput,
+    allow_definition_revision: bool,
+) -> Result<AgentUtilityOutput, DaemonError> {
+    let prompt = project_environment_setup_utility_prompt_assembly(&input)?;
+    let output = run_provider_utility_prompt(
+        runtime_state,
+        provider_run,
+        prompt.into(),
+        "run project environment setup utility",
+        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
+        agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+    )
+    .await?;
+    let definition = if allow_definition_revision {
+        parse_project_environment_setup_utility_output_for_repair(
+            &output,
+            input.definition.as_ref(),
+            &input.target_platform,
+        )?
+    } else {
+        parse_project_environment_setup_utility_output(
+            &output,
+            input.definition.as_ref(),
+            &input.target_platform,
+        )?
+    };
+    Ok(AgentUtilityOutput::ProjectEnvironmentSetup { definition })
+}
+
+fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
+    match kind {
+        AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
+        AgentUtilityKind::SemanticRecallSearch => "run semantic recall search utility",
+        AgentUtilityKind::ProjectEnvironmentSetup => "run project environment setup utility",
+    }
+}
+
+pub(crate) async fn run_provider_utility_prompt(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    run_provider_utility_prompt_with_admission(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn run_provider_utility_prompt_with_admission(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+) -> Result<String, DaemonError> {
+    let provider_run = if policy.is_read_only_discovery() {
+        let mut read_only_run = provider_run;
+        read_only_run.set_execution_config(
+            crate::provider::AgentExecutionMode::Plan,
+            crate::provider::AgentPermissionLevel::Required,
+        );
+        read_only_run.set_read_only_discovery(true);
+        read_only_run
+    } else {
+        provider_run
+    };
+    if crate::provider::provider_run_uses_runtime_structured_utility_prompt(&provider_run) {
+        return runtime_state
+            .run_structured_provider_utility_prompt(
+                provider_run,
+                prompt.visible_user_prompt,
+                prompt.hidden_system_context,
+                timeout,
+                policy,
+                admission,
+            )
+            .await;
+    }
+    tokio::task::spawn_blocking(move || match admission {
+        Some(admission) => crate::provider::run_blocking_provider_utility_prompt_with_admission(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            timeout,
+            operation,
+            policy,
+            Some(admission),
+        ),
+        None => crate::provider::run_blocking_provider_utility_prompt(
+            &provider_run,
+            &prompt.visible_user_prompt,
+            &prompt.hidden_system_context,
+            timeout,
+            operation,
+            policy,
+        ),
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation,
+        message: format!("agent utility prompt task failed: {error}"),
+    })?
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentUtilityPromptParts {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
+}
+
+impl From<crate::runtime::workspace_commit_message_utility::WorkspaceCommitMessageUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::workspace_commit_message_utility::WorkspaceCommitMessageUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
+}
+
+impl From<crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
+}
+
+impl From<crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt>
+    for AgentUtilityPromptParts
+{
+    fn from(
+        value: crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt,
+    ) -> Self {
+        Self {
+            visible_user_prompt: value.visible_user_prompt,
+            hidden_system_context: value.hidden_system_context,
+        }
+    }
+}
+
+fn random_hex_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_discovery_budget_does_not_extend_metadata_or_existing_run_utilities() {
+        assert_eq!(
+            agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            Duration::from_secs(300),
+        );
+        for policy in [
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            ProviderUtilityExecutionPolicy::ExistingRun,
+        ] {
+            assert_eq!(agent_utility_timeout(policy), Duration::from_secs(120));
+        }
+    }
+
+    #[test]
+    fn utility_operations_name_supported_kinds() {
+        assert_eq!(
+            agent_utility_operation(&AgentUtilityKind::WorkspaceCommitMessage),
+            "run workspace commit message utility"
+        );
+        assert_eq!(
+            agent_utility_operation(&AgentUtilityKind::SemanticRecallSearch),
+            "run semantic recall search utility"
+        );
+        assert_eq!(
+            agent_utility_operation(&AgentUtilityKind::ProjectEnvironmentSetup),
+            "run project environment setup utility"
+        );
+    }
+}

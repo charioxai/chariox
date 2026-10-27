@@ -1,0 +1,1 @@
+{"maximumFractionDigits":9,"maximumNanoCpus":"9223372036854775807","cases":[["0.5",true],["2.5",true],["1",true],["0.001",true],["0.000000001",true],["0",false],["0.000",false],["-0.5",false],["",false],[" 1",false],["1 ",false],["1e2",false],["NaN",false],["Infinity",false],["1.2.3",false],[".5",false],["1.",false],["0.0000000001",false],["9223372037",false]]}

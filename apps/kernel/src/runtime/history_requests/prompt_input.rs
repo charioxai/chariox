@@ -1,0 +1,445 @@
+//! Prompt-input history recording and retrieval.
+
+use std::collections::BTreeMap;
+
+use crate::error::DaemonError;
+use crate::history::{
+    HistoryEvent, HistoryEventKind, HistoryEventQuery, HistoryEventRole, OperationalHistoryStore,
+};
+use crate::local::{
+    GetPromptInputHistoryRequest, LocalDaemonResponse, PromptInputHistoryEntry,
+    PromptInputHistoryEntryKind, RecordPromptInputHistoryRequest,
+};
+
+pub(crate) async fn execute_prompt_input_history_request(
+    history: OperationalHistoryStore,
+    request: GetPromptInputHistoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let session_id = request.session_id.clone();
+    let limit = request.limit.unwrap_or(5000).clamp(1, 5000);
+    let after_sequence = request.after_sequence;
+    tokio::task::spawn_blocking(move || {
+        let mut events = prompt_input_history_events_for_kind(
+            &history,
+            &session_id,
+            "user_prompt",
+            after_sequence,
+            limit,
+        )?;
+        events.extend(prompt_input_history_events_for_kind(
+            &history,
+            &session_id,
+            "prompt_input",
+            after_sequence,
+            limit,
+        )?);
+        events.sort_by_key(|event| event.sequence);
+        events.truncate(limit);
+        Ok(LocalDaemonResponse::PromptInputHistory {
+            entries: events
+                .into_iter()
+                .filter_map(prompt_input_history_entry_from_event)
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "load prompt input history",
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn execute_record_prompt_input_history_request(
+    history: OperationalHistoryStore,
+    request: RecordPromptInputHistoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.text.trim().is_empty() {
+        return Ok(LocalDaemonResponse::PromptInputHistoryRecorded {
+            entry: PromptInputHistoryEntry {
+                sequence: 0,
+                timestamp_ms: 0,
+                session_id: request.session_id,
+                source_attachment_id: request.attachment_id,
+                kind: request.kind,
+                text: String::new(),
+            },
+        });
+    }
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        "input_kind".to_string(),
+        serde_json::Value::String(
+            match request.kind {
+                PromptInputHistoryEntryKind::Prompt => "prompt",
+                PromptInputHistoryEntryKind::Command => "command",
+            }
+            .to_string(),
+        ),
+    );
+    if let Some(attachment_id) = request.attachment_id.clone() {
+        metadata.insert(
+            "source_attachment_id".to_string(),
+            serde_json::Value::String(attachment_id),
+        );
+    }
+    let event = history.append_operational_event(
+        HistoryEventKind::PromptInput,
+        Some(HistoryEventRole::User),
+        Some(request.text),
+        metadata,
+        crate::history::HistoryEventTurnContext {
+            session_id: Some(request.session_id),
+            ..Default::default()
+        },
+    )?;
+    let entry = prompt_input_history_entry_from_event(event).ok_or_else(|| {
+        DaemonError::LocalTransport {
+            operation: "record prompt input history",
+            message: "recorded event could not be converted".to_string(),
+        }
+    })?;
+    Ok(LocalDaemonResponse::PromptInputHistoryRecorded { entry })
+}
+
+fn prompt_input_history_entry_from_event(event: HistoryEvent) -> Option<PromptInputHistoryEntry> {
+    let session_id = event.session_id.clone()?;
+    let kind = match event.kind {
+        HistoryEventKind::UserPrompt => {
+            if !user_prompt_event_counts_as_prompt_input_history(&event) {
+                return None;
+            }
+            PromptInputHistoryEntryKind::Prompt
+        }
+        HistoryEventKind::PromptInput => match event
+            .metadata
+            .get("input_kind")
+            .and_then(|value| value.as_str())
+        {
+            Some("command") => PromptInputHistoryEntryKind::Command,
+            _ => PromptInputHistoryEntryKind::Prompt,
+        },
+        _ => return None,
+    };
+    Some(PromptInputHistoryEntry {
+        sequence: event.sequence,
+        timestamp_ms: event.timestamp_ms,
+        session_id,
+        source_attachment_id: event
+            .metadata
+            .get("source_attachment_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        kind,
+        text: event.content.unwrap_or_default(),
+    })
+}
+
+fn user_prompt_event_counts_as_prompt_input_history(event: &HistoryEvent) -> bool {
+    // Kernel instructions are agent-only; the user never typed them.
+    if event
+        .prompt_id
+        .as_deref()
+        .is_some_and(crate::session::is_internal_prompt_echo_id)
+    {
+        return false;
+    }
+    let Some(entry) = event.to_session_history_entry() else {
+        return true;
+    };
+    if crate::session::is_internal_prompt_turn(entry.prompt_origin, event.prompt_id.as_deref()) {
+        return false;
+    }
+    match entry.prompt_origin {
+        Some(crate::session::PromptOrigin::Chariox) => true,
+        Some(
+            crate::session::PromptOrigin::External | crate::session::PromptOrigin::CompletionCheck,
+        ) => false,
+        None => !entry.is_external_provider_observed(),
+    }
+}
+
+fn prompt_input_history_events_for_kind(
+    history: &OperationalHistoryStore,
+    session_id: &str,
+    kind: &str,
+    after_sequence: Option<u64>,
+    limit: usize,
+) -> Result<Vec<HistoryEvent>, DaemonError> {
+    let mut events = Vec::new();
+    let mut cursor = after_sequence;
+    while events.len() < limit {
+        let batch = history.query_events(HistoryEventQuery {
+            session_id: Some(session_id.to_string()),
+            kind: Some(kind.to_string()),
+            after_sequence: cursor,
+            limit: Some(500),
+            ..HistoryEventQuery::default()
+        })?;
+        let Some(last_sequence) = batch.last().map(|event| event.sequence) else {
+            break;
+        };
+        let batch_len = batch.len();
+        events.extend(
+            batch
+                .into_iter()
+                .filter(prompt_input_history_event_projects_as_entry),
+        );
+        cursor = Some(last_sequence);
+        if batch_len < 500 {
+            break;
+        }
+    }
+    events.truncate(limit);
+    Ok(events)
+}
+
+fn prompt_input_history_event_projects_as_entry(event: &HistoryEvent) -> bool {
+    match event.kind {
+        HistoryEventKind::UserPrompt => user_prompt_event_counts_as_prompt_input_history(event),
+        HistoryEventKind::PromptInput => true,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::{HistoryEventTurnContext, SessionHistoryEntry, SessionHistoryEntryKind};
+
+    fn temp_history_store(name: &str) -> (OperationalHistoryStore, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-prompt-input-history-{name}-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        (
+            OperationalHistoryStore::open(path.clone()).expect("operational history should open"),
+            path,
+        )
+    }
+
+    fn remove_temp_history_store(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    fn append_prompt_entry(
+        store: &OperationalHistoryStore,
+        sequence: u64,
+        entry: &SessionHistoryEntry,
+    ) {
+        assert_eq!(store.reserve_sequence(), sequence);
+        store
+            .append(&HistoryEvent::transcript(
+                sequence,
+                entry,
+                HistoryEventTurnContext {
+                    session_id: Some("session-1".to_string()),
+                    agent_id: Some("agent-1".to_string()),
+                    prompt_id: Some(format!("prompt-{sequence}")),
+                    ..HistoryEventTurnContext::default()
+                },
+            ))
+            .expect("prompt event should append");
+    }
+
+    #[test]
+    fn prompt_input_history_excludes_external_observed_prompts() {
+        let (store, path) = temp_history_store("exclude-external");
+        let chariox_prompt =
+            SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", "chariox");
+        let external_origin_prompt = SessionHistoryEntry::user_prompt(
+            "session-1",
+            "attachment-1",
+            "agent-1",
+            "external origin",
+        )
+        .with_prompt_origin(crate::session::PromptOrigin::External);
+        let external_observed_prompt = SessionHistoryEntry::external_provider_observed(
+            "session-1",
+            None,
+            "agent-1",
+            SessionHistoryEntryKind::UserPrompt,
+            "external observed",
+            "codex",
+            "thread-1",
+            Some("turn-1".to_string()),
+            Some(2_000),
+        );
+        for (sequence, entry) in [
+            (1, chariox_prompt),
+            (2, external_origin_prompt),
+            (3, external_observed_prompt),
+        ] {
+            append_prompt_entry(&store, sequence, &entry);
+        }
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        runtime
+            .block_on(execute_record_prompt_input_history_request(
+                store.clone(),
+                RecordPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    attachment_id: Some("attachment-1".to_string()),
+                    kind: PromptInputHistoryEntryKind::Prompt,
+                    text: "draft input".to_string(),
+                },
+            ))
+            .expect("draft input should record");
+
+        let response = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: None,
+                },
+            ))
+            .expect("prompt input history should load");
+        let LocalDaemonResponse::PromptInputHistory { entries } = response else {
+            panic!("unexpected response");
+        };
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chariox", "draft input"]
+        );
+
+        remove_temp_history_store(&path);
+    }
+
+    #[test]
+    fn prompt_input_history_excludes_kernel_instructions() {
+        let (store, path) = temp_history_store("exclude-kernel");
+        for (sequence, prompt_id, text) in [
+            (1, "prompt-1", "typed"),
+            (
+                2,
+                "agent-event-agent-1-7",
+                "Kernel event inbox, untrusted data",
+            ),
+            (3, "prompt-3", "typed again"),
+        ] {
+            assert_eq!(store.reserve_sequence(), sequence);
+            let entry =
+                SessionHistoryEntry::user_prompt("session-1", "attachment-1", "agent-1", text);
+            store
+                .append(&HistoryEvent::transcript(
+                    sequence,
+                    &entry,
+                    HistoryEventTurnContext {
+                        session_id: Some("session-1".to_string()),
+                        agent_id: Some("agent-1".to_string()),
+                        prompt_id: Some(prompt_id.to_string()),
+                        ..HistoryEventTurnContext::default()
+                    },
+                ))
+                .expect("prompt event should append");
+        }
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        let LocalDaemonResponse::PromptInputHistory { entries } = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: None,
+                },
+            ))
+            .expect("prompt input history should load")
+        else {
+            panic!("unexpected response");
+        };
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["typed", "typed again"]
+        );
+        remove_temp_history_store(&path);
+    }
+
+    #[test]
+    fn prompt_input_history_pages_past_external_prompts() {
+        let (store, path) = temp_history_store("page-past-external");
+        append_prompt_entry(
+            &store,
+            1,
+            &SessionHistoryEntry::external_provider_observed(
+                "session-1",
+                None,
+                "agent-1",
+                SessionHistoryEntryKind::UserPrompt,
+                "external observed one",
+                "codex",
+                "thread-1",
+                Some("turn-1".to_string()),
+                Some(1_000),
+            ),
+        );
+        append_prompt_entry(
+            &store,
+            2,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "chariox one",
+            ),
+        );
+        append_prompt_entry(
+            &store,
+            3,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "external origin",
+            )
+            .with_prompt_origin(crate::session::PromptOrigin::External),
+        );
+        append_prompt_entry(
+            &store,
+            4,
+            &SessionHistoryEntry::user_prompt(
+                "session-1",
+                "attachment-1",
+                "agent-1",
+                "chariox two",
+            ),
+        );
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+        let response = runtime
+            .block_on(execute_prompt_input_history_request(
+                store,
+                GetPromptInputHistoryRequest {
+                    session_id: "session-1".to_string(),
+                    after_sequence: None,
+                    limit: Some(2),
+                },
+            ))
+            .expect("prompt input history should load");
+        let LocalDaemonResponse::PromptInputHistory { entries } = response else {
+            panic!("unexpected response");
+        };
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chariox one", "chariox two"]
+        );
+
+        remove_temp_history_store(&path);
+    }
+}

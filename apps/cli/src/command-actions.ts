@@ -1,0 +1,624 @@
+import { adjustProjectEnvironmentRequest, projectEnvironmentPanelLines } from "@chariox/kernel-client/project-environment-panel"
+import { getProjectEnvironmentManifestRequest } from "@chariox/kernel-client/ipc-project-environment-setup-requests"
+import type { ProjectEnvironmentManifest } from "@chariox/kernel-client/kernel-types"
+import type {
+  RuntimeAttachment,
+  RuntimeProviderRun,
+  RuntimeSession,
+  SessionConfigState,
+  TranscriptEntry,
+} from "./cli-types.js"
+import type { ParsedSlashCommand } from "./commands.js"
+import type { MultiAgentResponseLayout } from "./preferences.js"
+import {
+  ROOT_WORKFLOW_SHORTCUTS,
+  focusedSessionAgent,
+  formatRootWorkflowRunSummary,
+  type RootWorkflowShortcutDescriptor,
+} from "./root-workflow-shortcuts.js"
+import {
+  handleCollabSlashCommand,
+  handleCloudSlashCommand,
+  handleRelaySlashCommand,
+  type CloudCommandHandlerDeps,
+} from "./cloud-command-handlers.js"
+import {
+  handleProviderSlashCommand,
+  type ProviderCommandHandlerDeps,
+} from "./provider-command-handlers.js"
+import {
+  handleAccountSlashCommand,
+  handleModelSlashCommand,
+  handleModeSlashCommand,
+  handlePermissionsSlashCommand,
+  handleVariantSlashCommand,
+  handleViewSlashCommand,
+  type SelectionCommandHandlerDeps,
+} from "./selection-command-handlers.js"
+import {
+  handleConfigSlashCommand,
+  type ConfigCommandHandlerDeps,
+} from "./config-command-handlers.js"
+import {
+  handleRemoteMachineSlashCommand,
+  type RemoteMachineCommandHandlerDeps,
+} from "./remote-machine-command-handlers.js"
+import {
+  handleMcpSlashCommand,
+  handleEnvironmentSlashCommand,
+  handleConnectorSlashCommand,
+  handleCredentialSlashCommand,
+  handleExtensionSlashCommand,
+  handleScriptSlashCommand,
+  handleSkillSlashCommand,
+  type CapabilityCommandHandlerDeps,
+} from "./capability-command-handlers.js"
+import {
+  handleSliceSlashCommand,
+  type SliceCommandHandlerDeps,
+} from "./slice-command-handlers.js"
+import {
+  handleRoomSlashCommand,
+  type RoomCommandHandlerDeps,
+} from "./room-command-handler.js"
+import { handleRoomTerminalSlash, type RoomTerminalScreen } from "./room-terminal-slash.js"
+import {
+  handleWorkspaceSlashCommand,
+  handleWorktreeSlashCommand,
+  type WorkspaceCommandHandlerDeps,
+} from "./workspace-command-handlers.js"
+import {
+  handleSessionSlashCommand,
+  type SessionCommandHandlerDeps,
+} from "./session-command-handlers.js"
+import {
+  handleAgentForkCommand,
+  handleAgentSlashCommand,
+  handleCycleAgentFocus as cycleAgentFocusCommand,
+  handleTurnUndoCommand,
+  type AgentCommandHandlerDeps,
+} from "./agent-command-handlers.js"
+import {
+  handleKernelSlashCommand,
+  type KernelCommandHandlerDeps,
+} from "./kernel-command-handlers.js"
+import {
+  handleWorkflowSlashCommand,
+  type WorkflowCommandHandlerDeps,
+} from "./workflow-command-handlers.js"
+import {
+  handleNotificationSlashCommand,
+  type NotificationCommandHandlerDeps,
+} from "./notification-command-handler.js"
+import { handlePromptSettingsSlashCommand } from "./prompt-settings-command-handler.js"
+import { handleAppSlashCommand, type AppCommandHandlerDeps } from "./app-command-handler.js"
+import type {
+  LocalGitWorktreeOptions,
+} from "./command-worktree-placement.js"
+
+type FooterTone = "info" | "error"
+
+export { parseRequestedViewLayout } from "./selection-command-handlers.js"
+export {
+  formatAgentListSummary,
+} from "./agent-command-handlers.js"
+export { formatAgentSubstituteSummary } from "./agent-substitute-command-handlers.js"
+export {
+  formatAgentCapabilityGrants,
+  formatHomeExtensionAuditEvents,
+  parseMcpInstallConfig,
+} from "./capability-command-handlers.js"
+
+type CommandActionDeps =
+  & ProviderCommandHandlerDeps
+  & CloudCommandHandlerDeps
+  & SelectionCommandHandlerDeps
+  & ConfigCommandHandlerDeps
+  & RemoteMachineCommandHandlerDeps
+  & CapabilityCommandHandlerDeps
+  & Omit<SliceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
+  & Omit<WorkspaceCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget" | "setWorkspaceTarget" | "setWorktreeTarget" | "baseWorktree" | "hasDynamicWorktreeTarget">
+  & Omit<SessionCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
+  & Omit<AgentCommandHandlerDeps, "currentWorkspaceTarget" | "currentWorktreeTarget">
+  & KernelCommandHandlerDeps
+  & Omit<WorkflowCommandHandlerDeps, "currentWorkspaceTarget">
+  & NotificationCommandHandlerDeps
+  & AppCommandHandlerDeps
+  & {
+  workspace: string
+  worktree: string
+  getWorkspaceTarget?: () => string
+  getWorktreeTarget?: () => string
+  setWorkspaceTarget?: (workspace: string) => void
+  setWorktreeTarget?: (worktree: string) => void
+  accountProfile?: string | null
+  isAttached: () => boolean
+  sessionState: () => RuntimeSession
+  attachmentState: () => RuntimeAttachment | null
+  providerRunState: () => RuntimeProviderRun | null
+  currentModelId: () => string
+  currentVariantId: () => string
+  currentProviderId: () => string
+  submitGoalPrompt?: (text: string, targetAgentId: string) => Promise<void>
+  focusedAgentId: () => string | null
+  createAgentPromptSchedule?: (
+    sessionId: string,
+    agentId: string,
+    kind: "once" | "recurring",
+    intervalSeconds: number,
+    prompt: string,
+  ) => Promise<{ session: RuntimeSession }>
+  runWorkflowRegistryEntry?: (
+    name: string,
+    endpointRef: string,
+    prompt: string,
+    queueRef?: string | null,
+    options?: {
+      agentRebindings?: Array<{ node: string; agent_ref: string }>
+    },
+  ) => Promise<{ entry: { name: string }; result: { apply?: { apply?: { workflow_id?: string; agent_ids?: Record<string, string> } }; invocation?: { kind?: string } }; session: RuntimeSession }>
+  multiAgentResponseLayout: () => MultiAgentResponseLayout
+  maxAgentsPerScreen: () => number
+  flashFooter: (message: string, tone: FooterTone) => void
+  appendNotice: (message: string, emphasis?: TranscriptEntry["emphasis"], mergeKey?: string) => void
+  sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
+  reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
+  openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
+  captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
+  roomTerminalScreen?: RoomTerminalScreen
+  formatError: (error: unknown) => string
+  prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
+  attachBinding: (
+    session: Pick<RuntimeSession, "id">,
+    createdSession: boolean,
+  ) => Promise<void>
+  deleteKernel?: () => Promise<{ kernelId: string; deletedSessions: RuntimeSession[] }>
+  getDaemonHealth?: KernelCommandHandlerDeps["getDaemonHealth"]
+  getContextTransferStatus?: KernelCommandHandlerDeps["getContextTransferStatus"]
+  listKernelAccessGrants?: KernelCommandHandlerDeps["listKernelAccessGrants"]
+  revokeKernelAccessGrant?: KernelCommandHandlerDeps["revokeKernelAccessGrant"]
+  sendExtendKernelSudo?: (request: import("@chariox/kernel-client/kernel-types").ExtendKernelSudoRequest) => Promise<import("@chariox/kernel-client/kernel-types").KernelSudoTurn>
+  exportDebugBundle?: KernelCommandHandlerDeps["exportDebugBundle"]
+  transitionToNoSession: (message: string) => void
+  updateSessionConfig: (
+    sessionId: string,
+    attachmentId: string,
+    values: Record<string, string>,
+    requiresIdle: boolean,
+  ) => Promise<{ session: RuntimeSession; config: SessionConfigState }>
+  applySessionState: (session: RuntimeSession) => void
+  refreshAgentPanes: (session: RuntimeSession) => Promise<void>
+  rebuildTranscript: () => void
+  requestRender: () => void
+}
+
+export function createCommandActionHandlers(deps: CommandActionDeps) {
+  const currentWorkspaceTarget = () => deps.getWorkspaceTarget?.() ?? deps.workspace
+  const currentWorktreeTarget = () => deps.getWorktreeTarget?.() ?? deps.worktree
+  const setWorkspaceTarget = (workspace: string) => deps.setWorkspaceTarget?.(workspace)
+  const setWorktreeTarget = (worktree: string) => deps.setWorktreeTarget?.(worktree)
+  const workspaceCommandDeps = (): WorkspaceCommandHandlerDeps => ({
+    ...deps,
+    currentWorkspaceTarget,
+    currentWorktreeTarget,
+    setWorkspaceTarget,
+    setWorktreeTarget,
+    baseWorktree: deps.worktree,
+    hasDynamicWorktreeTarget: Boolean(deps.getWorktreeTarget),
+  })
+  const agentCommandDeps = (): AgentCommandHandlerDeps => ({
+    ...deps,
+    currentWorkspaceTarget,
+    currentWorktreeTarget,
+  })
+  const workflowCommandDeps = (): WorkflowCommandHandlerDeps => ({
+    ...deps,
+    currentWorkspaceTarget,
+  })
+
+  const handleSessionCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "session" }>,
+  ): Promise<boolean> => {
+    return handleSessionSlashCommand({ ...deps, currentWorkspaceTarget, currentWorktreeTarget }, command)
+  }
+
+  const handleProviderCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "provider" }>,
+  ): Promise<void> => {
+    await handleProviderSlashCommand(deps, command)
+  }
+
+  const handleModelCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "model" }>,
+  ): Promise<void> => {
+    await handleModelSlashCommand(deps, command)
+  }
+
+  const handleAccountCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "account" }>,
+  ): Promise<void> => {
+    await handleAccountSlashCommand(deps, command)
+  }
+
+  const handleVariantCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "variant" }>,
+  ): Promise<void> => {
+    await handleVariantSlashCommand(deps, command)
+  }
+
+  const handleModeCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "mode" }>,
+  ): Promise<void> => {
+    await handleModeSlashCommand(deps, command)
+  }
+
+  const handlePermissionsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "permissions" }>,
+  ): Promise<void> => {
+    await handlePermissionsSlashCommand(deps, command)
+  }
+
+  const handleViewCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "view" }>,
+  ): Promise<void> => {
+    await handleViewSlashCommand(deps, command)
+  }
+
+  const handleCycleAgentFocus = async (): Promise<void> => {
+    await cycleAgentFocusCommand(agentCommandDeps())
+  }
+
+  const handleAgentCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "agent" }>,
+  ): Promise<void> => {
+    await handleAgentSlashCommand(agentCommandDeps(), command)
+  }
+
+  const handleUndoCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "undo" }>,
+  ): Promise<void> => {
+    await handleTurnUndoCommand(agentCommandDeps(), command.args)
+  }
+
+  const handleForkCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "fork" }>,
+  ): Promise<void> => {
+    await handleAgentForkCommand(agentCommandDeps(), command.args)
+  }
+
+  const handleRelayCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "relay" }>,
+  ): Promise<void> => handleRelaySlashCommand(deps, command)
+
+  const handleCloudCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "cloud" }>,
+  ): Promise<void> => handleCloudSlashCommand(deps, command)
+
+  const handleCollabCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "collab" }>,
+  ): Promise<void> => handleCollabSlashCommand(deps, command)
+
+  const handleConfigCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "config" }>,
+  ): Promise<void> => {
+    await handleConfigSlashCommand(deps, command)
+  }
+
+  const handleMachineCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "machine" }>,
+  ): Promise<void> => {
+    await handleRemoteMachineSlashCommand(deps, command)
+  }
+
+  const handleSliceCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "slice" }>,
+  ): Promise<void> => {
+    await handleSliceSlashCommand({
+      ...deps,
+      currentWorkspaceTarget,
+      currentWorktreeTarget,
+      sessionId: () => deps.sessionState().id,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
+    }, command)
+  }
+
+  const handleKernelCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "kernel" }>,
+  ): Promise<void> => {
+    await handleKernelSlashCommand({
+      ...deps,
+      sudoWindows: () => deps.sessionState().sudo_windows ?? [],
+      ...(deps.sendExtendKernelSudo ? {
+        extendKernelSudo: (entryId: string, revision: number) => {
+          const attachmentId = deps.attachmentState()?.id
+          if (!attachmentId) throw new Error("attach to the session to extend sudo")
+          return deps.sendExtendKernelSudo!({ session_id: deps.sessionState().id, attachment_id: attachmentId, entry_id: entryId, revision })
+        },
+      } : {}),
+    }, command)
+  }
+
+  const handleRoomCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "room" }>,
+  ): Promise<void> => {
+    if (!deps.sendRoomEnvironmentRequest) {
+      deps.flashFooter("Room environment controls are unavailable in this daemon", "error")
+      return
+    }
+    if (command.args[0] === "terminal") {
+      if (!deps.roomTerminalScreen) {
+        deps.flashFooter("Room terminals need the full-screen client", "error")
+        return
+      }
+      await handleRoomTerminalSlash({
+        isAttached: deps.isAttached,
+        sessionId: () => deps.sessionState().id,
+        send: deps.sendRoomEnvironmentRequest,
+        screen: deps.roomTerminalScreen,
+        appendNotice: deps.appendNotice,
+        flashFooter: deps.flashFooter,
+      }, command.args.slice(1))
+      return
+    }
+    await handleRoomSlashCommand({
+      isAttached: deps.isAttached,
+      attachmentId: () => deps.attachmentState()?.id ?? null,
+      sessionId: () => deps.sessionState().id,
+      focusedAgentId: deps.focusedAgentId,
+      send: deps.sendRoomEnvironmentRequest,
+      ...(deps.isRelayConnection ? { isRelayConnection: deps.isRelayConnection } : {}),
+      ...(deps.createViewerPublicKey ? { createViewerPublicKey: deps.createViewerPublicKey } : {}),
+      ...(deps.reconnectRoomEventStream
+        ? { reconnectEventStream: deps.reconnectRoomEventStream }
+        : {}),
+      ...(deps.openRoomViewer ? { openViewer: deps.openRoomViewer } : {}),
+      ...(deps.captureRoomScreenshot
+        ? { captureScreenshot: deps.captureRoomScreenshot }
+        : {}),
+      appendNotice: deps.appendNotice,
+      flashFooter: deps.flashFooter,
+    }, command)
+  }
+
+  const handleMcpCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "mcp" }>,
+  ): Promise<void> => {
+    await handleMcpSlashCommand(deps, command)
+  }
+
+  const handleSkillCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "skill" }>,
+  ): Promise<void> => {
+    await handleSkillSlashCommand(deps, command)
+  }
+
+  const handleEnvCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "env" }>,
+  ): Promise<void> => {
+    // MP-08 / MP-10 / MP-11: post-launch panel uses the same kernel authority.
+    if (command.args[0] === "project") {
+      if (!deps.isAttached() || !deps.sendRoomEnvironmentRequest) {
+        deps.flashFooter("Attach to a Project session to open Environment", "error")
+        return
+      }
+      const session = deps.sessionState()
+      if (command.args[1] === "adjust") {
+        const agentId = deps.focusedAgentId()
+        if (!agentId) { deps.flashFooter("Select an agent to adjust Environment", "error"); return }
+        await deps.sendRoomEnvironmentRequest(adjustProjectEnvironmentRequest(session.id, agentId))
+        deps.flashFooter("Environment review opened", "info")
+      } else {
+        const response = await deps.sendRoomEnvironmentRequest(getProjectEnvironmentManifestRequest(session.project_id, deps.focusedAgentId())) as { ProjectEnvironmentManifest?: {manifest?: ProjectEnvironmentManifest | null} }
+        const manifest = response.ProjectEnvironmentManifest?.manifest
+        deps.appendNotice(manifest ? `Environment\n${projectEnvironmentPanelLines(manifest).join("\n")}\n/env project adjust — Change something...` : "No saved Project environment yet")
+      }
+      return
+    }
+    await handleEnvironmentSlashCommand(deps, command)
+  }
+
+  const handleScriptCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "script" }>,
+  ): Promise<void> => {
+    await handleScriptSlashCommand(deps, command)
+  }
+
+  const handleCredentialCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "credential" }>,
+  ): Promise<void> => {
+    await handleCredentialSlashCommand(deps, command)
+  }
+
+  const handleConnectorCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "connector" }>,
+  ): Promise<void> => {
+    await handleConnectorSlashCommand(deps, command)
+  }
+
+  const handleExtensionCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "extension" }>,
+  ): Promise<void> => {
+    await handleExtensionSlashCommand(deps, command)
+  }
+
+  const handleWorkspaceCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "workspace" }>,
+  ): Promise<void> => {
+    await handleWorkspaceSlashCommand(workspaceCommandDeps(), command)
+  }
+
+  const handleWorktreeCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "worktree" }>,
+  ): Promise<void> => {
+    await handleWorktreeSlashCommand(workspaceCommandDeps(), command)
+  }
+
+  const handleWorkflowCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "workflow" }>,
+  ): Promise<void> => {
+    await handleWorkflowSlashCommand(workflowCommandDeps(), command)
+  }
+
+  const handleNotificationsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "notifications" }>,
+  ): Promise<void> => {
+    await handleNotificationSlashCommand(deps, command)
+  }
+
+  const handleAppCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "app" }>,
+  ): Promise<void> => {
+    await handleAppSlashCommand(deps, command)
+  }
+
+  const handleSettingsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "settings" }>,
+  ): Promise<void> => {
+    await handlePromptSettingsSlashCommand(deps, command)
+  }
+
+  const handleLoopCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "loop" }>,
+  ): Promise<void> => {
+    await handleRootWorkflowShortcut(deps, ROOT_WORKFLOW_SHORTCUTS.loop, command.prompt)
+  }
+
+  const handleGoalCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "goal" }>,
+  ): Promise<void> => {
+    if (!command.prompt.trim()) { deps.flashFooter("usage: /goal [--interval 1–60] <objective>", "error"); return }
+    if (!deps.isAttached()) { deps.flashFooter("/goal requires an attached session", "error"); return }
+    const agent = focusedSessionAgent(deps.sessionState(), deps.focusedAgentId())
+    if (!agent) { deps.flashFooter("/goal requires a focused agent in this session", "error"); return }
+    if (!deps.submitGoalPrompt) { deps.flashFooter("hybrid goals are unavailable; update this client", "error"); return }
+    let raw = command.raw
+    const control = /^(pause|resume|cancel|interval|edit)(?:\s+([\s\S]*))?$/.exec(command.prompt)
+    if (control && !control[2]?.startsWith("goal:")) {
+      const task = deps.sessionState().agent_tasks?.find((t) => t.agent_id === agent.id && t.goal && !["done", "cancelled"].includes(t.state))
+      if (!task?.goal) { deps.flashFooter("no active goal on the focused agent", "error"); return }
+      raw = `/goal ${control[1]} ${task.goal.id} ${task.revision}${control[2] ? ` ${control[2]}` : ""}`
+    }
+    await deps.submitGoalPrompt(raw, agent.id)
+  }
+
+  const handleWaitCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "wait" }>,
+  ): Promise<void> => {
+    const commandName = command.scheduleKind === "once" ? "/wait-in" : "/wait-every"
+    if (command.error || command.minutes === null || !command.prompt.trim()) {
+      deps.flashFooter(command.error ?? `usage: ${commandName} <minutes> <prompt>`, "error")
+      return
+    }
+    if (!deps.isAttached()) {
+      deps.flashFooter("must be attached to a session to schedule agent prompts", "error")
+      return
+    }
+    const agentId = deps.focusedAgentId()
+    if (!agentId) {
+      deps.flashFooter("no focused agent", "error")
+      return
+    }
+    if (!deps.createAgentPromptSchedule) {
+      deps.flashFooter(`${commandName} is unavailable in this daemon`, "error")
+      return
+    }
+    const result = await deps.createAgentPromptSchedule(
+      deps.sessionState().id,
+      agentId,
+      command.scheduleKind,
+      Math.max(1, Math.round(command.minutes * 60)),
+      command.prompt,
+    )
+    deps.applySessionState(result.session)
+    await deps.refreshAgentPanes(result.session)
+    deps.flashFooter(
+      `${commandName} scheduled for ${command.minutes} ${command.minutes === 1 ? "minute" : "minutes"}`,
+      "info",
+    )
+  }
+
+  return {
+    handleSessionCommand,
+    handleProviderCommand,
+    handleAccountCommand,
+    handleModelCommand,
+    handleVariantCommand,
+    handleModeCommand,
+    handlePermissionsCommand,
+    handleViewCommand,
+    handleCycleAgentFocus,
+    handleAgentCommand,
+    handleUndoCommand,
+    handleForkCommand,
+    handleKernelCommand,
+    handleMachineCommand,
+    handleSliceCommand,
+    handleRoomCommand,
+    handleRelayCommand,
+    handleCloudCommand,
+    handleCollabCommand,
+    handleConfigCommand,
+    handleWorkspaceCommand,
+    handleWorktreeCommand,
+    handleWorkflowCommand,
+    handleNotificationsCommand,
+    handleAppCommand,
+    handleSettingsCommand,
+    handleLoopCommand,
+    handleGoalCommand,
+    handleWaitCommand,
+    handleMcpCommand,
+    handleSkillCommand,
+    handleEnvCommand,
+    handleScriptCommand,
+    handleCredentialCommand,
+    handleConnectorCommand,
+    handleExtensionCommand,
+  }
+}
+
+async function handleRootWorkflowShortcut(
+  deps: CommandActionDeps,
+  descriptor: RootWorkflowShortcutDescriptor,
+  prompt: string,
+): Promise<void> {
+  if (!prompt.trim()) {
+    deps.flashFooter(`usage: ${descriptor.commandName} <prompt>`, "error")
+    return
+  }
+  if (!deps.isAttached()) {
+    deps.flashFooter("must be attached to a session to run workflow shortcuts", "error")
+    return
+  }
+  if (!deps.runWorkflowRegistryEntry) {
+    deps.flashFooter(`${descriptor.commandName} is unavailable in this daemon`, "error")
+    return
+  }
+  const focusedAgentId = deps.focusedAgentId()
+  const focusedAgent = focusedSessionAgent(deps.sessionState(), focusedAgentId)
+  if (!focusedAgentId || !focusedAgent) {
+    deps.flashFooter(`${descriptor.commandName} requires a focused agent in this session`, "error")
+    return
+  }
+  const payload = await deps.runWorkflowRegistryEntry(descriptor.registryEntryName, descriptor.endpointRef, prompt.trim(), null, {
+    agentRebindings: [{ node: descriptor.entryNode, agent_ref: focusedAgent.id }],
+  })
+  deps.applySessionState(payload.session)
+  const workflowId = payload.result.apply?.apply?.workflow_id ?? null
+  if (workflowId) {
+    deps.selectWorkflowCanvas(workflowId)
+    deps.showWorkflowScreen()
+  }
+  deps.flashFooter(
+    formatRootWorkflowRunSummary({
+      descriptor,
+      focusedAgentId: focusedAgent.id,
+      workflowId,
+      invocationKind: payload.result.invocation?.kind ?? "invoked",
+      ...(payload.result.apply?.apply?.agent_ids !== undefined
+        ? { agentIdsByNode: payload.result.apply.apply.agent_ids }
+        : {}),
+    }),
+    "info",
+  )
+}

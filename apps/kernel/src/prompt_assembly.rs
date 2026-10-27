@@ -1,0 +1,2364 @@
+mod assessment_evidence;
+pub(crate) use assessment_evidence::AssessmentEvidence;
+// MP-08 / MP-10 / MP-11: identify only optional recreated-lease replay.
+pub(crate) const RECREATED_LEASE_CONTEXT_OPEN: &str = "<chariox_context_handoff>\nChariox reconstructed this bounded background from home history after worker lease recreation. The active user request is supplied separately.\n\n";
+pub(crate) const RECREATED_LEASE_CONTEXT_CLOSE: &str = "\n</chariox_context_handoff>";
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::error::DaemonError;
+use crate::provider::RuntimeProviderRun;
+use crate::session::PromptAttachment;
+
+const PROMPT_REGISTRY_VERSION: &str = "2";
+const PROMPT_DEFAULTS_STATE_FILE: &str = ".bundled-defaults.json";
+const PROMPT_MANIFEST_MARKER_PREFIX: &str = "<!-- chariox-prompt-manifest-entry:";
+const PROMPT_MANIFEST_MARKER_SUFFIX: &str = " -->";
+const LEGACY_WORKFLOW_TURN_HASHES: &[&str] = &[
+    "ac2ffb8b8e5542bfbeda71eb61a89938215dbf2d5b2027545256d81f19c3b87e",
+    "c5867472e1017d69c9426244ea9da5f5a1b03e86054fc3c6416442e55f518e4b",
+];
+const LEGACY_METAAGENT_DELEGATION_HASHES: &[&str] =
+    &["4182ea00a5ca086d4edcaa32900e3586fdc9feef6e954559b5ace7743698816e"];
+const LEGACY_META_MODE_ENTERED_HASHES: &[&str] = &[
+    "62d1df699e55d3e4213dcb7cdf3eadee471155238c48d3898985e7e264dcea5e",
+    "6aac2d837c2d629d1de3e5c96611dd877a9f5a54700a16e24469f53e052ddaa6",
+];
+const LEGACY_SLICE_HASHES: &[&str] = &[
+    "ba79f023be2bcb85d9ab22ceebe992ada13b1fc2e5c3bbfe5b8aef60237ff412",
+    "5b2723aede2fc23f4de963cc9aea35c7a0af4c1677e7ee5b64e0d74276be0a22",
+    "fd8f931980e7a9645e79d24517b01e74d915e3592d366c4d003e0eba476a7ca6",
+    "a9115e43cc0332fafcecdc29105b6151af4ed20bc584dc9f48ba00a267776b71",
+    "e92428d4e8c387de479477a3f33b873b0e81863cd499c224f44661d2efabb28f",
+];
+
+const RUNTIME_BASE: &str = include_str!("provider/runtime_instructions.md");
+const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
+    include_str!("provider/workspace_live_sync_instructions.md");
+const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
+    include_str!("provider/workspace_live_sync_tracked_instructions.md");
+const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
+const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
+    include_str!("provider/agent_message_context_instructions.md");
+const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
+const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_SCHEDULED_PROMPT: &str =
+    include_str!("provider/runtime_scheduled_prompt_instructions.md");
+const RUNTIME_METAAGENT_DELEGATION: &str =
+    include_str!("provider/metaagent_delegation_instructions.md");
+const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
+const RUNTIME_MCP_SKILL_CONTINUATION: &str =
+    include_str!("provider/mcp_skill_continuation_instructions.md");
+const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str =
+    include_str!("provider/workflow_direct_json_fallback_instructions.md");
+const RUNTIME_METAAGENT_EVENT: &str = include_str!("provider/metaagent_event_instructions.md");
+const RUNTIME_METAAGENT_TASK_RECOVERY: &str =
+    include_str!("provider/metaagent_task_recovery_instructions.md");
+const WORKFLOW_TURN: &str = include_str!("provider/workflow_turn_instructions.md");
+const WORKFLOW_RUN_COMPLETION: &str =
+    include_str!("provider/workflow_run_completion_instructions.md");
+const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str =
+    include_str!("provider/workflow_run_intermediate_output_instructions.md");
+const WORKFLOW_CONTROL_MAILBOX: &str =
+    include_str!("provider/workflow_control_mailbox_instructions.md");
+const WORKFLOW_EDGE_CONTRACTS: &str =
+    include_str!("provider/workflow_edge_contracts_instructions.md");
+const WORKFLOW_NODE_TURN_CONTEXT: &str =
+    include_str!("provider/workflow_node_turn_context_instructions.md");
+const WORKFLOW_NODE_MAX_TURNS: &str =
+    include_str!("provider/workflow_node_max_turns_instructions.md");
+const WORKFLOW_WAIT_FOR_ALL_INPUTS: &str =
+    include_str!("provider/workflow_wait_for_all_inputs_instructions.md");
+const WORKFLOW_OUTPUT_CONTRACT: &str =
+    include_str!("provider/workflow_output_contract_instructions.md");
+const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
+const WORKFLOW_SCHEDULE_CONTINUATION: &str =
+    include_str!("provider/workflow_schedule_continuation_instructions.md");
+const WORKFLOW_NODE_DEFAULT_INSTRUCTIONS: &str =
+    include_str!("provider/workflow_node_default_instructions.md");
+const WORKFLOW_HANDOFF_VALIDATION_PASSED: &str =
+    include_str!("provider/workflow_handoff_validation_passed_instructions.md");
+const WORKFLOW_HANDOFF_VALIDATION_FAILED: &str =
+    include_str!("provider/workflow_handoff_validation_failed_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID: &str =
+    include_str!("provider/workflow_output_submission_final_valid_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID: &str =
+    include_str!("provider/workflow_output_submission_final_invalid_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE: &str =
+    include_str!("provider/workflow_output_submission_intermediate_instructions.md");
+const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
+    include_str!("provider/workspace_commit_message_instructions.md");
+const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
+    include_str!("provider/semantic_recall_search_instructions.md");
+const UTILITY_PROJECT_ENVIRONMENT_SETUP: &str =
+    include_str!("provider/project_environment_setup_instructions.md");
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PromptEnvelope {
+    pub(crate) visible_user_prompt: String,
+    pub(crate) hidden_system_context: String,
+    pub(crate) attachments: Vec<PromptAttachment>,
+    pub(crate) manifest: PromptManifest,
+    pub(crate) steering: bool,
+    #[serde(skip)]
+    pub(crate) assessment_only: bool,
+    #[serde(skip)]
+    pub(crate) private_assessment_evidence: Option<AssessmentEvidence>,
+}
+
+impl PromptEnvelope {
+    pub(crate) fn new(
+        visible_user_prompt: impl Into<String>,
+        hidden_system_context: impl Into<String>,
+        attachments: Vec<PromptAttachment>,
+        manifest: PromptManifest,
+    ) -> Self {
+        Self {
+            visible_user_prompt: visible_user_prompt.into(),
+            hidden_system_context: hidden_system_context.into(),
+            attachments,
+            manifest,
+            steering: false,
+            assessment_only: false,
+            private_assessment_evidence: None,
+        }
+    }
+
+    pub(crate) fn with_steering(mut self, steering: bool) -> Self {
+        self.steering = steering;
+        self
+    }
+}
+
+pub(crate) fn agent_message_origin_context(prompt_id: &str) -> String {
+    format!(
+        "<chariox-agent-message-origin>For chariox.send_agent_message in this turn, set origin_prompt_id to `{prompt_id}`. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
+    )
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PromptManifest {
+    pub(crate) version: String,
+    pub(crate) entries: Vec<PromptManifestEntry>,
+}
+
+impl PromptManifest {
+    pub(crate) fn current() -> Self {
+        Self {
+            version: PROMPT_REGISTRY_VERSION.to_string(),
+            entries: Vec::new(),
+        }
+    }
+
+    pub(crate) fn push_body(&mut self, template_id: impl Into<String>, body: &str) {
+        self.entries.push(PromptManifestEntry {
+            template_id: template_id.into(),
+            sha256: sha256_hex(body),
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PromptManifestEntry {
+    pub(crate) template_id: String,
+    pub(crate) sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Explicit turn names distinguish prompt assembly contexts"
+)]
+pub(crate) enum PromptAssemblyMode {
+    NormalProviderTurn,
+    NativeTuiProviderTurn,
+    MetaagentProviderTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
+    WorkflowNodeTurn,
+    UtilityTurn,
+    AssessmentTurn,
+    #[allow(dead_code)] // Existing prompt-template vocabulary retained for continuation callers.
+    McpSkillContinuationTurn,
+}
+
+impl PromptAssemblyMode {
+    // MP-08 / MP-09 / MP-10 / MP-11: authority follows the admitted origin.
+    pub(crate) fn with_prompt_origin(self, origin: crate::session::PromptOrigin) -> Self {
+        if origin == crate::session::PromptOrigin::CompletionCheck {
+            Self::AssessmentTurn
+        } else {
+            self
+        }
+    }
+}
+
+pub(crate) fn provider_turn_mode_for_prompt(
+    agent_id: &str,
+    agent_is_metaagent: bool,
+    source_client_id: Option<&str>,
+    hidden_system_context: &str,
+) -> PromptAssemblyMode {
+    let metaagent_client_prefix = format!("metaagent:{agent_id}:");
+    let is_metaagent_control_turn = source_client_id
+        .is_some_and(|client_id| client_id.starts_with(&metaagent_client_prefix))
+        || hidden_system_context.contains("<meta-mode-entered-context>");
+    if agent_is_metaagent && is_metaagent_control_turn {
+        PromptAssemblyMode::MetaagentProviderTurn
+    } else {
+        PromptAssemblyMode::NormalProviderTurn
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PromptTemplateRegistry {
+    root: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct BundledPromptDefaultsState {
+    version: String,
+    template_sha256: BTreeMap<String, String>,
+}
+
+impl PromptTemplateRegistry {
+    pub(crate) fn from_env() -> Self {
+        let chariox_home = std::env::var_os("CHARIOX_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join(".chariox"))
+            })
+            .unwrap_or_else(|| std::env::temp_dir().join("chariox"));
+        Self::new(chariox_home.join("prompts"))
+    }
+
+    pub(crate) fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn user_rules(&self) -> Result<Option<String>, DaemonError> {
+        let root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(|root| PathBuf::from(root).join("user"))
+            .or_else(|| self.root.parent().map(Path::to_path_buf));
+        let Some(root) = root else {
+            return Ok(None);
+        };
+        let path = root.join("user-rules.md");
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Ok(metadata)
+                if metadata.is_file()
+                    && !metadata.file_type().is_symlink()
+                    && metadata.len() <= 64 * 1024 => {}
+            _ => return Err(prompt_settings_error("invalid user rules", "user-rules.md")),
+        }
+        let body = crate::project_environment::read_user_rules_file(&root)?;
+        Ok(Some(body))
+    }
+
+    pub(crate) fn list_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
+        self.materialize_bundled_defaults()?;
+        bundled_templates()
+            .into_iter()
+            .map(|template| self.read_setting_materialized(template.id))
+            .collect()
+    }
+
+    pub(crate) fn read_setting(
+        &self,
+        template_id: &str,
+    ) -> Result<PromptSettingRecord, DaemonError> {
+        self.materialize_bundled_defaults()?;
+        self.read_setting_materialized(template_id)
+    }
+
+    fn read_setting_materialized(
+        &self,
+        template_id: &str,
+    ) -> Result<PromptSettingRecord, DaemonError> {
+        let template = bundled_templates()
+            .into_iter()
+            .find(|template| template.id == template_id)
+            .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
+        let path = self.path_for(template.id);
+        let current = fs::read_to_string(&path)
+            .map_err(|error| prompt_io_error("read", &path, error))?
+            .trim()
+            .to_string();
+        let default = template.body.trim().to_string();
+        let metadata = prompt_setting_metadata(template.id);
+        Ok(PromptSettingRecord {
+            id: template.id.to_string(),
+            title: metadata.title.to_string(),
+            scope: metadata.scope.to_string(),
+            audience: metadata.audience.to_string(),
+            provider_applicability: metadata
+                .provider_applicability
+                .iter()
+                .map(|provider| (*provider).to_string())
+                .collect(),
+            source: if sha256_hex(&current) == sha256_hex(&default) {
+                "bundled".to_string()
+            } else {
+                "user_override".to_string()
+            },
+            current_sha256: sha256_hex(&current),
+            default_sha256: sha256_hex(&default),
+            current_bytes: current.len(),
+            default_bytes: default.len(),
+            revision: prompt_revision(&current),
+            variables: prompt_variables(&current),
+            current,
+            default,
+            editable: metadata.editable,
+            protected: metadata.protected,
+        })
+    }
+
+    pub(crate) fn update_setting_if_version(
+        &self,
+        template_id: &str,
+        body: &str,
+        expected_revision: u64,
+        expected_sha256: &str,
+    ) -> Result<PromptSettingRecord, DaemonError> {
+        let current = self.read_setting(template_id)?;
+        if current.protected {
+            return Err(prompt_settings_error(
+                "protected prompt setting cannot be edited",
+                template_id,
+            ));
+        }
+        validate_prompt_markdown(template_id, &current.default, body)?;
+        let path = self.path_for(template_id);
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let persisted =
+            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+        let persisted_body = persisted.trim();
+        let current_revision = prompt_revision(persisted_body);
+        let current_sha256 = sha256_hex(persisted_body);
+        if current_revision != expected_revision || current_sha256 != expected_sha256 {
+            return Err(DaemonError::PromptSettingConflict {
+                id: template_id.to_string(),
+                expected_revision,
+                current_revision,
+            });
+        }
+        atomic_write(&path, body.trim())?;
+        drop(_guard);
+        self.read_setting(template_id)
+    }
+
+    pub(crate) fn reset_setting_if_version(
+        &self,
+        template_id: &str,
+        expected_revision: u64,
+        expected_sha256: &str,
+    ) -> Result<PromptSettingRecord, DaemonError> {
+        let template = bundled_templates()
+            .into_iter()
+            .find(|template| template.id == template_id)
+            .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
+        self.materialize_bundled_defaults()?;
+        let path = self.path_for(template_id);
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let persisted =
+            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+        let persisted_body = persisted.trim();
+        let current_revision = prompt_revision(persisted_body);
+        let current_sha256 = sha256_hex(persisted_body);
+        if current_revision != expected_revision || current_sha256 != expected_sha256 {
+            return Err(DaemonError::PromptSettingConflict {
+                id: template_id.to_string(),
+                expected_revision,
+                current_revision,
+            });
+        }
+        atomic_write(&path, template.body.trim())?;
+        drop(_guard);
+        self.read_setting(template_id)
+    }
+
+    pub(crate) fn reset_all_settings_if_versions(
+        &self,
+        expected: &BTreeMap<String, crate::local::PromptSettingVersion>,
+    ) -> Result<Vec<PromptSettingRecord>, DaemonError> {
+        self.materialize_bundled_defaults()?;
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let templates = bundled_templates();
+        if expected.len() != templates.len() {
+            return Err(prompt_settings_error(
+                "reset-all requires the complete prompt catalog version map",
+                "expected",
+            ));
+        }
+        for template in &templates {
+            let path = self.path_for(template.id);
+            let Some(version) = expected.get(template.id) else {
+                return Err(prompt_settings_error(
+                    "reset-all version map is missing a prompt setting",
+                    template.id,
+                ));
+            };
+            let persisted =
+                fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+            let persisted_body = persisted.trim();
+            let current_revision = prompt_revision(persisted_body);
+            let current_sha256 = sha256_hex(persisted_body);
+            if current_revision != version.revision || current_sha256 != version.sha256 {
+                return Err(DaemonError::PromptSettingConflict {
+                    id: template.id.to_string(),
+                    expected_revision: version.revision,
+                    current_revision,
+                });
+            }
+        }
+        for template in templates {
+            let path = self.path_for(template.id);
+            atomic_write(&path, template.body.trim())?;
+        }
+        drop(_guard);
+        self.list_settings()
+    }
+
+    pub(crate) fn materialize_bundled_defaults(&self) -> Result<(), DaemonError> {
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let state_path = self.root.join(PROMPT_DEFAULTS_STATE_FILE);
+        let previous_state = fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|body| serde_json::from_str::<BundledPromptDefaultsState>(&body).ok());
+        let mut template_sha256 = BTreeMap::new();
+        for template in bundled_templates() {
+            let path = self.path_for(template.id);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| prompt_io_error("create", &path, error))?;
+            }
+            let bundled_body = template.body.trim_end();
+            let bundled_hash = sha256_hex(bundled_body);
+            template_sha256.insert(template.id.to_string(), bundled_hash);
+            let existing_body = fs::read_to_string(&path).ok();
+            let existing_hash = existing_body
+                .as_deref()
+                .map(|body| sha256_hex(body.trim_end()));
+            let previous_bundled_hash = previous_state
+                .as_ref()
+                .and_then(|state| state.template_sha256.get(template.id));
+            let is_known_legacy_default = existing_hash
+                .as_deref()
+                .is_some_and(|hash| known_legacy_bundled_default(template.id, hash));
+            let should_materialize = existing_body.is_none()
+                || previous_bundled_hash
+                    .zip(existing_hash.as_ref())
+                    .is_some_and(|(previous, existing)| previous == existing)
+                || is_known_legacy_default;
+            if should_materialize && existing_body.as_deref() != Some(bundled_body) {
+                atomic_write(&path, bundled_body)?;
+            }
+        }
+        fs::create_dir_all(&self.root)
+            .map_err(|error| prompt_io_error("create", &self.root, error))?;
+        let state = BundledPromptDefaultsState {
+            version: PROMPT_REGISTRY_VERSION.to_string(),
+            template_sha256,
+        };
+        let state_body = serde_json::to_string_pretty(&state).map_err(|error| {
+            DaemonError::ProviderProtocol {
+                provider_run_id: "prompt-assembly".to_string(),
+                operation: "prompt_defaults_state_serialize",
+                message: error.to_string(),
+            }
+        })?;
+        if previous_state.as_ref() != Some(&state) {
+            atomic_write(&state_path, &state_body)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read_required(&self, template_id: &str) -> Result<PromptTemplate, DaemonError> {
+        let path = self.path_for(template_id);
+        if !path.exists() {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: "prompt-assembly".to_string(),
+                operation: "prompt_template_read",
+                message: format!("required prompt template `{template_id}` missing at {path:?}"),
+            });
+        }
+        let body =
+            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+        Ok(PromptTemplate {
+            id: template_id.to_string(),
+            body: body.trim().to_string(),
+        })
+    }
+
+    fn path_for(&self, template_id: &str) -> PathBuf {
+        let mut path = self.root.clone();
+        for component in template_id.split('/') {
+            path.push(component);
+        }
+        path.set_extension("md");
+        path
+    }
+}
+
+fn known_legacy_bundled_default(template_id: &str, hash: &str) -> bool {
+    match template_id {
+        "workflow/turn" => LEGACY_WORKFLOW_TURN_HASHES.contains(&hash),
+        "runtime/metaagent-delegation" => LEGACY_METAAGENT_DELEGATION_HASHES.contains(&hash),
+        "runtime/meta-mode-entered" => LEGACY_META_MODE_ENTERED_HASHES.contains(&hash),
+        "runtime/slice" => LEGACY_SLICE_HASHES.contains(&hash),
+        _ => false,
+    }
+}
+
+fn prompt_registry_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn atomic_write(path: &Path, body: &str) -> Result<(), DaemonError> {
+    let Some(parent) = path.parent() else {
+        return Err(prompt_settings_error(
+            "prompt path has no parent",
+            &path.display().to_string(),
+        ));
+    };
+    fs::create_dir_all(parent).map_err(|error| prompt_io_error("create", parent, error))?;
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("prompt"),
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed),
+    ));
+    let result = (|| {
+        let mut file = fs::File::create(&temp_path)
+            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
+        file.write_all(body.as_bytes())
+            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
+        file.sync_all()
+            .map_err(|error| prompt_io_error("sync", &temp_path, error))?;
+        fs::rename(&temp_path, path).map_err(|error| prompt_io_error("rename", path, error))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PromptTemplate {
+    pub(crate) id: String,
+    pub(crate) body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptSettingRecord {
+    pub id: String,
+    pub title: String,
+    pub scope: String,
+    pub audience: String,
+    pub provider_applicability: Vec<String>,
+    pub source: String,
+    pub current: String,
+    pub default: String,
+    pub current_sha256: String,
+    pub default_sha256: String,
+    pub current_bytes: usize,
+    pub default_bytes: usize,
+    pub revision: u64,
+    pub variables: Vec<String>,
+    pub editable: bool,
+    pub protected: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PromptSettingMetadata {
+    title: &'static str,
+    scope: &'static str,
+    audience: &'static str,
+    provider_applicability: &'static [&'static str],
+    editable: bool,
+    protected: bool,
+}
+
+fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
+    let (title, scope, audience) = match template_id {
+        "workflow/turn" => ("Workflow turn contract", "workflow", "workflow-agent"),
+        "workflow/run-completion" => ("Workflow completion", "workflow", "workflow-agent"),
+        "workflow/run-intermediate-output" => {
+            ("Workflow progress output", "workflow", "workflow-agent")
+        }
+        "workflow/control-mailbox" => ("Workflow control mailbox", "workflow", "workflow-agent"),
+        "workflow/edge-contracts" => ("Workflow edge contracts", "workflow", "workflow-agent"),
+        "workflow/node-turn-context" => {
+            ("Workflow node turn context", "workflow", "workflow-agent")
+        }
+        "workflow/node-max-turns" => ("Workflow node turn limit", "workflow", "workflow-agent"),
+        "workflow/wait-for-all-inputs" => (
+            "Workflow input synchronization",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-contract" => ("Workflow output contract", "workflow", "workflow-agent"),
+        "workflow/last-turn" => ("Workflow last-turn guidance", "workflow", "workflow-agent"),
+        "workflow/schedule-continuation" => (
+            "Workflow schedule continuation",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/node-default-instructions" => (
+            "Workflow node default instructions",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/handoff-validation-passed" => (
+            "Workflow handoff validation passed",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/handoff-validation-failed" => (
+            "Workflow handoff validation failed",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-final-valid" => (
+            "Workflow final output submitted",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-final-invalid" => (
+            "Workflow final output rejected",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-intermediate" => (
+            "Workflow intermediate output submitted",
+            "workflow",
+            "workflow-agent",
+        ),
+        id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
+            ("Meta-agent runtime guidance", "runtime", "meta-agent")
+        }
+        "runtime/scheduled-prompt" => ("Scheduled prompt context", "runtime", "provider-agent"),
+        id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
+        id if id.starts_with("runtime/") => {
+            ("Runtime provider guidance", "runtime", "provider-agent")
+        }
+        _ => ("Chariox prompt", "runtime", "provider-agent"),
+    };
+    let protected = matches!(
+        template_id,
+        "runtime/base"
+            | "runtime/native-permissions"
+            | "runtime/workspace-live-sync"
+            | "runtime/workspace-live-sync-tracked"
+            | "runtime/slice"
+            | "runtime/metaagent-delegation"
+            | "runtime/agent-message-context"
+    );
+    PromptSettingMetadata {
+        title,
+        scope,
+        audience,
+        provider_applicability: &["codex", "claude", "opencode"],
+        editable: !protected,
+        protected,
+    }
+}
+
+fn prompt_variables(body: &str) -> Vec<String> {
+    let mut variables = BTreeMap::<String, ()>::new();
+    let mut remainder = body;
+    while let Some(start) = remainder.find("{{") {
+        let after_start = &remainder[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            break;
+        };
+        let variable = after_start[..end].trim();
+        if !variable.is_empty() {
+            variables.insert(variable.to_string(), ());
+        }
+        remainder = &after_start[end + 2..];
+    }
+    variables.into_keys().collect()
+}
+
+fn prompt_revision(body: &str) -> u64 {
+    let digest = Sha256::digest(body.as_bytes());
+    // Prompt revisions cross the browser/kernel JSON boundary and are represented
+    // as JavaScript numbers by the web client. Keep the content-derived revision
+    // within Number.MAX_SAFE_INTEGER so optimistic concurrency checks do not lose
+    // precision in transit.
+    u64::from_be_bytes(digest[..8].try_into().unwrap_or_default()) & ((1 << 53) - 1)
+}
+
+fn validate_prompt_markdown(
+    template_id: &str,
+    bundled_default: &str,
+    body: &str,
+) -> Result<(), DaemonError> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Err(prompt_settings_error(
+            "prompt Markdown cannot be empty",
+            "body",
+        ));
+    }
+    if trimmed.len() > 64 * 1024 {
+        return Err(prompt_settings_error(
+            "prompt Markdown exceeds the 64 KiB limit",
+            "body",
+        ));
+    }
+    let mut remainder = trimmed;
+    while let Some(start) = remainder.find("{{") {
+        let Some(end) = remainder[start + 2..].find("}}") else {
+            return Err(prompt_settings_error(
+                "prompt variables must have balanced delimiters",
+                template_id,
+            ));
+        };
+        remainder = &remainder[start + 2 + end + 2..];
+    }
+    let variables = prompt_variables(trimmed);
+    if let Some(required) = prompt_variables(bundled_default)
+        .into_iter()
+        .find(|required| !variables.iter().any(|variable| variable == required))
+    {
+        return Err(prompt_settings_error(
+            &format!("prompt must preserve required variable `{{{{{required}}}}}`"),
+            template_id,
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn render_configured_prompt(
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> String {
+    let body = PromptTemplateRegistry::from_env()
+        .read_setting(template_id)
+        .map(|setting| setting.current)
+        .unwrap_or_else(|_| bundled_default.to_string());
+    render_bundled_prompt(&body, substitutions)
+}
+
+pub(crate) fn render_configured_prompt_with_manifest(
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> (String, PromptManifestEntry) {
+    render_configured_prompt_with_manifest_from_registry(
+        &PromptTemplateRegistry::from_env(),
+        template_id,
+        bundled_default,
+        substitutions,
+    )
+}
+
+fn render_configured_prompt_with_manifest_from_registry(
+    registry: &PromptTemplateRegistry,
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> (String, PromptManifestEntry) {
+    let body = registry
+        .read_setting(template_id)
+        .map(|setting| setting.current)
+        .unwrap_or_else(|_| bundled_default.to_string());
+    let rendered = render_bundled_prompt(&body, substitutions);
+    (
+        rendered,
+        PromptManifestEntry {
+            template_id: template_id.to_string(),
+            sha256: sha256_hex(&body),
+        },
+    )
+}
+
+pub(crate) fn attach_prompt_manifest_entry(
+    context: impl Into<String>,
+    entry: &PromptManifestEntry,
+) -> String {
+    let marker = serde_json::to_string(entry).expect("prompt manifest entry must serialize");
+    format!(
+        "{PROMPT_MANIFEST_MARKER_PREFIX}{marker}{PROMPT_MANIFEST_MARKER_SUFFIX}\n{}",
+        context.into()
+    )
+}
+
+fn extract_prompt_manifest_entries(context: &str) -> (Option<&str>, Vec<PromptManifestEntry>) {
+    let mut entries = Vec::new();
+    let mut body = context;
+    loop {
+        let Some(line_end) = body.find('\n') else {
+            break;
+        };
+        let line = &body[..line_end];
+        let Some(payload) = line
+            .strip_prefix(PROMPT_MANIFEST_MARKER_PREFIX)
+            .and_then(|value| value.strip_suffix(PROMPT_MANIFEST_MARKER_SUFFIX))
+        else {
+            break;
+        };
+        if let Ok(entry) = serde_json::from_str::<PromptManifestEntry>(payload) {
+            entries.push(entry);
+            body = &body[line_end + 1..];
+        } else {
+            break;
+        }
+    }
+    (Some(body), entries)
+}
+
+pub(crate) fn strip_prompt_manifest_entries(context: &str) -> String {
+    extract_prompt_manifest_entries(context)
+        .0
+        .unwrap_or(context)
+        .trim()
+        .to_string()
+}
+
+fn prompt_settings_error(message: &str, setting_id: &str) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: "prompt-settings".to_string(),
+        operation: "prompt_settings",
+        message: format!("{message}: {setting_id}"),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PromptAssemblyService {
+    registry: PromptTemplateRegistry,
+}
+
+impl PromptAssemblyService {
+    pub(crate) fn from_env() -> Result<Self, DaemonError> {
+        let registry = PromptTemplateRegistry::from_env();
+        registry.materialize_bundled_defaults()?;
+        Ok(Self { registry })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(registry: PromptTemplateRegistry) -> Self {
+        Self { registry }
+    }
+
+    pub(crate) fn assemble_provider_turn(
+        &self,
+        run: &RuntimeProviderRun,
+        visible_user_prompt: &str,
+        additional_hidden_context: Option<&str>,
+        attachments: Vec<PromptAttachment>,
+        mode: PromptAssemblyMode,
+    ) -> Result<PromptEnvelope, DaemonError> {
+        if mode == PromptAssemblyMode::AssessmentTurn {
+            let mut envelope = PromptEnvelope::new(
+                visible_user_prompt,
+                format!(
+                    "Assess only the supplied evidence, including exact kernel-private result data when supplied. Tools and external authority are unavailable.\n\n{}",
+                    additional_hidden_context.unwrap_or_default()
+                ),
+                Vec::new(),
+                PromptManifest::current(),
+            );
+            envelope.assessment_only = true;
+            return Ok(envelope);
+        }
+        let mut hidden_fragments = Vec::new();
+        let mut manifest = PromptManifest::current();
+
+        self.push_template("runtime/base", &mut hidden_fragments, &mut manifest)?;
+        if let Some(rules) = self.registry.user_rules()? {
+            hidden_fragments.push(format!(
+                "<chariox-user-rules>\n{rules}\n</chariox-user-rules>"
+            ));
+        }
+        if let Some(missing) = run.pty_env().get("CHARIOX_PROJECT_MISSING_INPUTS") {
+            if let Ok(names) = serde_json::from_str::<Vec<String>>(missing) {
+                hidden_fragments.push(format!("Project setup continues with these inputs missing or left behind: {}. Ask for a value only when the current task needs it; never guess or print secret values.", names.join(", ")));
+            }
+        }
+        if current_kernel_is_slice() {
+            self.push_template("runtime/slice", &mut hidden_fragments, &mut manifest)?;
+        }
+        let execution_template = if run.requires_workspace_live_sync() {
+            "runtime/workspace-live-sync"
+        } else if run.tracks_workspace_live_sync() {
+            "runtime/workspace-live-sync-tracked"
+        } else {
+            "runtime/native-permissions"
+        };
+        self.push_template(execution_template, &mut hidden_fragments, &mut manifest)?;
+        if mode == PromptAssemblyMode::MetaagentProviderTurn {
+            self.push_template(
+                "runtime/metaagent-delegation",
+                &mut hidden_fragments,
+                &mut manifest,
+            )?;
+        }
+        let (additional_hidden_context, additional_manifest_entries) = additional_hidden_context
+            .map(extract_prompt_manifest_entries)
+            .unwrap_or_default();
+        manifest.entries.extend(additional_manifest_entries);
+        if let Some(additional_hidden_context) = additional_hidden_context
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            hidden_fragments.push(additional_hidden_context.to_string());
+        }
+        let (attachments, notes_context) =
+            crate::prompt_notes::split_for_provider(attachments, run.agent_instance_id());
+        hidden_fragments.extend(notes_context);
+        if additional_hidden_context.is_some_and(|context| {
+            context.contains("<workflow-runtime-instructions>")
+                || context.contains("Chariox workflow turn")
+        }) {
+            self.push_template(
+                "runtime/workflow-direct-json-fallback",
+                &mut hidden_fragments,
+                &mut manifest,
+            )?;
+        }
+
+        if matches!(
+            mode,
+            PromptAssemblyMode::McpSkillContinuationTurn
+                | PromptAssemblyMode::NativeTuiProviderTurn
+                | PromptAssemblyMode::MetaagentProviderTurn
+                | PromptAssemblyMode::NormalProviderTurn
+                | PromptAssemblyMode::WorkflowNodeTurn
+                | PromptAssemblyMode::UtilityTurn
+        ) {
+            // Mode is currently recorded by the caller-specific manifest entries added later.
+        }
+
+        Ok(PromptEnvelope::new(
+            visible_user_prompt,
+            hidden_fragments.join("\n\n"),
+            attachments,
+            manifest,
+        ))
+    }
+
+    pub(crate) fn assemble_hidden_context_only(
+        &self,
+        template_ids: &[&str],
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        let mut hidden_fragments = Vec::new();
+        let mut manifest = PromptManifest::current();
+        for template_id in template_ids {
+            self.push_template(template_id, &mut hidden_fragments, &mut manifest)?;
+        }
+        Ok((hidden_fragments.join("\n\n"), manifest))
+    }
+
+    pub(crate) fn assemble_mcp_skill_continuation_context(
+        &self,
+        mcp_name: &str,
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        let (hidden_context, manifest) =
+            self.assemble_hidden_context_only(&["runtime/mcp-skill-continuation"])?;
+        Ok((
+            hidden_context.replace("{{MCP_NAME}}", mcp_name.trim()),
+            manifest,
+        ))
+    }
+
+    pub(crate) fn assemble_meta_mode_entered_context(
+        &self,
+    ) -> Result<(String, PromptManifest), DaemonError> {
+        self.assemble_hidden_context_only(&["runtime/meta-mode-entered"])
+    }
+
+    fn push_template(
+        &self,
+        template_id: &str,
+        fragments: &mut Vec<String>,
+        manifest: &mut PromptManifest,
+    ) -> Result<(), DaemonError> {
+        let template = self.registry.read_required(template_id)?;
+        manifest.push_body(template.id.clone(), &template.body);
+        if !template.body.trim().is_empty() {
+            let body = strip_legacy_template_heading(template_id, &template.body);
+            fragments.push(prompt_component(&prompt_component_tag(template_id), &body));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn bundled_workflow_turn_template() -> &'static str {
+    WORKFLOW_TURN
+}
+
+pub(crate) fn bundled_workflow_run_completion_template() -> &'static str {
+    WORKFLOW_RUN_COMPLETION
+}
+
+pub(crate) fn bundled_workflow_run_intermediate_output_template() -> &'static str {
+    WORKFLOW_RUN_INTERMEDIATE_OUTPUT
+}
+
+pub(crate) fn render_bundled_prompt(template: &str, replacements: &[(&str, &str)]) -> String {
+    replacements
+        .iter()
+        .fold(template.to_string(), |body, (key, value)| {
+            body.replace(&format!("{{{{{key}}}}}"), value)
+        })
+}
+
+pub(crate) fn bundled_metaagent_event_template() -> &'static str {
+    RUNTIME_METAAGENT_EVENT
+}
+
+pub(crate) fn bundled_agent_message_context_template() -> &'static str {
+    RUNTIME_AGENT_MESSAGE_CONTEXT
+}
+
+pub(crate) fn bundled_skill_context_template() -> &'static str {
+    RUNTIME_SKILL_CONTEXT
+}
+
+/// Return the immutable Markdown fallback for a catalog id.
+///
+/// Prompt injection callers should obtain bundled text through this boundary
+/// rather than reaching into `src/provider` themselves. User overrides still
+/// flow through `render_configured_prompt`/`PromptTemplateRegistry`.
+pub(crate) fn bundled_prompt_template(template_id: &str) -> Option<&'static str> {
+    bundled_templates()
+        .into_iter()
+        .find(|template| template.id == template_id)
+        .map(|template| template.body)
+}
+
+fn current_kernel_is_slice() -> bool {
+    crate::slice::current_slice_worker_id().is_some()
+}
+
+fn bundled_templates() -> Vec<BundledPromptTemplate> {
+    vec![
+        BundledPromptTemplate::new("runtime/base", RUNTIME_BASE),
+        BundledPromptTemplate::new("runtime/workspace-live-sync", RUNTIME_WORKSPACE_LIVE_SYNC),
+        BundledPromptTemplate::new(
+            "runtime/workspace-live-sync-tracked",
+            RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED,
+        ),
+        BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
+        BundledPromptTemplate::new(
+            "runtime/agent-message-context",
+            RUNTIME_AGENT_MESSAGE_CONTEXT,
+        ),
+        BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
+        BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new("runtime/scheduled-prompt", RUNTIME_SCHEDULED_PROMPT),
+        BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
+        BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
+        BundledPromptTemplate::new(
+            "runtime/mcp-skill-continuation",
+            RUNTIME_MCP_SKILL_CONTINUATION,
+        ),
+        BundledPromptTemplate::new(
+            "runtime/workflow-direct-json-fallback",
+            RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK,
+        ),
+        BundledPromptTemplate::new("runtime/metaagent-event", RUNTIME_METAAGENT_EVENT),
+        BundledPromptTemplate::new(
+            "runtime/metaagent-task-recovery",
+            RUNTIME_METAAGENT_TASK_RECOVERY,
+        ),
+        BundledPromptTemplate::new("workflow/turn", WORKFLOW_TURN),
+        BundledPromptTemplate::new("workflow/run-completion", WORKFLOW_RUN_COMPLETION),
+        BundledPromptTemplate::new(
+            "workflow/run-intermediate-output",
+            WORKFLOW_RUN_INTERMEDIATE_OUTPUT,
+        ),
+        BundledPromptTemplate::new("workflow/control-mailbox", WORKFLOW_CONTROL_MAILBOX),
+        BundledPromptTemplate::new("workflow/edge-contracts", WORKFLOW_EDGE_CONTRACTS),
+        BundledPromptTemplate::new("workflow/node-turn-context", WORKFLOW_NODE_TURN_CONTEXT),
+        BundledPromptTemplate::new("workflow/node-max-turns", WORKFLOW_NODE_MAX_TURNS),
+        BundledPromptTemplate::new("workflow/wait-for-all-inputs", WORKFLOW_WAIT_FOR_ALL_INPUTS),
+        BundledPromptTemplate::new("workflow/output-contract", WORKFLOW_OUTPUT_CONTRACT),
+        BundledPromptTemplate::new("workflow/last-turn", WORKFLOW_LAST_TURN),
+        BundledPromptTemplate::new(
+            "workflow/schedule-continuation",
+            WORKFLOW_SCHEDULE_CONTINUATION,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/node-default-instructions",
+            WORKFLOW_NODE_DEFAULT_INSTRUCTIONS,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/handoff-validation-passed",
+            WORKFLOW_HANDOFF_VALIDATION_PASSED,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/handoff-validation-failed",
+            WORKFLOW_HANDOFF_VALIDATION_FAILED,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-final-valid",
+            WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-final-invalid",
+            WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-intermediate",
+            WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE,
+        ),
+        BundledPromptTemplate::new(
+            "utility/workspace-commit-message",
+            UTILITY_WORKSPACE_COMMIT_MESSAGE,
+        ),
+        BundledPromptTemplate::new(
+            "utility/semantic-recall-search",
+            UTILITY_SEMANTIC_RECALL_SEARCH,
+        ),
+        BundledPromptTemplate::new(
+            "utility/project-environment-setup",
+            UTILITY_PROJECT_ENVIRONMENT_SETUP,
+        ),
+    ]
+}
+
+struct BundledPromptTemplate {
+    id: &'static str,
+    body: &'static str,
+}
+
+impl BundledPromptTemplate {
+    fn new(id: &'static str, body: &'static str) -> Self {
+        Self { id, body }
+    }
+}
+
+fn sha256_hex(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn prompt_component(tag: &str, body: &str) -> String {
+    let escaped = escape_prompt_component_delimiters(tag, body.trim());
+    format!("<{tag}>\n{escaped}\n</{tag}>")
+}
+
+pub(crate) fn assembled_prompt_component(tag: &str, body: &str) -> String {
+    format!("<{tag}>\n{}\n</{tag}>", body.trim())
+}
+
+pub(crate) fn unescape_prompt_component_delimiters(body: &str) -> String {
+    CHARIOX_PROMPT_COMPONENT_TAGS
+        .iter()
+        .fold(body.to_string(), |value, tag| {
+            unescape_prompt_component_tag_delimiters(&value, tag)
+        })
+}
+
+fn prompt_component_tag(template_id: &str) -> String {
+    match template_id {
+        "runtime/base" => "runtime-instructions",
+        "runtime/workspace-live-sync" => "workspace-live-sync-instructions",
+        "runtime/workspace-live-sync-tracked" => "workspace-live-sync-tracked-instructions",
+        "runtime/native-permissions" => "native-permission-instructions",
+        "runtime/slice" => "slice-runtime-instructions",
+        "runtime/metaagent-delegation" => "metaagent-delegation-instructions",
+        "runtime/meta-mode-entered" => "meta-mode-entered-context",
+        "runtime/mcp-skill-continuation" => "mcp-skill-continuation-context",
+        "runtime/workflow-direct-json-fallback" => "workflow-direct-json-fallback",
+        "runtime/metaagent-event" => "metaagent-event",
+        "runtime/skill-context" => "skill-context-instructions",
+        "workflow/turn" => "workflow-runtime-instructions",
+        "workflow/run-completion" | "workflow/run-intermediate-output" => {
+            "system-node-level-prompt"
+        }
+        "utility/workspace-commit-message" => "workspace-commit-message-instructions",
+        "utility/semantic-recall-search" => "semantic-recall-search-instructions",
+        "utility/project-environment-setup" => "project-environment-setup-instructions",
+        _ => return template_id.replace('/', "-"),
+    }
+    .to_string()
+}
+
+fn strip_legacy_template_heading(template_id: &str, body: &str) -> String {
+    let heading = match template_id {
+        "runtime/workflow-direct-json-fallback" => Some("Workflow direct JSON fallback:"),
+        _ => None,
+    };
+    heading
+        .and_then(|heading| body.trim().strip_prefix(heading))
+        .unwrap_or(body.trim())
+        .trim_start()
+        .to_string()
+}
+
+fn escape_prompt_component_delimiters(component_tag: &str, body: &str) -> String {
+    let escaped = escape_prompt_component_tag_delimiters(body, component_tag);
+    CHARIOX_PROMPT_COMPONENT_TAGS
+        .iter()
+        .filter(|tag| **tag != component_tag)
+        .fold(escaped, |value, tag| {
+            escape_prompt_component_tag_delimiters(&value, tag)
+        })
+}
+
+fn escape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
+    body.replace(&format!("<{tag}>"), &format!("&lt;{tag}&gt;"))
+        .replace(&format!("</{tag}>"), &format!("&lt;/{tag}&gt;"))
+}
+
+fn unescape_prompt_component_tag_delimiters(body: &str, tag: &str) -> String {
+    body.replace(&format!("&lt;{tag}&gt;"), &format!("<{tag}>"))
+        .replace(&format!("&lt;/{tag}&gt;"), &format!("</{tag}>"))
+}
+
+const CHARIOX_PROMPT_COMPONENT_TAGS: &[&str] = &[
+    "user-notes",
+    "note",
+    "selected-text",
+    "comment",
+    "runtime-instructions",
+    "workspace-live-sync-instructions",
+    "workspace-live-sync-tracked-instructions",
+    "native-permission-instructions",
+    "slice-runtime-instructions",
+    "metaagent-delegation-instructions",
+    "meta-mode-entered-context",
+    "mcp-skill-continuation-context",
+    "workflow-direct-json-fallback",
+    "metaagent-event",
+    "skill-context-instructions",
+    "workspace-commit-message-instructions",
+    "semantic-recall-search-instructions",
+    "endpoint-prompt",
+    "workflow-level-prompt",
+    "node-level-prompt",
+    "workflow-runtime-instructions",
+    "system-node-level-prompt",
+    "workflow-handoff-payloads",
+    "outgoing-edge-contracts",
+    "node-instruction-reference",
+    "control-mailbox",
+];
+
+fn prompt_io_error(operation: &'static str, path: &Path, error: std::io::Error) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: "prompt-assembly".to_string(),
+        operation,
+        message: format!("prompt template path {path:?}: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::env_lock;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_prompt_root(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let index = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join("chariox-prompt-assembly-tests")
+            .join(format!("{}-{}-{index}", name, std::process::id()))
+    }
+
+    #[test]
+    fn metaagent_user_prompts_use_normal_turn_context() {
+        assert_eq!(
+            provider_turn_mode_for_prompt("agent-meta", true, Some("browser-terminal"), "",),
+            PromptAssemblyMode::NormalProviderTurn
+        );
+        assert_eq!(
+            provider_turn_mode_for_prompt(
+                "agent-meta",
+                true,
+                Some("metaagent:agent-meta:task"),
+                "",
+            ),
+            PromptAssemblyMode::MetaagentProviderTurn
+        );
+        assert_eq!(
+            provider_turn_mode_for_prompt(
+                "agent-meta",
+                true,
+                Some("browser-terminal"),
+                "<meta-mode-entered-context>task</meta-mode-entered-context>",
+            ),
+            PromptAssemblyMode::MetaagentProviderTurn
+        );
+    }
+
+    fn test_run(workspace_live_sync: bool) -> RuntimeProviderRun {
+        test_run_with_live_sync_mode(if workspace_live_sync {
+            crate::config::WorkspaceLiveSyncMode::Managed
+        } else {
+            crate::config::WorkspaceLiveSyncMode::Unrestricted
+        })
+    }
+
+    fn test_run_with_live_sync_mode(
+        mode: crate::config::WorkspaceLiveSyncMode,
+    ) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new("session", "agent", "codex", "default", "gpt-5.4");
+        let request = request.with_workspace_live_sync_mode(mode);
+        RuntimeProviderRun::new(
+            "provider-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://127.0.0.1:43112".to_string()),
+            },
+        )
+    }
+
+    // Notes the user attached reach every provider as hidden context, not as files.
+    #[test]
+    fn user_notes_become_hidden_context_and_leave_provider_attachments() {
+        use base64::Engine;
+        let root = temp_prompt_root("user-notes");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let note = PromptAttachment::new(
+            "chariox-terminal://note/1",
+            crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            Some("Note".into()),
+        )
+        .with_contents_base64(base64::engine::general_purpose::STANDARD.encode(
+            r#"{"quote":"the selected sentence","comment":"rewrite it","source":{"kind":"room","room":"Design review"}}"#,
+        ));
+        let image = PromptAttachment::new("file:///a.png", "image/png", None);
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Please help",
+                None,
+                vec![note, image.clone()],
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert_eq!(envelope.visible_user_prompt, "Please help");
+        assert_eq!(envelope.attachments, vec![image]);
+        for expected in [
+            "<user-notes>",
+            "Room: Design review",
+            "the selected sentence",
+            "rewrite it",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "{expected}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08 / MP-10 / MP-11 S01: provider context agrees with the exposed room tools.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_regular_room_creation() {
+        let root = temp_prompt_root("room-creation-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Create my team",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("regular agents may spawn"),
+            "MP-11 S01: ordinary providers must receive room creation instructions"
+        );
+        assert!(!envelope
+            .hidden_system_context
+            .contains("but only a Meta agent may create agents"));
+        assert!(
+            envelope
+                .hidden_system_context
+                .contains("Do not substitute a provider CLI started from Bash"),
+            "MP-08/MP-10/MP-11: a requested Room helper must remain a kernel-owned agent"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
+    // inbox admission and request no reply unless asked.
+    #[test]
+    fn mp11_review_runtime_instructions_describe_durable_room_messages() {
+        for expected in ["`durable`", "`urgent`", "`reply_requested`", "courtesy"] {
+            assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+        assert!(!RUNTIME_BASE.contains("may ask that agent to reply"));
+        assert!(!RUNTIME_BASE.contains("Its `started` or `queued` result is the authoritative"));
+    }
+
+    #[test]
+    fn prompt_registry_materializes_bundled_defaults_on_first_run() {
+        let root = temp_prompt_root("materializes");
+        let registry = PromptTemplateRegistry::new(root.clone());
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+
+        assert!(root.join("runtime").join("base.md").exists());
+        assert!(root
+            .join("runtime")
+            .join("workspace-live-sync-tracked.md")
+            .exists());
+        assert!(root.join("workflow").join("turn.md").exists());
+        let base = fs::read_to_string(root.join("runtime").join("base.md"))
+            .expect("base prompt should read");
+        assert!(base.contains("chariox.list_extensions"));
+        assert!(base.contains("chariox.list_session_agents"));
+        assert!(base.contains("chariox.get_session_agent"));
+        assert!(base.contains("chariox.send_agent_message"));
+        assert!(base.contains("Treat every interaction as an equal-level, self-contained message"));
+        assert!(base
+            .contains("Include a follow-up destination only when the sender explicitly requests"));
+        let agent_message =
+            fs::read_to_string(root.join("runtime").join("agent-message-context.md"))
+                .expect("agent message context should read");
+        assert!(
+            agent_message.contains("do not reply to an acknowledgement or status-only completion")
+        );
+        assert!(
+            agent_message.contains("new bounded actionable request or a materially useful result")
+        );
+        assert!(agent_message.contains("Useful answers, clarifying questions, and corrections"));
+        let workflow_turn = fs::read_to_string(root.join("workflow").join("turn.md"))
+            .expect("workflow turn prompt should read");
+        assert!(workflow_turn.contains("workflow_handoffs"));
+        assert!(workflow_turn.contains("validate_workflow_handoff"));
+    }
+
+    #[test]
+    fn prompt_registry_reads_user_edited_templates() {
+        let root = temp_prompt_root("edited");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(root.join("runtime").join("base.md"), "USER EDITED TOKEN")
+            .expect("user edit should write");
+        registry
+            .materialize_bundled_defaults()
+            .expect("rematerializing should preserve user edits");
+
+        let template = registry
+            .read_required("runtime/base")
+            .expect("template should read");
+
+        assert_eq!(template.body, "USER EDITED TOKEN");
+    }
+
+    #[test]
+    fn prompt_registry_updates_unchanged_bundled_defaults() {
+        let root = temp_prompt_root("updates-defaults");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("workflow").join("turn.md");
+        fs::write(&path, "PREVIOUS BUNDLED DEFAULT").expect("old default should write");
+        let mut template_sha256 = BTreeMap::new();
+        template_sha256.insert(
+            "workflow/turn".to_string(),
+            sha256_hex("PREVIOUS BUNDLED DEFAULT"),
+        );
+        let state = BundledPromptDefaultsState {
+            version: "previous".to_string(),
+            template_sha256,
+        };
+        fs::write(
+            root.join(PROMPT_DEFAULTS_STATE_FILE),
+            serde_json::to_string(&state).expect("state should serialize"),
+        )
+        .expect("state should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("unchanged old defaults should update");
+
+        let body = fs::read_to_string(path).expect("updated default should read");
+        assert!(body.contains("do not validate the outer routing wrapper"));
+        assert!(body.contains("completed incoming edge and MUST NOT be used"));
+    }
+
+    #[test]
+    fn prompt_registry_updates_known_metaagent_legacy_defaults() {
+        let root = temp_prompt_root("updates-metaagent-legacy");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("runtime").join("meta-mode-entered.md");
+        fs::write(
+            &path,
+            concat!(
+                "Kernel mode transition: this agent is now operating in Chariox meta mode for the active task.\n\n",
+                "Delegate implementation to owned regular agents or workflows. Use Chariox meta tools for planning, supervision, task state, and allowed capability provisioning. ",
+                "Finish by calling `chariox.meta.complete_task`, `chariox.meta.mark_blocked`, or by honoring user pause/abort controls.",
+            ),
+        )
+        .expect("legacy default should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("legacy Meta default should update despite current state metadata");
+
+        let body = fs::read_to_string(path).expect("updated Meta default should read");
+        assert!(body.contains("On continuation, first check `chariox.meta.session_overview`"));
+    }
+
+    #[test]
+    fn prompt_registry_updates_known_slice_legacy_defaults() {
+        let root = temp_prompt_root("updates-slice-legacy");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let path = root.join("runtime").join("slice.md");
+        fs::write(
+            &path,
+            // Exact published legacy template at 670c972296 (MP-08 migration fixture).
+            r#"You are running inside an Arroba slice. Slice-only runtime MCP tools are available for the slice screen, browser, keyboard, mouse, and OCR. Use these tools only for the slice environment attached to this agent.
+
+Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.
+
+Use `paste_secret_to_slice` only after focusing the intended browser field. Pass the credential id and set `submit` only when the focused form should be submitted with Return. This pastes the secret through the slice screen without exposing the secret value in your answer or terminal output.
+
+Prefer `slice_find_text` before clicking text in the browser or GUI because it returns screen coordinates directly. Use `slice_ocr` when visual text matters but the page or app is not accessible through files, terminal output, or browser automation."#,
+        )
+        .expect("legacy slice default should write");
+
+        registry
+            .materialize_bundled_defaults()
+            .expect("legacy slice default should update despite current state metadata");
+
+        let body = fs::read_to_string(path).expect("updated slice default should read");
+        assert!(body.contains("replace the loopback hostname with `host.docker.internal`"));
+        assert!(body.contains("prefer DOM tools before OCR or coordinates"));
+    }
+
+    #[test]
+    fn prompt_registry_fails_when_required_template_is_missing() {
+        let root = temp_prompt_root("missing");
+        let registry = PromptTemplateRegistry::new(root);
+
+        let error = registry
+            .read_required("runtime/base")
+            .expect_err("missing template should fail");
+
+        assert!(error
+            .to_string()
+            .contains("required prompt template `runtime/base` missing"));
+    }
+
+    #[test]
+    fn mp08_mp10_user_rules_use_existing_hidden_prompt_path() {
+        let _guard = env_lock::lock();
+        let old = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+        let root = temp_prompt_root("mp08-user-rules");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("user-rules.md"), "Prefer clear Project names.").unwrap();
+        let registry = PromptTemplateRegistry::new(root.join("prompts"));
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Visible request",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        assert!(envelope
+            .hidden_system_context
+            .contains("<chariox-user-rules>"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Prefer clear Project names."));
+        assert_eq!(envelope.visible_user_prompt, "Visible request");
+        fs::remove_dir_all(root).unwrap();
+        if let Some(old) = old {
+            std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", old);
+        }
+    }
+
+    #[test]
+    fn prompt_manifest_records_template_hashes_and_version() {
+        let root = temp_prompt_root("manifest");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry.clone());
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert_eq!(envelope.manifest.version, PROMPT_REGISTRY_VERSION);
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/base" && entry.sha256.len() == 64));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<runtime-instructions>"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<native-permission-instructions>"));
+    }
+
+    #[test]
+    fn scheduled_context_manifest_survives_provider_assembly() {
+        let root = temp_prompt_root("scheduled-manifest");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry.clone());
+        let (context, entry) = render_configured_prompt_with_manifest_from_registry(
+            &registry,
+            "runtime/scheduled-prompt",
+            bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled template should be bundled"),
+            &[("SCHEDULE_ID", "schedule-test")],
+        );
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "scheduled prompt",
+                Some(&attach_prompt_manifest_entry(context, &entry)),
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope.manifest.entries.contains(&entry));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<chariox-scheduled-prompt schedule_id=\"schedule-test\">"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains(PROMPT_MANIFEST_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn native_hook_context_strips_internal_manifest_marker_but_keeps_schedule() {
+        let entry = PromptManifestEntry {
+            template_id: "runtime/scheduled-prompt".to_string(),
+            sha256: "abc".to_string(),
+        };
+        let context = attach_prompt_manifest_entry("Run the scheduled task.", &entry);
+        assert_eq!(
+            strip_prompt_manifest_entries(&context),
+            "Run the scheduled task."
+        );
+    }
+
+    #[test]
+    fn metaagent_provider_turn_includes_delegation_template() {
+        let root = temp_prompt_root("metaagent");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::MetaagentProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope
+            .hidden_system_context
+            .contains("This agent is operating in Chariox Meta mode"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("start by calling `chariox.meta.read_task`"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("confirm it appears in"));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/metaagent-delegation"));
+    }
+
+    #[test]
+    fn normal_provider_turn_excludes_metaagent_delegation_template() {
+        let root = temp_prompt_root("not-metaagent");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/metaagent-delegation"));
+    }
+
+    #[test]
+    fn workflow_turns_include_direct_json_fallback() {
+        let root = temp_prompt_root("native-workflow-fallback");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible prompt",
+                Some(
+                    "<workflow-runtime-instructions>\nYou are an agent participating in a Chariox workflow turn.\n</workflow-runtime-instructions>",
+                ),
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope
+            .hidden_system_context
+            .contains("do not write pseudo tool calls"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<workflow-direct-json-fallback>"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains("Workflow direct JSON fallback:"));
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workflow-direct-json-fallback"));
+    }
+
+    #[test]
+    fn prompt_envelope_keeps_hidden_context_out_of_visible_prompt() {
+        let root = temp_prompt_root("hidden");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(root.join("runtime").join("base.md"), "HIDDEN_RUNTIME_TOKEN")
+            .expect("user edit should write");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "user visible prompt",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert_eq!(envelope.visible_user_prompt, "user visible prompt");
+        assert!(envelope
+            .hidden_system_context
+            .contains("HIDDEN_RUNTIME_TOKEN"));
+        assert!(!envelope
+            .visible_user_prompt
+            .contains("HIDDEN_RUNTIME_TOKEN"));
+    }
+
+    #[test]
+    fn workspace_live_sync_uses_workspace_template() {
+        let root = temp_prompt_root("workspace-live-sync");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(true),
+                "visible",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Do not interpret live sync as a global filesystem restriction"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("use provider-native edit/write/patch or shell/bash tools normally"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
+    }
+
+    #[test]
+    fn tracked_workspace_live_sync_uses_tracked_template() {
+        let root = temp_prompt_root("workspace-live-sync-tracked");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run_with_live_sync_mode(crate::config::WorkspaceLiveSyncMode::Tracked),
+                "visible",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync-tracked"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("provider-native edits inside the selected synced roots are allowed"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("Other repositories outside the synced roots are not part of live sync"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains("Direct filesystem writes inside those roots are unavailable"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/workspace-live-sync"));
+        assert!(!envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/native-permissions"));
+    }
+
+    #[test]
+    fn slice_kernels_include_slice_template() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_lock::lock();
+        std::env::set_var("CHARIOX_MACHINE_ID", "slice:test");
+        std::env::remove_var("CHARIOX_SLICE_MACHINE_ID");
+        let root = temp_prompt_root("slice");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry);
+
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "visible",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+        std::env::remove_var("CHARIOX_MACHINE_ID");
+
+        assert!(envelope
+            .manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/slice"));
+        assert!(envelope
+            .hidden_system_context
+            .contains("replace the loopback hostname with `host.docker.internal`"));
+    }
+
+    #[test]
+    fn mcp_skill_continuation_context_uses_registry_template() {
+        let root = temp_prompt_root("mcp-continuation");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("mcp-skill-continuation.md"),
+            "CONTINUATION_TEMPLATE {{MCP_NAME}}",
+        )
+        .expect("user edit should write");
+        let service = PromptAssemblyService::new(registry);
+
+        let (hidden, manifest) = service
+            .assemble_mcp_skill_continuation_context("playwright")
+            .expect("continuation context should assemble");
+
+        assert_eq!(
+            hidden,
+            "<mcp-skill-continuation-context>\nCONTINUATION_TEMPLATE playwright\n</mcp-skill-continuation-context>"
+        );
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/mcp-skill-continuation"));
+    }
+
+    #[test]
+    fn meta_mode_entered_context_uses_registry_template() {
+        let root = temp_prompt_root("meta-mode-transition");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("meta-mode-entered.md"),
+            "ENTERED_TEMPLATE",
+        )
+        .expect("user edit should write");
+        let service = PromptAssemblyService::new(registry);
+
+        let (entered, entered_manifest) = service
+            .assemble_meta_mode_entered_context()
+            .expect("entered context should assemble");
+
+        assert_eq!(
+            entered,
+            "<meta-mode-entered-context>\nENTERED_TEMPLATE\n</meta-mode-entered-context>"
+        );
+        assert!(entered_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.template_id == "runtime/meta-mode-entered"));
+    }
+
+    #[test]
+    fn prompt_settings_catalog_reads_edits_and_resets_without_exposing_paths() {
+        let root = temp_prompt_root("settings-catalog");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        let settings = registry.list_settings().expect("catalog should load");
+        let workflow = settings
+            .iter()
+            .find(|setting| setting.id == "workflow/turn")
+            .expect("workflow prompt should be catalogued");
+        assert!(workflow.editable);
+        assert_eq!(workflow.source, "bundled");
+        assert!(workflow.current_sha256.len() == 64);
+        assert_eq!(workflow.current_bytes, workflow.current.len());
+        assert!(!workflow.default.is_empty());
+
+        let default = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
+        let updated = registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &format!("{}\nHello {{{{NAME}}}}", default.default),
+                default.revision,
+                &default.current_sha256,
+            )
+            .expect("editable prompt should update");
+        assert!(updated.current.contains("Hello {{NAME}}"));
+        assert!(updated.variables.iter().any(|variable| variable == "NAME"));
+        assert_eq!(updated.source, "user_override");
+        assert_eq!(updated.current_bytes, updated.current.len());
+        assert_ne!(updated.current_sha256, updated.default_sha256);
+
+        let reset = registry
+            .reset_setting_if_version("workflow/turn", updated.revision, &updated.current_sha256)
+            .expect("prompt should reset");
+        assert_eq!(reset.current_sha256, reset.default_sha256);
+        assert!(registry.root.starts_with(root));
+    }
+
+    #[test]
+    fn every_provider_markdown_prompt_is_registered_in_the_catalog() {
+        let provider_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/provider");
+        let files = fs::read_dir(&provider_dir)
+            .expect("provider prompt directory should exist")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "md")
+            })
+            .collect::<Vec<_>>();
+        let templates = bundled_templates();
+        assert_eq!(
+            files.len(),
+            templates.len(),
+            "every provider Markdown prompt must have one catalog entry"
+        );
+        for file in files {
+            let body = fs::read_to_string(file.path()).expect("prompt Markdown should be readable");
+            assert!(
+                templates.iter().any(|template| template.body == body),
+                "provider prompt {:?} is not registered in bundled_templates",
+                file.file_name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_entry_has_a_central_bundled_lookup() {
+        for template in bundled_templates() {
+            assert_eq!(
+                bundled_prompt_template(template.id),
+                Some(template.body),
+                "catalog entry `{}` must resolve through the central lookup",
+                template.id
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_revisions_fit_the_browser_safe_integer_range() {
+        assert!(prompt_revision("browser-safe") <= 9_007_199_254_740_991);
+    }
+
+    #[test]
+    fn every_editable_prompt_is_consumed_by_kernel_loader_and_reset_all_restores_defaults() {
+        let root = temp_prompt_root("settings-all-prompts");
+        let registry = PromptTemplateRegistry::new(root);
+        let initial = registry.list_settings().expect("catalog should load");
+        assert!(!initial.is_empty(), "the prompt catalog must not be empty");
+
+        for setting in &initial {
+            if !setting.editable {
+                continue;
+            }
+            let updated = registry
+                .update_setting_if_version(
+                    &setting.id,
+                    &format!(
+                        "{}\n\n<!-- kernel-prompt-settings-test -->",
+                        setting.default
+                    ),
+                    setting.revision,
+                    &setting.current_sha256,
+                )
+                .unwrap_or_else(|error| panic!("failed to edit {}: {error}", setting.id));
+            assert_eq!(
+                updated.source, "user_override",
+                "{} should be overridden",
+                setting.id
+            );
+            let loaded = registry.read_required(&setting.id).unwrap_or_else(|error| {
+                panic!("kernel loader could not read {}: {error}", setting.id)
+            });
+            assert!(
+                loaded.body.contains("kernel-prompt-settings-test"),
+                "kernel loader did not consume edited template {}",
+                setting.id
+            );
+        }
+
+        let edited = registry
+            .list_settings()
+            .expect("edited catalog should load");
+        let expected = edited
+            .iter()
+            .map(|setting| {
+                (
+                    setting.id.clone(),
+                    crate::local::PromptSettingVersion {
+                        revision: setting.revision,
+                        sha256: setting.current_sha256.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let reset = registry
+            .reset_all_settings_if_versions(&expected)
+            .expect("reset-all should restore every catalog entry");
+        assert_eq!(reset.len(), edited.len());
+        for setting in registry.list_settings().expect("reset catalog should load") {
+            assert_eq!(
+                setting.current, setting.default,
+                "{} did not reset",
+                setting.id
+            );
+            assert_eq!(
+                setting.source, "bundled",
+                "{} remained overridden",
+                setting.id
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_settings_catalog_does_not_rewrite_unchanged_defaults_state() {
+        let root = temp_prompt_root("settings-catalog-no-rewrite");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.list_settings().expect("first catalog should load");
+        let state_path = root.join(PROMPT_DEFAULTS_STATE_FILE);
+        let before = fs::metadata(&state_path)
+            .expect("defaults state should exist")
+            .modified()
+            .expect("defaults state should have a modification time");
+        registry
+            .list_settings()
+            .expect("second catalog should load");
+        let after = fs::metadata(&state_path)
+            .expect("defaults state should still exist")
+            .modified()
+            .expect("defaults state should still have a modification time");
+        assert_eq!(
+            before, after,
+            "unchanged catalog must not rewrite defaults state"
+        );
+    }
+
+    #[test]
+    fn prompt_settings_reject_missing_required_variables() {
+        let root = temp_prompt_root("required-variables");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
+        let error = registry
+            .update_setting_if_version(
+                "workflow/turn",
+                "custom instructions",
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect_err("contract variables must be preserved");
+        assert!(error.to_string().contains("required variable"));
+    }
+
+    #[test]
+    fn prompt_settings_reject_stale_versioned_updates() {
+        let root = temp_prompt_root("version-conflict");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
+        let first_body = format!("{}\nfirst", current.default);
+        registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &first_body,
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect("first writer should update");
+        let stale_body = format!("{}\nstale", current.default);
+        let error = registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &stale_body,
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect_err("stale writer must not overwrite a newer prompt");
+        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
+        assert!(registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should remain readable")
+            .current
+            .contains("first"));
+    }
+
+    #[test]
+    fn prompt_settings_reject_stale_resets() {
+        let root = temp_prompt_root("reset-version-conflict");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("prompt should read");
+        registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &format!("{}\nnewer", current.default),
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect("newer writer should update");
+        let error = registry
+            .reset_setting_if_version("workflow/turn", current.revision, &current.current_sha256)
+            .expect_err("stale reset must not overwrite a newer prompt");
+        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
+        assert!(registry
+            .read_setting("workflow/turn")
+            .expect("prompt should remain readable")
+            .current
+            .contains("newer"));
+    }
+
+    #[test]
+    fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        crate::test_support::isolated_env_test!();
+        let _guard = env_lock::lock();
+        let home = temp_prompt_root("configured-scheduled-prompt");
+        let root = home.join("prompts");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("scheduled-prompt.md"),
+            "<scheduled>{{SCHEDULE_ID}}</scheduled>",
+        )
+        .expect("scheduled prompt override should write");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let rendered = render_configured_prompt(
+            "runtime/scheduled-prompt",
+            bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled prompt should be registered"),
+            &[("SCHEDULE_ID", "schedule-7")],
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        assert_eq!(rendered, "<scheduled>schedule-7</scheduled>");
+    }
+
+    #[test]
+    fn prompt_registry_concurrent_reads_never_observe_partial_updates() {
+        let root = temp_prompt_root("atomic-updates");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let default = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read")
+            .default;
+        let writer_registry = registry.clone();
+        let reader_registry = registry.clone();
+        let writer = std::thread::spawn(move || {
+            for index in 0..40 {
+                let current = writer_registry
+                    .read_setting("workflow/turn")
+                    .expect("prompt should read");
+                writer_registry
+                    .update_setting_if_version(
+                        "workflow/turn",
+                        &format!("{default}\nmarker-{index}"),
+                        current.revision,
+                        &current.current_sha256,
+                    )
+                    .expect("atomic prompt update should succeed");
+            }
+        });
+        for _ in 0..200 {
+            let setting = reader_registry
+                .read_setting("workflow/turn")
+                .expect("concurrent prompt read should succeed");
+            assert!(!setting.current.is_empty());
+            assert!(setting.current.contains("{{DELIVERY_TOKEN}}"));
+        }
+        writer.join().expect("writer should finish");
+    }
+
+    #[test]
+    fn protected_prompt_settings_are_read_only_but_resettable() {
+        let root = temp_prompt_root("settings-protected");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("runtime/base")
+            .expect("protected prompt should read");
+        let error = registry
+            .update_setting_if_version(
+                "runtime/base",
+                "unsafe override",
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect_err("protected prompts must not be editable");
+        assert!(error.to_string().contains("protected prompt setting"));
+        let setting = registry
+            .reset_setting_if_version("runtime/base", current.revision, &current.current_sha256)
+            .expect("protected prompt should reset");
+        assert!(setting.protected);
+    }
+}
+
+#[cfg(test)]
+#[path = "prompt_assembly/hosted_worker_tests.rs"]
+mod hosted_worker_tests;

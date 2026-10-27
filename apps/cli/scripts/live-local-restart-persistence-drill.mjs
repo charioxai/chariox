@@ -1,0 +1,568 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+import { makeAvailablePorts } from './lib/drill-runtime-helpers.mjs'
+import { historyOutlineText } from './lib/drill-history-outline.mjs'
+import { resolveLocalRestartDrillPaths } from './lib/local-restart-drill-paths.mjs'
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const cliRoot = path.resolve(scriptDir, '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+
+function parseArgs(argv) {
+  const options = { keepArtifactsOnFailure: false }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help' || arg === '-h') {
+      console.log('Usage: node apps/cli/scripts/live-local-restart-persistence-drill.mjs [--keep-artifacts-on-failure]')
+      process.exit(0)
+    } else {
+      throw new Error(`unknown option: ${arg}`)
+    }
+  }
+  return options
+}
+
+function log(name, details) {
+  if (details === undefined) console.log(`[m8-local-restart] ${name}`)
+  else console.log(`[m8-local-restart] ${name}`, JSON.stringify(details))
+}
+
+async function withTimeout(promise, label, timeoutMs) {
+  let timeout
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs)
+        timeout.unref()
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function run(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function sourceFiles(rootDir, currentDir = rootDir) {
+  const files = []
+  for (const entry of await readdir(currentDir, { withFileTypes: true })) {
+    const entryPath = path.join(currentDir, entry.name)
+    if (entry.isDirectory()) files.push(...await sourceFiles(rootDir, entryPath))
+    else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+      files.push({
+        sourcePath: entryPath,
+        relativePath: path.relative(rootDir, entryPath),
+      })
+    }
+  }
+  return files
+}
+
+async function loadCurrentKernelClient(runtimeRoot) {
+  const sourceRoot = path.join(repoRoot, 'packages', 'kernel-client', 'src')
+  const packageRoot = path.join(runtimeRoot, 'kernel-client')
+  const outputRoot = path.join(packageRoot, 'dist')
+  const [{ transformAsync }, tsPreset] = await Promise.all([
+    import('@babel/core'),
+    import('@babel/preset-typescript'),
+  ])
+
+  for (const { sourcePath, relativePath } of await sourceFiles(sourceRoot)) {
+    const outputPath = path.join(outputRoot, relativePath.replace(/\.ts$/, '.js'))
+    const transformed = await transformAsync(await readFile(sourcePath, 'utf8'), {
+      filename: sourcePath,
+      presets: [[tsPreset.default ?? tsPreset]],
+      sourceMaps: false,
+    })
+    await mkdir(path.dirname(outputPath), { recursive: true })
+    await writeFile(outputPath, transformed?.code ?? '', 'utf8')
+  }
+  await writeFile(path.join(packageRoot, 'package.json'), '{"type":"module"}\n', 'utf8')
+  await symlink(
+    path.join(repoRoot, 'packages', 'kernel-client', 'node_modules'),
+    path.join(packageRoot, 'node_modules'),
+    'dir',
+  )
+
+  const [ipc, requests] = await Promise.all([
+    import(pathToFileURL(path.join(outputRoot, 'ipc.js')).href),
+    import(pathToFileURL(path.join(outputRoot, 'ipc-requests.js')).href),
+  ])
+  return { LocalIpcClient: ipc.LocalIpcClient, requests }
+}
+
+async function buildKernel(cargoTargetDir) {
+  const binary = path.join(cargoTargetDir, 'debug', 'chariox-kernel')
+  const result = await run(
+    'cargo',
+    ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'],
+    {
+      env: {
+        ...process.env,
+        CARGO_INCREMENTAL: '0',
+        CARGO_TARGET_DIR: cargoTargetDir,
+      },
+    },
+  )
+  if (result.code !== 0) {
+    throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
+  }
+  return binary
+}
+
+function unwrap(resp, key) {
+  return resp?.[key] ?? resp
+}
+
+function hasExtensionGrant(agent, kind, name) {
+  return Array.isArray(agent?.extension_grants) && agent.extension_grants.some((grant) => grant.kind === kind && grant.name === name)
+}
+
+async function waitForDaemon(LocalIpcClient, kernelUrl, localAuthEnvironment) {
+  const deadline = Date.now() + 20_000
+  let lastError = null
+  while (Date.now() < deadline) {
+    const client = new LocalIpcClient(kernelUrl, { localAuthEnvironment })
+    try {
+      await withTimeout(
+        client.send({ ListSessions: null }),
+        'daemon probe',
+        1_000,
+      )
+      await client.close().catch(() => {})
+      return
+    } catch (error) {
+      lastError = error
+      await client.close().catch(() => {})
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  throw new Error(`daemon did not become ready: ${lastError?.message ?? lastError}`)
+}
+
+async function waitForState(client, getSessionStateRequest, sessionId, predicate, label, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  let lastSession = null
+  while (Date.now() < deadline) {
+    lastSession = unwrap(await client.send(getSessionStateRequest(sessionId)), 'SessionState').session
+    if (predicate(lastSession)) return lastSession
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`timed out waiting for ${label}\nlast session:\n${JSON.stringify(lastSession, null, 2)}`)
+}
+
+async function stopDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGTERM')
+  const exited = await new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 5_000)
+    child.once('exit', () => {
+      clearTimeout(timeout)
+      resolve(true)
+    })
+  })
+  if (!exited && child.exitCode === null && child.signalCode === null) {
+    child.kill('SIGKILL')
+    await new Promise((resolve) => child.once('exit', resolve))
+  }
+}
+
+async function crashDaemon(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return
+  child.kill('SIGKILL')
+  await new Promise((resolve) => child.once('exit', resolve))
+}
+
+async function startDaemon(kernelBinary, env) {
+  return spawn(kernelBinary, [], {
+    cwd: repoRoot,
+    env,
+    stdio: ['ignore', 'ignore', 'inherit'],
+  })
+}
+
+function agentByAlias(agents, alias) {
+  return agents.find((agent) => agent.alias === alias)
+}
+
+function activePromptForAgent(session, agentId) {
+  return session.prompt_states?.[agentId]?.active_prompt
+    ?? (session.active_prompt?.target_agent_id === agentId ? session.active_prompt : null)
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  const runId = `${process.pid}-${Date.now()}`
+  const startedAtMs = Date.now()
+  const {
+    evidenceRoot,
+    runtimeRoot: rootDir,
+    cargoTargetDir,
+  } = resolveLocalRestartDrillPaths({
+    homeDir: os.homedir(),
+    runId,
+  })
+  const workspace = path.join(rootDir, 'workspace')
+  const configRoot = path.join(rootDir, 'config')
+  const stateRoot = path.join(rootDir, 'state')
+  const skillDir = path.join(rootDir, 'm8-restart-skill')
+  const mcpPath = path.join(rootDir, 'echo-mcp.mjs')
+  const ports = await makeAvailablePorts()
+  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  const daemonId = `m8-local-restart-${process.pid}-${Date.now()}`
+  const env = {
+    ...process.env,
+    CHARIOX_HOME: path.join(rootDir, 'chariox-home'),
+    CHARIOX_LOG_DIR: path.join(rootDir, 'logs'),
+    XDG_CONFIG_HOME: configRoot,
+    XDG_STATE_HOME: stateRoot,
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.openCodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_CAPABILITY_ISOLATION_ROOT: path.join(rootDir, 'capabilities'),
+    CHARIOX_DAEMON_ID: daemonId,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history-jsonl'),
+  }
+
+  let daemon = null
+  let client = null
+  let sessionId = null
+  let succeeded = false
+  let failure = null
+  let evidenceChecks = {}
+
+  try {
+    await prepareDrillArtifacts(rootDir)
+    const { LocalIpcClient, requests } = await loadCurrentKernelClient(rootDir)
+    const {
+      addWorkflowNodeRequest,
+      attachToSessionRequest,
+      completePromptRequest,
+      createSessionRequest,
+      createWorkflowEndpointRequest,
+      createWorkflowRequest,
+      endSessionRequest,
+      getProviderRunRequest,
+      getSessionHistoryOutlineRequest,
+      getSessionStateRequest,
+      grantAgentExtensionRequest,
+      installMcpServerRequest,
+      installSkillRequest,
+      invokeWorkflowEndpointRequest,
+      launchProviderRunRequest,
+      listAgentsRequest,
+      searchRecallRequest,
+      spawnAgentRequest,
+      submitPromptRequest,
+      updateWorkflowNodeInstructionsRequest,
+    } = requests
+    await mkdir(workspace, { recursive: true })
+    await mkdir(path.join(configRoot, 'chariox'), { recursive: true })
+    await mkdir(stateRoot, { recursive: true })
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(path.join(configRoot, 'chariox', 'config.toml'), [
+      'version = 1',
+      '',
+      '[state]',
+      'snapshot_interval_events = 1',
+      '',
+      '[history.archive]',
+      'mode = "disabled"',
+      '',
+    ].join('\n'), 'utf8')
+    await writeFile(path.join(skillDir, 'SKILL.md'), [
+      '---',
+      'name: m8-restart-skill',
+      'description: Skill used by the M8 local restart persistence drill.',
+      '---',
+      'Use this only for M8 local restart persistence drills.',
+      '',
+    ].join('\n'), 'utf8')
+    await writeFile(mcpPath, [
+      'process.stdin.resume()',
+      "process.stdin.on('data', () => {})",
+      '',
+    ].join('\n'), 'utf8')
+
+    const kernelBinary = await buildKernel(cargoTargetDir)
+    daemon = await startDaemon(kernelBinary, env)
+    await waitForDaemon(LocalIpcClient, kernelUrl, env)
+    log('daemon-ready', { kernelUrl })
+
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
+    const created = unwrap(await client.send(createSessionRequest(workspace, workspace, 'm8-restart-session')), 'SessionCreated')
+    const session = created.session
+    sessionId = session.id
+    const defaultAgent = created.agent
+    const attachment = unwrap(await client.send(attachToSessionRequest(sessionId, 'm8-restart-client')), 'SessionAttached').attachment
+    const workerAgent = unwrap(
+      await client.send(spawnAgentRequest(sessionId, 'dev-stub', 'persisted-worker', 'm8-restart-profile-model', workspace, 'low')),
+      'AgentSpawned',
+    ).agent
+    log('session-created', { sessionId, defaultAgentId: defaultAgent.id, workerAgentId: workerAgent.id })
+
+    await client.send(installMcpServerRequest(workspace, {
+      name: 'm8_restart_echo',
+      enabled: true,
+      transport: {
+        type: 'stdio',
+        command: 'node',
+        args: [mcpPath],
+      },
+    }))
+    await client.send(installSkillRequest(workspace, skillDir))
+    const grantedMcp = unwrap(await client.send(grantAgentExtensionRequest(workspace, workerAgent.id, 'mcp', 'm8_restart_echo')), 'AgentExtensionGranted').agent
+    const grantedSkill = unwrap(await client.send(grantAgentExtensionRequest(workspace, workerAgent.id, 'skill', 'm8-restart-skill')), 'AgentExtensionGranted').agent
+    assert.equal(hasExtensionGrant(grantedMcp, 'mcp', 'm8_restart_echo'), true)
+    assert.equal(hasExtensionGrant(grantedSkill, 'skill', 'm8-restart-skill'), true)
+
+    const providerRun = unwrap(
+      await client.send(launchProviderRunRequest(sessionId, 'dev-stub', 'default', 'm8-restart-profile-model', 'low', workerAgent.id)),
+      'ProviderRunLaunchAccepted',
+    ).provider_run
+    log('provider-launched', { providerRunId: providerRun.id })
+
+    const promptMarker = `M8_RESTART_HISTORY_MARKER_${process.pid}_${Date.now()}`
+    const promptResponse = unwrap(
+      await client.send(submitPromptRequest(sessionId, attachment.id, workerAgent.id, promptMarker, [])),
+      'PromptSubmitted',
+    )
+    const startedPrompt = promptResponse.outcome?.Started?.prompt ?? promptResponse.outcome?.started?.prompt ?? null
+    assert.ok(startedPrompt, `prompt should start immediately: ${JSON.stringify(promptResponse.outcome)}`)
+    assert.equal(startedPrompt.status, 'Running')
+    await client.send(completePromptRequest(sessionId))
+
+    const workflow = unwrap(await client.send(createWorkflowRequest(sessionId, 'm8-restart-flow')), 'WorkflowCreated').workflow
+    const node = unwrap(await client.send(addWorkflowNodeRequest(sessionId, workflow.id, workerAgent.id)), 'WorkflowNodeAdded').node
+    await client.send(updateWorkflowNodeInstructionsRequest(sessionId, workflow.id, node.id, [
+      'This workflow turn is intentionally left in-flight for the M8 restart drill.',
+      'Do not complete the workflow.',
+    ].join('\n')))
+    const endpoint = unwrap(await client.send(createWorkflowEndpointRequest(sessionId, workflow.id, node.id, 'start')), 'WorkflowEndpointCreated').endpoint
+    const workflowPrompt = `M8_RESTART_WORKFLOW_MARKER_${process.pid}_${Date.now()}`
+    const invoked = unwrap(
+      await client.send(invokeWorkflowEndpointRequest(sessionId, workflow.id, endpoint.id, workflowPrompt)),
+      'WorkflowRunInvoked',
+    )
+    const workflowRun = invoked.workflow_run
+    log('workflow-invoked', { workflowId: workflow.id, workflowRunId: workflowRun.id })
+
+    const preRestartState = await waitForState(
+      client,
+      getSessionStateRequest,
+      sessionId,
+      (state) => state.active_provider_run_id != null
+        && state.scheduler_state === 'Running'
+        && activePromptForAgent(state, workerAgent.id)?.status === 'Running'
+        && state.workflow_runs.some((run) => run.id === workflowRun.id && run.status === 'Running'),
+      'active workflow before kernel crash',
+    )
+    assert.ok(preRestartState.active_provider_run_id)
+    assert.equal(preRestartState.scheduler_state, 'Running')
+    const preRestartPrompt = activePromptForAgent(preRestartState, workerAgent.id)
+    assert.equal(preRestartPrompt?.status, 'Running')
+    assert.equal(
+      preRestartState.workflow_runs.find((run) => run.id === workflowRun.id)?.status,
+      'Running',
+    )
+    const workflowPromptId = preRestartPrompt.id
+    const activeProviderRunId = preRestartState.active_provider_run_id
+    const activeProviderRun = unwrap(
+      await client.send(getProviderRunRequest(activeProviderRunId)),
+      'ProviderRun',
+    ).provider_run
+    log('pre-crash-checkpoint', { activeProviderRunId, workflowPromptId })
+
+    await new Promise((resolve) => setTimeout(resolve, 6_500))
+    await client.close()
+    client = null
+    await crashDaemon(daemon)
+    daemon = null
+    log('daemon-crashed')
+
+    daemon = await startDaemon(kernelBinary, env)
+    await waitForDaemon(LocalIpcClient, kernelUrl, env)
+    client = new LocalIpcClient(kernelUrl, { localAuthEnvironment: env })
+    log('daemon-restarted')
+
+    const restored = await waitForState(
+      client,
+      getSessionStateRequest,
+      sessionId,
+      (state) => state.active_provider_run_id != null
+        && activePromptForAgent(state, workerAgent.id)?.id === workflowPromptId
+        && state.workflow_runs.some((run) => run.id === workflowRun.id && run.status === 'Running'),
+      'active workflow recovery after kernel crash',
+    )
+    assert.equal(restored.id, sessionId)
+    const restoredPrompt = activePromptForAgent(restored, workerAgent.id)
+    assert.equal(restoredPrompt?.id, workflowPromptId)
+    const recoveredProviderRun = unwrap(
+      await client.send(getProviderRunRequest(restored.active_provider_run_id)),
+      'ProviderRun',
+    ).provider_run
+    assert.notEqual(String(recoveredProviderRun.state).toLowerCase(), 'ended')
+    for (const field of ['provider', 'adapter_key', 'account_profile', 'model']) {
+      assert.equal(recoveredProviderRun[field], activeProviderRun[field])
+    }
+    assert.equal(recoveredProviderRun.agent_instance_id, activeProviderRun.agent_instance_id)
+    if (activeProviderRun.provider_session_id != null) {
+      assert.equal(recoveredProviderRun.provider_session_id, activeProviderRun.provider_session_id)
+    }
+    assert.equal(restored.scheduler_state, 'Running')
+    assert.equal(restored.workflows.some((entry) => entry.id === workflow.id), true)
+    assert.equal(restored.workflows.find((entry) => entry.id === workflow.id)?.endpoints?.[0]?.id, endpoint.id)
+    const restoredRun = restored.workflow_runs.find((run) => run.id === workflowRun.id)
+    assert.equal(restoredRun?.status, 'Running')
+    assert.ok(restoredRun?.active_node_run_id)
+    assert.equal(restoredRun?.node_runs?.[0]?.status, 'Running')
+    assert.equal(
+      (restoredRun?.failure_events ?? [])
+        .some((event) => String(event.message).includes('interrupted by kernel restart')),
+      false,
+    )
+
+    const agents = unwrap(await client.send(listAgentsRequest(sessionId)), 'AgentsListed').agents
+    const restoredWorker = agentByAlias(agents, 'persisted-worker')
+    assert.ok(restoredWorker, 'persisted-worker agent should restore')
+    assert.equal(restoredWorker.provider, 'dev-stub')
+    assert.equal(restoredWorker.model, 'm8-restart-profile-model')
+    assert.equal(hasExtensionGrant(restoredWorker, 'mcp', 'm8_restart_echo'), true)
+    assert.equal(hasExtensionGrant(restoredWorker, 'skill', 'm8-restart-skill'), true)
+
+    const history = unwrap(await client.send(getSessionHistoryOutlineRequest(sessionId, [restoredWorker.id], 10)), 'SessionHistoryOutline')
+    assert.equal(
+      historyOutlineText(history, { includeUserPrompt: true }).includes(promptMarker),
+      true,
+    )
+    const search = unwrap(await client.send(searchRecallRequest(promptMarker, { session_id: sessionId, limit: 10 })), 'RecallEvents')
+    assert.equal(search.events.length > 0, true)
+
+    evidenceChecks = {
+      session_id_preserved: restored.id === sessionId,
+      active_prompt_id_preserved: restoredPrompt.id === workflowPromptId,
+      active_provider_run_recovered: String(recoveredProviderRun.state).toLowerCase() !== 'ended',
+      provider_relaunch_configuration_preserved: ['provider', 'adapter_key', 'account_profile', 'model']
+        .every((field) => recoveredProviderRun[field] === activeProviderRun[field]),
+      provider_session_id_preserved: activeProviderRun.provider_session_id == null
+        || recoveredProviderRun.provider_session_id === activeProviderRun.provider_session_id,
+      scheduler_running: restored.scheduler_state === 'Running',
+      workflow_running: restoredRun?.status === 'Running',
+      workflow_node_running: restoredRun?.node_runs?.[0]?.status === 'Running',
+      workflow_not_marked_interrupted: !(restoredRun?.failure_events ?? [])
+        .some((event) => String(event.message).includes('interrupted by kernel restart')),
+      agent_identity_preserved: restoredWorker.id === workerAgent.id,
+      provider_configuration_preserved: restoredWorker.provider === 'dev-stub'
+        && restoredWorker.model === 'm8-restart-profile-model',
+      mcp_grant_preserved: hasExtensionGrant(restoredWorker, 'mcp', 'm8_restart_echo'),
+      skill_grant_preserved: hasExtensionGrant(restoredWorker, 'skill', 'm8-restart-skill'),
+      prompt_history_preserved: historyOutlineText(history, { includeUserPrompt: true }).includes(promptMarker),
+      recall_index_preserved: search.events.length > 0,
+    }
+
+    log('verified', {
+      sessionId,
+      agentId: restoredWorker.id,
+      workflowId: workflow.id,
+      workflowRunId: workflowRun.id,
+      activePromptId: restoredPrompt.id,
+      initialProviderRunId: providerRun.id,
+      activeProviderRunId,
+      recoveredProviderRunId: recoveredProviderRun.id,
+      historyEvents: search.events.length,
+      evidenceRoot,
+    })
+    await client.send(endSessionRequest(sessionId)).catch(() => {})
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    if (client) await client.close().catch(() => {})
+    let cleanupFailure = null
+    if (daemon) {
+      await stopDaemon(daemon).catch((error) => {
+        cleanupFailure = error
+      })
+    }
+    const daemonStopped = daemon == null
+      || daemon.exitCode !== null
+      || daemon.signalCode !== null
+    if (!daemonStopped && !cleanupFailure) {
+      cleanupFailure = new Error('drill daemon remained alive after cleanup')
+    }
+    const cleanup = await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded && !cleanupFailure,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure: failure ?? cleanupFailure,
+      metadata: {
+        drill: 'local-restart-persistence',
+        kernelUrl,
+        daemonId,
+      },
+      log,
+    })
+    const runtimeRootRemoved = await stat(rootDir)
+      .then(() => false)
+      .catch((error) => {
+        if (error?.code === 'ENOENT') return true
+        throw error
+      })
+    if (!runtimeRootRemoved && !cleanup.preserved && !cleanupFailure) {
+      cleanupFailure = new Error('drill runtime root remained after cleanup')
+    }
+    const passed = succeeded && !cleanupFailure
+    await mkdir(evidenceRoot, { recursive: true })
+    await writeFile(path.join(evidenceRoot, 'matrix.json'), `${JSON.stringify({
+      goal: 'local-restart-persistence',
+      run_id: runId,
+      started_at_ms: startedAtMs,
+      finished_at_ms: Date.now(),
+      passed,
+      checks: evidenceChecks,
+      failure: (failure ?? cleanupFailure)
+        ? {
+            message: (failure ?? cleanupFailure).message ?? String(failure ?? cleanupFailure),
+            ...(options.keepArtifactsOnFailure ? { stack: (failure ?? cleanupFailure).stack ?? null } : {}),
+          }
+        : null,
+      cleanup: {
+        daemon_stopped: daemonStopped,
+        runtime_root_removed: runtimeRootRemoved,
+        runtime_root_preserved_on_failure: cleanup.preserved,
+      },
+    }, null, 2)}\n`, 'utf8')
+    log('evidence-written', { evidenceRoot })
+    if (cleanupFailure) throw cleanupFailure
+  }
+}
+
+main().catch((error) => {
+  console.error(`[m8-local-restart] failed: ${error.stack || error.message || error}`)
+  process.exit(1)
+})

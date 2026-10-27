@@ -1,0 +1,405 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+enum DaemonStatus {
+  online
+  offline
+}
+
+enum SessionStatus {
+  created
+  active
+  parked
+  ended
+}
+
+enum SessionExecutionMode {
+  single_agent
+  multi_agent_workflow
+}
+
+enum ProviderRunState {
+  starting
+  running
+  parked
+  ended
+}
+
+enum PromptStatus {
+  queued
+  running
+  completed
+}
+
+enum SchedulerState {
+  idle
+  runnable
+  running
+  waiting
+}
+
+enum ClientCapabilityLevel {
+  full_terminal
+  interactive_structured
+  message_transport
+  automation_only
+}
+
+enum WorkflowTopology {
+  circular
+  hierarchical
+}
+
+enum WorkflowRunStatus {
+  created
+  running
+  waiting
+  completed
+  failed
+  stopped
+}
+
+enum NodeRunStatus {
+  created
+  ready
+  running
+  waiting
+  completed
+  failed
+  stopped
+}
+
+enum AggregationStatus {
+  idle
+  waiting
+  ready
+  completed
+  failed
+}
+
+enum NodeMessageDeliveryStatus {
+  pending
+  delivered
+  consumed
+  failed
+}
+
+enum AgentState {
+  idle
+  working
+  focused
+  error
+}
+
+enum WorktreeIsolationMode {
+  shared_session
+  isolated_branch
+  isolated_worktree
+}
+
+enum WorkflowEdgeType {
+  handoff
+  loopback
+  fanout
+  fanin
+}
+
+enum StopRecommendation {
+  continue
+  stop
+  complete
+}
+
+model User {
+  id         String     @id @default(cuid())
+  machines   Machine[]
+  workspaces Workspace[]
+}
+
+model Machine {
+  id             String           @id @default(cuid())
+  userId         String
+  hostname       String
+  user           User             @relation(fields: [userId], references: [id])
+  daemons        DaemonInstance[]
+  hostedSessions Session[]        @relation("SessionHostMachine")
+}
+
+model DaemonInstance {
+  id             String           @id @default(cuid())
+  machineId      String
+  osUser         String
+  version        String
+  status         DaemonStatus
+  machine        Machine          @relation(fields: [machineId], references: [id])
+  hostedSessions Session[]        @relation("SessionHostDaemon")
+}
+
+model Workspace {
+  id        String     @id @default(cuid())
+  userId    String
+  name      String
+  rootPath  String
+  user      User       @relation(fields: [userId], references: [id])
+  worktrees Worktree[]
+  sessions  Session[]
+}
+
+model Worktree {
+  id           String               @id @default(cuid())
+  workspaceId  String
+  gitBranch    String
+  absolutePath String
+  workspace    Workspace            @relation(fields: [workspaceId], references: [id])
+  sessions     Session[]
+  assignments  WorktreeAssignment[]
+  agents       AgentInstance[]
+}
+
+model AgentInstance {
+  id              String        @id @default(cuid())
+  agentRef        String        @unique
+  sessionId       String
+  alias           String?
+  provider        String
+  model           String?
+  worktreeId      String?
+  state           AgentState    @default(idle)
+  isProcessing    Boolean       @default(false)
+  gridRow         Int           @default(0)
+  gridCol         Int           @default(0)
+  gridRowSpan     Int           @default(1)
+  gridColSpan     Int           @default(1)
+  createdAt       DateTime      @default(now())
+  lastActivityAt  DateTime      @default(now())
+  
+  session         Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  worktree        Worktree?     @relation(fields: [worktreeId], references: [id])
+  providerRun     ProviderRun?
+  
+  @@index([sessionId])
+}
+
+model Session {
+  id                  String              @id @default(cuid())
+  workspaceId         String
+  worktreeId          String
+  hostMachineId       String
+  hostDaemonId        String
+  executionMode       SessionExecutionMode @default(single_agent)
+  status              SessionStatus
+  activeWorkflowRunId String?             @unique
+  activePromptId      String?             @unique
+  focusedAgentId      String?             @unique
+  configVersion       Int                 @default(0)
+  schedulerState      SchedulerState      @default(idle)
+  maxAgents           Int                 @default(6)
+  workspace           Workspace           @relation(fields: [workspaceId], references: [id])
+  worktree            Worktree            @relation(fields: [worktreeId], references: [id])
+  hostMachine         Machine             @relation("SessionHostMachine", fields: [hostMachineId], references: [id])
+  hostDaemon          DaemonInstance      @relation("SessionHostDaemon", fields: [hostDaemonId], references: [id])
+  activeWorkflowRun   WorkflowRun?        @relation("ActiveWorkflowRun", fields: [activeWorkflowRunId], references: [id])
+  agents              AgentInstance[]
+  focusedAgent        AgentInstance?        @relation("SessionFocusedAgent", fields: [focusedAgentId], references: [id])
+  providerRuns        ProviderRun[]       @relation("SessionProviderRuns")
+  attachments         SessionAttachment[]
+  promptQueueItems    PromptQueueItem[]
+  configState         SessionConfigState?
+  schedules           Schedule[]
+  workflowDefinitions WorkflowDefinition[]
+  workflowRuns        WorkflowRun[]       @relation("SessionWorkflowRuns")
+  worktreeAssignments WorktreeAssignment[]
+}
+
+model ProviderRun {
+  id                   String              @id @default(cuid())
+  sessionId            String
+  agentInstanceId      String?             @unique
+  nodeRunId            String?             @unique
+  worktreeAssignmentId String?
+  provider             String
+  accountProfile       String
+  model                String
+  state                ProviderRunState
+  session              Session             @relation("SessionProviderRuns", fields: [sessionId], references: [id])
+  agentInstance        AgentInstance?      @relation(fields: [agentInstanceId], references: [id])
+  nodeRun              NodeRun?            @relation(fields: [nodeRunId], references: [id])
+  worktreeAssignment   WorktreeAssignment? @relation(fields: [worktreeAssignmentId], references: [id])
+}
+
+model SessionAttachment {
+  id               String              @id @default(cuid())
+  sessionId        String
+  clientId         String
+  capabilityLevel  ClientCapabilityLevel
+  joinedAt         DateTime            @default(now())
+  session          Session             @relation(fields: [sessionId], references: [id])
+  promptQueueItems PromptQueueItem[]
+}
+
+model PromptQueueItem {
+  id                 String            @id @default(cuid())
+  sessionId          String
+  sourceAttachmentId String
+  targetAgentId      String
+  prompt             String
+  status             PromptStatus
+  submittedAt        DateTime          @default(now())
+  startedAt          DateTime?
+  completedAt        DateTime?
+  session            Session           @relation(fields: [sessionId], references: [id])
+  sourceAttachment   SessionAttachment @relation(fields: [sourceAttachmentId], references: [id])
+}
+
+model SessionConfigState {
+  sessionId              String   @id
+  version                Int      @default(0)
+  values                 String   @default("{}")
+  updatedByAttachmentId  String?
+  updatedAt              DateTime @default(now())
+  session                Session  @relation(fields: [sessionId], references: [id])
+}
+
+model Schedule {
+  id        String   @id @default(cuid())
+  sessionId String
+  cron      String
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  session   Session  @relation(fields: [sessionId], references: [id])
+}
+
+model WorkflowDefinition {
+  id               String           @id @default(cuid())
+  sessionId        String
+  topologyType     WorkflowTopology
+  coordinatorNodeId String
+  version          Int              @default(1)
+  validationPolicy String
+  session          Session          @relation(fields: [sessionId], references: [id])
+  nodes            WorkflowNode[]
+  edges            WorkflowEdge[]
+  workflowRuns     WorkflowRun[]
+}
+
+model WorkflowNode {
+  id                   String               @id @default(cuid())
+  workflowDefinitionId String
+  nodeKey              String
+  label                String
+  role                 String
+  provider             String?
+  accountProfile       String?
+  model                String?
+  concurrencyGroup     String?
+  writesCode           Boolean              @default(false)
+  workflowDefinition   WorkflowDefinition   @relation(fields: [workflowDefinitionId], references: [id])
+  outgoingEdges        WorkflowEdge[]       @relation("WorkflowEdgeSource")
+  incomingEdges        WorkflowEdge[]       @relation("WorkflowEdgeTarget")
+  nodeRuns             NodeRun[]
+  aggregationStates    AggregationState[]
+  worktreeAssignments  WorktreeAssignment[]
+}
+
+model WorkflowEdge {
+  id                   String             @id @default(cuid())
+  workflowDefinitionId String
+  fromNodeId           String
+  toNodeId             String
+  edgeType             WorkflowEdgeType
+  routingPolicy        String
+  workflowDefinition   WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+  fromNode             WorkflowNode       @relation("WorkflowEdgeSource", fields: [fromNodeId], references: [id])
+  toNode               WorkflowNode       @relation("WorkflowEdgeTarget", fields: [toNodeId], references: [id])
+}
+
+model WorkflowRun {
+  id                  String             @id @default(cuid())
+  sessionId           String
+  workflowDefinitionId String
+  coordinatorNodeId   String
+  status              WorkflowRunStatus
+  iterationCount      Int                @default(0)
+  maxIterations       Int?
+  startedAt           DateTime           @default(now())
+  completedAt         DateTime?
+  session             Session            @relation("SessionWorkflowRuns", fields: [sessionId], references: [id])
+  workflowDefinition  WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id])
+  activeForSession    Session?           @relation("ActiveWorkflowRun")
+  nodeRuns            NodeRun[]
+  nodeMessages        NodeMessage[]
+  worktreeAssignments WorktreeAssignment[]
+  aggregationStates   AggregationState[]
+}
+
+model NodeRun {
+  id                   String              @id @default(cuid())
+  workflowRunId        String
+  workflowNodeId       String
+  worktreeAssignmentId String?             @unique
+  status               NodeRunStatus
+  summary              String?
+  artifacts            String              @default("[]")
+  handoffPayload       String?
+  stopRecommendation   StopRecommendation?
+  startedAt            DateTime            @default(now())
+  completedAt          DateTime?
+  workflowRun          WorkflowRun         @relation(fields: [workflowRunId], references: [id])
+  workflowNode         WorkflowNode        @relation(fields: [workflowNodeId], references: [id])
+  providerRun          ProviderRun?
+  worktreeAssignment   WorktreeAssignment? @relation(fields: [worktreeAssignmentId], references: [id])
+  sourceMessages       NodeMessage[]       @relation("SourceNodeRun")
+  targetMessages       NodeMessage[]       @relation("TargetNodeRun")
+}
+
+model NodeMessage {
+  id                String                    @id @default(cuid())
+  workflowRunId     String
+  sourceNodeRunId   String
+  targetNodeId      String?
+  targetNodeRunId   String?
+  messageType       String
+  summary           String
+  artifacts         String                    @default("[]")
+  handoffPayload    String
+  deliveryStatus    NodeMessageDeliveryStatus @default(pending)
+  createdAt         DateTime                  @default(now())
+  workflowRun       WorkflowRun               @relation(fields: [workflowRunId], references: [id])
+  sourceNodeRun     NodeRun                   @relation("SourceNodeRun", fields: [sourceNodeRunId], references: [id])
+  targetNodeRun     NodeRun?                  @relation("TargetNodeRun", fields: [targetNodeRunId], references: [id])
+}
+
+model WorktreeAssignment {
+  id             String                @id @default(cuid())
+  sessionId      String
+  workflowRunId  String?
+  workflowNodeId String?
+  nodeRunId      String?
+  worktreeId     String
+  branch         String
+  isolationMode  WorktreeIsolationMode
+  session        Session               @relation(fields: [sessionId], references: [id])
+  workflowRun    WorkflowRun?          @relation(fields: [workflowRunId], references: [id])
+  workflowNode   WorkflowNode?         @relation(fields: [workflowNodeId], references: [id])
+  worktree       Worktree              @relation(fields: [worktreeId], references: [id])
+  providerRuns   ProviderRun[]
+}
+
+model AggregationState {
+  id                String             @id @default(cuid())
+  workflowRunId     String
+  workflowNodeId    String
+  barrierKey        String
+  expectedInputs    Int
+  receivedInputs    Int                @default(0)
+  aggregationPolicy String
+  status            AggregationStatus
+  workflowRun       WorkflowRun        @relation(fields: [workflowRunId], references: [id])
+  workflowNode      WorkflowNode       @relation(fields: [workflowNodeId], references: [id])
+}

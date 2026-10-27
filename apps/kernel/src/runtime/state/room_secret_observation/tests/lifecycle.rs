@@ -1,0 +1,534 @@
+//! MP-08/MP-10/MP-11: metadata races and public corrupt-registry recovery.
+use super::*;
+use super::super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
+
+pub(super) struct IsolatedHome(Option<std::ffi::OsString>);
+impl IsolatedHome {
+    pub(super) fn new(root: &std::path::Path) -> Self {
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", root.join("home"));
+        Self(previous)
+    }
+}
+impl Drop for IsolatedHome {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(previous) => std::env::set_var("CHARIOX_HOME", previous),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn waiting_secret_input_reloads_removed_handle() {
+    waiting_secret_input_reloads_metadata("remove").await;
+}
+#[tokio::test]
+async fn waiting_browser_secret_input_reloads_host_policy() {
+    waiting_secret_input_reloads_metadata("host").await;
+}
+#[tokio::test]
+async fn waiting_secret_input_reloads_source_and_provenance() {
+    waiting_secret_input_reloads_metadata("source").await;
+}
+#[tokio::test]
+async fn waiting_computer_secret_input_reloads_use_policy() {
+    waiting_secret_input_reloads_metadata("computer-use").await;
+}
+
+async fn waiting_secret_input_reloads_metadata(change: &str) {
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-input-metadata-race");
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = browser_credential("login", "old-key");
+    if change == "computer-use" {
+        credential.allowed_uses = vec![crate::config::UserCredentialUse::Computer];
+        credential.injection = crate::config::UserCredentialInjectionConfig::Computer;
+    }
+    registry.upsert(credential.clone()).unwrap();
+    let mutation = room.runtime.vault_observation_mutation_guard().await;
+    let input = room
+        .runtime
+        .room_secret_input_service(&room.session_id, "login");
+    tokio::pin!(input);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), &mut input)
+            .await
+            .is_err()
+    );
+    // Same registry writes as the lifecycle APIs, while holding their writer lock.
+    match change {
+        "remove" => {
+            registry.remove("login").unwrap();
+        }
+        "host" => {
+            credential.allowed_hosts = vec!["other.test".into()];
+            registry.upsert(credential).unwrap();
+        }
+        "source" => {
+            credential.source = crate::config::UserCredentialSourceConfig::Vault {
+                key: "new-key".into(),
+            };
+            registry.upsert(credential).unwrap();
+        }
+        _ => {
+            credential.allowed_uses = vec![crate::config::UserCredentialUse::Browser];
+            credential.injection = crate::config::UserCredentialInjectionConfig::Browser;
+            registry.upsert(credential).unwrap();
+        }
+    }
+    drop(mutation);
+    let acquired = input.await;
+    if change == "remove" {
+        assert!(
+            acquired.is_err(),
+            "MP-08/MP-10/MP-11: waiting input must reject a removed handle"
+        );
+        return;
+    }
+    let (service, _guard) = acquired.unwrap();
+    match change {
+        "host" => assert!(
+            service
+                .validate_browser_secret_input_for_target_url("login", "https://fixture.test/login")
+                .is_err(),
+            "MP-08/MP-10/MP-11: waiting fill must obey current host policy"
+        ),
+        "source" => {
+            assert_eq!(
+                service.credential_vault_key("login").unwrap(),
+                Some("new-key")
+            );
+            let store = &room.runtime.owned.room_secret_observations;
+            let rooms = store.rooms.lock().unwrap();
+            assert_eq!(
+                rooms[&room.session_id].vault_keys,
+                BTreeSet::from(["new-key".into()])
+            );
+        }
+        _ => assert!(
+            service.validate_computer_secret_input("login").is_err(),
+            "MP-08/MP-10/MP-11: waiting Computer input must obey current use policy"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn corrupt_restarted_room_cannot_block_unrelated_credential_removal() {
+    corrupt_restarted_room_public_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn corrupt_restarted_room_remains_publicly_deletable() {
+    corrupt_restarted_room_public_lifecycle(true).await;
+}
+
+async fn corrupt_restarted_room_public_lifecycle(delete_only: bool) {
+    let _environment = crate::env_lock::lock();
+    for corruption in ["truncated", "undecryptable"] {
+        let root = TestRoot::new();
+        let _home = IsolatedHome::new(root.path());
+        let mut room = TestRoom::new("vault-corrupt-public-lifecycle");
+        let config = room.runtime.owned.config_projection.snapshot();
+        let path = root.path().join("observations");
+        let store = RoomSecretObservations::new(path.clone(), BTreeSet::new())
+            .with_identity(&config.relay_private_key);
+        store
+            .register_credential_source(&room.session_id, Some("damaged-key"))
+            .unwrap();
+        store.register(&room.session_id, "synthetic-only").unwrap();
+        if corruption == "truncated" {
+            std::fs::write(store.registry_path(&room.session_id), b"{").unwrap();
+        } else {
+            // Authenticated ciphertext for another Room cannot be opened here.
+            store.register("other-room", "synthetic-other").unwrap();
+            std::fs::copy(
+                store.registry_path("other-room"),
+                store.registry_path(&room.session_id),
+            )
+            .unwrap();
+        }
+        room.runtime.owned.room_secret_observations =
+            RoomSecretObservations::new(path, BTreeSet::new())
+                .with_identity(&config.relay_private_key);
+        let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+        registry
+            .upsert(browser_credential("unrelated", "unrelated-key"))
+            .unwrap();
+        if !delete_only {
+            crate::runtime::capability_registry::execute_capability_registry_request(
+                &room.runtime,
+                crate::local::LocalDaemonRequest::RemoveCredential(
+                    crate::local::RemoveCredentialRequest {
+                        id: "unrelated".into(),
+                    },
+                ),
+                config.user_config.credential_vault.clone(),
+            )
+            .await
+            .expect("MP-08/MP-10/MP-11: corrupt Room must not veto unrelated Vault mutation");
+            assert!(registry.get("unrelated").unwrap().is_none());
+        }
+        let store = &room.runtime.owned.room_secret_observations;
+        assert!(store.withholds_history(&room.session_id, 0));
+        assert!(store
+            .require(&room.session_id, true)
+            .unwrap_err()
+            .to_string()
+            .contains("Room observation state is fenced"));
+        assert_eq!(
+            store
+                .scrub_runtime_result(&room.session_id, "workflow ack committed".to_string())
+                .unwrap(),
+            "workflow ack committed"
+        );
+        assert!(!store
+            .uses_vault_key(&room.session_id, "unrelated-key")
+            .unwrap());
+        let restarted = RoomSecretObservations::new(store.root.clone(), BTreeSet::new())
+            .with_identity(&config.relay_private_key);
+        assert!(restarted.require(&room.session_id, true).is_err());
+        assert!(restarted.withholds_history(&room.session_id, 0));
+        assert!(!restarted
+            .uses_vault_key(&room.session_id, "unrelated-key")
+            .unwrap());
+        if !delete_only {
+            // Same callback as verified fresh provisioning, with no human interaction.
+            let mut fresh_slice = pending_test_slice(&crate::slice::SliceStore::default(), "fresh");
+            fresh_slice.environment_session_id = Some(room.session_id.clone());
+            room.runtime
+                .reset_fresh_slice_observation_environment(&fresh_slice)
+                .await
+                .unwrap();
+            assert!(store.require(&room.session_id, true).is_ok());
+            assert!(store.withholds_history(&room.session_id, 0));
+            assert!(room
+                .runtime
+                .owned
+                .session_store
+                .get_session(&room.session_id)
+                .unwrap()
+                .active_interactions()
+                .is_empty());
+        }
+        room.runtime
+            .delete_session_id(&room.session_id)
+            .await
+            .expect("MP-08/MP-10/MP-11: public Room deletion must recover a corrupt registry");
+        let store = &room.runtime.owned.room_secret_observations;
+        assert!(!store.registry_path(&room.session_id).exists());
+        assert!(!store.marker(&room.session_id).exists());
+    }
+}
+
+#[tokio::test]
+async fn public_history_new_vault_credential_retires_prior_public_value() {
+    // MP-08 / MP-10 / MP-11: supplementary regression for the real hidden-input
+    // Vault creation drill. Only successful creation can invalidate public text.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-public-history-creation");
+    let owner = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let history = &room.runtime.owned.operational_history_store;
+    let prior = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("before synthetic_vault_creation_value".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let safe = history
+        .append_operational_event(
+            crate::history::HistoryEventKind::UserPrompt,
+            None,
+            Some("earlier useful public review".into()),
+            Default::default(),
+            crate::history::HistoryEventTurnContext {
+                session_id: Some(room.session_id.clone()),
+                agent_id: Some(room.agent_id.clone()),
+                public_history_owner_user_id: Some(owner.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    {
+        let _guard = history.lock_public_history().unwrap();
+        assert!(history
+            .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+            .unwrap()
+            .is_some());
+    }
+    create_room_vault_credential(&room, &root, "creation", "synthetic_vault_creation_value").await;
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            &owner,
+            &room.session_id,
+            None,
+            "synthetic_vault_creation_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+    assert!(history
+        .read_public_history_locked(&owner, &room.session_id, &prior.event_id)
+        .unwrap()
+        .is_none());
+    assert!(
+        history
+            .read_public_history_locked(&owner, &room.session_id, &safe.event_id)
+            .unwrap()
+            .is_some(),
+        "Vault creation must preserve unrelated public messages"
+    );
+}
+
+#[tokio::test]
+async fn public_history_protected_room_withholds_fragmented_answers() {
+    // MP-08 / MP-10 / MP-11: protected Rooms withhold provider streams even
+    // when each delta lacks a complete secret. Assembly must not recover raw
+    // fragments through read or turn.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("public-history-split-secret");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    room.runtime
+        .owned
+        .room_secret_observations
+        .register(&room.session_id, "split_canary")
+        .unwrap();
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "split-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("split-run".into()),
+                    prompt_id: Some("split-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = append("prefix split_");
+    append("canary suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert!(!read.ok);
+    assert_eq!(
+        read.payload["error"],
+        "Public history reference is unavailable"
+    );
+    let turn = room
+        .runtime
+        .room_public_turn(
+            &session,
+            &actor,
+            serde_json::from_value(serde_json::json!({"turn_ref":"split-prompt"})).unwrap(),
+        )
+        .await
+        .unwrap();
+    // A withheld turn answers exactly like a missing one.
+    assert!(!turn.ok);
+    assert!(turn.payload.get("events").is_none());
+    assert!(turn.payload["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("Public history turn is unavailable"));
+}
+
+// MP-08 / MP-10 / MP-11: the runtime credential tools stamp the caller's Room
+// into metadata before this Vault mutation.
+async fn create_room_vault_credential(room: &TestRoom, root: &TestRoot, id: &str, secret: &str) {
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = browser_credential(id, &format!("{id}-key"));
+    credential.metadata =
+        Some(serde_json::from_value(serde_json::json!({"session_id":room.session_id})).unwrap());
+    let vault_config = crate::config::UserCredentialVaultConfig {
+        path: root.path().join("vault").display().to_string(),
+        ..Default::default()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&vault_config.path),
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let service =
+        crate::secret::RuntimeSecretService::with_vault_config(Vec::new(), &vault_config).unwrap();
+    room.runtime
+        .upsert_observed_vault_credential(&service, &registry, credential, secret, false)
+        .await
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(&vault_config.path).unwrap();
+}
+
+#[tokio::test]
+async fn public_history_agent_vault_credential_keeps_room_output_visible() {
+    // MP-08 / MP-10 / MP-11: a Vault value that was never inserted into the
+    // Room is scrub-only. It must not fence the session's provider stream.
+    let _environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let _home = IsolatedHome::new(root.path());
+    let room = TestRoom::new("vault-scrub-only");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    room.runtime.owned.config_projection.update(config);
+    create_room_vault_credential(&room, &root, "generated", "synthetic_generated_value").await;
+    let store = &room.runtime.owned.room_secret_observations;
+    assert_eq!(
+        store.protect_unframed_bytes(&room.session_id, b"later visible answer"),
+        b"later visible answer"
+    );
+    let session = room
+        .runtime
+        .owned
+        .session_store
+        .get_session(&room.session_id)
+        .unwrap();
+    let actor = room
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&room.agent_id)
+        .unwrap();
+    let entry = |text: &str| {
+        crate::history::SessionHistoryEntry::provider_output(
+            &room.session_id,
+            "later-run",
+            Some(&room.agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some(format!("later-{text}")),
+            text.to_owned(),
+        )
+    };
+    assert_eq!(
+        store
+            .protect_transcript_entry(entry("later visible answer"))
+            .text,
+        "later visible answer"
+    );
+    let history = &room.runtime.owned.operational_history_store;
+    let append = |text: &str| {
+        history
+            .append_transcript(
+                &entry(text),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let later = append("later visible answer");
+    let echo = append("echo synthetic_generated_value");
+    let events = store.protect_history_events(vec![later.clone(), echo]);
+    assert_eq!(events[0].content.as_deref(), Some("later visible answer"));
+    assert_eq!(events[1].content.as_deref(), Some("echo [redacted]"));
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, later.event_id, None)
+        .await
+        .unwrap();
+    assert!(read.ok);
+    assert_eq!(read.payload["event"]["text"], "later visible answer");
+    let split = |text: &str| {
+        history
+            .append_transcript(
+                &crate::history::SessionHistoryEntry::provider_output(
+                    &room.session_id,
+                    "later-run",
+                    Some(&room.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    Some("split-stored-message".into()),
+                    text.to_owned(),
+                ),
+                crate::history::HistoryEventTurnContext {
+                    session_id: Some(room.session_id.clone()),
+                    agent_id: Some(room.agent_id.clone()),
+                    provider_run_id: Some("later-run".into()),
+                    prompt_id: Some("later-prompt".into()),
+                    public_history_owner_user_id: Some(session.owner_user_id().into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let first = split("prefix synthetic_");
+    split("generated_value suffix");
+    let read = room
+        .runtime
+        .read_room_history(&session, &actor, first.event_id, None)
+        .await
+        .unwrap();
+    assert_eq!(read.payload["event"]["text"], "prefix [redacted] suffix");
+    let _guard = history.lock_public_history().unwrap();
+    assert!(history
+        .search_public_history_locked(
+            session.owner_user_id(),
+            &room.session_id,
+            None,
+            "synthetic_generated_value",
+            50,
+            None
+        )
+        .unwrap()
+        .hits
+        .is_empty());
+}

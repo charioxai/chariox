@@ -1,0 +1,27 @@
+kind: connector
+name: github_graphql
+description: GitHub GraphQL API connector.
+adapter: graphql
+credential:
+  required: true
+timeout_ms: 30000
+max_response_bytes: 1048576
+operations:
+  - name: viewer
+    description: Read the authenticated GitHub viewer.
+    safety: read
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    config:
+      endpoint: https://api.github.com/graphql
+      query: |
+        query Viewer {
+          viewer {
+            login
+            name
+          }
+        }
+      headers:
+        accept: application/vnd.github+json

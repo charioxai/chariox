@@ -1,0 +1,736 @@
+// Ordinary Node/FD3 integration only: these tests do not establish containment.
+// Include the pure native receipt parser tests in the platform-independent suite.
+import './linux-native-contract.test.mjs';
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { spawn } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
+import { encodeFrame, FrameDecoder } from '../../../packages/app-sdk/src/protocol.js';
+
+const repository = fileURLToPath(new URL('../../../', import.meta.url));
+let scratch;
+let fixtureNumber = 0;
+const active = new Set();
+before(async () => {
+  const parent = path.join(homedir(), '.chariox/dev/apps-phase1/bootstrap-tests');
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  scratch = await mkdtemp(path.join(parent, 'run-'));
+});
+after(async () => {
+  for (const child of active) child.kill('SIGKILL');
+  if (scratch) await rm(scratch, { recursive: true, force: true });
+});
+
+async function fixture(source, { entry = 'runtime/main.mjs', config = {}, environment = {}, files = {} } = {}) {
+  const parent = path.join(scratch, `fixture-${++fixtureNumber}`);
+  const roots = Object.fromEntries(['package', 'data', 'temporary', 'runtime'].map(name => [name, path.join(parent, name)]));
+  for (const root of Object.values(roots)) await mkdir(root, { recursive: true, mode: 0o700 });
+  await mkdir(path.join(roots.package, 'runtime'));
+  await writeFile(path.join(roots.package, entry), source);
+  for (const [name, contents] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(roots.package, name)), { recursive: true });
+    await writeFile(path.join(roots.package, name), contents);
+  }
+  for (const file of ['bootstrap.cjs', 'bootstrap-config.cjs'])
+    await cp(path.join(repository, 'apps/app-worker/src', file), path.join(roots.runtime, file));
+  await cp(path.join(repository, 'packages/app-sdk'), path.join(roots.runtime, 'sdk'), { recursive: true });
+  const launch = { version: 1, entry, declarations: { tools: ['echo'], incomingEvents: [] }, startupTimeoutMs: 2000, ...config };
+  // This is the exact documented LoadEnvironment bridge: its initial require
+  // is used only for node:module; file loading then uses createRequire.
+  const bootstrapPath = path.join(roots.runtime, 'bootstrap.cjs');
+  const script = `require('node:module').createRequire(${JSON.stringify(bootstrapPath)})(${JSON.stringify(bootstrapPath)}).start(${JSON.stringify(launch)});`;
+  return { roots, script, launch, environment: {
+    CHARIOX_APP_GENERATION: '7', CHARIOX_APP_INSTALLATION: 'installation_1',
+    CHARIOX_APP_RELEASE_DIGEST: 'a'.repeat(64), CHARIOX_APP_PACKAGE: roots.package,
+    CHARIOX_APP_DATA: roots.data, CHARIOX_APP_TMP: roots.temporary, ...environment,
+  } };
+}
+
+function start(prepared, nodeArguments = []) {
+  const child = spawn(process.execPath, ['--no-warnings', ...nodeArguments, '-e', prepared.script], {
+    cwd: prepared.roots.data, env: prepared.environment, stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+  });
+  active.add(child);
+  let stdout = ''; let stderr = ''; let bytes = 0; let malformed;
+  const messages = [];
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 7000);
+  const decoder = new FrameDecoder(message => messages.push(message));
+  child.stdio[3].on('error', () => {});
+  child.stdio[3].on('data', chunk => {
+    try { decoder.push(chunk); } catch (error) { malformed = error; child.kill('SIGKILL'); }
+  });
+  for (const [stream, target] of [[child.stdout, 'stdout'], [child.stderr, 'stderr']]) {
+    stream.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > 65536) { child.kill('SIGKILL'); return; }
+      if (target === 'stdout') stdout += chunk; else stderr += chunk;
+    });
+  }
+  let closed = false;
+  const completed = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      closed = true; active.delete(child); clearTimeout(deadline);
+      try { decoder.end(); } catch (error) { malformed ??= error; }
+      resolve({ code, signal, stdout, stderr, messages, malformed });
+    });
+  });
+  function send(message) { child.stdio[3].write(encodeFrame({ version: 1, generation: '7', ...message })); }
+  async function receive(predicate) {
+    const deadline = Date.now() + 4000;
+    while (!messages.some(predicate) && !closed && Date.now() < deadline)
+      await new Promise(resolve => setTimeout(resolve, 5));
+    const result = messages.find(predicate);
+    assert.ok(result, JSON.stringify({ messages, stderr, closed, malformed: malformed?.message }));
+    return result;
+  }
+  async function ready() {
+    const message = await receive(message => message.kind === 'request' && message.method === 'worker.ready');
+    assert.equal(message.generation, '7');
+    send({ kind: 'response', id: message.id, result: null });
+    return message;
+  }
+  function request(id, method, params) {
+    send({ kind: 'request', id, method, params, deadline_ms: Date.now() + 2000 });
+  }
+  return { child, messages, completed, receive, send, ready, request };
+}
+
+const registration = `async function register(chariox) {
+  if (!Object.isFrozen(chariox) || !Object.isFrozen(chariox.paths) || !Object.isFrozen(chariox.tools)
+    || 'ready' in chariox || 'close' in chariox || 'migration' in chariox || 'migrationStep' in chariox) throw new Error('bad injection');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  chariox.tools.register('echo', async input => input);
+  chariox.lifecycle.on('shutdown', async () => 'x'.repeat(512 * 1024));
+}`;
+
+for (const [extension, source] of [['mjs', `export default ${registration}`], ['cjs', `module.exports = ${registration}`]]) {
+  test(`${extension} registration, real FD3 dispatch and fully drained shutdown`, async () => {
+    const prepared = await fixture(source, { entry: `runtime/main.${extension}` });
+    const running = start(prepared);
+    const ready = await running.ready();
+    assert.deepEqual(ready.params, { tools: ['echo'], events: [], lifecycle: ['shutdown'] });
+    running.request('call-1', 'tools.invoke', { name: 'echo', input: { text: 'same app API' } });
+    assert.deepEqual((await running.receive(message => message.id === 'call-1')).result, { text: 'same app API' });
+    running.child.stdio[3].pause();
+    running.request('shutdown-1', 'lifecycle.dispatch', { event: 'shutdown' });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    running.child.stdio[3].resume();
+    const result = await running.completed;
+    assert.equal(result.code, 0, JSON.stringify(result));
+    assert.equal(result.signal, null);
+    assert.equal(result.malformed, undefined);
+    assert.equal(result.stderr, '');
+    assert.equal(result.messages.find(message => message.id === 'shutdown-1').result.length, 512 * 1024);
+  });
+}
+
+test('registration failure and missing declarations cannot claim readiness or leak exception detail', async () => {
+  for (const source of [
+    `export default () => { throw new Error('secret-token /private/user/path'); };`,
+    `export default () => {};`,
+    `export default sdk => sdk.tools.register('undeclared', () => {});`,
+    `export const other = 1;`,
+  ]) {
+    const result = await start(await fixture(source)).completed;
+    assert.equal(result.code, 131);
+    assert.equal(result.stderr, 'app_worker_bootstrap_failed:131\n');
+    assert.equal(result.messages.length, 0);
+  }
+});
+
+test('invalid trusted configuration and entry symlink fail before App code executes', async () => {
+  const source = `import fs from 'node:fs'; fs.writeFileSync(process.env.CHARIOX_APP_DATA + '/imported', 'yes'); export default () => {};`;
+  for (const options of [
+    { environment: { CHARIOX_APP_GENERATION: '07' } },
+    { environment: { CHARIOX_APP_GENERATION: '9223372036854775808' } },
+    { config: { version: 2 } },
+    { config: { entry: 'runtime/../runtime/main.mjs' } },
+    { config: { declarations: { tools: ['echo', 'echo'], incomingEvents: [] } } },
+    { config: { declarations: { tools: ['echo'], events: [] } } },
+  ]) {
+    const prepared = await fixture(source, options);
+    const result = await start(prepared).completed;
+    assert.equal(result.code, 130);
+    await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+  }
+  const prepared = await fixture(source);
+  const entry = path.join(prepared.roots.package, 'runtime/main.mjs');
+  const external = path.join(prepared.roots.data, 'outside.mjs');
+  await cp(entry, external); await rm(entry); await symlink(external, entry);
+  assert.equal((await start(prepared).completed).code, 130);
+  await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+});
+
+test('a declared incoming event requires a handler even when every tool is registered', async () => {
+  const prepared = await fixture(`export default sdk => sdk.tools.register('echo', value => value);`, {
+    config: { declarations: { tools: ['echo'], incomingEvents: ['notification'] } },
+  });
+  const result = await start(prepared).completed;
+  assert.equal(result.code, 131);
+  assert.equal(result.messages.length, 0);
+});
+
+test('asynchronous registration timeout closes IPC and reports only its stable code', async () => {
+  const prepared = await fixture('export default async () => new Promise(() => {});', { config: { startupTimeoutMs: 150 } });
+  const result = await start(prepared).completed;
+  assert.equal(result.code, 132);
+  assert.equal(result.stderr, 'app_worker_bootstrap_failed:132\n');
+  assert.equal(result.messages.length, 0);
+});
+
+test('IPC disconnect terminates an App with live timers', async () => {
+  const prepared = await fixture(`export default sdk => { sdk.tools.register('echo', x => x); setInterval(() => {}, 50); };`);
+  const running = start(prepared);
+  await running.ready();
+  running.child.stdio[3].destroy();
+  const result = await running.completed;
+  assert.equal(result.code, 133);
+  assert.equal(result.stderr, 'app_worker_bootstrap_failed:133\n');
+});
+
+test('malformed and stale generation frames close IPC without dispatch', async () => {
+  for (const stale of [false, true]) {
+    const running = start(await fixture(`export default ${registration}`));
+    await running.ready();
+    if (stale) running.send({ kind: 'request', generation: '8', id: 'stale', method: 'tools.invoke', params: { name: 'echo', input: null }, deadline_ms: Date.now() + 1000 });
+    else running.child.stdio[3].write(Buffer.from([0, 16, 0, 1]));
+    const result = await running.completed;
+    assert.equal(result.code, 133);
+    assert.equal(result.stderr, 'app_worker_bootstrap_failed:133\n');
+    assert.ok(!result.messages.some(message => message.kind === 'response'));
+  }
+});
+
+test('a result that is not JSON fails only its call; the App log says why and the worker keeps serving', async () => {
+  // Drill App 1.1.0 returned {echoed: undefined}: the worker used to exit 133.
+  const running = start(await fixture(`export default sdk => sdk.tools.register('echo', ({ mode, ...input }) => {
+    if (mode === 'undefined') return { ok: true, echoed: undefined };
+    if (mode === 'bigint') return { count: 1n };
+    if (mode === 'cycle') { const value = { nested: {} }; value.nested.self = value; return value; }
+    if (mode === 'error') throw new sdk.AppError('not a code', 'App-made error with an invalid code');
+    return input;
+  });`));
+  await running.ready();
+  const cases = [
+    ['undefined', 'result.echoed is undefined'],
+    ['bigint', 'result.count is a BigInt'],
+    ['cycle', 'result.nested.self refers back to an object that contains it (a cycle)'],
+  ];
+  for (const [mode, detail] of cases) {
+    running.request(`bad-${mode}`, 'tools.invoke', { name: 'echo', input: { mode } });
+    const log = await running.receive(message => message.method === 'log.write' && message.params.message.endsWith(detail));
+    assert.deepEqual(log.params, { level: 'error', fields: { code: 'INVALID_OUTPUT', method: 'tools.invoke', name: 'echo' },
+      message: `Tool echo returned a result that cannot be sent, so that call failed with INVALID_OUTPUT: ${detail}` });
+    running.send({ kind: 'response', id: log.id, result: null });
+    const reply = await running.receive(message => message.id === `bad-${mode}`);
+    assert.deepEqual(reply.error, { code: 'INVALID_OUTPUT', message: `The App's result cannot be sent: ${detail}`, retryable: false });
+  }
+  running.request('bad-error', 'tools.invoke', { name: 'echo', input: { mode: 'error' } });
+  const log = await running.receive(message => message.method === 'log.write' && message.params.fields.code === 'HANDLER_FAILED');
+  assert.match(log.params.message, /^Tool echo threw an AppError that cannot be sent, so that call failed with HANDLER_FAILED: its code/);
+  running.send({ kind: 'response', id: log.id, result: null });
+  assert.deepEqual((await running.receive(message => message.id === 'bad-error')).error,
+    { code: 'HANDLER_FAILED', message: 'App handler failed', retryable: false });
+  running.request('good', 'tools.invoke', { name: 'echo', input: { text: 'still serving' } });
+  assert.deepEqual((await running.receive(message => message.id === 'good')).result, { text: 'still serving' });
+  running.request('shutdown', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 0, JSON.stringify(result));
+  assert.equal(result.stderr, '');
+  assert.equal(result.malformed, undefined);
+});
+
+test('kernel readiness rejection and failed App shutdown terminate with bounded errors', async () => {
+  const rejected = start(await fixture(`export default ${registration}`));
+  const ready = await rejected.receive(message => message.method === 'worker.ready');
+  rejected.send({ kind: 'response', id: ready.id, error: { code: 'DENIED', message: 'private kernel reason' } });
+  const first = await rejected.completed;
+  assert.equal(first.code, 131);
+  assert.equal(first.stderr, 'app_worker_bootstrap_failed:131\n');
+
+  const running = start(await fixture(`export default sdk => {
+    sdk.tools.register('echo', x => x);
+    sdk.lifecycle.on('shutdown', () => { throw new Error('secret shutdown path'); });
+  };`));
+  await running.ready();
+  running.request('shutdown-error', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 135);
+  const reply = result.messages.find(message => message.id === 'shutdown-error');
+  assert.ok(reply.error);
+  assert.ok(!JSON.stringify(reply).includes('secret'));
+  assert.equal(result.stderr, 'app_worker_bootstrap_failed:135\n');
+});
+
+test('global Fetch is installed before App import and uses only the actual inherited SDK channel', async () => {
+  const prepared = await fixture(`
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    if (descriptor.writable || descriptor.configurable) throw new Error('mutable global transport');
+    export default sdk => sdk.tools.register('echo', async () => {
+      if (globalThis.fetch !== sdk.http.fetch) throw new Error('wrong global transport');
+      const response = await fetch(new Request('https://api.example.test/fixture'));
+      const value = await response.json();
+      return { value, url: response.url, bodyUsed: response.bodyUsed,
+        nativeValues: response instanceof Response && response.headers instanceof Headers };
+    });
+  `);
+  prepared.script = `globalThis.fetch = () => { throw new Error('ambient network fetch was invoked'); };\n${prepared.script}`;
+  const running = start(prepared);
+  await running.ready();
+  running.request('fetch-call', 'tools.invoke', { name: 'echo', input: null });
+  const open = await running.receive(message => message.method === 'http.open');
+  assert.equal(open.params.url, 'https://api.example.test/fixture');
+  assert.equal(open.params.hasBody, false);
+  const streamId = '00000000-0000-4000-8000-000000000001';
+  running.send({ kind: 'response', id: open.id, result: { streamId } });
+  const head = await running.receive(message => message.method === 'http.headers');
+  running.send({ kind: 'response', id: head.id, result: { pending: false, status: 200,
+    headers: [['content-type', 'application/json'], ['content-encoding', 'gzip']], url: open.params.url } });
+  const read = await running.receive(message => message.method === 'http.read');
+  running.send({ kind: 'response', id: read.id, result: { pending: false, done: false,
+    chunkBase64: gzipSync(Buffer.from('{"through":"kernel"}')).toString('base64') } });
+  const end = await running.receive(message => message.method === 'http.read' && message.id !== read.id);
+  running.send({ kind: 'response', id: end.id, result: { pending: false, done: true, chunkBase64: '' } });
+  const cancel = await running.receive(message => message.method === 'http.cancel');
+  assert.equal(cancel.params.streamId, streamId);
+  running.send({ kind: 'response', id: cancel.id, result: null });
+  const result = await running.receive(message => message.id === 'fetch-call');
+  assert.deepEqual(result.result, { value: { through: 'kernel' }, url: open.params.url, bodyUsed: true, nativeValues: true });
+  running.request('shutdown-fetch', 'lifecycle.dispatch', { event: 'shutdown' });
+  const completed = await running.completed;
+  assert.equal(completed.code, 0, JSON.stringify(completed));
+  assert.equal(completed.malformed, undefined);
+  assert.equal(completed.stderr, '');
+});
+
+test('an App directory watch reports private data changes; macOS workers poll', async () => {
+  const running = start(await fixture(`
+    import { watch, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    export default sdk => sdk.tools.register('echo', () => new Promise((resolve, reject) => {
+      const watcher = watch(sdk.paths.data, (eventType, filename) => {
+        watcher.close();
+        resolve({ eventType, filename, polled: watcher.constructor.name !== 'FSWatcher' });
+      });
+      watcher.on('error', reject);
+      writeFileSync(join(sdk.paths.data, 'marker'), 'x');
+    }));
+  `));
+  await running.ready();
+  running.request('watch-call', 'tools.invoke', { name: 'echo', input: null });
+  const reply = await running.receive(message => message.id === 'watch-call');
+  assert.deepEqual(reply.result, { eventType: 'rename', filename: 'marker', polled: process.platform === 'darwin' });
+  running.request('shutdown-watch', 'lifecycle.dispatch', { event: 'shutdown' });
+  assert.equal((await running.completed).code, 0);
+});
+
+// The fallback runs on macOS only; naming the platform exercises it anywhere.
+async function watchFallback(body) {
+  const directory = await mkdtemp(path.join(scratch, 'watch-'));
+  const bootstrap = path.join(repository, 'apps/app-worker/src/bootstrap.cjs');
+  const script = `const fs = require('node:fs'); const path = require('node:path');
+    const install = platform => require(${JSON.stringify(bootstrap)}).installDirectoryWatch(platform);
+    const dir = ${JSON.stringify(directory)}; const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    (async () => { ${body} })().then(result => process.stdout.write(JSON.stringify(result)));`;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  active.add(child);
+  let stdout = ''; let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+  const code = await new Promise(resolve => child.once('close', resolve));
+  clearTimeout(deadline); active.delete(child);
+  assert.equal(code, 0, stderr);
+  return JSON.parse(stdout);
+}
+
+test('macOS directory watch fallback reports creation, change and removal, then closes', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'sub'));
+    const events = [];
+    const watcher = fs.watch(dir, (type, name) => events.push([type, name]));
+    fs.writeFileSync(path.join(dir, 'a.txt'), '1');
+    await pause(600);
+    fs.appendFileSync(path.join(dir, 'a.txt'), '2');
+    fs.writeFileSync(path.join(dir, 'sub', 'nested.txt'), 'not recursive');
+    await pause(600);
+    fs.rmSync(path.join(dir, 'a.txt'));
+    await pause(600);
+    let closed = false;
+    watcher.on('close', () => { closed = true; });
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'after-close.txt'), 'x');
+    await pause(600);
+    return { events, closed, native: watcher.constructor.name === 'FSWatcher' };`);
+  assert.deepEqual(result, { events: [['rename', 'a.txt'], ['change', 'a.txt'], ['rename', 'a.txt']], closed: true, native: false });
+});
+
+test('macOS fallback: recursive and buffer names, native file watches, synchronous errors and entry limit', async () => {
+  const result = await watchFallback(`
+    install('darwin');
+    fs.mkdirSync(path.join(dir, 'tree', 'deep'), { recursive: true });
+    const events = [];
+    const watcher = fs.watch(dir, { recursive: true, encoding: 'buffer' },
+      (type, name) => events.push([type, Buffer.isBuffer(name), name.toString()]));
+    fs.writeFileSync(path.join(dir, 'tree', 'deep', 'x.txt'), 'x');
+    await pause(600);
+    watcher.close();
+    fs.writeFileSync(path.join(dir, 'file.txt'), '0');
+    const file = fs.watch(path.join(dir, 'file.txt'));
+    const native = file.constructor.name === 'FSWatcher';
+    file.close();
+    const code = operation => { try { operation(); return 'none'; } catch (error) { return error.code; } };
+    const missing = code(() => fs.watch(path.join(dir, 'missing')));
+    fs.mkdirSync(path.join(dir, 'big'));
+    for (let index = 0; index < 4097; ++index) fs.writeFileSync(path.join(dir, 'big', String(index)), '');
+    return { events, native, missing, limit: code(() => fs.watch(path.join(dir, 'big'))) };`);
+  assert.deepEqual(result, { events: [['rename', true, path.join('tree', 'deep', 'x.txt')]], native: true,
+    missing: 'ENOENT', limit: 'ENOSPC' });
+});
+
+test('macOS fallback covers ESM and fs/promises watch, abort and non-persistent watchers', async () => {
+  const result = await watchFallback(`
+    const early = await import('node:fs');
+    install('darwin');
+    const { watch } = await import('node:fs/promises');
+    const controller = new AbortController();
+    setTimeout(() => fs.writeFileSync(path.join(dir, 'p.txt'), 'p'), 50);
+    const seen = [];
+    let aborted;
+    try {
+      for await (const { eventType, filename } of watch(dir, { signal: controller.signal })) {
+        seen.push([eventType, filename]);
+        controller.abort();
+      }
+    } catch (error) { aborted = error.name; }
+    fs.watch(dir, { persistent: false }, () => {});
+    return { seen, aborted, esm: early.watch === fs.watch && watch === fs.promises.watch };`);
+  assert.deepEqual(result, { seen: [['rename', 'p.txt']], aborted: 'AbortError', esm: true });
+});
+
+test('other platforms keep the native directory watch', async () => {
+  assert.equal(await watchFallback(`const before = fs.watch; install('linux'); return fs.watch === before;`), true);
+});
+
+test('fatal asynchronous App exceptions terminate without exposing exception text', async () => {
+  const running = start(await fixture(`export default sdk => {
+    sdk.tools.register('echo', () => { setImmediate(() => { throw new Error('private credential value'); }); return null; });
+  };`));
+  await running.ready();
+  running.request('fatal', 'tools.invoke', { name: 'echo', input: null });
+  const result = await running.completed;
+  assert.equal(result.code, 134);
+  assert.equal(result.stderr, 'app_worker_bootstrap_failed:134\n');
+});
+
+const migrationFiles = { 'migrations/001.js': `export default async chariox => {
+  if (!Object.isFrozen(chariox) || 'tools' in chariox || typeof fetch !== 'function') throw new Error('bad migration context');
+  const record = await chariox.state.get('project');
+  await chariox.state.transaction({ checks: [{ key: 'project', version: record.version }], writes: [{ key: 'project', value: { v: chariox.to } }] });
+};`, 'migrations/002.cjs': 'module.exports = async () => {};' };
+const migrations = { migrations: [{ from: 0, to: 1, entry: 'migrations/001.js' }, { from: 1, to: 2, entry: 'migrations/002.cjs' }], migrationTimeoutMs: 2000 };
+
+test('trusted configuration accepts only a consecutive, contained migration chain', async () => {
+  const prepared = await fixture('export default () => {};', { files: { ...migrationFiles, 'migrations/link.js': '', 'runtime/other.js': '' } });
+  const { configuration } = createRequire(import.meta.url)('../src/bootstrap-config.cjs');
+  const load = patch => configuration({ ...prepared.launch, ...patch }, prepared.environment, prepared.roots.runtime);
+  const plain = load({});
+  assert.deepEqual(plain.migrations, []);
+  assert.ok(Object.isFrozen(plain.migrations));
+  const migrating = load(migrations);
+  assert.equal(migrating.migrationTimeoutMs, 2000);
+  assert.deepEqual(migrating.migrations, [
+    { from: 0, to: 1, entry: path.join(prepared.roots.package, 'migrations/001.js') },
+    { from: 1, to: 2, entry: path.join(prepared.roots.package, 'migrations/002.cjs') }]);
+  assert.ok(Object.isFrozen(migrating.migrations) && migrating.migrations.every(Object.isFrozen));
+  await rm(path.join(prepared.roots.package, 'migrations/link.js'));
+  await symlink(path.join(prepared.roots.package, 'migrations/001.js'), path.join(prepared.roots.package, 'migrations/link.js'));
+  const step = (entry, from = 0, to = 1) => ({ migrations: [{ from, to, entry }], migrationTimeoutMs: 1000 });
+  for (const patch of [
+    { migrations: migrations.migrations }, { migrationTimeoutMs: 1000 }, { migrations: [], migrationTimeoutMs: 1000 },
+    { ...migrations, migrationTimeoutMs: 0 }, { ...migrations, migrationTimeoutMs: 120001 }, { ...migrations, migrationTimeoutMs: 1.5 },
+    { migrations: Array.from({ length: 1025 }, (_, from) => ({ from, to: from + 1, entry: 'migrations/001.js' })), migrationTimeoutMs: 1000 },
+    step('migrations/001.js', 0, 2), step('migrations/001.js', -1, 0), step('migrations/001.js', 0.5, 1.5),
+    step('migrations/001.js', Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1),
+    { migrations: [migrations.migrations[1], migrations.migrations[0]], migrationTimeoutMs: 1000 },
+    { migrations: [{ ...migrations.migrations[0], extra: 1 }], migrationTimeoutMs: 1000 },
+    { migrations: [{ from: 0, to: 1 }], migrationTimeoutMs: 1000 },
+    step('runtime/other.js'), step('migrations/../runtime/other.js'), step('migrations//001.js'),
+    step('migrations/001.json'), step('migrations\\001.js'), step('migrations/0\n01.js'),
+    step('migrations/missing.js'), step('migrations/link.js'),
+  ]) assert.throws(() => load(patch), undefined, JSON.stringify(patch));
+});
+
+test('pending migrations run in order through admitted state calls before the App entry loads', async () => {
+  const prepared = await fixture(`import fs from 'node:fs'; fs.writeFileSync(process.env.CHARIOX_APP_DATA + '/imported', 'yes');
+    export default ${registration}`, { files: migrationFiles, config: migrations });
+  const running = start(prepared);
+  const get = await running.receive(message => message.method === 'state.get');
+  assert.deepEqual(get.params, { key: 'project' });
+  await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+  running.send({ kind: 'response', id: get.id, result: { value: { v: 0 }, version: 3 } });
+  const write = await running.receive(message => message.method === 'state.transaction');
+  assert.deepEqual(write.params, { checks: [{ key: 'project', version: 3 }], writes: [{ key: 'project', value: { v: 1 } }], schemaVersion: 1 });
+  running.send({ kind: 'response', id: write.id, result: { revision: 1, receipts: [] } });
+  for (const to of [1, 2]) {
+    const step = await running.receive(message => message.method === 'migration.step' && message.params.to === to);
+    running.send({ kind: 'response', id: step.id, result: null });
+  }
+  await running.ready();
+  assert.equal(await readFile(path.join(prepared.roots.data, 'imported'), 'utf8'), 'yes');
+  assert.deepEqual(running.messages.map(message => message.method),
+    ['state.get', 'state.transaction', 'migration.step', 'migration.step', 'worker.ready']);
+  running.request('shutdown-migrated', 'lifecycle.dispatch', { event: 'shutdown' });
+  const result = await running.completed;
+  assert.equal(result.code, 0, JSON.stringify(result));
+});
+
+test('a failed migration step ends the worker with its own code before the App loads', async () => {
+  const source = `import fs from 'node:fs'; fs.writeFileSync(process.env.CHARIOX_APP_DATA + '/imported', 'yes'); export default () => {};`;
+  for (const failing of [`export default () => { throw new Error('secret migration detail'); };`,
+    'export default async () => Promise.reject(new Error("x"));', 'export const migrate = () => {};', 'syntax error here(']) {
+    const prepared = await fixture(source, { files: { ...migrationFiles, 'migrations/001.js': failing }, config: migrations });
+    const result = await start(prepared).completed;
+    assert.equal(result.code, 136, JSON.stringify(result));
+    assert.equal(result.stderr, 'app_worker_bootstrap_failed:136\n');
+    assert.equal(result.messages.length, 0);
+    await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+  }
+  const prepared = await fixture(source, { files: { ...migrationFiles, 'migrations/001.js': 'export default () => {};' }, config: migrations });
+  const running = start(prepared);
+  const step = await running.receive(message => message.method === 'migration.step');
+  running.send({ kind: 'response', id: step.id, error: { code: 'DENIED', message: 'stale data version' } });
+  const result = await running.completed;
+  assert.equal(result.code, 136);
+  await assert.rejects(readFile(path.join(prepared.roots.data, 'imported')));
+});
+
+test('the migration timeout bounds migrations and startup is re-armed for App load', async () => {
+  const hung = await fixture('export default () => {};', { files: { ...migrationFiles, 'migrations/001.js': 'export default () => new Promise(() => {});' },
+    config: { ...migrations, migrationTimeoutMs: 150 } });
+  assert.equal((await start(hung).completed).code, 132);
+  const prepared = await fixture(`export default ${registration}`, { config: { ...migrations, startupTimeoutMs: 400, migrationTimeoutMs: 5000 },
+    files: { ...migrationFiles, 'migrations/001.js': 'export default () => new Promise(resolve => setTimeout(resolve, 600));' } });
+  const running = start(prepared);
+  for (const to of [1, 2]) {
+    const step = await running.receive(message => message.method === 'migration.step' && message.params.to === to);
+    running.send({ kind: 'response', id: step.id, result: null });
+  }
+  await running.ready();
+  running.request('shutdown-slow', 'lifecycle.dispatch', { event: 'shutdown' });
+  assert.equal((await running.completed).code, 0);
+});
+
+test('every fsync form is denied the same way before App code runs', async () => {
+  const source = `import fs from 'node:fs';
+import { fsyncSync } from 'node:fs';
+import { open } from 'node:fs/promises';
+export default chariox => chariox.tools.register('echo', async () => {
+  const file = chariox.paths.data + '/probe';
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  const settled = promise => promise.then(() => 'ok', error => error.code);
+  const fd = fs.openSync(file, 'w');
+  fs.writeSync(fd, 'x');
+  const outcome = {
+    fsyncSync: code(() => fs.fsyncSync(fd)),
+    importedFsyncSync: code(() => fsyncSync(fd)),
+    fdatasyncSync: code(() => fs.fdatasyncSync(fd)),
+    writeFileSyncFlush: code(() => fs.writeFileSync(file + '-2', Buffer.from('x'), { flush: true })),
+    fsync: await new Promise(resolve => fs.fsync(fd, error => resolve(error ? error.code : 'ok'))),
+    fdatasync: await new Promise(resolve => fs.fdatasync(fd, error => resolve(error ? error.code : 'ok'))),
+  };
+  fs.closeSync(fd);
+  const handle = await open(file, 'r+');
+  outcome.fileHandleSync = await settled(handle.sync());
+  outcome.fileHandleDatasync = await settled(handle.datasync());
+  await handle.close();
+  outcome.promisesWriteFileFlush = await settled(fs.promises.writeFile(file + '-3', 'x', { flush: true }));
+  outcome.written = fs.readFileSync(file, 'utf8');
+  // A worker thread gets its own node:fs and keeps Node's behavior (here,
+  // without --permission, both forms work).
+  const { Worker } = await import('node:worker_threads');
+  outcome.worker = await new Promise((resolve, reject) => {
+    const worker = new Worker(\`
+      const fs = require('node:fs');
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const fd = fs.openSync(workerData, 'r+');
+        let sync; try { fs.fsyncSync(fd); sync = 'ok'; } catch (error) { sync = error.code; }
+        fs.closeSync(fd);
+        const handle = await fs.promises.open(workerData, 'r+');
+        const fileHandle = await handle.sync().then(() => 'ok', error => error.code);
+        await handle.close();
+        parentPort.postMessage({ fsyncSync: sync, fileHandleSync: fileHandle });
+      })();\`, { eval: true, workerData: file });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+  });
+  return outcome;
+});`;
+  const running = start(await fixture(source));
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: {} });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  assert.deepEqual(outcome, {
+    fsyncSync: denied, importedFsyncSync: denied, fdatasyncSync: denied, writeFileSyncFlush: denied,
+    fsync: denied, fdatasync: denied, fileHandleSync: denied, fileHandleDatasync: denied,
+    promisesWriteFileFlush: denied, written: 'x',
+    worker: { fsyncSync: 'ok', fileHandleSync: 'ok' },
+  });
+  running.child.kill('SIGKILL');
+  await running.completed;
+});
+
+test('App worker threads keep the permission model, whatever their options', async () => {
+  const source = `import { register } from 'node:module';
+import { SHARE_ENV, Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+const probe = \`
+  const fs = require('node:fs');
+  const { Worker, parentPort, workerData } = require('node:worker_threads');
+  const code = run => { try { run(); return 'ok'; } catch (error) { return error.code; } };
+  parentPort.postMessage({
+    outside: code(() => fs.readFileSync(workerData.outside)),
+    storage: code(() => fs.writeFileSync(workerData.storage, 'x')),
+    worker: code(() => new Worker('0', { eval: true, execArgv: [] }).terminate()),
+    register: code(() => require('node:module').register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+  });\`;
+export default chariox => chariox.tools.register('echo', async ({ outside }) => {
+  const storage = chariox.paths.data + '/from-worker';
+  const run = (Constructor, options) => new Promise(resolve => {
+    let worker;
+    try { worker = new Constructor(probe, { eval: true, workerData: { outside, storage }, ...options }); }
+    catch (error) { resolve(error.code); return; }
+    worker.once('message', resolve);
+    worker.once('error', error => resolve('error:' + error.code));
+  });
+  class Subclass extends Worker {}
+  const outcome = {
+    app: code(() => require('node:fs').readFileSync(outside)),
+    register: code(() => register('data:text/javascript,')),
+    childProcess: code(() => require('node:child_process').spawnSync('true')),
+    binding: code(() => process.binding('spawn_sync')),
+    sameWorker: require('node:worker_threads').Worker === Worker && Worker.prototype.constructor === Worker,
+    // The native handle constructor reached from a returned Worker's handle is
+    // the neutralized one; constructing it throws before any thread can start.
+    handleConstructor: code(() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const native = new worker[handle].constructor('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+      return native.startThread();
+    }),
+    // The worker_threads diagnostics channel hands App code the same handle, so
+    // App code subscribing before creating a Worker still only ever sees the
+    // neutralized constructor: the guard replaced it before any App code ran.
+    diagnosticsCapture: await new Promise(resolve => {
+      let native;
+      const channel = require('node:diagnostics_channel');
+      const onPublish = ({ worker }) => {
+        const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+        native = worker[handle].constructor;
+      };
+      channel.subscribe('worker_threads', onPublish);
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      channel.unsubscribe('worker_threads', onPublish);
+      resolve(code(() => {
+        const handle = new native('data:text/javascript,', null, [], new Float64Array(4), false, false, 'x');
+        return handle.startThread();
+      }));
+    }),
+    // util.inspect({ showProxy: true }) must not hand back an unguarded native
+    // constructor: the wrapper is not a Proxy, so the recovered value is itself.
+    inspectCapture: await (async () => {
+      const { inspect } = require('node:util');
+      let recovered;
+      Worker[inspect.custom] = function () { recovered = this; return 'worker'; };
+      inspect(Worker, { showProxy: true });
+      delete Worker[inspect.custom];
+      if (recovered !== Worker) return 'leaked-native-constructor';
+      return run(recovered, { execArgv: [] });
+    })(),
+    // A handle faked with Object.create has no native state, so startThread
+    // rejects it; the neutralized constructor is the only lever, and it is gone.
+    fakeHandleDenied: (() => {
+      const worker = new Worker('0', { eval: true });
+      worker.terminate();
+      const handle = Object.getOwnPropertySymbols(worker).find(symbol => symbol.description === 'kHandle');
+      const proto = Object.getPrototypeOf(worker[handle]);
+      try { Object.create(proto).startThread(); return false; } catch { return true; }
+    })(),
+    inherited: await run(Worker, {}),
+    emptyExecArgv: await run(Worker, { execArgv: [] }),
+    repeatedExecArgv: await run(Worker, { execArgv: process.execArgv }),
+    constructorExecArgv: await run(Worker.prototype.constructor, { execArgv: [] }),
+    subclassExecArgv: await run(Subclass, { execArgv: [] }),
+    customExecArgv: await run(Worker, { execArgv: ['--stack-trace-limit=5'] }),
+    widerExecArgv: await run(Worker, { execArgv: ['--permission', '--allow-fs-read=*'] }),
+    envNodeOptions: await run(Worker, { env: { NODE_OPTIONS: '--allow-fs-read=*' } }),
+    shareEnv: await run(Worker, { env: SHARE_ENV }),
+    // A getter that synchronously creates a nested Worker during the outer
+    // construction: both are permitted threads from the parent, both stay
+    // contained, and the outer one must not fail because of the inner one.
+    reentrant: await (async () => {
+      const contained = worker => new Promise(settle => {
+        worker.once('message', message => settle(message.outside));
+        worker.once('error', error => settle('error:' + error.code));
+      });
+      let innerContained;
+      let outerWorker;
+      try {
+        outerWorker = new Worker(probe, {
+          eval: true,
+          get workerData() {
+            innerContained = contained(new Worker(probe, { eval: true, workerData: { outside, storage } }));
+            return { outside, storage };
+          },
+        });
+      } catch (error) { return 'outer:' + (error.code || error.message); }
+      return { outer: await contained(outerWorker), inner: await innerContained };
+    })(),
+  };
+  process.env.NODE_OPTIONS = '--allow-fs-read=*';
+  outcome.processNodeOptions = await run(Worker, {});
+  Object.prototype.execArgv = [];
+  outcome.prototypeExecArgv = await run(Worker, {});
+  delete Object.prototype.execArgv;
+  return outcome;
+});`;
+  const prepared = await fixture(source);
+  const outside = path.join(path.dirname(prepared.roots.data), 'outside.txt');
+  await writeFile(outside, 'secret');
+  const roots = Object.values(prepared.roots);
+  const running = start(prepared, ['--permission', '--no-addons', '--allow-worker', '--max-old-space-size=128',
+    ...roots.map(root => `--allow-fs-read=${root}`),
+    `--allow-fs-write=${prepared.roots.data}`, `--allow-fs-write=${prepared.roots.temporary}`]);
+  await running.ready();
+  running.request('call-1', 'tools.invoke', { name: 'echo', input: { outside } });
+  const outcome = (await running.receive(message => message.id === 'call-1')).result;
+  const denied = 'ERR_ACCESS_DENIED';
+  const contained = { outside: denied, storage: 'ok', worker: denied, register: denied, childProcess: denied };
+  assert.deepEqual(outcome, {
+    app: denied, register: denied, childProcess: denied, binding: denied, sameWorker: true,
+    handleConstructor: denied, diagnosticsCapture: denied, fakeHandleDenied: true,
+    inspectCapture: contained,
+    inherited: contained, emptyExecArgv: contained, repeatedExecArgv: contained,
+    constructorExecArgv: contained, subclassExecArgv: contained,
+    customExecArgv: denied, widerExecArgv: denied, envNodeOptions: contained, shareEnv: denied,
+    reentrant: { outer: denied, inner: denied },
+    processNodeOptions: contained, prototypeExecArgv: contained,
+  });
+  assert.equal(await readFile(path.join(prepared.roots.data, 'from-worker'), 'utf8'), 'x');
+  running.child.kill('SIGKILL');
+  await running.completed;
+});

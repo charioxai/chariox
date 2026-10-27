@@ -1,0 +1,820 @@
+use std::fs;
+use std::path::PathBuf;
+
+use serde_json::Value;
+
+use crate::session::unix_epoch_ms;
+
+const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
+
+const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
+const CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX: &str = "startup-workspace-trust:";
+const CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX: &str = "startup-workspace-trust-denied:";
+
+pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
+    let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
+    fs::read_to_string(marker)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
+    let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
+    let _ = fs::write(marker, value);
+}
+
+fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("yolo-rendered-permission-confirmed"))
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ClaudeYoloRenderedPermissionConfirmation {
+    confirmed_at_ms: u64,
+    rendered_prompt: String,
+}
+
+pub(super) fn mark_claude_yolo_rendered_permission_confirmed(
+    context_file: &str,
+    rendered_prompt: &str,
+) {
+    let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) else {
+        return;
+    };
+    let confirmation = ClaudeYoloRenderedPermissionConfirmation {
+        confirmed_at_ms: unix_epoch_ms(),
+        rendered_prompt: normalize_claude_rendered_permission_text(rendered_prompt),
+    };
+    if let Ok(raw) = serde_json::to_string(&confirmation) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn claude_yolo_rendered_permission_confirmation_pending(
+    context_file: &str,
+    rendered_prompt: &str,
+) -> bool {
+    claude_yolo_rendered_permission_marker_path(context_file)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|value| {
+            serde_json::from_str::<ClaudeYoloRenderedPermissionConfirmation>(&value).ok()
+        })
+        .is_some_and(|confirmation| {
+            confirmation.rendered_prompt
+                == normalize_claude_rendered_permission_text(rendered_prompt)
+                && unix_epoch_ms().saturating_sub(confirmation.confirmed_at_ms)
+                    < CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS
+        })
+}
+
+pub(super) fn clear_claude_yolo_rendered_permission_confirmation(context_file: &str) {
+    if let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+pub(super) fn claude_headless_submit_retry_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("headless-submit-retry.json"))
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct ClaudeHeadlessSubmitRetry {
+    pub(super) prompt_id: String,
+    pub(super) count: u8,
+    pub(super) last_attempt_ms: u64,
+    #[serde(default)]
+    pub(super) visible_prompt: String,
+}
+
+pub(super) fn read_claude_headless_submit_retry(context_file: &str) -> ClaudeHeadlessSubmitRetry {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return ClaudeHeadlessSubmitRetry::default();
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+pub(super) fn write_claude_headless_submit_retry(
+    context_file: &str,
+    prompt_id: &str,
+    count: u8,
+    last_attempt_ms: u64,
+    visible_prompt: &str,
+) {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return;
+    };
+    let payload = ClaudeHeadlessSubmitRetry {
+        prompt_id: prompt_id.to_string(),
+        count,
+        last_attempt_ms,
+        visible_prompt: visible_prompt.to_string(),
+    };
+    if let Ok(raw) = serde_json::to_string(&payload) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn write_claude_headless_startup_wait_marker(context_file: &str) {
+    write_claude_native_marker(context_file, &format!("startup-wait:{}", unix_epoch_ms()));
+}
+
+pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str) -> Option<String> {
+    claude_native_marker(context_file)
+        .and_then(|marker| {
+            marker
+                .strip_prefix(CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|interaction_id| !interaction_id.is_empty())
+}
+
+pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+    write_claude_native_marker(
+        context_file,
+        &format!(
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            unix_epoch_ms()
+        ),
+    );
+}
+
+pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
+    claude_headless_workspace_trust_interaction_id(context_file)?
+        .strip_prefix("select-yes:")?
+        .parse()
+        .ok()
+}
+
+pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
+    marker.starts_with(CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX)
+}
+
+pub(super) fn claude_headless_workspace_trust_denied(context_file: &str) -> bool {
+    claude_native_marker(context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with(CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX))
+}
+
+pub(super) fn write_claude_headless_workspace_trust_interaction_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
+    write_claude_native_marker(
+        context_file,
+        &format!("{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}{interaction_id}"),
+    );
+}
+
+pub(super) fn write_claude_headless_workspace_trust_denied_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
+    write_claude_native_marker(
+        context_file,
+        &format!("{CLAUDE_HEADLESS_WORKSPACE_TRUST_DENIED_PREFIX}{interaction_id}"),
+    );
+}
+
+pub(super) fn claude_headless_bypass_selection_pending(context_file: &str) -> bool {
+    claude_native_marker(context_file).as_deref() == Some(CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER)
+}
+
+pub(super) fn write_claude_headless_bypass_selection_marker(context_file: &str) {
+    write_claude_native_marker(context_file, CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER);
+}
+
+pub(super) fn append_claude_headless_debug(context_file: &str, label: &str, value: &str) {
+    if std::env::var_os("CHARIOX_CLAUDE_HEADLESS_DEBUG").is_none() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(context_file).parent() else {
+        return;
+    };
+    let path = root.join("headless-debug.log");
+    let _ = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            writeln!(file, "[{}] {label}: {value}", unix_epoch_ms())
+        });
+}
+
+fn claude_permission_input_dir(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("permission-inputs"))
+}
+
+pub(super) fn claude_permission_recent_file(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("permission-recent.txt"))
+}
+
+fn claude_hook_permission_tombstone_file(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("hook-permission-tombstone.json"))
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ClaudeHookPermissionTombstone {
+    recorded_at_ms: u64,
+    tool_name: String,
+    detail: String,
+}
+
+pub(super) fn write_claude_hook_permission_tombstone(context_file: &str, event: &Value) {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return;
+    };
+    let tool_name = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_string();
+    let detail = event
+        .get("tool_input")
+        .and_then(Value::as_object)
+        .and_then(|input| {
+            input
+                .get("command")
+                .or_else(|| input.get("file_path"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default()
+        .to_string();
+    let tombstone = ClaudeHookPermissionTombstone {
+        recorded_at_ms: unix_epoch_ms(),
+        tool_name,
+        detail,
+    };
+    if let Ok(raw) = serde_json::to_string(&tombstone) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn clear_claude_hook_permission_tombstone(context_file: &str) {
+    if let Some(path) = claude_hook_permission_tombstone_file(context_file) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+pub(super) fn take_matching_claude_hook_permission_tombstone(
+    context_file: &str,
+    rendered: &str,
+) -> bool {
+    let Some(path) = claude_hook_permission_tombstone_file(context_file) else {
+        return false;
+    };
+    let Some(tombstone) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClaudeHookPermissionTombstone>(&raw).ok())
+    else {
+        let _ = fs::remove_file(path);
+        return false;
+    };
+    if unix_epoch_ms().saturating_sub(tombstone.recorded_at_ms)
+        > CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS
+    {
+        let _ = fs::remove_file(path);
+        return false;
+    }
+    let rendered = compact_claude_permission_text(rendered);
+    let tool_name = compact_claude_permission_text(&tombstone.tool_name);
+    let detail = compact_claude_permission_text(&tombstone.detail);
+    if !rendered.contains(&tool_name) || (!detail.is_empty() && !rendered.contains(&detail)) {
+        return false;
+    }
+    let _ = fs::remove_file(path);
+    true
+}
+
+fn compact_claude_permission_text(value: &str) -> String {
+    normalize_claude_rendered_permission_text(value)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+pub(super) fn validate_context_request_id(
+    request_id: &str,
+) -> Result<(), crate::error::DaemonError> {
+    if request_id.is_empty()
+        || !request_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "claude_hook_context_response",
+            message: "Invalid native context response request id".into(),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn write_claude_hook_context_response(
+    context_file: &str,
+    request_id: &str,
+    context: &str,
+) -> Result<(), crate::error::DaemonError> {
+    let error = |message: String| crate::error::DaemonError::LocalTransport {
+        operation: "claude_hook_context_response",
+        message,
+    };
+    validate_context_request_id(request_id)?;
+    let root = std::path::Path::new(context_file)
+        .parent()
+        .ok_or_else(|| error("Missing native context response directory".into()))?;
+    let dir = root.join("hook-context-responses");
+    fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
+    let pending = dir.join(format!("{request_id}.tmp"));
+    let response = dir.join(format!("{request_id}.txt"));
+    let result = fs::write(&pending, context).and_then(|()| fs::rename(&pending, &response));
+    if result.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    result.map_err(|e| error(e.to_string()))
+}
+
+pub(super) fn write_claude_permission_response(
+    context_file: &str,
+    request_id: &str,
+    allowed: bool,
+    reason: &str,
+) {
+    write_claude_permission_payload(
+        context_file,
+        request_id,
+        serde_json::json!({
+            "behavior": if allowed { "allow" } else { "deny" },
+            "message": reason,
+        }),
+    );
+}
+
+/// No decision: the waiting hook returns at once without one, and Claude asks
+/// in its own dialog.
+pub(super) fn write_claude_permission_passthrough(context_file: &str, request_id: &str) {
+    write_claude_permission_payload(context_file, request_id, serde_json::json!({}));
+}
+
+fn write_claude_permission_payload(context_file: &str, request_id: &str, payload: Value) {
+    if request_id.trim().is_empty() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(context_file).parent() else {
+        return;
+    };
+    let dir = root.join("permission-responses");
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
+}
+
+pub(super) fn write_claude_permission_input(
+    context_file: &str,
+    interaction_id: &str,
+    input: &[u8],
+) {
+    let Some(dir) = claude_permission_input_dir(context_file) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let filename = format!("{}.input", safe_claude_permission_filename(interaction_id));
+    let _ = fs::write(dir.join(filename), input);
+}
+
+pub(super) fn take_claude_permission_inputs(context_file: &str) -> Vec<Vec<u8>> {
+    let Some(dir) = claude_permission_input_dir(context_file) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("input"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    let marker = claude_native_marker(context_file);
+    let active_id = marker
+        .as_deref()
+        .and_then(|marker| marker.strip_prefix("permission:"))
+        .map(str::to_owned)
+        .or_else(|| claude_headless_workspace_trust_interaction_id(context_file));
+    let expected_file =
+        active_id.map(|id| format!("{}.input", safe_claude_permission_filename(&id)));
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            // A resolved approval may reach the mailbox after its turn ended.
+            // Discard it unless the provider is still displaying that exact decision.
+            let bytes =
+                if path.file_name().and_then(|name| name.to_str()) == expected_file.as_deref() {
+                    fs::read(&path).ok()
+                } else {
+                    None
+                };
+            let _ = fs::remove_file(path);
+            bytes
+        })
+        .collect()
+}
+
+fn safe_claude_permission_filename(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub(super) fn timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
+    let Some(tool_name) = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions") {
+        return false;
+    }
+    let is_runtime_tool =
+        tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.");
+    event.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") || !is_runtime_tool
+}
+
+pub(crate) fn format_claude_permission_message(event: &Value) -> String {
+    let tool_name = event
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("tool");
+    let permission_mode = event.get("permission_mode").and_then(Value::as_str);
+    let details = event
+        .get("tool_input")
+        .map(format_claude_tool_input)
+        .filter(|value| !value.trim().is_empty());
+    let mut pieces = vec![format!("Claude Code wants to run {tool_name}.")];
+    if let Some(permission_mode) = permission_mode {
+        pieces.push(format!("Permission mode: {permission_mode}."));
+    }
+    if let Some(details) = details {
+        pieces.push(String::new());
+        pieces.push(details);
+    }
+    pieces.join("\n")
+}
+
+fn format_claude_tool_input(input: &Value) -> String {
+    let Some(record) = input.as_object() else {
+        return String::new();
+    };
+    if let Some(command) = record.get("command").and_then(Value::as_str) {
+        return ["Command:", "", command].join("\n");
+    }
+    if let Some(file_path) = record.get("file_path").and_then(Value::as_str) {
+        let mut pieces = vec![format!("File: {file_path}")];
+        if let Some(old_string) = record.get("old_string").and_then(Value::as_str) {
+            pieces.extend([String::new(), "Old:".to_string(), old_string.to_string()]);
+        }
+        if let Some(new_string) = record.get("new_string").and_then(Value::as_str) {
+            pieces.extend([String::new(), "New:".to_string(), new_string.to_string()]);
+        }
+        if let Some(content) = record.get("content").and_then(Value::as_str) {
+            pieces.extend([String::new(), "Content:".to_string(), content.to_string()]);
+        }
+        return pieces.join("\n");
+    }
+    serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())
+}
+
+pub(super) fn claude_rendered_permission_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let compact = normalized.replace(' ', "");
+    (normalized.contains("Do you want to proceed?") || compact.contains("Doyouwanttoproceed?"))
+        && (normalized.contains("1. Yes") || compact.contains("1.Yes"))
+        && (normalized.contains("3. No") || compact.contains("3.No"))
+}
+
+pub(super) fn claude_rendered_permission_details(text: &str) -> String {
+    // MP-08 / MP-10 / MP-11: expose the provider's actual action/arguments,
+    // never terminal control sequences or Chariox hidden instructions.
+    let mut visible = normalize_claude_rendered_permission_text(text);
+    while visible.contains(crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START) {
+        visible = redact_native_hidden_instructions(&visible);
+    }
+    format!(
+        "Claude Code asks to run this tool:\n{}",
+        visible.chars().take(4000).collect::<String>().trim()
+    )
+}
+
+/// Select Yes using the rendered selector, including an explicit highlighted
+/// row. Without a highlight, Claude starts on the first displayed choice.
+pub(super) fn claude_workspace_trust_approval_input(text: &str) -> Option<&'static [u8]> {
+    if !claude_headless_workspace_trust_visible(text) {
+        return None;
+    }
+    let compact = normalize_claude_rendered_permission_text(text)
+        .to_ascii_lowercase()
+        .replace(' ', "");
+    // Official releases render this selector both with and without numbers.
+    let choices = compact.replace("1.", "").replace("2.", "");
+    let yes = choices.rfind("yes,itrustthisfolder")?;
+    let no = choices.rfind("no,exit")?;
+    let yes_selected = choices[..yes].ends_with('❯');
+    let no_selected = choices[..no].ends_with('❯');
+    if yes_selected {
+        return Some(b"\r");
+    }
+    if yes < no {
+        Some(if no_selected { b"\x1b[A" } else { b"\r" })
+    } else {
+        Some(b"\x1b[B")
+    }
+}
+
+pub(super) fn claude_headless_workspace_trust_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    (normalized_lower.contains("quick safety check") || compact.contains("quicksafetycheck"))
+        && (normalized_lower.contains("trust this folder") || compact.contains("trustthisfolder"))
+}
+
+pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    let mode_visible = normalized_lower.contains("bypass permissions mode")
+        || compact.contains("bypasspermissionsmode");
+    let complete_acceptance =
+        normalized_lower.contains("yes, i accept") || compact.contains("yes,iaccept");
+    let clipped_choice = (normalized_lower.contains("1. no, exit")
+        || compact.contains("1.no,exit"))
+        && (normalized_lower.contains("2. yes") || compact.contains("2.yes"))
+        && (normalized_lower.contains("enter to confirm") || compact.contains("entertoconfirm"));
+    mode_visible && (complete_acceptance || clipped_choice)
+}
+
+pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {
+    let normalized = normalize_claude_rendered_permission_text(rendered);
+    if normalized.trim().is_empty() {
+        return claude_permission_recent_file(context_file)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_default();
+    }
+    let Some(path) = claude_permission_recent_file(context_file) else {
+        return normalized;
+    };
+    let mut recent = fs::read_to_string(&path).unwrap_or_default();
+    if recent.trim_end().ends_with(normalized.trim()) {
+        return recent;
+    }
+    recent.push(' ');
+    recent.push_str(&normalized);
+    if recent.chars().count() > 4000 {
+        recent = recent
+            .chars()
+            .rev()
+            .take(4000)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+    }
+    let _ = fs::write(path, &recent);
+    recent
+}
+
+pub(super) fn clear_claude_permission_recent(context_file: &str) {
+    if let Some(path) = claude_permission_recent_file(context_file) {
+        let _ = fs::write(path, "");
+    }
+}
+
+fn normalize_claude_rendered_permission_text(value: &str) -> String {
+    let mut output = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.next() {
+                Some('[') => {
+                    for next in chars.by_ref() {
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            let _ = chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) | None => {}
+            }
+            continue;
+        }
+        if ch.is_control() {
+            if !output.ends_with(' ') {
+                output.push(' ');
+            }
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !output.ends_with(' ') {
+                output.push(' ');
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    let modern_idle_composer = compact.split('❯').skip(1).any(|after_prompt_glyph| {
+        let footer = after_prompt_glyph.chars().take(256).collect::<String>();
+        footer.contains("⏵⏵") && footer.contains("shift+tabtocycle")
+    });
+    (normalized_lower.contains("try \"write a test for")
+        || compact.contains("try\"writeatestfor")
+        || normalized_lower.contains("bypass permissions on")
+        || compact.contains("bypasspermissionson")
+        || normalized_lower.contains("for shortcuts")
+        || compact.contains("forshortcuts")
+        || modern_idle_composer)
+        && !(claude_headless_workspace_trust_visible(&normalized)
+            || claude_headless_bypass_confirmation_visible(&normalized))
+}
+
+pub(super) fn claude_headless_prompt_waiting_in_composer(
+    text: &str,
+    expected_prompt: &str,
+) -> bool {
+    let normalized = normalize_claude_rendered_permission_text(text);
+    let normalized_lower = normalized.to_ascii_lowercase();
+    let compact = normalized_lower.replace(' ', "");
+    let expected = normalize_claude_rendered_permission_text(expected_prompt)
+        .trim()
+        .to_ascii_lowercase();
+    let expected_compact = expected.replace(' ', "");
+    let direct_prompt_waiting = !expected.is_empty()
+        && (normalized_lower.trim_end().ends_with(&expected)
+            || compact.trim_end().ends_with(&expected_compact));
+    direct_prompt_waiting
+        || normalized_lower.contains("[pasted text")
+        || compact.contains("[pastedtext")
+        || normalized_lower.contains("paste again to expand")
+        || compact.contains("pasteagaintoexpand")
+}
+
+pub(super) fn normalize_claude_visible_prompt_for_headless(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+pub(super) fn extract_native_hidden_instructions(prompt: &str) -> String {
+    let start = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START;
+    let end = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END;
+    let Some(start_index) = prompt.find(start) else {
+        return String::new();
+    };
+    let after_start = start_index + start.len();
+    let Some(end_index) = prompt[after_start..]
+        .find(end)
+        .map(|index| after_start + index)
+    else {
+        return prompt[after_start..].trim().to_string();
+    };
+    prompt[after_start..end_index].trim().to_string()
+}
+
+pub(super) fn redact_native_hidden_instructions(prompt: &str) -> String {
+    let start = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_START;
+    let end = crate::provider::NATIVE_TUI_HIDDEN_INSTRUCTIONS_END;
+    let Some(start_index) = prompt.find(start) else {
+        return prompt.to_string();
+    };
+    let after_start = start_index + start.len();
+    let Some(end_index) = prompt[after_start..]
+        .find(end)
+        .map(|index| after_start + index + end.len())
+    else {
+        return prompt[..start_index].to_string();
+    };
+    let mut redacted = String::new();
+    redacted.push_str(&prompt[..start_index]);
+    redacted.push_str(&prompt[end_index..]);
+    redacted.replace("\n\n\n", "\n\n")
+}
+
+#[cfg(test)]
+mod approval_lifetime_tests {
+    use super::*;
+    #[test]
+    fn approval_lifetime_rendered_mailbox_drops_replies_for_previous_decision() {
+        let worktree = crate::test_support::TestWorktree::new("approval-mailbox");
+        let context_file = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        write_claude_permission_input(&context_file, "approval-A", b"\r");
+        write_claude_permission_input(&context_file, "approval-B", &[0x03]);
+        write_claude_native_marker(&context_file, "permission:approval-B");
+        assert_eq!(
+            take_claude_permission_inputs(&context_file),
+            vec![vec![0x03]]
+        );
+        write_claude_permission_input(&context_file, "approval-A", &[0x03]);
+        write_claude_native_marker(&context_file, "injected:prompt-B");
+        assert!(take_claude_permission_inputs(&context_file).is_empty());
+    }
+    #[test]
+    fn approval_lifetime_rendered_mailbox_preserves_matching_startup_reply() {
+        let worktree = crate::test_support::TestWorktree::new("approval-startup-mailbox");
+        let context_file = worktree
+            .path()
+            .join("hidden-context.txt")
+            .display()
+            .to_string();
+        write_claude_headless_workspace_trust_interaction_marker(&context_file, "trust-A");
+        write_claude_permission_input(&context_file, "trust-A", b"\r");
+        assert_eq!(
+            take_claude_permission_inputs(&context_file),
+            vec![b"\r".to_vec()]
+        );
+    }
+}
+
+#[cfg(test)]
+mod workspace_trust_selection_tests {
+    use super::claude_workspace_trust_approval_input;
+    #[test]
+    fn approval_selects_affirmative_choice_for_current_and_legacy_dialogs() {
+        for (choices, input) in [
+            (
+                "❯ No, exit\n  Yes, I trust this folder",
+                b"\x1b[B".as_slice(),
+            ),
+            (
+                "  Yes, I trust this folder\n❯ No, exit",
+                b"\x1b[A".as_slice(),
+            ),
+            (
+                "❯ 1. Yes, I trust this folder\n  2. No, exit",
+                b"\r".as_slice(),
+            ),
+            ("❯ Yes, I trust this folder\n  No, exit", b"\r".as_slice()),
+        ] {
+            let frame = format!("Quick safety check\nDo you trust this folder?\n{choices}");
+            assert_eq!(claude_workspace_trust_approval_input(&frame), Some(input));
+        }
+    }
+    #[test]
+    fn unknown_or_incomplete_choice_never_accepts_a_default() {
+        for frame in [
+            "Quick safety check Do you trust this folder? Yes, I trust this folder",
+            "Quick safety check ❯ No, exit",
+            "Quick safety check Do you trust this folder? ❯ Different choice Yes, I trust this folder",
+            "❯ No, exit Yes, I trust this folder",
+        ] {
+            assert!(claude_workspace_trust_approval_input(frame).is_none());
+        }
+    }
+}

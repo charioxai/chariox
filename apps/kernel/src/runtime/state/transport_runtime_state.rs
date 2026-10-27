@@ -1,0 +1,679 @@
+use super::*;
+
+const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
+const MAX_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 30_000;
+const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
+
+impl KernelRuntimeState {
+    pub(crate) fn waiting_room_auxiliary_projection(
+        &self,
+        owner_user_id: &str,
+        request: &crate::local::ListExternalProviderSessionsRequest,
+    ) -> (
+        crate::local::ExternalProviderSessionPage,
+        crate::runtime::metaagent_event::MetaagentEventStore,
+    ) {
+        (
+            self.owned
+                .external_provider_sessions
+                .list_for_owner(owner_user_id, request),
+            self.owned.metaagent_events.clone(),
+        )
+    }
+
+    pub(crate) fn durable_snapshot_scheduler(
+        &self,
+    ) -> Option<crate::durable_snapshot::DurableSnapshotScheduler> {
+        let config = self.owned.config_projection.snapshot();
+        let policy = crate::durable_snapshot::DurableCheckpointPolicy::from_user_state_config(
+            &config.user_config.state,
+        )?;
+        Some(
+            crate::durable_snapshot::DurableSnapshotScheduler::new_with_policy(
+                config.daemon_id,
+                crate::durable_snapshot::DurableSnapshotSources {
+                    durable_state: self.owned.durable_state_store.clone(),
+                    sessions: self.owned.session_store.clone(),
+                    agents: self.owned.agent_store.clone(),
+                    slices: self.owned.slice_store.clone(),
+                    metaagent_events: self.owned.metaagent_events.clone(),
+                    room_computer_revoked: self.owned.room_computer_revoked.clone(),
+                },
+                policy,
+            ),
+        )
+    }
+
+    pub(crate) async fn pump_transport_runtime(&self) {
+        self.owned.announce_durable_writer_condition();
+        self.refresh_user_domain_grants();
+        self.schedule_room_browser_health();
+        self.app_control().schedule_maintenance();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            self.schedule_app_event_pump();
+            self.schedule_app_maintenance_pump();
+            self.schedule_app_validation_pump();
+            self.refresh_started_app_catalogs();
+        }
+        if !self.owned.publication_activation.is_active() {
+            return;
+        }
+        let now = crate::session::unix_epoch_ms();
+        let next = self
+            .owned
+            .next_agent_lifecycle_sweep_ms
+            .load(Ordering::Acquire);
+        if next > now.saturating_add(crate::durable_state::agent_lifecycle::SWEEP_MS) {
+            let _ = self.owned.next_agent_lifecycle_sweep_ms.compare_exchange(
+                next,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        if claim_periodic_sweep(
+            &self.owned.next_agent_lifecycle_sweep_ms,
+            now,
+            crate::durable_state::agent_lifecycle::SWEEP_MS,
+        ) {
+            if let Err(error) = self.sweep_agent_lifecycle().await {
+                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
+            }
+        }
+        self.owned.sweep_kernel_operation_interactions(false);
+        self.owned.withdraw_stale_agent_interactions();
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.resume_app_view_pumps();
+        self.app_control().publishers().pump(self).await;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control().installs().pump(self).await;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        self.app_control()
+            .lifecycle()
+            .schedule_recovery(tokio::runtime::Handle::current());
+        let now_ms = crate::session::unix_epoch_ms();
+        self.sweep_stale_terminal_attachments(now_ms).await;
+        super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
+            self,
+        )
+        .await;
+        self.retry_due_provider_launch_failures(now_ms).await;
+        if self.claim_provider_process_gc(now_ms) {
+            if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
+                crate::logging::warn_with_fields(
+                    "daemon.provider_process_gc",
+                    "provider process gc failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+        self.reap_structured_prompt_jobs_and_dispatch();
+        // MP-08 / MP-10: only the independent output scheduler consumes ready
+        // run IDs. A serial maintenance pass must not strand ready siblings
+        // behind one run's history acknowledgement or provider lane.
+        let watchdog_dispatches = self
+            .owned
+            .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
+        self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
+        self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
+            .await;
+    }
+
+    pub(crate) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .attachment_store
+            .record_heartbeat(session_id, attachment_id, now_ms)
+    }
+
+    pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
+        let stale_attachment_ids = self
+            .owned
+            .attachment_store
+            .stale_terminal_attachment_ids(now_ms, STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS);
+        for attachment_id in stale_attachment_ids {
+            match self.owned.detach(&attachment_id) {
+                Ok(attachment) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "detached stale terminal attachment",
+                        serde_json::json!({
+                            "session_id": attachment.session_id(),
+                            "attachment_id": attachment.id(),
+                            "stale_after_ms": STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS,
+                        }),
+                    );
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "failed detaching stale terminal attachment",
+                        serde_json::json!({
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
+    }
+
+    pub(crate) fn terminal_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.owned
+            .terminal_stream
+            .session_change_sequence(session_id)
+    }
+
+    pub(crate) fn terminal_attachment_change_sequence(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> u64 {
+        self.owned
+            .terminal_stream
+            .attachment_change_sequence(session_id, attachment_id)
+    }
+
+    pub(crate) async fn wait_for_terminal_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
+        self.owned
+            .terminal_stream
+            .wait_for_session_change_after(session_id, sequence)
+            .await;
+    }
+
+    pub(crate) async fn reap_idle_provider_processes(
+        &self,
+        now_ms: u64,
+    ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        let idle_ttl_ms = config.provider_process_idle_ttl_ms;
+        let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
+        let summary = self
+            .with_app_side_effect(move |app| {
+                app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
+            })
+            .await?;
+        if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
+            crate::logging::warn_with_fields(
+                "daemon.provider_process_gc",
+                "provider process gc reaped idle processes",
+                serde_json::json!({
+                    "tracked_processes_reaped": summary.tracked_processes_reaped,
+                    "orphan_processes_reaped": summary.orphan_processes_reaped,
+                }),
+            );
+        }
+        Ok(summary)
+    }
+
+    fn claim_provider_process_gc(&self, now_ms: u64) -> bool {
+        let config = self.owned.config_projection.snapshot();
+        let interval_ms = provider_process_gc_interval_ms(
+            config.provider_process_idle_ttl_ms,
+            config.provider_process_orphan_ttl_ms,
+        );
+        claim_periodic_sweep(
+            &self.owned.next_provider_process_gc_at_ms,
+            now_ms,
+            interval_ms,
+        )
+    }
+
+    pub(crate) async fn wait_for_terminal_attachment_change_after(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        sequence: u64,
+    ) {
+        self.owned
+            .terminal_stream
+            .wait_for_attachment_change_after(session_id, attachment_id, sequence)
+            .await;
+    }
+
+    /// The transport pump's abandoned-decision sweep, for tests that drive
+    /// another pump without the transport loop.
+    #[cfg(test)]
+    pub(crate) fn sweep_kernel_decisions_for_test(&self) {
+        self.owned.sweep_kernel_operation_interactions(false);
+    }
+
+    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
+        self.owned.runtime_projection_changes.sequence()
+    }
+
+    pub(crate) fn record_waiting_room_change(&self) {
+        self.owned.runtime_projection_changes.record_change();
+    }
+
+    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+        self.owned
+            .runtime_projection_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn session_projection_change_sequence(&self) -> u64 {
+        self.owned.session_projection.change_sequence()
+    }
+
+    pub(crate) fn session_projection_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.owned
+            .session_projection
+            .session_change_sequence(session_id)
+    }
+
+    pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
+        self.owned
+            .session_projection
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_session_projection_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
+        self.owned
+            .session_projection
+            .wait_for_session_change_after(session_id, sequence)
+            .await;
+    }
+
+    pub(crate) fn workflow_design_change_sequence(&self) -> u64 {
+        self.owned.workflow_design_events.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_workflow_design_change_after(&self, sequence: u64) {
+        self.owned
+            .workflow_design_events
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_change_sequence(&self) -> u64 {
+        self.owned.runtime_projection_changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_transport_runtime_pump_change_after(&self, sequence: u64) {
+        self.owned
+            .runtime_projection_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    /// Resolves when an App starts that an agent's tool listing left out, so
+    /// the pump refreshes that agent's catalog at once.
+    pub(crate) async fn wait_for_started_app_refreshes(&self) {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let signal = self.app_control().started_app_refreshes_signal();
+            signal.notified().await;
+        }
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        std::future::pending::<()>().await;
+    }
+
+    pub(crate) fn pty_output_change_sequence(&self) -> u64 {
+        self.owned.pty_output_signal.sequence()
+    }
+
+    pub(crate) async fn wait_for_pty_output_change_after(&self, sequence: u64) {
+        self.owned
+            .pty_output_signal
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn provider_output_ready_sequence(&self) -> u64 {
+        self.owned.provider_store.output_ready_signal().sequence()
+    }
+    pub(crate) async fn wait_for_provider_output_ready_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .output_ready_signal()
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn provider_run_actor_completion_sequence(&self) -> u64 {
+        self.owned
+            .provider_store
+            .run_actor_completion_signal()
+            .sequence()
+    }
+
+    pub(crate) async fn wait_for_provider_run_actor_completion_after(&self, sequence: u64) {
+        self.owned
+            .provider_store
+            .run_actor_completion_signal()
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_interval_ms(
+        &self,
+        active_interval_ms: u64,
+        idle_interval_ms: u64,
+        now_ms: u64,
+    ) -> u64 {
+        let archived_agent_ids = self.owned.archived_agent_ids();
+        let next_runtime_due_at_ms = [
+            self.next_structured_output_poll_due_at_ms(),
+            self.owned.provider_output_deadlines.next_due_at_ms(),
+            self.owned.provider_launch_failure_retries.next_due_at_ms(),
+            self.app_event_pump_due_at_ms(now_ms),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        transport_runtime_pump_interval_for_state(
+            next_runtime_due_at_ms,
+            self.owned
+                .session_store
+                .read()
+                .next_scheduled_runtime_wake_at_ms(&archived_agent_ids),
+            now_ms,
+            active_interval_ms,
+            idle_interval_ms,
+        )
+    }
+
+    /// App event handoff with a backlog or wake runs at its own one-second
+    /// floor, not the five-second idle tick. Only where the pump runs, and not
+    /// while a stopped writer keeps it from running.
+    fn app_event_pump_due_at_ms(&self, now_ms: u64) -> Option<u64> {
+        if !cfg!(any(
+            target_os = "macos",
+            all(target_os = "linux", target_env = "gnu")
+        )) || self
+            .owned
+            .durable_state_store
+            .require_writer_healthy()
+            .is_err()
+        {
+            return None;
+        }
+        let due = self.app_control().event_pump().next_due()?;
+        // Round up: a tick that wakes a hair before the floor finds the pass
+        // not yet due and waits a whole minimum interval more.
+        let wait = due.saturating_duration_since(std::time::Instant::now());
+        let wait_ms = wait.as_micros().div_ceil(1000);
+        Some(now_ms.saturating_add(u64::try_from(wait_ms).unwrap_or(u64::MAX)))
+    }
+
+    fn next_structured_output_poll_due_at_ms(&self) -> Option<u64> {
+        self.owned.structured_output_records.next_poll_due_at_ms()
+    }
+
+    pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.owned.room_execs.shutdown();
+        self.owned.room_terminals.shutdown();
+        self.stop_app_grant_wakes();
+        for id in self.app_control().user_views().shutdown() {
+            self.app_control().views().forget_session(&id);
+            self.app_control().views().keep_pumping(&id);
+        }
+        let browser_host = self.owned.kernel_browser_host.clone();
+        let browser_result = tokio::task::spawn_blocking(move || browser_host.shutdown())
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "kernel_browser.shutdown",
+                message: "MD-2: shutdown task failed".into(),
+            })
+            .and_then(|result| {
+                result.map_err(|message| DaemonError::LocalTransport {
+                    operation: "kernel_browser.shutdown",
+                    message,
+                })
+            });
+        let wakes = self.owned.agent_wakes.clone();
+        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        let sessions = self.owned.session_store.read().list_sessions();
+        for session in sessions {
+            self.owned.withdraw_agent_interactions(session.id(), None)?;
+        }
+        {
+            let publishers = self.app_control().publishers().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || publishers.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_publisher_shutdown",
+                    message: "App publisher tasks did not drain".into(),
+                })?;
+        }
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let installs = self.app_control().installs().clone();
+            let runtime = tokio::runtime::Handle::current();
+            tokio::task::spawn_blocking(move || installs.shutdown_blocking(runtime))
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_install_shutdown",
+                    message: "App installation tasks did not drain".into(),
+                })?;
+        }
+        self.owned.sweep_kernel_operation_interactions(true);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let lifecycle = self.app_control().lifecycle().clone();
+            // The blocking owner survives cancellation of this await and keeps
+            // every worker/broker lease until actual shutdown finishes.
+            tokio::task::spawn_blocking(move || lifecycle.shutdown_blocking())
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_shutdown",
+                    message: "App worker shutdown did not complete".into(),
+                })?
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime.app_worker_stop_persistence",
+                    message: "App workers were reaped but a requested stop could not be persisted"
+                        .into(),
+                })?;
+        }
+        let controller_result = self.shutdown_browser_controller_process().await;
+        let app_result = self
+            .with_app_side_effect(|app| app.shutdown_cleanup())
+            .await;
+        let history_result = self.provider_history_appends.flush_all().await;
+        browser_result?;
+        controller_result?;
+        app_result?;
+        history_result
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_snapshot_projection(
+        &self,
+        session_id: &str,
+        last_event_id: u64,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        self.session_snapshot_projection_for_user(session_id, last_event_id, None)
+    }
+
+    fn session_snapshot_projection_for_user(
+        &self,
+        session_id: &str,
+        last_event_id: u64,
+        unread_for_user_id: Option<&str>,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        let session = self.owned.session_snapshot(session_id)?;
+        let provider_run = session
+            .active_provider_run_id()
+            .and_then(|provider_run_id| {
+                self.owned
+                    .provider_store
+                    .get_run(provider_run_id)
+                    .ok()
+                    .or_else(|| self.owned.provider_run_projection.get(provider_run_id))
+            });
+        let agent_activity =
+            self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
+        Ok(crate::runtime::projection::SessionSnapshotProjection {
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
+                &session,
+                unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+            ),
+            metadata: crate::runtime::projection::ProjectionMetadata::new(
+                crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
+                last_event_id,
+            ),
+            session,
+            provider_run,
+            agent_activity,
+        })
+    }
+
+    pub(crate) fn session_snapshot_projection_for_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        last_event_id: u64,
+    ) -> Result<crate::runtime::projection::SessionSnapshotProjection, DaemonError> {
+        let attachment = self.owned.attachment_store.get_attachment(attachment_id)?;
+        if attachment.session_id() != session_id {
+            return Err(DaemonError::AttachmentNotInSession {
+                session_id: session_id.to_string(),
+                attachment_id: attachment_id.to_string(),
+            });
+        }
+        let projection = self.session_snapshot_projection_for_user(
+            session_id,
+            last_event_id,
+            Some(attachment.owner_user_id()),
+        )?;
+        projection.redacted_for_user(attachment.owner_user_id(), &self.owned.durable_state_store)
+    }
+}
+
+fn transport_runtime_pump_interval_for_state(
+    next_runtime_due_at_ms: Option<u64>,
+    next_watchdog_run_at_ms: Option<u64>,
+    now_ms: u64,
+    minimum_interval_ms: u64,
+    idle_interval_ms: u64,
+) -> u64 {
+    let fallback_interval_ms = idle_interval_ms;
+    let next_due_at_ms = [next_runtime_due_at_ms, next_watchdog_run_at_ms]
+        .into_iter()
+        .flatten()
+        .min();
+    let Some(next_due_at_ms) = next_due_at_ms else {
+        return fallback_interval_ms;
+    };
+    if next_due_at_ms <= now_ms {
+        return minimum_interval_ms;
+    }
+    next_due_at_ms
+        .saturating_sub(now_ms)
+        .max(minimum_interval_ms)
+        .min(fallback_interval_ms)
+        .min(idle_interval_ms)
+}
+
+fn provider_process_gc_interval_ms(idle_ttl_ms: u64, orphan_ttl_ms: u64) -> u64 {
+    idle_ttl_ms.min(orphan_ttl_ms).clamp(
+        MIN_PROVIDER_PROCESS_GC_INTERVAL_MS,
+        MAX_PROVIDER_PROCESS_GC_INTERVAL_MS,
+    )
+}
+
+fn claim_periodic_sweep(next_at_ms: &AtomicU64, now_ms: u64, interval_ms: u64) -> bool {
+    let mut next_at = next_at_ms.load(Ordering::Acquire);
+    loop {
+        if now_ms < next_at {
+            return false;
+        }
+        match next_at_ms.compare_exchange_weak(
+            next_at,
+            now_ms.saturating_add(interval_ms),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(current) => next_at = current,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        claim_periodic_sweep, provider_process_gc_interval_ms,
+        transport_runtime_pump_interval_for_state,
+    };
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn transport_runtime_pump_interval_uses_idle_sweep_without_active_work() {
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(None, None, 10_000, 500, 5_000),
+            5_000,
+        );
+    }
+
+    #[test]
+    fn transport_runtime_pump_interval_uses_coarse_sweep_without_due_work() {
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(None, None, 10_000, 500, 5_000),
+            5_000,
+        );
+    }
+
+    #[test]
+    fn transport_runtime_pump_interval_tracks_due_watchdogs() {
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(None, Some(10_250), 10_000, 500, 5_000),
+            500,
+        );
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(None, Some(12_000), 10_000, 500, 5_000),
+            2_000,
+        );
+    }
+
+    #[test]
+    fn transport_runtime_pump_interval_tracks_structured_output_poll_due_time() {
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(Some(10_250), None, 10_000, 500, 5_000),
+            500,
+        );
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(Some(12_000), None, 10_000, 500, 5_000),
+            2_000,
+        );
+        assert_eq!(
+            transport_runtime_pump_interval_for_state(Some(9_999), None, 10_000, 500, 5_000),
+            500,
+        );
+    }
+
+    #[test]
+    fn provider_process_gc_interval_respects_short_ttls_and_caps_default_work() {
+        assert_eq!(provider_process_gc_interval_ms(1_000, u64::MAX), 1_000);
+        assert_eq!(provider_process_gc_interval_ms(300_000, 30_000), 30_000);
+        assert_eq!(provider_process_gc_interval_ms(0, 30_000), 250);
+    }
+
+    #[test]
+    fn periodic_sweep_claims_once_per_interval() {
+        let next_at_ms = AtomicU64::new(0);
+        assert!(claim_periodic_sweep(&next_at_ms, 10_000, 30_000));
+        assert!(!claim_periodic_sweep(&next_at_ms, 10_001, 30_000));
+        assert!(!claim_periodic_sweep(&next_at_ms, 39_999, 30_000));
+        assert!(claim_periodic_sweep(&next_at_ms, 40_000, 30_000));
+    }
+}

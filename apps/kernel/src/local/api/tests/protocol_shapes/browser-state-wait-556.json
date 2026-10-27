@@ -1,0 +1,17 @@
+{
+  "request": { "KernelBrowser": { "command": { "op": "state_wait", "after": "0123456789abcdef.7", "wait_ms": 2000 } } },
+  "first_request": { "KernelBrowser": { "command": { "op": "state_wait", "after": "", "wait_ms": 0 } } },
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "state": "ready",
+        "generation": 7,
+        "tabs": [],
+        "viewport": { "width": 1280, "height": 800, "device_scale_factor": 2 },
+        "chrome_window": { "window_generation": 3, "active_tab_id": "tab-2", "auxiliary": [] },
+        "browser_lockdown": "managed",
+        "revision": "0123456789abcdef.8"
+      }
+    }
+  }
+}

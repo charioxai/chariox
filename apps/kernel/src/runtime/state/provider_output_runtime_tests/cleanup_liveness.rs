@@ -1,0 +1,1215 @@
+use super::*;
+
+#[tokio::test]
+async fn cancellation_acknowledgement_does_not_fail_an_already_stopped_workflow() {
+    assert_stopped_workflow_cancellation_acknowledgement(false).await;
+}
+
+#[tokio::test]
+async fn cancellation_acknowledgement_preserves_existing_workflow_failures() {
+    assert_stopped_workflow_cancellation_acknowledgement(true).await;
+}
+
+async fn assert_stopped_workflow_cancellation_acknowledgement(existing_failure: bool) {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-cancel-ack");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "cancel-ack-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), None)
+        .unwrap();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+        .unwrap();
+    let run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), None)
+        .unwrap();
+    let prompt = crate::session::PromptQueueItem::new(
+        "cancel-ack-prompt",
+        attachment.id(),
+        agent.id(),
+        "cancel",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(run.id(), run.node_runs()[0].id());
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt.clone(), false)
+        .unwrap();
+    app.sessions_mut()
+        .cancel_workflow_run(session.id(), run.id())
+        .unwrap();
+    if existing_failure {
+        app.sessions_mut()
+            .record_workflow_failure_event(
+                session.id(),
+                run.id(),
+                crate::session::WorkflowFailureEvent::new(
+                    crate::session::WorkflowFailureKind::ProviderFailure,
+                    run.node_runs()[0].id(),
+                    Vec::new(),
+                    "provider failed before stop",
+                ),
+            )
+            .unwrap();
+    }
+    let expected_failures = app
+        .sessions()
+        .resolve_workflow_run_ref(session.id(), run.id())
+        .unwrap()
+        .failure_events()
+        .to_vec();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    for _ in 0..2 {
+        runtime
+            .owned
+            .workflow_cancel_prompt(session.id(), &prompt)
+            .unwrap();
+        let mut app = app.lock().await;
+        crate::app::workflow_runtime::cancel_workflow_prompt_from_runtime(
+            &mut app,
+            session.id(),
+            &prompt,
+        )
+        .unwrap();
+        let stopped = app
+            .sessions()
+            .resolve_workflow_run_ref(session.id(), run.id())
+            .unwrap();
+        assert_eq!(stopped.status(), crate::session::WorkflowRunStatus::Stopped);
+        assert_eq!(
+            stopped.failure_events(),
+            expected_failures,
+            "acknowledging an intentional stop must preserve failure events unchanged"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unexpected_owned_provider_exit_marks_active_agent_error() {
+    assert_owned_provider_exit_state(false).await;
+}
+
+#[tokio::test]
+async fn completed_claude_transcript_exit_settles_prompt_without_agent_error() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-completed-claude");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-completed-claude-exit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-completed-claude-exit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "completed-claude-exit".to_string(),
+            pty_target: Some("provider-run-completed-claude-exit".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-completed-claude-exit",
+        attachment.id(),
+        agent.id(),
+        "finish normally\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt.clone(), false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        None,
+    )
+    .expect("prompt should be delivered");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+    crate::transport::flow_control::mark_prompt_completion_recorded(&mut app, run.id());
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("completed Claude exit should reconcile"));
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
+    assert_ne!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .state(),
+        crate::agent::AgentState::Error,
+    );
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("completed turn should remain projected");
+    assert_eq!(
+        completed.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Completed,
+    );
+    assert_eq!(completed.provider_termination, None);
+}
+
+#[tokio::test]
+async fn claude_transcript_limit_diagnostic_survives_provider_exit_settlement() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-claude-limit");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-claude-limit-exit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus-4-8",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-claude-limit-exit",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude-limit-exit".to_string(),
+            pty_target: Some("provider-run-claude-limit-exit".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    let prompt = crate::session::PromptQueueItem::new(
+        "prompt-claude-limit-exit",
+        attachment.id(),
+        agent.id(),
+        "continue work\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        None,
+    )
+    .expect("prompt should be delivered");
+    let diagnostic =
+        "Provider reported a substitutable resource limit: You've hit your session limit";
+    let run = app
+        .providers_mut()
+        .record_terminal_diagnostic(run.id(), diagnostic.to_string())
+        .expect("diagnostic should be recorded");
+    app.update_provider_run_projection(run);
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), "provider-run-claude-limit-exit")
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), "provider-run-claude-limit-exit")
+        .await
+        .expect("Claude limit exit should reconcile"));
+
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("failed turn should remain projected");
+    assert_eq!(
+        completed.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed
+    );
+    assert!(runtime
+        .owned
+        .provider_store
+        .get_run("provider-run-claude-limit-exit")
+        .expect("run should remain available")
+        .terminal_diagnostic()
+        .is_some_and(|value| value == diagnostic));
+}
+
+#[tokio::test]
+async fn cancelled_owned_provider_exit_does_not_mark_agent_error() {
+    assert_owned_provider_exit_state(true).await;
+}
+
+async fn assert_owned_provider_exit_state(cancelling: bool) {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-owned-exit");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-unexpected-exit",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "do work\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    if cancelling {
+        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+            .expect("cancellation should be recorded before provider exit");
+    }
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let outcome = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(17, 42),
+        )
+        .await
+        .expect("unexpected provider exit should settle");
+
+    assert!(outcome.had_active_prompt);
+    assert_eq!(outcome.cancelled_prompt, cancelling);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
+    let agent_state = runtime
+        .owned
+        .agent_store
+        .get_agent(agent.id())
+        .expect("agent should remain available")
+        .state();
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("settled turn should remain projected");
+    if cancelling {
+        assert_ne!(
+            agent_state,
+            crate::agent::AgentState::Error,
+            "a deliberate cancellation must not become an unexpected provider failure"
+        );
+        assert_eq!(
+            completed.provider_termination, None,
+            "a deliberate cancellation must not record a provider failure termination"
+        );
+    } else {
+        assert_eq!(agent_state, crate::agent::AgentState::Error);
+        assert_eq!(
+            completed.settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        );
+        assert_eq!(
+            completed.provider_termination,
+            Some(crate::provider::ProviderRunTermination::process_exit(
+                17, 42
+            )),
+        );
+    }
+}
+
+#[tokio::test]
+async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replacement_run() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-exit-queue");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-unexpected-exit-queue",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "first prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued prompt\n",
+            Vec::new(),
+        )
+        .expect("second prompt should queue")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    };
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let outcome = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("unexpected provider exit should settle and replace");
+
+    assert!(outcome.had_active_prompt);
+    assert!(outcome.started_next_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("queued prompt should be active on the replacement run");
+    assert_eq!(active_prompt.prompt(), "queued prompt\n");
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("replacement agent should remain available")
+            .state(),
+        crate::agent::AgentState::Working,
+    );
+    let active_prompt_id = active_prompt.id().to_string();
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+
+    // MP-08/MP-10: an asynchronous dispatch can report the old process's
+    // failure after liveness has already promoted the queued turn.
+    runtime
+        .fail_owned_provider_prompt(session.id(), run.id(), "old connection closed", true)
+        .await
+        .expect("late old-run failure should be ignored");
+    let after_late_failure = runtime.owned.session_snapshot(session.id()).unwrap();
+    assert_eq!(
+        after_late_failure
+            .active_prompt_for_agent(agent.id())
+            .map(crate::session::PromptQueueItem::id),
+        Some(active_prompt_id.as_str()),
+        "MP-08/MP-10 stale provider failure must preserve the promoted turn",
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .state(),
+        crate::agent::AgentState::Working
+    );
+
+    let repeated = runtime
+        .settle_unexpected_provider_run_exit(
+            session.id(),
+            run.id(),
+            agent.id(),
+            crate::provider::ProviderRunTermination::process_exit(1, 43),
+        )
+        .await
+        .expect("repeated exit reconciliation should be idempotent");
+    assert!(!repeated.had_active_prompt);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should still exist");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(agent.id())
+            .map(crate::session::PromptQueueItem::id),
+        Some(active_prompt_id.as_str()),
+        "the queued prompt must be promoted exactly once",
+    );
+}
+
+#[tokio::test]
+async fn unexpected_owned_provider_exit_without_active_prompt_preserves_agent_state() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-idle-exit");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    let state_before = agent.state();
+    crate::app::ProviderLaunchProcessRuntime::new(&mut app)
+        .remove_run(run.id())
+        .expect("idle provider process should stop");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let ended = runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("idle provider exit should reconcile");
+
+    assert!(ended);
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .state(),
+        state_before,
+    );
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("idle agent history should load");
+    assert!(!history.iter().any(|event| {
+        event.kind == crate::history::HistoryEventKind::Notice
+            && event
+                .content
+                .as_deref()
+                .is_some_and(|content| content.contains("ended unexpectedly"))
+    }));
+}
+
+#[tokio::test]
+async fn owned_end_session_clears_stale_prompt_runtime_state_for_already_ended_session() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-end-session");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = app
+        .launch_provider(crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "codex",
+            "default",
+            "gpt-5",
+        ))
+        .expect("provider should launch");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .end_session(session.id())
+        .await
+        .expect("session should end once");
+    {
+        let app = app.lock().await;
+        app.prompt_activity_store().write().insert(
+            run.id().to_string(),
+            crate::app::ActivePromptState {
+                last_output_at: Some(Instant::now()),
+                saw_response_content: true,
+                completion_recorded: true,
+                settlement_requested: true,
+                active_tool_ids: std::collections::BTreeSet::new(),
+            },
+        );
+        app.active_turn_store().start(
+            crate::app::ActiveTurnState::new(
+                session.id().to_string(),
+                agent.id().to_string(),
+                "prompt-stale".to_string(),
+                run.id().to_string(),
+            )
+            .with_phase(crate::app::ActiveTurnPhase::Settling),
+        );
+    }
+
+    runtime
+        .end_session(session.id())
+        .await
+        .expect("already ended session should clean stale runtime state");
+
+    let app = app.lock().await;
+    assert!(
+        !app.prompt_activity_store().read().contains_key(run.id()),
+        "prompt activity should not survive already-ended session cleanup"
+    );
+    assert!(
+        !app.active_turn_store().snapshot().contains_key(run.id()),
+        "active turn should not survive already-ended session cleanup"
+    );
+}
+
+#[tokio::test]
+async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-liveness-ended");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "do work\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    match app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "queued work\n",
+            Vec::new(),
+        )
+        .expect("queued prompt should submit")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { .. } => {}
+        other => panic!("second prompt should queue, got {other:?}"),
+    }
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should be marked ended")
+        .into_run();
+    app.update_provider_run_projection(ended);
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let already_ended = runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("already-ended liveness reconciliation should succeed");
+
+    assert!(already_ended);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let active_prompt = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("already-ended reconciliation should advance one queued prompt");
+    assert_eq!(active_prompt.prompt(), "queued work\n");
+    assert!(session_state
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(std::collections::VecDeque::is_empty));
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("dead-run settlement should remain projected");
+    let termination = completed
+        .provider_termination
+        .expect("dead-run settlement should expose provider termination");
+    assert!(termination.reason.contains("already ended"));
+    assert!(
+        !runtime.owned.provider_output_deadlines.contains(run.id()),
+        "the prior provider output timer must be cleared"
+    );
+    let app = app.lock().await;
+    assert!(
+        !app.prompt_activity_store().read().contains_key(run.id()),
+        "already-ended provider reconciliation should clear prompt activity"
+    );
+    assert!(
+        !app.active_turn_store().snapshot().contains_key(run.id()),
+        "already-ended provider reconciliation should clear active turn state"
+    );
+}
+
+#[tokio::test]
+async fn stale_provider_exit_does_not_settle_prompt_on_replacement_run() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-stale-exit");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let stale_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("initial provider should launch");
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), stale_run.id())
+        .expect("initial provider should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+    let replacement_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("replacement provider should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "continue on the replacement\n",
+        Vec::new(),
+    )
+    .expect("replacement prompt should start");
+    let prompt_id = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should exist")
+        .active_prompt_for_agent(agent.id())
+        .expect("replacement prompt should remain active")
+        .id()
+        .to_string();
+    app.active_turn_store()
+        .start(crate::app::ActiveTurnState::new(
+            session.id().to_string(),
+            agent.id().to_string(),
+            prompt_id,
+            replacement_run.id().to_string(),
+        ));
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let already_ended = runtime
+        .reconcile_provider_run_exit(session.id(), stale_run.id())
+        .await
+        .expect("stale provider reconciliation should succeed");
+
+    assert!(already_ended);
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_some(),
+        "stale provider reconciliation must not settle the replacement prompt"
+    );
+    assert!(
+        runtime
+            .owned
+            .active_turns
+            .snapshot()
+            .contains_key(replacement_run.id()),
+        "replacement active turn must remain tracked"
+    );
+}
+
+#[tokio::test]
+async fn stale_provider_exit_preserves_starting_cross_agent_workflow_handoff() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-cross-agent");
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, focused_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let stale_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_alias("stale"),
+        )
+        .expect("stale agent should spawn");
+    let downstream_agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("downstream"),
+        )
+        .expect("downstream agent should spawn");
+    crate::app::KernelSessionService::new(&mut app)
+        .focus_agent(session.id(), focused_agent.id())
+        .expect("first agent should remain focused");
+
+    let focused_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(focused_agent.id()),
+        )
+        .expect("focused provider should launch");
+    let parked_focused_run = app
+        .providers_mut()
+        .park_run_provider_only(session.id(), focused_run.id())
+        .expect("focused provider should park")
+        .into_run();
+    app.update_provider_run_projection(parked_focused_run);
+
+    let stale_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(stale_agent.id()),
+        )
+        .expect("stale provider should launch");
+    let ended_stale_run = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), stale_run.id())
+        .expect("stale provider should end")
+        .into_run();
+    app.update_provider_run_projection(ended_stale_run);
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), None)
+        .expect("ended stale provider should no longer be active");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let downstream_run = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(downstream_agent.id()),
+        )
+        .expect("downstream provider launch should start")
+        .run;
+    runtime
+        .owned
+        .provider_run_projection
+        .update(downstream_run.clone());
+
+    let already_ended = runtime
+        .reconcile_provider_run_exit(session.id(), stale_run.id())
+        .await
+        .expect("stale provider reconciliation should succeed");
+
+    assert!(already_ended);
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(downstream_run.id())
+            .expect("downstream run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Starting,
+        "stale settlement must not terminate a downstream provider launch",
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(focused_run.id())
+            .expect("focused run should remain available")
+            .state(),
+        crate::provider::ProviderRunState::Parked,
+        "stale settlement must not resume the focused idle provider",
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        Some(downstream_run.id()),
+        "the downstream provider launch must remain active",
+    );
+}
+
+#[tokio::test]
+async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provider_runs() {
+    let worktree = crate::test_support::TestWorktree::new("cleanup-destroy-agent");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "codex",
+                "default",
+                "gpt-5",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    let ended = app
+        .providers_mut()
+        .terminate_run_provider_only(session.id(), run.id())
+        .expect("provider run should end")
+        .into_run();
+    app.update_provider_run_projection(ended);
+    app.prompt_activity_store().write().insert(
+        run.id().to_string(),
+        crate::app::ActivePromptState {
+            last_output_at: Some(Instant::now()),
+            saw_response_content: true,
+            completion_recorded: true,
+            settlement_requested: true,
+            active_tool_ids: std::collections::BTreeSet::new(),
+        },
+    );
+    app.active_turn_store().start(
+        crate::app::ActiveTurnState::new(
+            session.id().to_string(),
+            agent.id().to_string(),
+            "prompt-stale".to_string(),
+            run.id().to_string(),
+        )
+        .with_phase(crate::app::ActiveTurnPhase::Settling),
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .destroy_agent(agent.id(), crate::session::DEFAULT_LOCAL_USER_ID)
+        .await
+        .expect("agent should be destroyed");
+
+    let app = app.lock().await;
+    assert!(
+        !app.prompt_activity_store().read().contains_key(run.id()),
+        "destroying an agent should clear prompt activity for ended provider runs"
+    );
+    assert!(
+        !app.active_turn_store().snapshot().contains_key(run.id()),
+        "destroying an agent should clear active turns for ended provider runs"
+    );
+}
+
+// MP-08/MP-10/MP-11: an old abort receipt must not stop a resumed invocation.
+#[tokio::test]
+async fn stale_structured_abort_ack_preserves_running_workflow_prompt() {
+    assert_structured_abort_receipt_ownership(false, true, false).await;
+}
+
+#[tokio::test]
+async fn stale_structured_abort_ack_preserves_new_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, true, false).await;
+}
+
+#[tokio::test]
+async fn current_structured_abort_ack_settles_its_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, false, false).await;
+}
+
+#[tokio::test]
+async fn stale_structured_abort_ack_error_preserves_new_cancelling_prompt() {
+    assert_structured_abort_receipt_ownership(true, true, true).await;
+}
+
+async fn assert_structured_abort_receipt_ownership(cancelling: bool, stale: bool, failed: bool) {
+    let worktree = crate::test_support::TestWorktree::new("abort-receipt-generation");
+    let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "abort-receipt-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), None)
+        .unwrap();
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .unwrap();
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(session.id(), workflow.id(), node.id(), None)
+        .unwrap();
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(session.id(), workflow.id(), endpoint.id(), None)
+        .unwrap();
+    let node_run_id = workflow_run.node_runs()[0].id();
+    app.sessions_mut()
+        .start_workflow_node_run(session.id(), workflow_run.id(), node_run_id)
+        .unwrap();
+    let provider_run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "abort-receipt-provider",
+        session.id().to_string(),
+        Some(agent.id().to_string()),
+        "codex".to_string(),
+    );
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "resumed-current-prompt",
+        attachment.id(),
+        agent.id(),
+        "research the public MDN documentation",
+        crate::session::PromptStatus::Queued,
+    )
+    .with_workflow_context(workflow_run.id(), node_run_id);
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap();
+    let prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap()
+        .expect("submission should assign the canonical active prompt ID");
+    if cancelling {
+        app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+            .unwrap();
+    }
+    app.providers_mut().inject_finished_abort_for_test(
+        crate::provider::FinishedProviderPromptAbortJob {
+            session_id: session.id().to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            prompt_id: if stale {
+                "older-interrupted-prompt".to_string()
+            } else {
+                prompt.id().to_string()
+            },
+            result: if failed {
+                Err(crate::error::DaemonError::LocalTransport {
+                    operation: "abort receipt regression",
+                    message: "older abort failed".to_string(),
+                })
+            } else {
+                Ok(())
+            },
+        },
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.reap_structured_prompt_jobs();
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let current_run = snapshot.workflow_run(workflow_run.id()).unwrap();
+    if stale {
+        assert_eq!(
+            current_run.status(),
+            crate::session::WorkflowRunStatus::Running,
+            "an older abort acknowledgement stopped the new workflow invocation"
+        );
+        assert!(current_run.failure_events().is_empty());
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .unwrap();
+        assert_eq!(active.id(), prompt.id());
+        assert_eq!(
+            active.status(),
+            if cancelling {
+                crate::session::PromptStatus::Cancelling
+            } else {
+                crate::session::PromptStatus::Running
+            }
+        );
+    } else {
+        assert_eq!(
+            current_run.status(),
+            crate::session::WorkflowRunStatus::Stopped
+        );
+        assert!(runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .is_none());
+    }
+}

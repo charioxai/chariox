@@ -1,0 +1,135 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { createSessionBrowserProjectionController } from "./session-browser-projection-controller.js"
+import type { SessionListEntry } from "./sessions.js"
+
+test("session browser projection filters ended sessions and normalizes selection", () => {
+  let selectedIndex = 4
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => true,
+    availableSessions: () => [
+      session("ended", "Ended", 10),
+      session("recent", "Created", 30),
+      session("old", "Created", 20),
+    ],
+    selectedIndex: () => selectedIndex,
+    setSelectedIndex: (index) => {
+      selectedIndex = index
+    },
+  })
+
+  assert.deepEqual(controller.sessions().map((item) => item.id), ["recent", "old"])
+  assert.equal(controller.normalizeIndex(), 1)
+  assert.equal(selectedIndex, 1)
+})
+
+test("session browser projection switches hotkey sections by attachment state", () => {
+  let attached = true
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => attached,
+    availableSessions: () => [],
+    selectedIndex: () => 0,
+    setSelectedIndex: () => {},
+  })
+
+  assert.deepEqual(controller.hotkeySections().map((section) => section.title), ["Global", "Session"])
+  attached = false
+  assert.deepEqual(controller.hotkeySections().map((section) => section.title), ["Global", "Waiting room"])
+})
+
+test("live session insertion keeps the selected session and subsequent arrows move normally", () => {
+  let rows = [session("recent", "Created", 30), session("old", "Created", 20)]
+  let selectedIndex = 1
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => false,
+    availableSessions: () => rows,
+    selectedIndex: () => selectedIndex,
+    setSelectedIndex: index => { selectedIndex = index },
+  })
+  assert.equal(controller.normalizeIndex(), 1)
+  rows = [session("new", "Created", 40), ...rows]
+  assert.equal(controller.normalizeIndex(), 2)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
+  selectedIndex -= 1
+  assert.equal(controller.normalizeIndex(), 1)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "recent")
+  rows = rows.filter(row => row.id !== "recent")
+  assert.equal(controller.normalizeIndex(), 1)
+  assert.equal(controller.sessions()[selectedIndex]?.id, "old")
+})
+
+test("session browser projection scopes sessions to the selected project", () => {
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => false,
+    availableSessions: () => [
+      { ...session("frontend-new", "Created", 30), project_id: "frontend" },
+      { ...session("docs", "Created", 40), project_id: "docs" },
+      { ...session("frontend-old", "Created", 20), project_id: "frontend" },
+      { ...session("frontend-ended", "Ended", 50), project_id: "frontend" },
+    ],
+    selectedIndex: () => 0,
+    setSelectedIndex: () => {},
+    selectedProject: () => ({
+      id: "frontend",
+      owner_user_id: "owner",
+      workspace_id: "/workspace",
+      name: "Frontend",
+      kind: "named",
+      status: "active",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      session_count: 2,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }),
+  })
+
+  assert.deepEqual(controller.sessions().map((item) => item.id), ["frontend-new", "frontend-old"])
+  assert.equal(controller.selectedProject()?.name, "Frontend")
+})
+
+test("session browser projection renders ended sessions inside an archived project only", () => {
+  const controller = createSessionBrowserProjectionController({
+    isAttached: () => false,
+    availableSessions: () => [
+      { ...session("archived-ended", "Ended", 30), project_id: "archived" },
+      { ...session("archived-parked", "Parked", 20), project_id: "archived" },
+      { ...session("ordinary-ended", "Ended", 40), project_id: "active" },
+    ],
+    selectedIndex: () => 0,
+    setSelectedIndex: () => {},
+    selectedProject: () => ({
+      id: "archived",
+      owner_user_id: "owner",
+      workspace_id: "/workspace",
+      name: "Archived",
+      kind: "named",
+      status: "archived",
+      created_at_ms: 1,
+      updated_at_ms: 2,
+      archived_at_ms: 2,
+      session_count: 2,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }),
+  })
+
+  assert.deepEqual(
+    controller.sessions().map((item) => item.id),
+    ["archived-ended", "archived-parked"],
+  )
+})
+
+function session(id: string, status: string, lastUsedAtMs: number): SessionListEntry {
+  return {
+    id,
+    alias: null,
+    workspace_id: "/workspace",
+    worktree_id: "/workspace",
+    created_at_ms: 1,
+    last_used_at_ms: lastUsedAtMs,
+    status,
+    connected_cli_count: 0,
+  }
+}

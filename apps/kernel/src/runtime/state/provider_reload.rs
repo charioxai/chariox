@@ -1,0 +1,843 @@
+//! Provider reload policy for launch inputs and the shared runtime tool catalog.
+//!
+//! This module owns the shared decision and relaunch path for changes that require a provider
+//! process to refresh its launch inputs or discover a changed runtime catalog.
+
+use super::*;
+
+#[derive(Debug, Clone)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "Trigger names describe the changed resource at each call site"
+)]
+pub(crate) enum ProviderReloadTrigger {
+    AgentMcpChanged {
+        session_id: String,
+        agent_id: String,
+        name: String,
+    },
+    SessionWorkspaceLiveSyncModeChanged {
+        session_id: String,
+    },
+    UserConfigChanged {
+        path: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderReloadOutcome {
+    Unaffected,
+    Reloaded,
+    ToolsRefreshed,
+    Deferred,
+}
+
+/// Runtime MCP tools can change without changing the server URL or provider
+/// launch arguments. Keep that cause typed through the existing idle queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProviderReloadReason {
+    LaunchInputs(String),
+    RuntimeToolCatalog,
+    RuntimeToolCatalogAndLaunchInputs(String),
+}
+impl ProviderReloadReason {
+    pub(super) fn label(&self) -> &str {
+        match self {
+            Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label) => label,
+            Self::RuntimeToolCatalog => "runtime tool catalog",
+        }
+    }
+    pub(super) fn merge(self, previous: &Self) -> Self {
+        match (self, previous) {
+            (Self::RuntimeToolCatalogAndLaunchInputs(label), _) => {
+                Self::RuntimeToolCatalogAndLaunchInputs(label)
+            }
+            (
+                Self::LaunchInputs(label),
+                Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label),
+            (
+                Self::RuntimeToolCatalog,
+                Self::LaunchInputs(label) | Self::RuntimeToolCatalogAndLaunchInputs(label),
+            ) => Self::RuntimeToolCatalogAndLaunchInputs(label.clone()),
+            (reason, _) => reason,
+        }
+    }
+    fn includes_catalog(&self) -> bool {
+        matches!(
+            self,
+            Self::RuntimeToolCatalog | Self::RuntimeToolCatalogAndLaunchInputs(_)
+        )
+    }
+    fn requires_reload(
+        &self,
+        current: &ProviderLaunchFingerprint,
+        desired: &ProviderLaunchFingerprint,
+    ) -> bool {
+        self.includes_catalog() || current != desired
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProviderLaunchFingerprint {
+    runtime_mcp_server_url: Option<String>,
+    mcp_servers: Vec<crate::mcp::CharioxMcpServerConfig>,
+    // Compare request inputs, before adapter and isolation augmentation.
+    provider_env_remove: Option<std::collections::BTreeSet<String>>,
+    provider_config_overrides: std::collections::BTreeMap<String, serde_json::Value>,
+    write_access_mode: crate::provider::ProviderWriteAccessMode,
+    execution_mode: crate::provider::AgentExecutionMode,
+    permission_level: crate::provider::AgentPermissionLevel,
+}
+
+impl ProviderLaunchFingerprint {
+    fn from_run(run: &crate::provider::RuntimeProviderRun) -> Self {
+        Self {
+            runtime_mcp_server_url: run.runtime_mcp_server_url().map(str::to_string),
+            mcp_servers: run.mcp_servers().to_vec(),
+            provider_env_remove: run
+                .requested_provider_env_remove()
+                .map(|names| names.iter().cloned().collect()),
+            provider_config_overrides: run.provider_config_overrides().clone(),
+            write_access_mode: run.write_access_mode(),
+            execution_mode: run.execution_mode(),
+            permission_level: run.permission_level(),
+        }
+    }
+
+    fn from_request(request: &crate::provider::LaunchProviderRequest) -> Self {
+        Self {
+            runtime_mcp_server_url: request
+                .runtime_mcp_binding
+                .as_ref()
+                .map(|binding| binding.server_url.clone()),
+            mcp_servers: request.mcp_servers.clone(),
+            provider_env_remove: Some(request.provider_env_remove.iter().cloned().collect()),
+            provider_config_overrides: request.provider_config_overrides.clone(),
+            write_access_mode: request.write_access_mode,
+            execution_mode: request.execution_mode.unwrap_or_default(),
+            permission_level: request.permission_level.unwrap_or_default(),
+        }
+    }
+}
+
+impl KernelRuntimeState {
+    pub(crate) async fn apply_provider_reload_policy(
+        &self,
+        trigger: ProviderReloadTrigger,
+    ) -> Result<Vec<ProviderReloadOutcome>, DaemonError> {
+        let mut outcomes = Vec::new();
+        match trigger {
+            ProviderReloadTrigger::AgentMcpChanged {
+                session_id,
+                agent_id,
+                name,
+            } => {
+                let reason = format!("MCP `{name}`");
+                outcomes.push(
+                    self.reload_agent_provider_for_policy(&session_id, &agent_id, &reason)
+                        .await?,
+                );
+            }
+            ProviderReloadTrigger::SessionWorkspaceLiveSyncModeChanged { session_id } => {
+                let session = self.owned.session_store.get_session(&session_id)?;
+                let runs = self.owned.provider_store.list_runs();
+                let agent_ids = active_agent_provider_run_ids_for_session(&runs, session.id());
+                for agent_id in agent_ids {
+                    outcomes.push(
+                        self.reload_agent_provider_for_policy(
+                            session.id(),
+                            &agent_id,
+                            "session workspace live sync mode",
+                        )
+                        .await?,
+                    );
+                }
+                if outcomes.is_empty() {
+                    outcomes.push(ProviderReloadOutcome::Unaffected);
+                }
+            }
+            ProviderReloadTrigger::UserConfigChanged { path } => {
+                if !user_config_path_requires_provider_reload(&path) {
+                    outcomes.push(ProviderReloadOutcome::Unaffected);
+                    return Ok(outcomes);
+                }
+                for run in self.owned.provider_store.list_runs() {
+                    let Some(agent_id) = run.agent_instance_id().map(str::to_string) else {
+                        continue;
+                    };
+                    if !matches!(
+                        run.state(),
+                        crate::provider::ProviderRunState::Running
+                            | crate::provider::ProviderRunState::Starting
+                    ) {
+                        continue;
+                    }
+                    let reason = format!("config `{path}`");
+                    outcomes.push(
+                        self.reload_agent_provider_for_policy(run.session_id(), &agent_id, &reason)
+                            .await?,
+                    );
+                }
+                if outcomes.is_empty() {
+                    outcomes.push(ProviderReloadOutcome::Unaffected);
+                }
+            }
+        }
+        Ok(outcomes)
+    }
+
+    pub(super) async fn reload_agent_provider_for_policy(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: &str,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_for_reason(
+            session_id,
+            agent_id,
+            ProviderReloadReason::LaunchInputs(reason.into()),
+        )
+        .await
+    }
+
+    /// Lifecycle/grant callers refresh the existing shared MCP. Busy agents use
+    /// the same deferred reload queue; no prompt or workflow is created here.
+    pub(crate) async fn refresh_agent_runtime_tool_catalog(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        if let Some(run) = self
+            .owned
+            .provider_run_projection
+            .get_for_agent(session_id, agent_id)
+        {
+            self.owned
+                .provider_run_projection
+                .catalog_changes()
+                .invalidate(run.id());
+        }
+        self.reload_agent_provider_for_reason(
+            session_id,
+            agent_id,
+            ProviderReloadReason::RuntimeToolCatalog,
+        )
+        .await
+    }
+
+    async fn reload_agent_provider_for_reason(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        reason: ProviderReloadReason,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        match self
+            .reload_agent_provider_if_idle_for_reason(session_id, agent_id, &reason)
+            .await?
+        {
+            ProviderReloadOutcome::Deferred => {
+                self.remember_pending_provider_reload(session_id, agent_id, reason);
+                Ok(ProviderReloadOutcome::Deferred)
+            }
+            outcome => Ok(outcome),
+        }
+    }
+
+    pub(super) async fn reload_agent_provider_if_idle_for_reason(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cause: &ProviderReloadReason,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.reload_agent_provider_if_idle(session_id, agent_id, cause, None)
+            .await
+    }
+
+    /// `unlocked` is the caller's vault access, checked just before this
+    /// call, so this reload never waits on a human vault popup.
+    pub(super) async fn reload_agent_provider_if_idle(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        cause: &ProviderReloadReason,
+        unlocked: Option<&super::runtime_vault_unlock_state::VaultUnlockGuard>,
+    ) -> Result<ProviderReloadOutcome, DaemonError> {
+        self.authorize_current_external_command()?;
+        // A leased provider is owned by the worker. Its run identity must be
+        // replaced through the authenticated lease launch/prompt handshake;
+        // a local reload would neither refresh that process nor rebind home.
+        if self
+            .owned
+            .agent_store
+            .get_agent(agent_id)?
+            .remote_execution()
+            .is_some()
+        {
+            return Ok(ProviderReloadOutcome::Unaffected);
+        }
+        let reason = cause.label();
+        let (launch_request, runtime_init_delay_ms, terminated_run_id) = {
+            let owned = &self.owned;
+            if owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
+                .is_some()
+            {
+                if let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) {
+                    owned.record_notice(
+                        session_id,
+                        Some(run.id()),
+                        owned.attachment_store.list_session_attachment_ids(session_id),
+                        format!(
+                            "Provider reload for {reason} is pending until agent `{agent_id}` is idle."
+                        ),
+                    );
+                }
+                return Ok(ProviderReloadOutcome::Deferred);
+            }
+            let Some(run) = owned.provider_store.get_run_for_agent(session_id, agent_id) else {
+                return Ok(ProviderReloadOutcome::Unaffected);
+            };
+            if !crate::provider::provider_run_supports_policy_reload(&run) {
+                return Ok(ProviderReloadOutcome::Unaffected);
+            }
+            let config = owned.config_projection.snapshot();
+            let durable_resume_state = owned
+                .agent_store
+                .get_agent(agent_id)?
+                .provider_resume_state()
+                .clone();
+            let mut launch_request =
+                policy_reload_launch_request(&run, agent_id, durable_resume_state);
+            launch_request = launch_request.with_workspace_live_sync_mode(
+                crate::provider::provider_workspace_live_sync_mode_for_session(
+                    run.provider(),
+                    &config,
+                    owned.session_store.get_session(session_id).ok().as_ref(),
+                ),
+            );
+            let launch_request = match unlocked {
+                Some(_) => {
+                    let launch_request = self
+                        .resolve_provider_launch_account_authority(launch_request)
+                        .await?;
+                    self.owned
+                        .prepare_provider_launch_request(launch_request, config.runtime_mcp_url())?
+                }
+                None => {
+                    self.prepare_provider_launch_request_with_vault(
+                        launch_request,
+                        "reload provider run",
+                    )
+                    .await?
+                }
+            };
+            self.authorize_current_external_command()?;
+            let has_active_prompt = owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&owned.session_store.get_session(session_id)?, agent_id)
+                .is_some();
+            let current_run = owned.provider_store.get_run_for_agent(session_id, agent_id);
+            if current_run.is_none() {
+                return Ok(ProviderReloadOutcome::Unaffected);
+            }
+            if !provider_reload_snapshot_is_still_current(
+                run.id(),
+                current_run.as_ref(),
+                has_active_prompt,
+            ) {
+                if !has_active_prompt {
+                    return Ok(ProviderReloadOutcome::Deferred);
+                }
+                owned.record_notice(
+                    session_id,
+                    Some(run.id()),
+                    owned
+                        .attachment_store
+                        .list_session_attachment_ids(session_id),
+                    format!(
+                        "Provider reload for {reason} is pending until agent `{agent_id}` is idle."
+                    ),
+                );
+                return Ok(ProviderReloadOutcome::Deferred);
+            }
+            let run = current_run.expect("current provider run was checked above");
+            // An in-place tool refresh must not swallow a simultaneous launch
+            // configuration/permission change retained by the common queue.
+            if cause.includes_catalog()
+                && !run.client_interface().is_chariox()
+                && ProviderLaunchFingerprint::from_run(&run)
+                    == ProviderLaunchFingerprint::from_request(&launch_request)
+            {
+                return self.refresh_native_runtime_catalog(run).await;
+            }
+            if !cause.requires_reload(
+                &ProviderLaunchFingerprint::from_run(&run),
+                &ProviderLaunchFingerprint::from_request(&launch_request),
+            ) {
+                return Ok(ProviderReloadOutcome::Unaffected);
+            }
+
+            self.authorize_current_external_command()?;
+            let mut terminated_run_id = None;
+            if run.state() != crate::provider::ProviderRunState::Ended {
+                terminated_run_id = Some(run.id().to_string());
+                let outcome = owned
+                    .provider_store
+                    .terminate_run_provider_only(session_id, run.id())?;
+                owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
+                owned.provider_run_projection.update(outcome.into_run());
+            }
+            owned.record_notice(
+                session_id,
+                None,
+                owned
+                    .attachment_store
+                    .list_session_attachment_ids(session_id),
+                format!(
+                    "Reloading provider conversation for agent `{agent_id}` after {reason} changed."
+                ),
+            );
+            (
+                launch_request,
+                config.provider_runtime_init_delay_ms,
+                terminated_run_id,
+            )
+        };
+
+        self.spawn_provider_relaunch(
+            launch_request,
+            runtime_init_delay_ms,
+            terminated_run_id,
+            12_000,
+        );
+        Ok(ProviderReloadOutcome::Reloaded)
+    }
+}
+
+fn provider_reload_snapshot_is_still_current(
+    expected_run_id: &str,
+    current_run: Option<&crate::provider::RuntimeProviderRun>,
+    has_active_prompt: bool,
+) -> bool {
+    !has_active_prompt && current_run.is_some_and(|run| run.id() == expected_run_id)
+}
+
+pub(super) fn policy_reload_launch_request(
+    run: &crate::provider::RuntimeProviderRun,
+    agent_id: &str,
+    durable_resume_state: crate::provider::ProviderResumeState,
+) -> crate::provider::LaunchProviderRequest {
+    let mut request = crate::provider::LaunchProviderRequest::new(
+        run.session_id(),
+        run.adapter_key(),
+        run.provider(),
+        run.account_profile(),
+        run.model(),
+    )
+    .with_agent_id(agent_id)
+    .with_owner_user_id(run.owner_user_id().to_string())
+    .with_client_interface(run.client_interface())
+    .with_remote_extension_manifest(run.remote_extension_manifest().clone())
+    .with_variant(run.variant().map(str::to_string))
+    .with_resume_state(durable_resume_state);
+    crate::account_profile::copy_provider_account_selection(run, &mut request);
+    if let Some((home, path)) = run.preparation_environment() {
+        request.with_preparation_environment(home, path)
+    } else {
+        request
+    }
+}
+
+fn user_config_path_requires_provider_reload(path: &str) -> bool {
+    path == "providers.workspace_live_sync"
+}
+
+fn active_agent_provider_run_ids_for_session(
+    runs: &[crate::provider::RuntimeProviderRun],
+    session_id: &str,
+) -> std::collections::BTreeSet<String> {
+    runs.iter()
+        .filter(|run| {
+            run.session_id() == session_id
+                && matches!(
+                    run.state(),
+                    crate::provider::ProviderRunState::Running
+                        | crate::provider::ProviderRunState::Starting
+                )
+        })
+        .filter_map(|run| run.agent_instance_id().map(str::to_string))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
+    };
+
+    use super::{
+        active_agent_provider_run_ids_for_session, policy_reload_launch_request,
+        provider_reload_snapshot_is_still_current,
+    };
+
+    #[test]
+    fn runtime_catalog_refresh_is_required_even_when_launch_inputs_are_identical() {
+        use super::{ProviderLaunchFingerprint, ProviderReloadReason};
+        let run = provider_run("run", "session", Some("agent"));
+        let request = policy_reload_launch_request(&run, "agent", ProviderResumeState::default());
+        let current = ProviderLaunchFingerprint::from_run(&run);
+        let desired = ProviderLaunchFingerprint::from_request(&request);
+        assert_eq!(current, desired);
+        assert!(!ProviderReloadReason::LaunchInputs("configuration".into())
+            .requires_reload(&current, &desired));
+        assert!(ProviderReloadReason::RuntimeToolCatalog.requires_reload(&current, &desired));
+        let changed = ProviderLaunchFingerprint {
+            permission_level: crate::provider::AgentPermissionLevel::Required,
+            ..desired
+        };
+        assert!(ProviderReloadReason::LaunchInputs("permissions".into())
+            .requires_reload(&current, &changed));
+    }
+
+    #[test]
+    fn runtime_catalog_cause_survives_pending_launch_configuration_updates() {
+        use super::ProviderReloadReason;
+        let catalog = ProviderReloadReason::RuntimeToolCatalog;
+        let config = ProviderReloadReason::LaunchInputs("new permissions".into());
+        let combined =
+            ProviderReloadReason::RuntimeToolCatalogAndLaunchInputs("new permissions".into());
+        assert_eq!(config.clone().merge(&catalog), combined);
+        assert_eq!(catalog.clone().merge(&config), combined);
+        assert_eq!(catalog.merge(&combined), combined);
+        assert_eq!(combined.clone().merge(&config), combined);
+    }
+
+    #[test]
+    fn catalog_reload_preserves_native_interface_and_home_tool_manifest() {
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "model")
+            .with_agent_id("agent")
+            .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
+            .with_remote_extension_manifest(crate::extension::RemoteExtensionManifest {
+                tools: vec![crate::extension::RemoteExtensionTool {
+                    kind: crate::extension::ExtensionKind::App,
+                    name: "installed".into(),
+                    tool_name: "app_fixture_echo".into(),
+                    description: "Fixture".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                    authority: crate::extension::ExtensionAuthority::Home,
+                    definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
+                    execution_location: crate::extension::ExtensionExecutionLocation::Home,
+                    safety: None,
+                    timeout_sec: Some(30),
+                    version_hash: Some("fixture".into()),
+                }],
+                room_browser_available: false,
+            });
+        let run = crate::provider::RuntimeProviderRun::new(
+            "run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let reload = policy_reload_launch_request(&run, "agent", ProviderResumeState::default());
+        assert_eq!(reload.client_interface, request.client_interface);
+        assert_eq!(
+            reload.remote_extension_manifest,
+            request.remote_extension_manifest
+        );
+    }
+
+    #[test]
+    fn provider_reload_fingerprint_matches_adapter_and_isolation_launch_inputs() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        // MP-08/MP-11: launch planning must not depend on installed provider CLIs.
+        let bin = crate::test_support::TestWorktree::new("reload-fingerprint-bin");
+        for (name, override_env) in [
+            ("codex", "CHARIOX_CODEX_BIN"),
+            ("claude", "CHARIOX_CLAUDE_BIN"),
+            ("opencode", "CHARIOX_OPENCODE_BIN"),
+        ] {
+            let executable = bin.path().join(name);
+            std::fs::write(&executable, "#!/bin/sh\nexit 0\n")
+                .expect("fake provider executable should exist");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+                    .expect("fake provider should be executable");
+            }
+            std::env::remove_var(override_env);
+        }
+        std::env::set_var("PATH", bin.path());
+        let profile = crate::test_support::TestWorktree::new("reload-fingerprint-claude-profile");
+        let previous = std::env::var_os("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
+        let launches = [
+            ("codex", "codex"),
+            ("claude", "claude-headless"),
+            ("opencode", "opencode"),
+        ]
+        .into_iter()
+        .map(|(adapter, provider)| {
+            let mut request =
+                LaunchProviderRequest::new("reload-session", adapter, provider, "default", "model");
+            request.provider_env_remove =
+                vec!["RELOAD_CONTROL_B".into(), "RELOAD_CONTROL_A".into()];
+            if adapter == "claude" {
+                request.provider_account_env.insert(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    profile.path().display().to_string(),
+                );
+            }
+
+            let launch = crate::provider::ProviderRegistry::new()
+                .resolve(adapter)
+                .unwrap()
+                .connect(&request);
+            if let Ok(launch) = &launch {
+                if let Some(events) = launch.pty_env.get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                    let root = std::path::Path::new(events).parent().unwrap();
+                    assert_eq!(root.parent(), Some(std::env::temp_dir().as_path()));
+                    assert!(root
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("chariox-claude-remote-native-"));
+                    std::fs::remove_dir_all(root)
+                        .expect("generated native launch files should clean up");
+                }
+            }
+            (request, launch)
+        })
+        .collect::<Vec<_>>();
+        if let Some(value) = previous {
+            std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", value);
+        }
+        for (request, launch) in launches {
+            let launch = launch.expect("official adapter launch plan should resolve");
+            assert_eq!(
+                launch.pty_program.as_deref(),
+                bin.path().join(&request.adapter_key).to_str(),
+                "launch should use the test-scoped provider executable"
+            );
+            for isolated in [false, true] {
+                let mut launch = launch.clone();
+                if isolated {
+                    // The Linux managed wrapper adds this same removal list.
+                    launch
+                        .pty_env_remove
+                        .extend(crate::provider::managed_provider_isolation_env_remove());
+                }
+                let run = crate::provider::RuntimeProviderRun::new("reload-run", &request, launch);
+                assert_eq!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "{} isolated={isolated}",
+                    request.adapter_key
+                );
+                let value = serde_json::to_value(&run).expect("run should serialize");
+                assert!(!value
+                    .as_object()
+                    .unwrap()
+                    .contains_key("requested_provider_env_remove"));
+                let restored: crate::provider::RuntimeProviderRun =
+                    serde_json::from_value(value).expect("run should restore");
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&restored),
+                    super::ProviderLaunchFingerprint::from_request(&request),
+                    "restored runs must reload without request provenance"
+                );
+                let mut changed = request.clone();
+                changed.provider_env_remove.push("NEW_CONTROL".into());
+                assert_ne!(
+                    super::ProviderLaunchFingerprint::from_run(&run),
+                    super::ProviderLaunchFingerprint::from_request(&changed)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn provider_reload_environment_removal_fingerprint_is_order_independent() {
+        let fingerprint = |names: &[&str]| {
+            let mut request =
+                LaunchProviderRequest::new("session", "codex", "codex", "default", "model");
+            request.provider_env_remove = names.iter().map(|name| name.to_string()).collect();
+            super::ProviderLaunchFingerprint::from_request(&request)
+        };
+        assert_eq!(fingerprint(&["A", "B", "A"]), fingerprint(&["B", "A"]));
+        assert_ne!(fingerprint(&["A", "B"]), fingerprint(&["A"]));
+    }
+
+    #[test]
+    fn provider_reload_uses_only_durable_resume_state() {
+        let run = provider_run_with_resume_state(
+            "run-claude",
+            "session-1",
+            "agent-1",
+            ProviderResumeState::from_claude_session_id("unconfirmed-runtime-session"),
+        );
+
+        let fresh_request =
+            policy_reload_launch_request(&run, "agent-1", ProviderResumeState::default());
+        assert!(
+            fresh_request.resume_state.is_none(),
+            "a provider-generated session id must not be resumed before the first turn confirms it"
+        );
+
+        let confirmed_request = policy_reload_launch_request(
+            &run,
+            "agent-1",
+            ProviderResumeState::from_claude_session_id("confirmed-session"),
+        );
+        assert_eq!(
+            confirmed_request
+                .resume_state
+                .as_ref()
+                .and_then(ProviderResumeState::claude_session_id),
+            Some("confirmed-session")
+        );
+    }
+
+    #[test]
+    fn provider_reload_carries_the_kernel_preparation_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-provider-reload-preparation-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms(),
+        ));
+        let home = root
+            .join(".chariox-project-environment")
+            .join("b".repeat(64));
+        std::fs::create_dir_all(&home).expect("preparation home should exist");
+        let path = format!("{}/.local/bin:/usr/bin", home.display());
+        let mut run = provider_run("run-prepared", "session-1", Some("agent-1"));
+        run.set_preparation_environment(home.display().to_string(), path.clone())
+            .expect("preparation environment should bind to the run");
+
+        let request = policy_reload_launch_request(&run, "agent-1", ProviderResumeState::default());
+
+        assert_eq!(
+            request.preparation_environment,
+            Some((home.display().to_string(), path))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_reload_policy_selects_active_agent_runs_for_session_mode_changes() {
+        let mut running = provider_run("run-1", "session-1", Some("agent-1"));
+        running.mark_running();
+        let starting = provider_run("run-2", "session-1", Some("agent-2"));
+        let mut ended = provider_run("run-3", "session-1", Some("agent-3"));
+        ended.mark_ended();
+        let mut other_session = provider_run("run-4", "session-2", Some("agent-4"));
+        other_session.mark_running();
+        let mut session_run = provider_run("run-5", "session-1", None);
+        session_run.mark_running();
+
+        assert_eq!(
+            active_agent_provider_run_ids_for_session(
+                &[running, starting, ended, other_session, session_run],
+                "session-1",
+            ),
+            ["agent-1".to_string(), "agent-2".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn provider_reload_revalidates_idle_run_identity_after_async_preparation() {
+        let expected = provider_run("expected", "session-1", Some("agent-1"));
+        let replacement = provider_run("replacement", "session-1", Some("agent-1"));
+
+        assert!(provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&expected),
+            false,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&expected),
+            true,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            Some(&replacement),
+            false,
+        ));
+        assert!(!provider_reload_snapshot_is_still_current(
+            expected.id(),
+            None,
+            false,
+        ));
+    }
+
+    fn provider_run(
+        run_id: &str,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> crate::provider::RuntimeProviderRun {
+        let mut request =
+            LaunchProviderRequest::new(session_id, "codex", "codex", "default", "gpt-5.2");
+        if let Some(agent_id) = agent_id {
+            request = request.with_agent_id(agent_id);
+        }
+        crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "codex:test".to_string(),
+                pty_target: None,
+                pty_program: Some("codex".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://127.0.0.1:1".to_string()),
+            },
+        )
+    }
+
+    fn provider_run_with_resume_state(
+        run_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+    ) -> crate::provider::RuntimeProviderRun {
+        crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &LaunchProviderRequest::new(session_id, "claude", "claude-p", "default", "haiku")
+                .with_agent_id(agent_id)
+                .with_resume_state(resume_state),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude".to_string(),
+                pty_target: None,
+                pty_program: Some("claude".to_string()),
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("stdio://claude".to_string()),
+            },
+        )
+    }
+}

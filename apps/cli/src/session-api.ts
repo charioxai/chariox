@@ -1,0 +1,198 @@
+import {
+  normalizeRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity,
+  normalizeRuntimeSessions,
+  type RuntimeAttachment,
+  type RuntimeSession,
+} from "./cli-types.js"
+import type { LocalIpcClient } from "./ipc.js"
+import {
+  aliasSessionRequest,
+  attachToSessionRequest,
+  attachSessionViewRequest,
+  createSessionRequest,
+  createWorkspaceWorktreeRequest,
+  deleteSessionRequest,
+  detachFromSessionRequest,
+  endSessionRequest,
+  getSessionStateRequest,
+  listSessionsRequest,
+  pauseMetaagentTaskRequest,
+  resolveSessionRequest,
+  resumeMetaagentTaskRequest,
+  abortMetaagentTaskRequest,
+  updateMetaagentTaskRequest,
+} from "./ipc-requests.js"
+import { expectVariant } from "./ipc-response.js"
+import { resolvePendingWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
+import type { SessionProjectSelection } from "@chariox/kernel-client"
+import type { SessionHistoryOutline } from "./cli-types.js"
+
+export async function attachSessionView(client: LocalIpcClient, sessionId: string, clientId: string, preferredAgentId: string | null = null) {
+  const response = await client.send<Record<string, unknown>>(attachSessionViewRequest(sessionId, clientId, preferredAgentId))
+  const view = expectVariant<{
+    attachment: RuntimeAttachment
+    state: Record<string, unknown>
+    history: Record<string, unknown>
+  }>(response, "SessionViewAttached")
+  const state = expectVariant<{
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+    room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
+  }>(view.state, "SessionState")
+  if (state.session.id !== sessionId || view.attachment.session_id !== sessionId) throw new Error("initial view session mismatch")
+  const history = expectVariant<SessionHistoryOutline>(view.history, "SessionHistoryOutline")
+  if (history.agents.some(agent => !state.session.agents.some(visible => visible.id === agent.agent_id))) throw new Error("initial view history agent mismatch")
+  return {
+    attachment: view.attachment,
+    session: normalizeRuntimeSessionWithAgentActivity({ ...state, session: { ...state.session, room_workflows: state.room_workflows, room_workflows_fresh: true } }),
+    history: { ...history, agents: history.agents.map(agent => ({ ...agent, loadedBlobs: agent.prefetched_blobs ?? [] })) },
+  }
+}
+
+export async function listSessions(client: LocalIpcClient): Promise<RuntimeSession[]> {
+  const response = await client.send<Record<string, unknown>>(listSessionsRequest())
+  const payload = expectVariant<{ sessions: RuntimeSession[] }>(response, "SessionsListed")
+  return normalizeRuntimeSessions(payload.sessions).sort((left, right) => right.created_at_ms - left.created_at_ms)
+}
+
+export async function createSession(
+  client: LocalIpcClient,
+  workspace: string,
+  worktree: string,
+  alias?: string,
+  agentDefaults?: RuntimeSession["agent_defaults"],
+  sliceRef?: string | null,
+  workspaceLiveSyncMode?: "off" | "managed" | "tracked" | "unrestricted" | null,
+  kernelRef?: string | null,
+  worktreePlacement?: Record<string, unknown> | null,
+  projectSelection?: SessionProjectSelection | null,
+): Promise<RuntimeSession> {
+  const resolvedWorktree = await resolvePendingWaitingRoomWorktreePath(workspace, worktree, {
+    createWorktree: async (workspacePath) => {
+      const response = await client.send<Record<string, unknown>>(createWorkspaceWorktreeRequest(workspacePath))
+      return expectVariant<{ worktree: { path: string } }>(response, "WorkspaceWorktreeCreated").worktree.path
+    },
+  })
+  const response = await client.send<Record<string, unknown>>(
+    createSessionRequest(
+      workspace,
+      resolvedWorktree,
+      alias,
+      agentDefaults,
+      sliceRef,
+      workspaceLiveSyncMode,
+      kernelRef,
+      worktreePlacement,
+      projectSelection,
+    ),
+  )
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionCreated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function resolveSession(
+  client: LocalIpcClient,
+  sessionRef: string,
+  workspace: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(resolveSessionRequest(sessionRef, workspace))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionResolved")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function aliasSession(
+  client: LocalIpcClient,
+  sessionId: string,
+  alias: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(aliasSessionRequest(sessionId, alias))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionAliased")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function deleteSessionByRef(
+  client: LocalIpcClient,
+  sessionRef: string,
+  workspace: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(deleteSessionRequest(sessionRef, workspace))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionDeleted")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function archiveSessionById(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(endSessionRequest(sessionId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "SessionEnded")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function detachSessionAttachment(client: LocalIpcClient, attachmentId: string): Promise<void> {
+  await client.send<Record<string, unknown>>(detachFromSessionRequest(attachmentId))
+}
+
+export async function attachToSession(
+  client: LocalIpcClient,
+  sessionId: string,
+  clientId: string,
+): Promise<RuntimeAttachment> {
+  const response = await client.send<Record<string, unknown>>(attachToSessionRequest(sessionId, clientId))
+  const payload = expectVariant<{ attachment: RuntimeAttachment }>(response, "SessionAttached")
+  return payload.attachment
+}
+
+export async function getSessionState(client: LocalIpcClient, sessionId: string): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(getSessionStateRequest(sessionId))
+  const payload = expectVariant<{
+    session: RuntimeSession
+    agent_activity?: RuntimeSession["agent_activity"] | null
+    agent_activity_revision?: number | null
+    room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory
+  }>(response, "SessionState")
+  return normalizeRuntimeSessionWithAgentActivity({ ...payload, session: { ...payload.session, room_workflows: payload.room_workflows, room_workflows_fresh: true } })
+}
+
+export async function updateMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+  updates: { taskMarkdown?: string | null; planMarkdown?: string | null },
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(
+    updateMetaagentTaskRequest(sessionId, metaagentId, updates),
+  )
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function pauseMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(pauseMetaagentTaskRequest(sessionId, metaagentId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function resumeMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(resumeMetaagentTaskRequest(sessionId, metaagentId))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}
+
+export async function abortMetaagentTask(
+  client: LocalIpcClient,
+  sessionId: string,
+  metaagentId: string,
+  reason?: string | null,
+): Promise<RuntimeSession> {
+  const response = await client.send<Record<string, unknown>>(abortMetaagentTaskRequest(sessionId, metaagentId, reason))
+  const payload = expectVariant<{ session: RuntimeSession }>(response, "MetaagentTaskUpdated")
+  return normalizeRuntimeSession(payload.session)
+}

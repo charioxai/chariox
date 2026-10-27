@@ -1,0 +1,183 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { createCommandCenterController } from "./command-center-controller.js"
+import { fallbackProviderCatalog } from "./provider-catalog.js"
+import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
+import { createCommandCenterCommandExecutor } from "./command-center-command-executor.js"
+
+test("command center command executor dispatches attachment commands with the raw input", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/attach ./notes.md")
+
+  assert.deepEqual(harness.calls, ["attachment:/attach ./notes.md"])
+  assert.deepEqual(harness.flashes, [])
+})
+
+test("command center command executor contains domain command failures in footer flashes", async () => {
+  const harness = createHarness({
+    onAgent: () => {
+      throw new Error("agent unavailable")
+    },
+  })
+
+  await harness.executor.execute("/agent focus missing")
+
+  assert.deepEqual(harness.flashes, ["error:agent unavailable"])
+})
+
+test("command center command executor lets uncontained command failures propagate", async () => {
+  const harness = createHarness({
+    onSession: () => {
+      throw new Error("session failed")
+    },
+  })
+
+  await assert.rejects(() => harness.executor.execute("/session list"), /session failed/)
+  assert.deepEqual(harness.flashes, [])
+})
+
+test("command center command executor dispatches wait commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/wait-in 3 Check later")
+
+  assert.deepEqual(harness.calls, ["wait:once:3:Check later"])
+})
+
+test("command center routes App commands and contains transport failures", async () => {
+  const harness = createHarness({ onApp: async (command) => {
+    harness.calls.push(`app:${command.args.join(" ")}`)
+    throw new Error("App connection lost")
+  } })
+  await harness.executor.execute("/app status install-1")
+  assert.deepEqual(harness.calls, ["app:status install-1"])
+  assert.deepEqual(harness.flashes, ["error:App connection lost"])
+})
+
+test("command center command executor dispatches launch config commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/mode plan")
+  await harness.executor.execute("/permissions required")
+
+  assert.deepEqual(harness.calls, ["mode:plan", "permissions:required"])
+})
+
+test("command center command executor dispatches Room environment commands", async () => {
+  const harness = createHarness()
+
+  await harness.executor.execute("/room status")
+
+  assert.deepEqual(harness.calls, ["room:status"])
+})
+
+test("command center command executor delegates catalog-only kernel commands to shared shell", async () => {
+  const harness = createHarness({
+    handleSharedShellCommand: async (command) => {
+      harness.calls.push(`shared:${command}`)
+      return command === "/workflow registry list"
+    },
+  })
+
+  await harness.executor.execute("/workflow registry list")
+
+  assert.deepEqual(harness.calls, ["shared:/workflow registry list"])
+})
+
+function createHarness(overrides: Partial<Parameters<typeof createCommandCenterCommandExecutor>[0]> = {}) {
+  const calls: string[] = []
+  const flashes: string[] = []
+  const deps: Parameters<typeof createCommandCenterCommandExecutor>[0] = {
+    onExit: () => calls.push("exit"),
+    onWaiting: () => calls.push("waiting"),
+    onApprovals: () => calls.push("approvals"),
+    onStop: () => calls.push("stop"),
+    handleAttachmentCommand: (raw) => calls.push(`attachment:${raw}`),
+    onSession: (command) => calls.push(`session:${command.action ?? ""}`),
+    onProvider: (command) => calls.push(`provider:${command.value}`),
+    onModel: (command) => calls.push(`model:${command.value}`),
+    onVariant: (command) => calls.push(`variant:${command.value}`),
+    onMode: (command) => calls.push(`mode:${command.value}`),
+    onPermissions: (command) => calls.push(`permissions:${command.value}`),
+    onView: (command) => calls.push(`view:${command.value}`),
+    onUndo: (command) => calls.push(`undo:${command.args.join(" ")}`),
+    onFork: (command) => calls.push(`fork:${command.args.join(" ")}`),
+    onAgent: (command) => calls.push(`agent:${command.args.join(" ")}`),
+    onKernel: (command) => calls.push(`kernel:${command.args.join(" ")}`),
+    onMachine: (command) => calls.push(`machine:${command.args.join(" ")}`),
+    onSlice: (command) => calls.push(`slice:${command.args.join(" ")}`),
+    onRoom: (command) => calls.push(`room:${command.args.join(" ")}`),
+    onRelay: (command) => calls.push(`relay:${command.args.join(" ")}`),
+    onCloud: (command) => calls.push(`cloud:${command.args.join(" ")}`),
+    onCollab: (command) => calls.push(`collab:${command.args.join(" ")}`),
+    onConfig: (command) => calls.push(`config:${command.args.join(" ")}`),
+    onWorkspace: (command) => calls.push(`workspace:${command.args.join(" ")}`),
+    onWorktree: (command) => calls.push(`worktree:${command.args.join(" ")}`),
+    onWorkflow: (command) => calls.push(`workflow:${command.args.join(" ")}`),
+    onLoop: (command) => calls.push(`loop:${command.prompt}`),
+    onGoal: (command) => calls.push(`goal:${command.prompt}`),
+    onWait: (command) => calls.push(`wait:${command.scheduleKind}:${command.minutes}:${command.prompt}`),
+    onMcp: (command) => calls.push(`mcp:${command.args.join(" ")}`),
+    onSkill: (command) => calls.push(`skill:${command.args.join(" ")}`),
+    onEnv: (command) => calls.push(`env:${command.args.join(" ")}`),
+    onScript: (command) => calls.push(`script:${command.args.join(" ")}`),
+    onCredential: (command) => calls.push(`credential:${command.args.join(" ")}`),
+    onConnector: (command) => calls.push(`connector:${command.args.join(" ")}`),
+    onExtension: (command) => calls.push(`extension:${command.args.join(" ")}`),
+    flashFooter: (message, tone) => flashes.push(`${tone}:${message}`),
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    ...overrides,
+  }
+  return {
+    calls,
+    flashes,
+    executor: createCommandCenterCommandExecutor(deps),
+  }
+}
+
+test("command palette approvals reach the required UI handler without shell dispatch", async () => {
+  const h = createHarness({
+    handleSharedShellCommand: async () => { assert.fail("UI approvals sent to shared shell") },
+  })
+  await h.executor.execute("/approvals")
+  assert.deepEqual(h.calls, ["approvals"])
+  assert.deepEqual(h.flashes, [])
+})
+
+test("Enter and submit selection of approval suggestions clear the palette before opening", async () => {
+  for (const selection of ["abbreviated Enter", "exact Enter", "abbreviated submit"]) {
+    let prompt = selection === "exact Enter" ? "/approvals" : "/approv"
+    let opened = 0
+    const h = createHarness({
+      onApprovals: () => {
+        assert.equal(prompt, "")
+        assert.equal(palette.open(), false)
+        opened += 1
+      },
+      handleSharedShellCommand: async () => { assert.fail("approvals sent to shared shell") },
+    })
+    const palette = createCommandCenterController({
+      getCommandTree: () => [],
+      getProviderCatalog: fallbackProviderCatalog,
+      getProviderCommandCatalogs: fallbackProviderCommandCatalogs,
+      getCurrentProvider: () => "opencode",
+      getFocusedProvider: () => null,
+      getCurrentModel: () => "model",
+      getCurrentVariant: () => "high",
+      getPromptText: () => prompt,
+      replacePromptText: value => { prompt = value },
+      executeCommand: h.executor.execute,
+      onCommandError: error => { assert.fail(String(error)) },
+      render() {},
+    })
+    palette.sync()
+    assert.equal(palette.selectedItem()?.value, "/approvals")
+    if (selection === "abbreviated submit") assert.equal(palette.selectFromSubmit(), true)
+    else assert.equal(palette.handleKey({ name: "return" }), true)
+    await Promise.resolve()
+    assert.equal(opened, 1)
+    assert.deepEqual(h.flashes, [])
+  }
+})

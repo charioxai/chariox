@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Synthetic cross-language CLI command and relay target scope regression; not a usable credential",
+  "requestedAlias": "builder-kernel",
+  "relayUrl": "wss://relay.example",
+  "claims": {
+    "iss": "fixture-issuer",
+    "sub": "machine-scoped-client-1",
+    "subject_kind": "client",
+    "realm_id": "realm-1",
+    "allowed_actions": [
+      "client.connect"
+    ],
+    "allowed_targets": [
+      "kernel-canonical-1"
+    ],
+    "iat": 1790769600,
+    "exp": 1790773200,
+    "jti": "synthetic-cli-target-fixture",
+    "account_id": "account-1",
+    "user_id": "user-1",
+    "machine_id": "machine-1",
+    "client_id": "machine-scoped-client-1",
+    "session_id": "session-1",
+    "public_key_thumbprint": "fixture-thumbprint"
+  },
+  "validationTimeMs": 1790769601000,
+  "tokenExpiresAt": "2026-09-30T13:00:00Z",
+  "syntheticToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmaXh0dXJlLWlzc3VlciIsInN1YiI6Im1hY2hpbmUtc2NvcGVkLWNsaWVudC0xIiwic3ViamVjdF9raW5kIjoiY2xpZW50IiwicmVhbG1faWQiOiJyZWFsbS0xIiwiYWxsb3dlZF9hY3Rpb25zIjpbImNsaWVudC5jb25uZWN0Il0sImFsbG93ZWRfdGFyZ2V0cyI6WyJrZXJuZWwtY2Fub25pY2FsLTEiXSwiaWF0IjoxNzkwNzY5NjAwLCJleHAiOjE3OTA3NzMyMDAsImp0aSI6InN5bnRoZXRpYy1jbGktdGFyZ2V0LWZpeHR1cmUiLCJhY2NvdW50X2lkIjoiYWNjb3VudC0xIiwidXNlcl9pZCI6InVzZXItMSIsIm1hY2hpbmVfaWQiOiJtYWNoaW5lLTEiLCJjbGllbnRfaWQiOiJtYWNoaW5lLXNjb3BlZC1jbGllbnQtMSIsInNlc3Npb25faWQiOiJzZXNzaW9uLTEiLCJwdWJsaWNfa2V5X3RodW1icHJpbnQiOiJmaXh0dXJlLXRodW1icHJpbnQifQ.synthetic-signature",
+  "generatedCommand": "chariox --relay-url wss://relay.example --relay-token eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmaXh0dXJlLWlzc3VlciIsInN1YiI6Im1hY2hpbmUtc2NvcGVkLWNsaWVudC0xIiwic3ViamVjdF9raW5kIjoiY2xpZW50IiwicmVhbG1faWQiOiJyZWFsbS0xIiwiYWxsb3dlZF9hY3Rpb25zIjpbImNsaWVudC5jb25uZWN0Il0sImFsbG93ZWRfdGFyZ2V0cyI6WyJrZXJuZWwtY2Fub25pY2FsLTEiXSwiaWF0IjoxNzkwNzY5NjAwLCJleHAiOjE3OTA3NzMyMDAsImp0aSI6InN5bnRoZXRpYy1jbGktdGFyZ2V0LWZpeHR1cmUiLCJhY2NvdW50X2lkIjoiYWNjb3VudC0xIiwidXNlcl9pZCI6InVzZXItMSIsIm1hY2hpbmVfaWQiOiJtYWNoaW5lLTEiLCJjbGllbnRfaWQiOiJtYWNoaW5lLXNjb3BlZC1jbGllbnQtMSIsInNlc3Npb25faWQiOiJzZXNzaW9uLTEiLCJwdWJsaWNfa2V5X3RodW1icHJpbnQiOiJmaXh0dXJlLXRodW1icHJpbnQifQ.synthetic-signature --target-daemon-id kernel-canonical-1",
+  "parsedTarget": {
+    "daemonId": "kernel-canonical-1",
+    "daemonAlias": null
+  }
+}

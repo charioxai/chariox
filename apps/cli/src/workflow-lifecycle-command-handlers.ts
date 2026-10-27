@@ -1,0 +1,215 @@
+import type {
+  RuntimeSession,
+  WorkflowDefinition,
+} from "./cli-types.js"
+
+type FooterTone = "info" | "error"
+
+export type WorkflowCreatePayload = {
+  workflow: WorkflowDefinition
+  session: RuntimeSession
+}
+
+export type WorkflowResolvePayload = {
+  workflow: WorkflowDefinition
+}
+
+export type WorkflowDeletePayload = {
+  workflow: WorkflowDefinition
+  session: RuntimeSession
+}
+
+export type WorkflowLifecycleCommandContext = {
+  workflowRefOrSelected: (workflowRef: string | null | undefined) => string | null
+}
+
+export type WorkflowLifecycleCommandDeps = {
+  sessionState: () => RuntimeSession
+  workflowScreenActive: () => boolean
+  showWorkflowScreen: () => void
+  selectedWorkflowId?: () => string | null
+  selectWorkflowCanvas: (workflowId: string | null) => void
+  replaceWorkflowDefinitions: (workflows: WorkflowDefinition[]) => void
+  upsertWorkflowDefinition: (workflow: WorkflowDefinition) => void
+  createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
+  listWorkflows: () => Promise<WorkflowDefinition[]>
+  resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
+  assignWorkflowAlias: (workflowId: string, alias: string) => Promise<WorkflowDefinition | null>
+  deleteWorkflow?: (workflowRef: string) => Promise<WorkflowDeletePayload>
+  applySessionState: (session: RuntimeSession) => void
+  flashFooter: (message: string, tone: FooterTone) => void
+}
+
+export async function handleWorkflowDeleteCommand(
+  deps: WorkflowLifecycleCommandDeps,
+  context: WorkflowLifecycleCommandContext,
+  args: readonly string[],
+): Promise<void> {
+  const workflowRef = context.workflowRefOrSelected(args[1])
+  if (!workflowRef) {
+    deps.flashFooter("usage: /workflow delete [workflow-ref]", "error")
+    return
+  }
+  if (!deps.deleteWorkflow) {
+    deps.flashFooter("workflow deletion unavailable", "error")
+    return
+  }
+  const selectedWorkflowId = deps.selectedWorkflowId?.() ?? null
+  const payload = await deps.deleteWorkflow(workflowRef)
+  deps.applySessionState(payload.session)
+  const nextWorkflowId = selectedWorkflowId !== payload.workflow.id
+    && payload.session.workflows?.some((workflow) => workflow.id === selectedWorkflowId)
+    ? selectedWorkflowId
+    : payload.session.workflows?.[0]?.id ?? null
+  deps.selectWorkflowCanvas(nextWorkflowId)
+  deps.flashFooter(`deleted workflow ${formatWorkflowWithAlias(payload.workflow)}`, "info")
+}
+
+export async function handleWorkflowRootCommand(
+  deps: WorkflowLifecycleCommandDeps,
+): Promise<void> {
+  const knownWorkflows = deps.sessionState().workflows ?? []
+  if (knownWorkflows.length > 0) {
+    if (!deps.workflowScreenActive()) {
+      deps.selectWorkflowCanvas(knownWorkflows[0]?.id ?? null)
+      deps.showWorkflowScreen()
+    }
+    return
+  }
+
+  if (!deps.workflowScreenActive()) {
+    deps.showWorkflowScreen()
+    return
+  }
+
+  const workflows = await deps.listWorkflows()
+  if (workflows.length > 0) {
+    deps.replaceWorkflowDefinitions(workflows)
+    deps.selectWorkflowCanvas(workflows[0]?.id ?? null)
+    return
+  }
+
+  const payload = await deps.createWorkflow(null)
+  deps.selectWorkflowCanvas(payload.workflow.id)
+  deps.applySessionState(payload.session)
+  deps.flashFooter(`created workflow ${payload.workflow.id}`, "info")
+}
+
+export async function handleWorkflowListCommand(
+  deps: WorkflowLifecycleCommandDeps,
+): Promise<void> {
+  const workflows = await deps.listWorkflows()
+  deps.replaceWorkflowDefinitions(workflows)
+  deps.flashFooter(
+    workflows.length === 0
+      ? "no workflows in workspace"
+      : `workflows: ${workflows.map(formatWorkflowListItem).join(", ")}`,
+    "info",
+  )
+}
+
+export async function handleWorkflowShowCommand(
+  deps: WorkflowLifecycleCommandDeps,
+  context: WorkflowLifecycleCommandContext,
+  args: readonly string[],
+): Promise<void> {
+  const workflowRef = context.workflowRefOrSelected(args[1])
+  if (!workflowRef) {
+    deps.flashFooter("usage: /workflow show [workflow-ref]", "error")
+    return
+  }
+  const payload = await deps.resolveWorkflow(workflowRef)
+  deps.upsertWorkflowDefinition(payload.workflow)
+  deps.selectWorkflowCanvas(payload.workflow.id)
+  deps.showWorkflowScreen()
+  deps.flashFooter(`workflow ${formatWorkflowWithAlias(payload.workflow)}`, "info")
+}
+
+export async function handleWorkflowNewCommand(
+  deps: WorkflowLifecycleCommandDeps,
+  args: readonly string[],
+): Promise<void> {
+  const payload = await deps.createWorkflow(args[1] ?? null)
+  deps.selectWorkflowCanvas(payload.workflow.id)
+  deps.showWorkflowScreen()
+  deps.applySessionState(payload.session)
+  deps.flashFooter(`created workflow ${formatWorkflowWithAlias(payload.workflow)}`, "info")
+}
+
+/** `/workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias]`:
+ * the agent's own one-node workflow; the answer names the command that adds
+ * the chosen trigger, or the deployment, on its entry endpoint. */
+export async function handleWorkflowFromAgentCommand(
+  deps: WorkflowLifecycleCommandDeps & {
+    createAgentWorkflow?: (agentId: string, reason: "trigger" | "deploy", alias?: string | null) => Promise<{ workflow: WorkflowDefinition; endpoint: { id: string }; session: RuntimeSession }>
+    resolveSessionAgent: (reference?: string | null) => { agent?: { id: string } | null } | null | undefined
+  },
+  args: readonly string[],
+): Promise<void> {
+  const [, agentRef, reason, ...rest] = args
+  if (!agentRef || (reason !== "trigger" && reason !== "deploy")) {
+    deps.flashFooter(fromAgentUsage, "error")
+    return
+  }
+  const kind = reason === "trigger" && rest[0] && Object.hasOwn(triggerNextCommand, rest[0])
+    ? rest.shift() as keyof typeof triggerNextCommand
+    : null
+  const alias = rest[0]
+  const agentId = deps.resolveSessionAgent(agentRef)?.agent?.id
+  if (!agentId) {
+    deps.flashFooter(`unknown agent: ${agentRef}`, "error")
+    return
+  }
+  if (!deps.createAgentWorkflow) {
+    deps.flashFooter("workflows from agents are unavailable in this view", "error")
+    return
+  }
+  const payload = await deps.createAgentWorkflow(agentId, reason, alias ?? null)
+  deps.selectWorkflowCanvas(payload.workflow.id)
+  deps.showWorkflowScreen()
+  const next = kind
+    ? triggerNextCommand[kind](payload.workflow.id, payload.endpoint.id)
+    : `/workflow ${reason === "trigger" ? "trigger" : "endpoint"} ... on endpoint ${payload.endpoint.id}`
+  deps.flashFooter(`created workflow ${formatWorkflowWithAlias(payload.workflow)} for ${agentRef}; next: ${next}`, "info")
+}
+
+const fromAgentUsage = "usage: /workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias]"
+
+// The command that adds each trigger class to the new workflow's endpoint.
+const triggerNextCommand = {
+  http: (workflowId: string, endpointId: string) => `/workflow trigger create ${workflowId} ${endpointId} --route /`,
+  schedule: (workflowId: string, endpointId: string) => `/workflow schedule add ${workflowId} ${endpointId} --every 1h`,
+  notification: (workflowId: string, endpointId: string) =>
+    `/workflow trigger create ${workflowId} ${endpointId} --kind event_based, then /app automation add <installation-id> <automation-id> <event> <session-id> <trigger-id>`,
+} as const
+
+export async function handleWorkflowAliasCommand(
+  deps: WorkflowLifecycleCommandDeps,
+  args: readonly string[],
+): Promise<void> {
+  const workflowRef = args[0]
+  const alias = args[1]
+  if (!workflowRef || !alias) {
+    deps.flashFooter(workflowUsage, "error")
+    return
+  }
+
+  const workflow = await deps.assignWorkflowAlias(workflowRef, alias)
+  if (!workflow) {
+    deps.flashFooter(`unknown workflow: ${workflowRef}`, "error")
+    return
+  }
+  deps.upsertWorkflowDefinition(workflow)
+  deps.showWorkflowScreen()
+  deps.flashFooter(`workflow ${workflow.id} aliased as ${workflow.alias}`, "info")
+}
+
+export const workflowUsage = "usage: /workflow | /workflow list | /workflow show [workflow-ref] | /workflow new [alias] | /workflow from-agent <agent-ref> trigger [http|schedule|notification]|deploy [alias] | /workflow delete [workflow-ref] | /workflow run|start [workflow-ref] <endpoint-ref> [prompt] | /workflow max-turns <count|off> | /workflow run-output-schema [workflow-ref] [schema-ref|none] | /workflow runs [workflow-ref] | /workflow run-show|run-get <run-ref> | /workflow cancel <run-ref> | /workflow pause <run-ref> | /workflow resume <run-ref> | /workflow pane logs|trace|edit [workflow-ref] | /workflow <workflow-ref> <alias> | /workflow <workflow-ref> <from-node-or-agent-ref> <to-node-or-agent-ref> | /workflow node ... | /workflow edge ... | /workflow endpoint ..."
+
+function formatWorkflowListItem(workflow: WorkflowDefinition): string {
+  return workflow.alias ? `${workflow.id} (${workflow.alias})` : workflow.id
+}
+
+function formatWorkflowWithAlias(workflow: WorkflowDefinition): string {
+  return `${workflow.id}${workflow.alias ? ` (${workflow.alias})` : ""}`
+}

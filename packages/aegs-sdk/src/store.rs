@@ -1,0 +1,2220 @@
+use std::collections::BTreeSet;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use chariox_event_protocol::AegsProviderActionResponse;
+
+pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionReceiptLookupError {
+    Conflict(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for ActionReceiptLookupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) | Self::Storage(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ActionReceiptLookupError {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AuthorizationRecord {
+    pub state_digest: String,
+    pub connection_id: String,
+    pub provider: String,
+    pub return_url: Option<String>,
+    pub expires_at_ms: u64,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CreateAuthorizationRequest<'a> {
+    pub state_digest: &'a str,
+    pub connection_id: &'a str,
+    pub owner_id: &'a str,
+    pub provider: &'a str,
+    pub return_url: Option<&'a str>,
+    pub expires_at_ms: u64,
+    pub now_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConnectionRecord {
+    pub connection_id: String,
+    pub owner_id: String,
+    pub provider: String,
+    pub status: String,
+    pub encrypted_credential: Option<Vec<u8>>,
+    pub metadata: Value,
+    pub expires_at_ms: Option<u64>,
+    pub updated_at_ms: u64,
+    pub last_successful_health_check_at_ms: Option<u64>,
+    pub last_accepted_event_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderHookRecord {
+    pub connection_id: String,
+    pub connection_scope: String,
+    pub provider_hook_id: String,
+    pub configuration_digest: String,
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AegsStoreMetrics {
+    pub active_subscriptions: u64,
+    pub subscriptions: u64,
+    pub connections: u64,
+    pub provider_hooks: u64,
+}
+
+#[derive(Clone)]
+pub struct AegsStore {
+    connection: Arc<Mutex<Connection>>,
+    delivery_gate: Arc<tokio::sync::RwLock<()>>,
+}
+
+impl AegsStore {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, rusqlite::Error> {
+        let connection = Connection::open(path)?;
+        connection.execute_batch(
+            "
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = FULL;
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                binding_id TEXT PRIMARY KEY NOT NULL,
+                owner_id TEXT NOT NULL,
+                generator_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                connection_scope TEXT NOT NULL,
+                event_interest_key TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_type_version INTEGER NOT NULL,
+                filter_json TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                active INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS subscriptions_matching
+                ON subscriptions(generator_id, event_type, connection_scope, active);
+            CREATE TABLE IF NOT EXISTS connections (
+                connection_id TEXT PRIMARY KEY NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT 'legacy',
+                provider TEXT NOT NULL,
+                status TEXT NOT NULL,
+                encrypted_credential BLOB,
+                metadata_json TEXT NOT NULL,
+                expires_at_ms INTEGER,
+                updated_at_ms INTEGER NOT NULL,
+                last_successful_health_check_at_ms INTEGER,
+                last_accepted_event_at_ms INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS authorizations (
+                state_digest TEXT PRIMARY KEY NOT NULL,
+                connection_id TEXT NOT NULL UNIQUE,
+                provider TEXT NOT NULL,
+                return_url TEXT,
+                expires_at_ms INTEGER NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
+            );
+            CREATE TABLE IF NOT EXISTS connection_generations (
+                connection_id TEXT PRIMARY KEY NOT NULL,
+                generation INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS subscription_authorities (
+                binding_id TEXT PRIMARY KEY NOT NULL,
+                connection_owner_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                generation INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO connection_generations
+                SELECT connection_id, 1 FROM connections;
+            CREATE INDEX IF NOT EXISTS authorizations_expiry
+                ON authorizations(expires_at_ms);
+            CREATE TABLE IF NOT EXISTS provider_hooks (
+                connection_id TEXT NOT NULL,
+                connection_scope TEXT NOT NULL,
+                provider_hook_id TEXT NOT NULL,
+                configuration_digest TEXT NOT NULL,
+                expires_at_ms INTEGER,
+                updated_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(connection_id, connection_scope),
+                FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
+            );
+            CREATE TABLE IF NOT EXISTS action_receipts (
+                owner_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL DEFAULT '',
+                response_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(owner_id, connection_id, idempotency_key)
+            );
+            ",
+        )?;
+        migrate_subscription_owner(&connection)?;
+        migrate_connection_owner(&connection)?;
+        migrate_connection_lifecycle_timestamps(&connection)?;
+        migrate_action_receipt_fingerprint(&connection)?;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            delivery_gate: Arc::new(tokio::sync::RwLock::new(())),
+        })
+    }
+
+    pub fn upsert(&self, claim: &SubscriptionClaim) -> Result<bool, String> {
+        claim.validate()?;
+        let filter_json =
+            serde_json::to_string(&claim.filter).map_err(|error| error.to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let current_revision = connection
+            .query_row(
+                "SELECT revision FROM subscriptions WHERE binding_id = ?1",
+                params![claim.binding_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if current_revision.is_some_and(|revision| revision > claim.revision as i64) {
+            return Ok(false);
+        }
+        connection
+            .execute(
+                "
+                INSERT INTO subscriptions (
+                    binding_id, generator_id, connection_id, connection_scope,
+                    event_interest_key, event_type, event_type_version, filter_json,
+                    revision, active
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ON CONFLICT(binding_id) DO UPDATE SET
+                    generator_id = excluded.generator_id,
+                    connection_id = excluded.connection_id,
+                    connection_scope = excluded.connection_scope,
+                    event_interest_key = excluded.event_interest_key,
+                    event_type = excluded.event_type,
+                    event_type_version = excluded.event_type_version,
+                    filter_json = excluded.filter_json,
+                    revision = excluded.revision,
+                    active = excluded.active
+                ",
+                params![
+                    claim.binding_id,
+                    claim.generator_id,
+                    claim.connection_id,
+                    claim.connection_scope,
+                    claim.event_interest_key,
+                    claim.event_type,
+                    claim.event_type_version,
+                    filter_json,
+                    claim.revision as i64,
+                    claim.active,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    pub fn reconcile(
+        &self,
+        owner_id: &str,
+        generator_id: &str,
+        claims: &[SubscriptionClaim],
+    ) -> Result<Vec<String>, String> {
+        self.reconcile_scoped(owner_id, None, generator_id, claims)
+    }
+
+    /// Reconcile one owner's desired bindings while enforcing the owner scope
+    /// carried by a signed management capability. Static operator tokens pass
+    /// `None` and retain their intentionally global administrative behavior.
+    pub fn reconcile_scoped(
+        &self,
+        owner_id: &str,
+        allowed_connection_owners: Option<&[String]>,
+        generator_id: &str,
+        claims: &[SubscriptionClaim],
+    ) -> Result<Vec<String>, String> {
+        if owner_id.trim().is_empty() {
+            return Err("subscription reconciliation owner_id is required".to_string());
+        }
+        for claim in claims {
+            if claim.generator_id != generator_id {
+                return Err(format!(
+                    "binding {} belongs to generator {}, not {}",
+                    claim.binding_id, claim.generator_id, generator_id
+                ));
+            }
+            claim.validate()?;
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        if let Some(allowed_connection_owners) = allowed_connection_owners {
+            for claim in claims {
+                let connection_owner = transaction
+                    .query_row(
+                        "SELECT owner_id FROM connections WHERE connection_id = ?1",
+                        params![claim.connection_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "connection {} is not owned by an allowed management principal",
+                            claim.connection_id
+                        )
+                    })?;
+                if !allowed_connection_owners
+                    .iter()
+                    .any(|allowed| allowed == &connection_owner)
+                {
+                    return Err(format!(
+                        "connection {} belongs to an owner outside the management capability",
+                        claim.connection_id
+                    ));
+                }
+            }
+        }
+        let claimed_binding_ids = claims
+            .iter()
+            .map(|claim| claim.binding_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let owned_binding_ids = {
+            let mut statement = transaction
+                .prepare(
+                    "SELECT binding_id FROM subscriptions
+                     WHERE generator_id = ?1 AND owner_id = ?2",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map(params![generator_id, owner_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        for binding_id in owned_binding_ids {
+            if !claimed_binding_ids.contains(binding_id.as_str()) {
+                transaction
+                    .execute(
+                        "UPDATE subscriptions SET active = 0
+                         WHERE binding_id = ?1 AND owner_id = ?2",
+                        params![binding_id, owner_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        let mut accepted = Vec::with_capacity(claims.len());
+        for claim in claims {
+            let filter_json =
+                serde_json::to_string(&claim.filter).map_err(|error| error.to_string())?;
+            let changed = transaction
+                .execute(
+                    "
+                    INSERT INTO subscriptions (
+                        binding_id, owner_id, generator_id, connection_id, connection_scope,
+                        event_interest_key, event_type, event_type_version, filter_json,
+                        revision, active
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    ON CONFLICT(binding_id) DO UPDATE SET
+                        generator_id = excluded.generator_id,
+                        connection_id = excluded.connection_id,
+                        connection_scope = excluded.connection_scope,
+                        event_interest_key = excluded.event_interest_key,
+                        event_type = excluded.event_type,
+                        event_type_version = excluded.event_type_version,
+                        filter_json = excluded.filter_json,
+                        revision = excluded.revision,
+                        active = excluded.active
+                    WHERE
+                        excluded.owner_id = subscriptions.owner_id
+                        AND excluded.revision >= subscriptions.revision
+                    ",
+                    params![
+                        claim.binding_id,
+                        owner_id,
+                        claim.generator_id,
+                        claim.connection_id,
+                        claim.connection_scope,
+                        claim.event_interest_key,
+                        claim.event_type,
+                        claim.event_type_version,
+                        filter_json,
+                        claim.revision as i64,
+                        claim.active,
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            if changed > 0 {
+                transaction
+                    .execute(
+                        "DELETE FROM subscription_authorities WHERE binding_id = ?1",
+                        params![claim.binding_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                transaction.execute(
+                    "INSERT INTO subscription_authorities (binding_id, connection_owner_id, provider, generation)
+                     SELECT ?1, c.owner_id, c.provider, g.generation FROM connections c
+                     JOIN connection_generations g ON g.connection_id = c.connection_id
+                     WHERE c.connection_id = ?2 AND c.status = 'ready'",
+                    params![claim.binding_id, claim.connection_id],
+                ).map_err(|error| error.to_string())?;
+                accepted.push(claim.binding_id.clone());
+            }
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(accepted)
+    }
+
+    pub fn matching(
+        &self,
+        generator_id: &str,
+        event_type: &str,
+        connection_scope: &str,
+    ) -> Result<Vec<SubscriptionClaim>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT binding_id, generator_id, connection_id, connection_scope,
+                       event_interest_key, event_type, event_type_version, filter_json,
+                       revision, active
+                FROM subscriptions
+                WHERE generator_id = ?1 AND event_type = ?2
+                  AND connection_scope = ?3 AND active = 1
+                  AND (NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
+                    OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
+                      AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
+                      AND EXISTS (SELECT 1 FROM subscription_authorities a
+                        JOIN connection_generations g ON g.connection_id = c.connection_id
+                        WHERE a.binding_id = subscriptions.binding_id
+                          AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
+                          AND a.generation = g.generation)))
+                ORDER BY binding_id
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![generator_id, event_type, connection_scope], |row| {
+                let filter_json: String = row.get(7)?;
+                Ok(SubscriptionClaim {
+                    binding_id: row.get(0)?,
+                    generator_id: row.get(1)?,
+                    connection_id: row.get(2)?,
+                    connection_scope: row.get(3)?,
+                    event_interest_key: row.get(4)?,
+                    event_type: row.get(5)?,
+                    event_type_version: row.get(6)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
+                    revision: row.get::<_, i64>(8)? as u64,
+                    active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    // Keep the selected connection generation alongside queued events. Reconciliation
+    // after reauthorization must never revive an event selected under older authority.
+    pub(crate) async fn matching_for_delivery(
+        &self,
+        generator_id: &str,
+        event_type: &str,
+        connection_scope: &str,
+    ) -> Result<Vec<(SubscriptionClaim, Option<i64>)>, String> {
+        let _guard = self.delivery_gate.read().await;
+        self.matching(generator_id, event_type, connection_scope)?
+            .into_iter()
+            .map(|claim| {
+                self.connection_generation(&claim.connection_id)
+                    .map(|generation| (claim, generation))
+            })
+            .collect()
+    }
+
+    fn connection_generation(&self, connection_id: &str) -> Result<Option<i64>, String> {
+        self.connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?
+            .query_row(
+                "SELECT generation FROM connection_generations WHERE connection_id = ?1",
+                params![connection_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) async fn delivery_guard(
+        &self,
+        claim: &SubscriptionClaim,
+        selected_generation: Option<i64>,
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, String> {
+        let guard = Arc::clone(&self.delivery_gate).read_owned().await;
+        let current = self.matching(
+            &claim.generator_id,
+            &claim.event_type,
+            &claim.connection_scope,
+        )?;
+        if self.connection_generation(&claim.connection_id)? != selected_generation
+            || !current.iter().any(|value| value == claim)
+        {
+            return Err("subscription is no longer authorized for delivery".to_string());
+        }
+        Ok(guard)
+    }
+
+    pub(crate) async fn revoke_connection_wait(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let _guard = self.delivery_gate.write().await;
+        self.revoke_connection_locked(connection_id, owner_id, now_ms)
+    }
+
+    pub fn all(&self, generator_id: &str) -> Result<Vec<SubscriptionClaim>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT binding_id, generator_id, connection_id, connection_scope,
+                       event_interest_key, event_type, event_type_version, filter_json,
+                       revision, active
+                FROM subscriptions WHERE generator_id = ?1 ORDER BY binding_id
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![generator_id], |row| {
+                let filter_json: String = row.get(7)?;
+                Ok(SubscriptionClaim {
+                    binding_id: row.get(0)?,
+                    generator_id: row.get(1)?,
+                    connection_id: row.get(2)?,
+                    connection_scope: row.get(3)?,
+                    event_interest_key: row.get(4)?,
+                    event_type: row.get(5)?,
+                    event_type_version: row.get(6)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
+                    revision: row.get::<_, i64>(8)? as u64,
+                    active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn all_for_owner(
+        &self,
+        generator_id: &str,
+        owner_id: &str,
+    ) -> Result<Vec<SubscriptionClaim>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT binding_id, generator_id, connection_id, connection_scope,
+                       event_interest_key, event_type, event_type_version, filter_json,
+                       revision, active
+                FROM subscriptions
+                WHERE generator_id = ?1 AND owner_id = ?2
+                ORDER BY binding_id
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![generator_id, owner_id], |row| {
+                let filter_json: String = row.get(7)?;
+                Ok(SubscriptionClaim {
+                    binding_id: row.get(0)?,
+                    generator_id: row.get(1)?,
+                    connection_id: row.get(2)?,
+                    connection_scope: row.get(3)?,
+                    event_interest_key: row.get(4)?,
+                    event_type: row.get(5)?,
+                    event_type_version: row.get(6)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
+                    revision: row.get::<_, i64>(8)? as u64,
+                    active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Returns the active workflow trigger bindings attached to one provider connection.
+    /// Providers use this read-only context to construct test events that still pass through
+    /// ordinary subscription matching and AEDS delivery.
+    pub fn active_subscriptions_for_connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<Vec<SubscriptionClaim>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT binding_id, generator_id, connection_id, connection_scope,
+                       event_interest_key, event_type, event_type_version, filter_json,
+                       revision, active
+                FROM subscriptions
+                WHERE connection_id = ?1 AND active = 1
+                ORDER BY binding_id
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![connection_id], |row| {
+                let filter_json: String = row.get(7)?;
+                Ok(SubscriptionClaim {
+                    binding_id: row.get(0)?,
+                    generator_id: row.get(1)?,
+                    connection_id: row.get(2)?,
+                    connection_scope: row.get(3)?,
+                    event_interest_key: row.get(4)?,
+                    event_type: row.get(5)?,
+                    event_type_version: row.get(6)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
+                    revision: row.get::<_, i64>(8)? as u64,
+                    active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn metrics(&self) -> Result<AegsStoreMetrics, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let count = |table: &str, predicate: Option<&str>| -> Result<u64, String> {
+            let query = predicate
+                .map(|predicate| format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"))
+                .unwrap_or_else(|| format!("SELECT COUNT(*) FROM {table}"));
+            connection
+                .query_row(&query, [], |row| row.get::<_, i64>(0))
+                .map(|value| value.max(0) as u64)
+                .map_err(|error| error.to_string())
+        };
+        Ok(AegsStoreMetrics {
+            active_subscriptions: count("subscriptions", Some("active = 1"))?,
+            subscriptions: count("subscriptions", None)?,
+            connections: count("connections", None)?,
+            provider_hooks: count("provider_hooks", None)?,
+        })
+    }
+
+    pub fn action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        idempotency_key: &str,
+        request_fingerprint: &str,
+    ) -> Result<Option<AegsProviderActionResponse>, ActionReceiptLookupError> {
+        let connection = self.connection.lock().map_err(|_| {
+            ActionReceiptLookupError::Storage("AEGS action store lock was poisoned".to_string())
+        })?;
+        connection
+            .query_row(
+                "SELECT response_json, request_fingerprint FROM action_receipts
+                 WHERE owner_id = ?1 AND connection_id = ?2 AND idempotency_key = ?3",
+                params![owner_id, connection_id, idempotency_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))?
+            .map(|(response_json, stored_fingerprint)| {
+                if stored_fingerprint != request_fingerprint {
+                    return Err(ActionReceiptLookupError::Conflict(format!(
+                        "idempotency key `{idempotency_key}` was already used for a different action request"
+                    )));
+                }
+                serde_json::from_str(&response_json)
+                    .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))
+            })
+            .transpose()
+    }
+
+    pub fn record_action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        response: &AegsProviderActionResponse,
+        request_fingerprint: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let response_json = serde_json::to_string(response).map_err(|error| error.to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS action store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "INSERT INTO action_receipts
+                 (owner_id, connection_id, idempotency_key, action_id, request_fingerprint, response_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(owner_id, connection_id, idempotency_key) DO NOTHING",
+                params![
+                    owner_id,
+                    connection_id,
+                    response.idempotency_key,
+                    response.action_id,
+                    request_fingerprint,
+                    response_json,
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn create_authorization(
+        &self,
+        request: CreateAuthorizationRequest<'_>,
+    ) -> Result<(), String> {
+        let _generation_guard = self
+            .delivery_gate
+            .try_write()
+            .map_err(|_| "connection has an in-flight delivery; retry authorization".to_string())?;
+        let CreateAuthorizationRequest {
+            state_digest,
+            connection_id,
+            owner_id,
+            provider,
+            return_url,
+            expires_at_ms,
+            now_ms,
+        } = request;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM authorizations WHERE expires_at_ms < ?1",
+                params![now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "
+                INSERT INTO connections (
+                    connection_id, owner_id, provider, status, encrypted_credential,
+                    metadata_json, expires_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, ?3, 'pending', NULL, '{}', NULL, ?4)
+                ",
+                params![connection_id, owner_id, provider, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "
+                INSERT INTO authorizations (
+                    state_digest, connection_id, provider, return_url,
+                    expires_at_ms, completed
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 0)
+                ",
+                params![
+                    state_digest,
+                    connection_id,
+                    provider,
+                    return_url,
+                    expires_at_ms as i64
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO connection_generations (connection_id, generation) VALUES (?1, 1)
+             ON CONFLICT(connection_id) DO UPDATE SET generation = generation + 1",
+                params![connection_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn create_reauthorization(
+        &self,
+        request: CreateAuthorizationRequest<'_>,
+    ) -> Result<(), String> {
+        let _generation_guard = self
+            .delivery_gate
+            .try_write()
+            .map_err(|_| "connection has an in-flight delivery; retry authorization".to_string())?;
+        let CreateAuthorizationRequest {
+            state_digest,
+            connection_id,
+            owner_id,
+            provider,
+            return_url,
+            expires_at_ms,
+            now_ms,
+        } = request;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let owned = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM connections
+                 WHERE connection_id = ?1 AND owner_id = ?2 AND provider = ?3",
+                params![connection_id, owner_id, provider],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if owned != 1 {
+            return Err("the owned connection was not found".to_string());
+        }
+        transaction
+            .execute(
+                "DELETE FROM authorizations WHERE connection_id = ?1 OR expires_at_ms < ?2",
+                params![connection_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE connections SET status = 'pending', updated_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO authorizations (
+                    state_digest, connection_id, provider, return_url,
+                    expires_at_ms, completed
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![
+                    state_digest,
+                    connection_id,
+                    provider,
+                    return_url,
+                    expires_at_ms as i64
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO connection_generations (connection_id, generation) VALUES (?1, 1)
+             ON CONFLICT(connection_id) DO UPDATE SET generation = generation + 1",
+                params![connection_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_ready_connection(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        provider: &str,
+        metadata: &Value,
+        now_ms: u64,
+    ) -> Result<ConnectionRecord, String> {
+        let _generation_guard = self
+            .delivery_gate
+            .try_write()
+            .map_err(|_| "connection has an in-flight delivery; retry authorization".to_string())?;
+        let metadata_json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let changed = transaction
+            .execute(
+                "INSERT INTO connections (
+                    connection_id, owner_id, provider, status, encrypted_credential,
+                    metadata_json, expires_at_ms, updated_at_ms
+                 ) VALUES (?1, ?2, ?3, 'ready', NULL, ?4, NULL, ?5)
+                 ON CONFLICT(connection_id) DO UPDATE SET
+                    owner_id = excluded.owner_id,
+                    provider = excluded.provider,
+                    status = 'ready',
+                    metadata_json = excluded.metadata_json,
+                    updated_at_ms = excluded.updated_at_ms
+                 WHERE connections.owner_id = excluded.owner_id",
+                params![
+                    connection_id,
+                    owner_id,
+                    provider,
+                    metadata_json,
+                    now_ms as i64
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed > 0 {
+            transaction
+                .execute(
+                    "INSERT INTO connection_generations (connection_id, generation) VALUES (?1, 1)
+                 ON CONFLICT(connection_id) DO UPDATE SET generation = generation + 1",
+                    params![connection_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        drop(connection);
+        self.claim_connection_owner(connection_id, owner_id)
+    }
+
+    pub fn authorization(
+        &self,
+        state_digest: &str,
+        now_ms: u64,
+    ) -> Result<Option<AuthorizationRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .query_row(
+                "
+                SELECT state_digest, connection_id, provider, return_url,
+                       expires_at_ms, completed
+                FROM authorizations
+                WHERE state_digest = ?1 AND expires_at_ms >= ?2 AND completed = 0
+                  AND EXISTS (SELECT 1 FROM connections c
+                    WHERE c.connection_id = authorizations.connection_id
+                      AND c.provider = authorizations.provider AND c.status = 'pending')
+                ",
+                params![state_digest, now_ms as i64],
+                |row| {
+                    Ok(AuthorizationRecord {
+                        state_digest: row.get(0)?,
+                        connection_id: row.get(1)?,
+                        provider: row.get(2)?,
+                        return_url: row.get(3)?,
+                        expires_at_ms: row.get::<_, i64>(4)? as u64,
+                        completed: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn complete_authorization(
+        &self,
+        state_digest: &str,
+        encrypted_credential: &[u8],
+        metadata: &Value,
+        expires_at_ms: Option<u64>,
+        now_ms: u64,
+    ) -> Result<ConnectionRecord, String> {
+        // MP-11 review: completion only admits the current pending authorization
+        // inside the database transaction below. Pending connections cannot deliver
+        // events, and entering pending already fences their old generation. An
+        // unrelated active delivery must not discard a successfully exchanged code.
+        let metadata_json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let connection_id = transaction
+            .query_row(
+                "
+                SELECT connection_id
+                FROM authorizations
+                WHERE state_digest = ?1 AND expires_at_ms >= ?2 AND completed = 0
+                  AND EXISTS (SELECT 1 FROM connections c
+                    WHERE c.connection_id = authorizations.connection_id
+                      AND c.provider = authorizations.provider AND c.status = 'pending')
+                ",
+                params![state_digest, now_ms as i64],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                "authorization state is invalid, expired, or already used".to_string()
+            })?;
+        transaction
+            .execute(
+                "
+                UPDATE connections
+                SET status = 'ready', encrypted_credential = ?2, metadata_json = ?3,
+                    expires_at_ms = ?4, updated_at_ms = ?5
+                WHERE connection_id = ?1
+                ",
+                params![
+                    connection_id,
+                    encrypted_credential,
+                    metadata_json,
+                    expires_at_ms.map(|value| value as i64),
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE authorizations SET completed = 1 WHERE state_digest = ?1",
+                params![state_digest],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+        drop(connection);
+        self.connection(&connection_id)?
+            .ok_or_else(|| "completed connection was not found".to_string())
+    }
+
+    pub fn connection(&self, connection_id: &str) -> Result<Option<ConnectionRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .query_row(
+                "
+                SELECT connection_id, owner_id, provider, status, encrypted_credential,
+                       metadata_json, expires_at_ms, updated_at_ms,
+                       last_successful_health_check_at_ms, last_accepted_event_at_ms
+                FROM connections WHERE connection_id = ?1
+                ",
+                params![connection_id],
+                |row| {
+                    let metadata_json: String = row.get(5)?;
+                    Ok(ConnectionRecord {
+                        connection_id: row.get(0)?,
+                        owner_id: row.get(1)?,
+                        provider: row.get(2)?,
+                        status: row.get(3)?,
+                        encrypted_credential: row.get(4)?,
+                        metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
+                        expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+                        updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                        last_successful_health_check_at_ms: row
+                            .get::<_, Option<i64>>(8)?
+                            .map(|value| value.max(0) as u64),
+                        last_accepted_event_at_ms: row
+                            .get::<_, Option<i64>>(9)?
+                            .map(|value| value.max(0) as u64),
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn claim_connection_owner(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+    ) -> Result<ConnectionRecord, String> {
+        let connection = self
+            .connection(connection_id)?
+            .ok_or_else(|| "the authorized connection was not found".to_string())?;
+        if connection.owner_id == owner_id {
+            return Ok(connection);
+        }
+        Err("the authorized connection belongs to another owner; legacy migration requires an explicit operator mapping".to_string())
+    }
+
+    pub fn connections_for_owner(&self, owner_id: &str) -> Result<Vec<ConnectionRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "SELECT connection_id, owner_id, provider, status, encrypted_credential,
+                        metadata_json, expires_at_ms, updated_at_ms,
+                        last_successful_health_check_at_ms, last_accepted_event_at_ms
+                 FROM connections WHERE owner_id = ?1 ORDER BY updated_at_ms DESC, connection_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![owner_id], |row| {
+                let metadata_json: String = row.get(5)?;
+                Ok(ConnectionRecord {
+                    connection_id: row.get(0)?,
+                    owner_id: row.get(1)?,
+                    provider: row.get(2)?,
+                    status: row.get(3)?,
+                    encrypted_credential: row.get(4)?,
+                    metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
+                    expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
+                    updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                    last_successful_health_check_at_ms: row
+                        .get::<_, Option<i64>>(8)?
+                        .map(|value| value.max(0) as u64),
+                    last_accepted_event_at_ms: row
+                        .get::<_, Option<i64>>(9)?
+                        .map(|value| value.max(0) as u64),
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn revoke_connection(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let _guard = self
+            .delivery_gate
+            .try_write()
+            .map_err(|_| "connection has an in-flight delivery; retry revocation".to_string())?;
+        self.revoke_connection_locked(connection_id, owner_id, now_ms)
+    }
+
+    fn revoke_connection_locked(
+        &self,
+        connection_id: &str,
+        owner_id: &str,
+        now_ms: u64,
+    ) -> Result<bool, String> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let changed = transaction.execute(
+            "UPDATE connections SET status = 'revoked', encrypted_credential = NULL, updated_at_ms = ?3
+             WHERE connection_id = ?1 AND owner_id = ?2 AND status != 'revoked'",
+            params![connection_id, owner_id, now_ms as i64],
+        ).map_err(|error| error.to_string())?;
+        if changed > 0 {
+            transaction
+                .execute(
+                    "UPDATE subscriptions SET active = 0 WHERE connection_id = ?1",
+                    params![connection_id],
+                )
+                .map_err(|error| error.to_string())?;
+            transaction
+                .execute(
+                    "DELETE FROM authorizations WHERE connection_id = ?1",
+                    params![connection_id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(changed > 0)
+    }
+
+    pub fn mark_connection_health(
+        &self,
+        connection_id: &str,
+        checked_at_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = connection
+            .execute(
+                "UPDATE connections SET last_successful_health_check_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, checked_at_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("the provider connection was not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn mark_connection_event_accepted(
+        &self,
+        connection_id: &str,
+        accepted_at_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = connection
+            .execute(
+                "UPDATE connections SET last_accepted_event_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, accepted_at_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("the provider connection was not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn update_connection_credential(
+        &self,
+        connection_id: &str,
+        encrypted_credential: &[u8],
+        expires_at_ms: Option<u64>,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = connection
+            .execute(
+                "
+                UPDATE connections
+                SET encrypted_credential = ?2, expires_at_ms = ?3, updated_at_ms = ?4
+                WHERE connection_id = ?1 AND status = 'ready'
+                ",
+                params![
+                    connection_id,
+                    encrypted_credential,
+                    expires_at_ms.map(|value| value as i64),
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("ready connection was not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn provider_hooks(&self) -> Result<Vec<ProviderHookRecord>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT connection_id, connection_scope, provider_hook_id,
+                       configuration_digest, expires_at_ms
+                FROM provider_hooks
+                ORDER BY connection_id, connection_scope
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(ProviderHookRecord {
+                    connection_id: row.get(0)?,
+                    connection_scope: row.get(1)?,
+                    provider_hook_id: row.get(2)?,
+                    configuration_digest: row.get(3)?,
+                    expires_at_ms: row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn upsert_provider_hook(
+        &self,
+        hook: &ProviderHookRecord,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "
+                INSERT INTO provider_hooks (
+                    connection_id, connection_scope, provider_hook_id,
+                    configuration_digest, expires_at_ms, updated_at_ms
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                ON CONFLICT(connection_id, connection_scope) DO UPDATE SET
+                    provider_hook_id = excluded.provider_hook_id,
+                    configuration_digest = excluded.configuration_digest,
+                    expires_at_ms = excluded.expires_at_ms,
+                    updated_at_ms = excluded.updated_at_ms
+                ",
+                params![
+                    hook.connection_id,
+                    hook.connection_scope,
+                    hook.provider_hook_id,
+                    hook.configuration_digest,
+                    hook.expires_at_ms.map(|value| value as i64),
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_provider_hook(
+        &self,
+        connection_id: &str,
+        connection_scope: &str,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "
+                DELETE FROM provider_hooks
+                WHERE connection_id = ?1 AND connection_scope = ?2
+                ",
+                params![connection_id, connection_scope],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+pub(crate) fn action_request_fingerprint(
+    action_id: &str,
+    input: &Value,
+    context: &Value,
+) -> String {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "action_id": action_id,
+        "input": input,
+        "context": context,
+    }))
+    .expect("action request fingerprint is serializable");
+    format!("sha256:{:x}", Sha256::digest(canonical))
+}
+
+fn migrate_subscription_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(subscriptions)")?;
+    let has_owner = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "owner_id");
+    drop(columns);
+    if !has_owner {
+        connection.execute(
+            "ALTER TABLE subscriptions
+             ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_connection_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
+    let has_owner = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "owner_id");
+    drop(columns);
+    if !has_owner {
+        connection.execute_batch(
+            "ALTER TABLE connections
+             ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy';",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_connection_lifecycle_timestamps(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns
+        .iter()
+        .any(|column| column == "last_successful_health_check_at_ms")
+    {
+        connection.execute(
+            "ALTER TABLE connections ADD COLUMN last_successful_health_check_at_ms INTEGER",
+            [],
+        )?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "last_accepted_event_at_ms")
+    {
+        connection.execute(
+            "ALTER TABLE connections ADD COLUMN last_accepted_event_at_ms INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_action_receipt_fingerprint(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(action_receipts)")?;
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "request_fingerprint") {
+        connection.execute(
+            "ALTER TABLE action_receipts ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claim(binding_id: &str, revision: u64, active: bool) -> SubscriptionClaim {
+        SubscriptionClaim {
+            binding_id: binding_id.to_string(),
+            generator_id: "dev.chariox.github".to_string(),
+            connection_id: "installation-1".to_string(),
+            connection_scope: "charioxai/chariox".to_string(),
+            event_interest_key: format!("sha256:{binding_id}"),
+            event_type: "pull_request.opened".to_string(),
+            event_type_version: 1,
+            filter: serde_json::json!({}),
+            revision,
+            active,
+        }
+    }
+
+    #[test]
+    fn reconciliation_is_authoritative_and_revision_fenced() {
+        let store = AegsStore::open(":memory:").unwrap();
+        assert_eq!(
+            store
+                .reconcile(
+                    "kernel-a",
+                    "dev.chariox.github",
+                    &[claim("binding-a", 2, true)],
+                )
+                .unwrap(),
+            vec!["binding-a"]
+        );
+        assert!(store
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
+            .unwrap()
+            .iter()
+            .any(|value| value.binding_id == "binding-a"));
+        assert_eq!(
+            store.metrics().unwrap(),
+            AegsStoreMetrics {
+                active_subscriptions: 1,
+                subscriptions: 1,
+                connections: 0,
+                provider_hooks: 0,
+            }
+        );
+
+        assert!(store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[claim("binding-a", 1, true)],
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.all("dev.chariox.github").unwrap()[0].revision, 2);
+
+        store
+            .reconcile("kernel-a", "dev.chariox.github", &[])
+            .unwrap();
+        assert!(store
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.metrics().unwrap().active_subscriptions, 0);
+    }
+
+    #[test]
+    fn connection_subscription_context_returns_only_active_bindings() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[
+                    claim("binding-active", 1, true),
+                    claim("binding-inactive", 1, false),
+                ],
+            )
+            .unwrap();
+        let mut other = claim("binding-other", 1, true);
+        other.connection_id = "installation-2".to_string();
+        store
+            .reconcile("kernel-b", "dev.chariox.github", &[other])
+            .unwrap();
+
+        let subscriptions = store
+            .active_subscriptions_for_connection("installation-1")
+            .unwrap();
+        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions[0].binding_id, "binding-active");
+    }
+
+    #[test]
+    fn connection_lifecycle_timestamps_are_durable() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection(
+                "installation-1",
+                "kernel-a",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        store.mark_connection_health("installation-1", 20).unwrap();
+        store
+            .mark_connection_event_accepted("installation-1", 30)
+            .unwrap();
+
+        let connection = store.connection("installation-1").unwrap().unwrap();
+        assert_eq!(connection.last_successful_health_check_at_ms, Some(20));
+        assert_eq!(connection.last_accepted_event_at_ms, Some(30));
+    }
+
+    #[test]
+    fn reconciliation_is_authoritative_only_for_its_owner_and_rejects_binding_takeover() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[claim("binding-a", 2, true)],
+            )
+            .unwrap();
+        store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-b", 1, true)],
+            )
+            .unwrap();
+        assert_eq!(store.metrics().unwrap().active_subscriptions, 2);
+
+        store
+            .reconcile("kernel-b", "dev.chariox.github", &[])
+            .unwrap();
+        let subscriptions = store.all("dev.chariox.github").unwrap();
+        assert!(subscriptions
+            .iter()
+            .any(|subscription| subscription.binding_id == "binding-a" && subscription.active));
+        assert!(subscriptions
+            .iter()
+            .any(|subscription| subscription.binding_id == "binding-b" && !subscription.active));
+
+        assert!(store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-a", 2, true)],
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.metrics().unwrap().active_subscriptions, 1);
+
+        assert!(store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-a", 3, true)],
+            )
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
+            .unwrap()
+            .iter()
+            .any(|subscription| {
+                subscription.binding_id == "binding-a"
+                    && subscription.revision == 2
+                    && subscription.active
+            }));
+    }
+
+    #[test]
+    fn scoped_reconciliation_rejects_foreign_connections_and_binding_takeover() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection(
+                "connection-a",
+                "owner-a",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        let mut owned = claim("binding-a", 1, true);
+        owned.connection_id = "connection-a".to_string();
+        assert_eq!(
+            store
+                .reconcile_scoped(
+                    "kernel-a",
+                    Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                    "dev.chariox.github",
+                    &[owned.clone()],
+                )
+                .unwrap(),
+            vec!["binding-a"]
+        );
+
+        assert_eq!(
+            store
+                .matching(
+                    &owned.generator_id,
+                    &owned.event_type,
+                    &owned.connection_scope
+                )
+                .unwrap(),
+            vec![owned.clone()]
+        );
+
+        let mut foreign = owned.clone();
+        foreign.connection_id = "connection-b".to_string();
+        assert!(store
+            .reconcile_scoped(
+                "kernel-a",
+                Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                "dev.chariox.github",
+                &[foreign],
+            )
+            .unwrap_err()
+            .contains("outside the management capability"));
+
+        let mut takeover = owned;
+        takeover.connection_id = "connection-b".to_string();
+        takeover.revision = 2;
+        assert!(store
+            .reconcile_scoped(
+                "kernel-b",
+                Some(&["owner-b".to_string(), "kernel-b".to_string()]),
+                "dev.chariox.github",
+                &[takeover],
+            )
+            .unwrap()
+            .is_empty());
+        let stored = store
+            .all_for_owner("dev.chariox.github", "kernel-a")
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].connection_id, "connection-a");
+    }
+
+    #[test]
+    fn authorization_state_is_single_use_and_persists_opaque_credentials() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "state-digest",
+                connection_id: "connection-1",
+                owner_id: "owner-kernel-user",
+                provider: "github",
+                return_url: Some("https://terminal.example/workflows"),
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
+            .unwrap();
+        let pending = store.connection("connection-1").unwrap().unwrap();
+        assert_eq!(pending.status, "pending");
+        assert_eq!(pending.owner_id, "owner-kernel-user");
+
+        let ready = store
+            .complete_authorization(
+                "state-digest",
+                b"opaque-encrypted-credential",
+                &serde_json::json!({"installation_id": 42}),
+                Some(3_000),
+                1_500,
+            )
+            .unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(
+            ready.encrypted_credential.as_deref(),
+            Some(b"opaque-encrypted-credential".as_slice())
+        );
+        assert!(store
+            .complete_authorization("state-digest", b"replacement", &Value::Null, None, 1_600,)
+            .unwrap_err()
+            .contains("already used"));
+    }
+
+    #[test]
+    fn connections_are_owner_scoped_and_legacy_connections_require_operator_mapping() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "state-owner-a",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
+            .unwrap();
+        assert_eq!(store.connections_for_owner("owner-a").unwrap().len(), 1);
+        assert!(store.connections_for_owner("owner-b").unwrap().is_empty());
+        assert!(store
+            .claim_connection_owner("connection-owner-a", "owner-b")
+            .unwrap_err()
+            .contains("another owner"));
+
+        {
+            let database = store.connection.lock().unwrap();
+            database
+                .execute(
+                    "UPDATE connections SET owner_id = 'legacy' WHERE connection_id = ?1",
+                    params!["connection-owner-a"],
+                )
+                .unwrap();
+        }
+        assert!(store
+            .claim_connection_owner("connection-owner-a", "owner-b")
+            .is_err());
+        assert!(store
+            .claim_connection_owner("connection-owner-a", "owner-a")
+            .is_err());
+        assert_eq!(
+            store
+                .connection("connection-owner-a")
+                .unwrap()
+                .unwrap()
+                .owner_id,
+            "legacy"
+        );
+    }
+
+    #[test]
+    fn reauthorization_retains_connection_identity_and_owner() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "initial-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 2_000,
+                now_ms: 1_000,
+            })
+            .unwrap();
+        store
+            .complete_authorization(
+                "initial-state",
+                b"old-encrypted-credential",
+                &serde_json::json!({"account": "chariox"}),
+                None,
+                1_100,
+            )
+            .unwrap();
+        store
+            .create_reauthorization(CreateAuthorizationRequest {
+                state_digest: "replacement-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-a",
+                provider: "github",
+                return_url: Some("https://terminal.chariox.com/notifications/callback"),
+                expires_at_ms: 3_000,
+                now_ms: 2_000,
+            })
+            .unwrap();
+        let pending = store.connection("connection-owner-a").unwrap().unwrap();
+        assert_eq!(pending.owner_id, "owner-a");
+        assert_eq!(pending.status, "pending");
+        assert!(store
+            .create_reauthorization(CreateAuthorizationRequest {
+                state_digest: "foreign-state",
+                connection_id: "connection-owner-a",
+                owner_id: "owner-b",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 3_000,
+                now_ms: 2_100,
+            })
+            .unwrap_err()
+            .contains("owned connection"));
+        let ready = store
+            .complete_authorization(
+                "replacement-state",
+                b"new-encrypted-credential",
+                &serde_json::json!({"account": "chariox"}),
+                None,
+                2_200,
+            )
+            .unwrap();
+        assert_eq!(ready.connection_id, "connection-owner-a");
+        assert_eq!(ready.owner_id, "owner-a");
+        assert_eq!(ready.status, "ready");
+    }
+
+    #[test]
+    fn action_receipts_are_durable_and_idempotent() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let fingerprint = action_request_fingerprint(
+            "notification.reply",
+            &serde_json::json!({"text": "hello"}),
+            &serde_json::json!({"channel": "C1"}),
+        );
+        let response = chariox_event_protocol::AegsProviderActionResponse {
+            action_id: "notification.reply".to_string(),
+            idempotency_key: "reply-1".to_string(),
+            accepted: true,
+            result: serde_json::json!({"message_ts": "123.456"}),
+        };
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, &fingerprint, 10)
+            .unwrap();
+        assert_eq!(
+            store
+                .action_receipt("owner-a", "connection-a", "reply-1", &fingerprint)
+                .unwrap(),
+            Some(response.clone())
+        );
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, &fingerprint, 11)
+            .unwrap();
+        assert!(store
+            .action_receipt("owner-b", "connection-a", "reply-1", &fingerprint)
+            .unwrap()
+            .is_none());
+        let different = action_request_fingerprint(
+            "notification.reply",
+            &serde_json::json!({"text": "different"}),
+            &serde_json::json!({"channel": "C1"}),
+        );
+        assert!(store
+            .action_receipt("owner-a", "connection-a", "reply-1", &different)
+            .unwrap_err()
+            .to_string()
+            .contains("already used for a different action request"));
+    }
+}
+
+#[cfg(test)]
+mod mp11_authorization_tests {
+    use super::*;
+    fn pending() -> AegsStore {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "pending",
+                connection_id: "connection",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        store
+    }
+    #[test]
+    fn mp11_revocation_invalidates_inflight_authorization() {
+        let store = pending();
+        // An exchange may already hold this record when the owner revokes.
+        assert!(store.authorization("pending", 2).unwrap().is_some());
+        assert!(store.revoke_connection("connection", "owner", 3).unwrap());
+        assert!(store
+            .complete_authorization("pending", b"synthetic", &Value::Null, None, 4)
+            .is_err());
+        let connection = store.connection("connection").unwrap().unwrap();
+        assert_eq!(connection.status, "revoked");
+        assert!(connection.encrypted_credential.is_none());
+        assert!(store.authorization("pending", 4).unwrap().is_none());
+    }
+    #[test]
+    fn mp11_ordinary_lookup_cannot_adopt_legacy_credentials() {
+        let store = pending();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE connections SET owner_id='legacy' WHERE connection_id='connection'",
+                [],
+            )
+            .unwrap();
+        let threads: Vec<_> = ["owner-a", "owner-b"]
+            .into_iter()
+            .map(|owner| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    store.claim_connection_owner("connection", owner).is_err()
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert!(thread.join().unwrap());
+        }
+        assert_eq!(
+            store.connection("connection").unwrap().unwrap().owner_id,
+            "legacy"
+        );
+    }
+}
+
+#[cfg(test)]
+mod mp11_delivery_tests {
+    use super::*;
+    fn ready() -> (AegsStore, SubscriptionClaim) {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "pending",
+                connection_id: "connection",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        store
+            .complete_authorization("pending", b"synthetic", &Value::Null, None, 2)
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", "dev.chariox.github", &[claim.clone()])
+            .unwrap();
+        (store, claim)
+    }
+    #[test]
+    fn mp11_late_webhook_does_not_select_revoked_subscription() {
+        let (store, claim) = ready();
+        assert_eq!(
+            store
+                .matching(
+                    &claim.generator_id,
+                    &claim.event_type,
+                    &claim.connection_scope
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        store.revoke_connection("connection", "owner", 3).unwrap();
+        assert!(store
+            .matching(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope
+            )
+            .unwrap()
+            .is_empty());
+        assert!(!store.all(&claim.generator_id).unwrap()[0].active);
+    }
+}
+
+#[cfg(test)]
+mod mp11_delivery_gate_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn mp11_review_oauth_completion_survives_another_connections_delivery() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("publishing", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "pending-state",
+                connection_id: "pending",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "publishing".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", "dev.chariox.github", &[claim.clone()])
+            .unwrap();
+        let generation = store.connection_generation("publishing").unwrap();
+        // This is the same guard held across a blocked publisher.publish(...).await.
+        let delivery = store.delivery_guard(&claim, generation).await.unwrap();
+        let completing = store.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            completing.complete_authorization(
+                "pending-state",
+                b"synthetic-encrypted-exchange",
+                &Value::Null,
+                None,
+                2,
+            )
+        });
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(2), result)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(
+            ready.encrypted_credential.as_deref(),
+            Some(b"synthetic-encrypted-exchange".as_slice())
+        );
+        assert!(store.authorization("pending-state", 2).unwrap().is_none());
+        assert_eq!(
+            store.connection_generation("publishing").unwrap(),
+            generation
+        );
+        drop(delivery);
+        assert!(store.delivery_guard(&claim, generation).await.is_ok());
+    }
+    #[tokio::test]
+    async fn mp11_selected_delivery_is_fenced_against_revocation() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .create_authorization(CreateAuthorizationRequest {
+                state_digest: "state",
+                connection_id: "connection",
+                owner_id: "owner",
+                provider: "github",
+                return_url: None,
+                expires_at_ms: 1000,
+                now_ms: 1,
+            })
+            .unwrap();
+        store
+            .complete_authorization("state", b"synthetic", &Value::Null, None, 2)
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", "dev.chariox.github", &[claim.clone()])
+            .unwrap();
+        let guard = store.delivery_guard(&claim, Some(1)).await.unwrap();
+        let other = store.clone();
+        let revoke =
+            tokio::spawn(
+                async move { other.revoke_connection_wait("connection", "owner", 3).await },
+            );
+        tokio::task::yield_now().await;
+        assert!(!revoke.is_finished());
+        drop(guard);
+        assert!(revoke.await.unwrap().unwrap());
+        assert!(store.delivery_guard(&claim, Some(1)).await.is_err());
+    }
+    #[tokio::test]
+    async fn mp11_reauthorization_and_reconcile_cannot_revive_selected_generation() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection-a", "user", "github", &Value::Null, 1)
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection-a".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile_scoped(
+                "kernel",
+                Some(&["user".into()]),
+                &claim.generator_id,
+                &[claim.clone()],
+            )
+            .unwrap();
+        let selected = store
+            .matching_for_delivery(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope,
+            )
+            .await
+            .unwrap();
+        assert_eq!(selected.len(), 1);
+        store
+            .upsert_ready_connection("connection-a", "user", "github", &Value::Null, 1)
+            .unwrap();
+        assert!(store
+            .matching(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope
+            )
+            .unwrap()
+            .is_empty());
+        store
+            .reconcile_scoped(
+                "kernel",
+                Some(&["user".into()]),
+                &claim.generator_id,
+                &[claim.clone()],
+            )
+            .unwrap();
+        assert!(store
+            .delivery_guard(&selected[0].0, selected[0].1)
+            .await
+            .is_err());
+        let current = store
+            .matching_for_delivery(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope,
+            )
+            .await
+            .unwrap();
+        assert_eq!(current.len(), 1);
+        assert!(store
+            .delivery_guard(&current[0].0, current[0].1)
+            .await
+            .is_ok());
+    }
+    #[test]
+    fn mp11_ready_connection_reauthorization_requires_explicit_reconcile() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        let claim = SubscriptionClaim {
+            binding_id: "binding".into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: "scope".into(),
+            event_interest_key: "interest".into(),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        };
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &claim.generator_id,
+                    &claim.event_type,
+                    &claim.connection_scope
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        assert!(store
+            .matching(
+                &claim.generator_id,
+                &claim.event_type,
+                &claim.connection_scope
+            )
+            .unwrap()
+            .is_empty());
+        store
+            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .unwrap();
+        assert_eq!(
+            store
+                .matching(
+                    &claim.generator_id,
+                    &claim.event_type,
+                    &claim.connection_scope
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}

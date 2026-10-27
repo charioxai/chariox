@@ -1,0 +1,206 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  handleRemoteMachineSlashCommand,
+  type RemoteMachineCommandHandlerDeps,
+  type RemoteMachineSummary,
+} from "./remote-machine-command-handlers.js"
+
+test("remote machine command renders recovery hints", async () => {
+  const harness = remoteMachineHarness()
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("list"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+
+  assert.match(harness.footers.at(0)?.message ?? "", /cold id=machine-2 status=pending/)
+  assert.match(harness.footers.at(0)?.message ?? "", /next: approve with \/machine approve machine-2/)
+  assert.match(harness.footers.at(1)?.message ?? "", /cold-kernel id=kernel-2/)
+  assert.match(harness.footers.at(1)?.message ?? "", /readiness=blocked/)
+  assert.match(harness.footers.at(1)?.message ?? "", /accepting_remote_leases=false/)
+  assert.match(harness.footers.at(1)?.message ?? "", /next: run \/machine kernels builder; enable remote leases on cold-kernel or choose another worker/)
+  assert.deepEqual(harness.notices, [])
+  assert.deepEqual(harness.notices, [])
+})
+
+test("remote machine command renders unknown lease state with refresh recovery", async () => {
+  const harness = remoteMachineHarness({
+    accepting_remote_leases: undefined,
+    available_providers: ["codex"],
+  })
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+
+  assert.match(harness.footers.at(0)?.message ?? "", /accepting_remote_leases=unknown/)
+  assert.match(harness.footers.at(0)?.message ?? "", /readiness=unknown/)
+  assert.doesNotMatch(harness.footers.at(0)?.message ?? "", /enable remote leases/)
+  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+})
+
+test("remote machine command prioritizes unknown readiness over empty providers", async () => {
+  const harness = remoteMachineHarness({
+    accepting_remote_leases: undefined,
+    available_providers: [],
+  })
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+
+  assert.match(harness.footers.at(0)?.message ?? "", /readiness=unknown/)
+  assert.match(harness.footers.at(0)?.message ?? "", /providers=-/)
+  assert.match(harness.footers.at(0)?.message ?? "", /next: run \/machine kernels builder; refresh cold-kernel readiness or reconnect that worker before launching remote agents/)
+  assert.doesNotMatch(harness.footers.at(0)?.message ?? "", /configure provider CLIs/)
+})
+
+test("remote machine mutation commands patch cached machines without refreshing inventory", async () => {
+  const harness = remoteMachineHarness()
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("approve", "machine-2"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("rename", "machine-2", "New", "Name"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("forget", "machine-2"))
+
+  assert.deepEqual(harness.machines.map((machine) => [
+    machine.machine_id,
+    machine.display_name,
+    machine.trust_status,
+  ]), [
+    ["machine-1", "Builder", "approved"],
+  ])
+  assert.equal(harness.reconcileCount, 3)
+  assert.equal(harness.footers.at(0)?.message, "approved remote machine cold")
+  assert.equal(harness.footers.at(1)?.message, "renamed remote machine machine-2 to New Name")
+  assert.equal(harness.footers.at(2)?.message, "forgot remote machine New Name")
+})
+
+test("remote machine reimage command requires an explicit second confirmation", async () => {
+  const harness = remoteMachineHarness()
+  const calls: Array<[string, "prepare" | "confirm" | "cancel"]> = []
+  harness.deps.reimageManagedEnvironment = async (environmentId, action) => {
+    calls.push([environmentId, action])
+    return { message: `${action}:${environmentId}`, tone: "info" }
+  }
+
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1", "confirm"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("reimage", "environment-1", "cancel"))
+
+  assert.deepEqual(calls, [
+    ["environment-1", "prepare"],
+    ["environment-1", "confirm"],
+    ["environment-1", "cancel"],
+  ])
+  assert.deepEqual(harness.footers.slice(-3).map(f => f.message), [
+    "prepare:environment-1",
+    "confirm:environment-1",
+    "cancel:environment-1",
+  ])
+})
+
+function command(...args: string[]) {
+  return { kind: "machine" as const, args, raw: `/machine ${args.join(" ")}` }
+}
+
+function remoteMachineHarness(kernelOverrides: Record<string, unknown> = {}) {
+  const notices: string[] = []
+  const footers: Array<{ message: string; tone: "info" | "error" }> = []
+  let reconcileCount = 0
+  const machines: RemoteMachineSummary[] = [{
+    machine_id: "machine-1",
+    machine_alias: "builder",
+    registry_alias: null,
+    display_name: "Builder",
+    trust_status: "approved" as const,
+    online: true,
+    pending: false,
+    kernel_count: 1,
+    available_providers: ["codex"],
+  }, {
+    machine_id: "machine-2",
+    machine_alias: "cold",
+    registry_alias: null,
+    display_name: "cold",
+    trust_status: "pending" as const,
+    online: true,
+    pending: true,
+    kernel_count: 0,
+    available_providers: [],
+  }]
+  const deps: RemoteMachineCommandHandlerDeps & { appendNotice: (message: string) => void } = {
+    flashFooter: (message, tone) => { footers.push({ message, tone }) },
+    appendNotice: (message) => { notices.push(message) },
+    refreshWaitingRoomData: async () => {
+      throw new Error("should not refresh waiting-room inventory after remote machine mutation")
+    },
+    getRemoteMachines: () => machines,
+    setRemoteMachines: (next) => {
+      machines.splice(0, machines.length, ...next)
+    },
+    reconcileWaitingRoom: () => {
+      reconcileCount += 1
+    },
+    listRemoteMachines: async () => machines,
+    approveRemoteMachine: async (machineRef) => ({
+      machine_id: machineRef,
+      display_name: "cold",
+      trust_status: "approved",
+      online: true,
+    }),
+    forgetRemoteMachine: async (machineRef) => ({
+      machine_id: machineRef,
+      display_name: "New Name",
+      trust_status: "forgotten",
+      online: false,
+    }),
+    renameRemoteMachine: async (machineRef, alias) => ({
+      machine_id: machineRef,
+      display_name: alias,
+      trust_status: "approved",
+      online: true,
+    }),
+    listRemoteMachineKernels: async () => [{
+      kernel_id: "kernel-2",
+      machine_id: "machine-1",
+      machine_alias: "builder",
+      relay_alias: "cold-kernel",
+      kernel_alias: null,
+      accepting_remote_leases: false,
+      leased_agent_count: 0,
+      local_session_count: 0,
+      available_providers: [],
+      ...kernelOverrides,
+    }],
+  }
+  return {
+    deps,
+    notices,
+    footers,
+    machines,
+    get reconcileCount() {
+      return reconcileCount
+    },
+  }
+}
+
+test("MP-07/MP-08/MP-11 SSH add forwards selection and remove retains state", async () => {
+  const calls: unknown[] = []
+  const deps = { flashFooter: (m: string) => calls.push(m), appendNotice: (m: string) => calls.push(m),
+    addSshMachine: async (host: string, options: unknown) => { calls.push({ host, options }); return { install_id: "byom-lan", status: "ready", kernel_id: "kernel", machine_id: "machine", release_digest: "sha256:approved", state_retained: false } },
+    removeSshMachine: async (id: string) => { calls.push(id); return { install_id: id, status: "removed", kernel_id: null, machine_id: null, release_digest: "sha256:approved", state_retained: true } },
+  }
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--id", "byom-lan", "--port", "55129", "--release", "approved"] })
+  assert.ok(calls.some(c => typeof c === "object" && c !== null && JSON.stringify(c) === JSON.stringify({ host: "linux-lan", options: { install_id: "byom-lan", port: 55129, release: "approved" } })))
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine remove byom-lan", args: ["remove", "byom-lan"] })
+  assert.ok(calls.some(c => typeof c === "string" && c.includes("state retained")))
+  const before = calls.length
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh linux-lan", args: ["add", "ssh", "linux-lan", "--port", "43118"] })
+  assert.equal(calls.length, before + 1)
+  assert.match(String(calls.at(-1)), /usage:/)
+})
+
+test("MP-08/MP-11 machine results never enter the agent transcript", async () => {
+  const harness = remoteMachineHarness()
+  await handleRemoteMachineSlashCommand(harness.deps, command("list"))
+  await handleRemoteMachineSlashCommand(harness.deps, command("kernels", "machine-1"))
+  assert.deepEqual(harness.notices, [])
+  assert.ok(harness.footers.some(f => f.message.includes("cold id=machine-2")))
+  assert.ok(harness.footers.some(f => f.message.includes("cold-kernel id=kernel-2")))
+})

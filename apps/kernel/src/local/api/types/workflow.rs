@@ -1,0 +1,1119 @@
+use super::*;
+use crate::session::WorkflowPublicationInvocationEnvelope;
+
+fn deserialize_nullable_patch_field<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowRequest {
+    pub session_id: String,
+    pub alias: Option<String>,
+}
+
+/// A visible one-node workflow for one of the caller's agents, created when
+/// that agent gets a trigger or a deployment. It records its origin; the
+/// client then completes the trigger or deploy setup on its entry endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAgentWorkflowRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    pub reason: crate::session::WorkflowOriginReason,
+    pub surface: crate::session::WorkflowOriginSurface,
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkflowCodeRequest {
+    pub session_id: String,
+    pub node_path: String,
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::workflow_code::WorkflowCodeLanguage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowRegistryRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    pub source: crate::workflow_code::WorkflowRegistrySourceInput,
+    pub node_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowRegistryEntryFromWorkflowRequest {
+    pub session_id: String,
+    pub name: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<crate::workflow_code::WorkflowRegistrySourceScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunWorkflowRegistryEntryRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub parameters: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_rebindings: Vec<crate::workflow_code::WorkflowCodeProviderRebinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_rebindings: Vec<crate::workflow_code::WorkflowCodeAgentRebinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    pub language: crate::workflow_code::WorkflowCodeLanguage,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+    pub language: crate::workflow_code::WorkflowCodeLanguage,
+    pub node_path: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowCodeSourceRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub artifact_name: String,
+    pub origin: crate::session::WorkflowCodeSourceOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebuildWorkflowCodeSourceRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub expected_workflow_revision: u64,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCodeSourceFromWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub expected_workflow_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_generated_source_sha256: Option<String>,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowCodeArtifactsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowCodePackageExportTarget {
+    Artifact { name: String },
+    Workflow { workflow_ref: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExportWorkflowCodePackageRequest {
+    pub session_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<WorkflowCodePackageExportTarget>,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportWorkflowCodeArtifactRequest {
+    pub session_id: String,
+    pub package: crate::workflow_code::WorkflowCodeArtifactPackage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overwrite: bool,
+    pub node_path: String,
+}
+
+pub type ImportWorkflowCodePackageRequest = ImportWorkflowCodeArtifactRequest;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowCodeSourceExportTarget {
+    Artifact { name: String },
+    Workflow { workflow_ref: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportWorkflowCodeSourceRequest {
+    pub session_id: String,
+    pub target: WorkflowCodeSourceExportTarget,
+    #[serde(default)]
+    pub format: crate::workflow_code::WorkflowCodeSourceExportFormat,
+    #[serde(default)]
+    pub agent_mode: crate::workflow_code::WorkflowCodeSourceExportAgentMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolveWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowPublicationRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parser: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_exposure: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowPublicationsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowPublicationRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportWorkflowPublicationPackageRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_app: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_app_assets_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPublicationPackageFile {
+    pub path: String,
+    pub content_base64: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisableWorkflowPublicationRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowPublicationRuntimeAction {
+    Start,
+    Stop,
+    Restart,
+    Inspect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlWorkflowPublicationRuntimeRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub action: WorkflowPublicationRuntimeAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowPublicationDeploymentRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub setup_id: String,
+    pub operation_key: String,
+    pub deployment_id: String,
+    pub environment_id: String,
+    pub release_id: String,
+    pub package_digest: String,
+    pub desired_revision: u64,
+    pub caller_claims_public_key_pem: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterWorkflowPublicationEndpointRequest {
+    pub session_id: String,
+    pub publication_ref: String,
+    pub local_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializeWorkflowPublicationRequest {
+    pub publication_id: String,
+    pub snapshot: WorkflowPublicationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivateWorkflowPublicationRuntimeRequest {
+    pub publication_id: String,
+    pub runtime_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub entry_node_id: String,
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    pub alias: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    pub entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowNodeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowNodeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowNodeInstructionsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeCanCompleteRunRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub can_complete_workflow_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeCanEmitIntermediateOutputRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub can_emit_intermediate_workflow_run_output: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeWaitForAllInputsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    pub wait_for_all_inputs: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeIntermediateOutputSchemaRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowNodeMaxTurnsRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddWorkflowEdgeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidateWorkflowHandoffRequest {
+    pub session_id: String,
+    pub handoff_schema_ref: String,
+    pub handoff_json: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AckWorkflowTurnRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+    pub workflow_node_run_id: String,
+    pub delivery_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowEdgeRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub edge_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCanvasLayoutRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_layout_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<WorkflowCanvasLayoutPatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvokeWorkflowEndpointRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowRunsRequest {
+    pub session_id: String,
+    pub workflow_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumeWorkflowRunRequest {
+    pub session_id: String,
+    pub workflow_run_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowWatchdogRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub interval_seconds: u64,
+    pub invocation_prompt: String,
+    pub policy: WorkflowWatchdogPolicy,
+    pub max_wakeups_configured: bool,
+    pub max_wakeups: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowScheduleRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub endpoint_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+    pub trigger: WorkflowScheduleTrigger,
+    pub invocation_prompt: String,
+    pub overlap_policy: WorkflowScheduleOverlapPolicy,
+    pub max_runs_configured: bool,
+    pub max_runs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowWatchdogsRequest {
+    pub session_id: String,
+    pub workflow_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowSchedulesRequest {
+    pub session_id: String,
+    pub workflow_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowWatchdogEnabledRequest {
+    pub session_id: String,
+    pub watchdog_ref: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowScheduleEnabledRequest {
+    pub session_id: String,
+    pub schedule_ref: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowWatchdogRequest {
+    pub session_id: String,
+    pub watchdog_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowScheduleRequest {
+    pub session_id: String,
+    pub schedule_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewWorkflowScheduleRequest {
+    pub trigger: WorkflowScheduleTrigger,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_ms: Option<u64>,
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSchedulePreview {
+    pub trigger: WorkflowScheduleTrigger,
+    pub next_run_at_ms: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowFlushContextRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub flush_agent_context_before_run: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetWorkflowRunOutputSchemaRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListWorkflowPromptQueuesRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateWorkflowPromptQueueRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+    pub alias: String,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowPromptQueueRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+    pub queue_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveWorkflowPromptQueueRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+    pub queue_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListQueuedWorkflowPromptsRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateQueuedWorkflowPromptRequest {
+    pub session_id: String,
+    pub queue_item_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveQueuedWorkflowPromptRequest {
+    pub session_id: String,
+    pub queue_item_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClearWorkflowPromptQueueRequest {
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_ref: Option<String>,
+    pub queue_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApplyWorkflowDesignOpRequest {
+    pub session_id: String,
+    pub origin_client_id: String,
+    pub op_id: String,
+    pub op: WorkflowDesignOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignWorkflow {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flush_agent_context_before_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schemas: Vec<crate::session::WorkflowSchemaDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignWorkflowPatch {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub alias: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prompt: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flush_agent_context_before_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub run_output_schema_ref: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignSchemaPatch {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub alias: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignNode {
+    pub id: String,
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_complete_workflow_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_emit_intermediate_run_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_all_inputs: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intermediate_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignNodePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub instructions: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_complete_workflow_run: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_emit_intermediate_run_output: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_all_inputs: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub intermediate_output_schema_ref: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_turns: Option<Option<u32>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEdge {
+    pub id: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_side: Option<crate::session::WorkflowEdgeEndpointSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_policy: Option<crate::session::WorkflowHandoffValidationPolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEdgePatch {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub handoff_schema_ref: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub validation_policy: Option<Option<crate::session::WorkflowHandoffValidationPolicy>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEndpoint {
+    pub id: String,
+    pub entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignEndpointPatch {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nullable_patch_field",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub alias: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkflowDesignOp {
+    WorkflowCreate {
+        workflow: WorkflowDesignWorkflow,
+    },
+    WorkflowUpdate {
+        workflow_id: String,
+        patch: WorkflowDesignWorkflowPatch,
+    },
+    WorkflowRemove {
+        workflow_id: String,
+    },
+    SchemaAdd {
+        workflow_id: String,
+        schema: crate::session::WorkflowSchemaDefinition,
+    },
+    SchemaUpdate {
+        workflow_id: String,
+        schema_id: String,
+        patch: WorkflowDesignSchemaPatch,
+    },
+    SchemaRemove {
+        workflow_id: String,
+        schema_id: String,
+    },
+    NodeAdd {
+        workflow_id: String,
+        node: WorkflowDesignNode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<WorkflowDesignPoint>,
+    },
+    NodeUpdate {
+        workflow_id: String,
+        node_id: String,
+        patch: WorkflowDesignNodePatch,
+    },
+    NodeMove {
+        workflow_id: String,
+        node_id: String,
+        position: WorkflowDesignPoint,
+    },
+    NodeRemove {
+        workflow_id: String,
+        node_id: String,
+    },
+    EdgeAdd {
+        workflow_id: String,
+        edge: WorkflowDesignEdge,
+    },
+    EdgeUpdate {
+        workflow_id: String,
+        edge_id: String,
+        patch: WorkflowDesignEdgePatch,
+    },
+    EdgeRemove {
+        workflow_id: String,
+        edge_id: String,
+    },
+    EndpointAdd {
+        workflow_id: String,
+        endpoint: WorkflowDesignEndpoint,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<WorkflowDesignPoint>,
+    },
+    EndpointUpdate {
+        workflow_id: String,
+        endpoint_id: String,
+        patch: WorkflowDesignEndpointPatch,
+    },
+    EndpointMove {
+        workflow_id: String,
+        endpoint_id: String,
+        position: WorkflowDesignPoint,
+    },
+    EndpointRemove {
+        workflow_id: String,
+        endpoint_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDesignOpForwarded {
+    pub session_id: String,
+    pub kernel_sequence: u64,
+    pub origin_client_id: String,
+    pub op_id: String,
+    pub op: WorkflowDesignOp,
+}
+
+/// Protocol 436: control only the explicit current-room run ids captured by a client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlRoomWorkflowRunsRequest {
+    pub session_id: String,
+    pub workflow_id: String,
+    pub action: RoomWorkflowRunAction,
+    pub run_ids: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomWorkflowRunAction {
+    Pause,
+    Resume,
+    Stop,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomWorkflowRunControlResult {
+    pub run_id: String,
+    pub outcome: RoomWorkflowRunControlOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomWorkflowRunControlOutcome {
+    Applied,
+    Unchanged,
+    Failed,
+}

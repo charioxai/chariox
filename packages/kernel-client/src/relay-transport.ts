@@ -1,0 +1,140 @@
+import type {
+  RelayConnectFrame,
+  RelayRequestFrame,
+  RelaySubscribeFrame,
+  RelayTarget,
+  RelayUnsubscribeFrame,
+} from "./kernel-transport-frames.js"
+import { decryptRelayPayload, encryptRelayPayload, type RelayClientIdentity } from "./relay-crypto.js"
+import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
+
+export function buildRelayConnectFrame(authToken: string | null, target: RelayTarget | null): RelayConnectFrame {
+  if (!authToken) {
+    throw new Error("relay auth token is required")
+  }
+  if (!target?.daemon_id && !target?.daemon_alias) {
+    throw new Error("relay target daemon id or alias is required")
+  }
+  return {
+    kind: "client_connect",
+    auth_token: authToken,
+    target: target ?? {},
+  }
+}
+
+export function normalizeRelayRequest(
+  requestId: string,
+  request: unknown,
+  target: RelayTarget | null,
+  daemonPublicKey: string | null,
+  identity?: RelayClientIdentity | null,
+): { frame: RelayRequestFrame; decryptResponse: (payload: EncryptedRelayPayload) => string } {
+  const resolvedTarget = requireRelayTarget(target)
+  if (!daemonPublicKey) {
+    throw new Error("relay daemon public key is required")
+  }
+  const command = relayCommandEnvelope(request) ?? {
+    command_id: requestId,
+    request,
+  }
+  const plaintext = Buffer.from(JSON.stringify(command), "utf8")
+  const ephemeral = identity ? null : encryptRelayPayload(daemonPublicKey, plaintext)
+  const payload = identity
+    ? identity.encrypt(daemonPublicKey, plaintext)
+    : ephemeral!.payload
+  const decryptResponse = identity
+    ? (response: EncryptedRelayPayload) => identity.decrypt(response, daemonPublicKey)
+    : (response: EncryptedRelayPayload) => decryptRelayPayloadFromExpectedSender(
+      ephemeral!.privateKey,
+      response,
+      daemonPublicKey,
+    )
+  return {
+    frame: {
+      kind: "client_request",
+      request_id: requestId,
+      target: resolvedTarget,
+      encrypted_request: payload,
+    },
+    decryptResponse,
+  }
+}
+
+export function decryptRelayPayloadFromExpectedSender(
+  privateKey: Buffer,
+  payload: EncryptedRelayPayload,
+  expectedSenderPublicKey: string,
+): string {
+  if (!expectedSenderPublicKey || payload.sender_public_key !== expectedSenderPublicKey) {
+    throw new Error("relay sender identity mismatch")
+  }
+  return decryptRelayPayload(privateKey, payload)
+}
+
+function relayCommandEnvelope(value: unknown): { command_id: string; request: unknown } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null
+  }
+  const envelope = value as Record<string, unknown>
+  if (
+    typeof envelope.command_id !== "string"
+    || envelope.command_id.trim() === ""
+    || !Object.prototype.hasOwnProperty.call(envelope, "request")
+  ) {
+    return null
+  }
+  return {
+    command_id: envelope.command_id,
+    request: envelope.request,
+  }
+}
+
+export function buildRelaySubscribeFrame(input: {
+  readonly requestId: string
+  readonly subscriptionId: string
+  readonly target: RelayTarget | null
+  readonly sessionId: string
+  readonly attachmentId: string
+  readonly clientPublicKey: string
+  readonly resumeFromEventId: number | null
+  readonly subscriptionScope?: string | undefined
+  readonly heartbeatIntervalMs?: number | undefined
+}): RelaySubscribeFrame {
+  const frame: RelaySubscribeFrame = {
+    kind: "client_subscribe",
+    request_id: input.requestId,
+    subscription_id: input.subscriptionId,
+    target: requireRelayTarget(input.target),
+    session_id: input.sessionId,
+    attachment_id: input.attachmentId,
+    client_public_key: input.clientPublicKey,
+    resume_from_event_id: input.resumeFromEventId,
+  }
+  if (input.subscriptionScope) {
+    frame.subscription_scope = input.subscriptionScope
+  }
+  if (input.heartbeatIntervalMs !== undefined) {
+    frame.heartbeat_interval_ms = input.heartbeatIntervalMs
+  }
+  return frame
+}
+
+export function buildRelayUnsubscribeFrame(
+  requestId: string,
+  subscriptionId: string,
+  clientPublicKey: string,
+): RelayUnsubscribeFrame {
+  return {
+    kind: "client_unsubscribe",
+    request_id: requestId,
+    subscription_id: subscriptionId,
+    client_public_key: clientPublicKey,
+  }
+}
+
+export function requireRelayTarget(target: RelayTarget | null): RelayTarget {
+  if (!target?.daemon_id && !target?.daemon_alias) {
+    throw new Error("relay target daemon id or alias is required")
+  }
+  return target
+}

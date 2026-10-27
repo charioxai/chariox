@@ -1,0 +1,328 @@
+import { workspaceLiveSyncUiEnabled } from "@chariox/kernel-client/workspace-live-sync-mode"
+import type {
+  AgentInstance,
+  RuntimeProviderRun,
+  RuntimeSession,
+  SliceRecord,
+} from "../cli-types.js"
+import {
+  formatExtensionAuthorityBoundaryDetail,
+  formatExtensionGrantPlacement,
+  formatExtensionGrantRuntimeDetail,
+} from "@chariox/kernel-client/extension-grant-placement"
+import { formatRemoteExtensionSyncStatusLine, remoteExtensionSyncNextAction } from "@chariox/kernel-client/shell-capability-format"
+import {
+  formatSliceProviderAccounts,
+  formatSliceProviderAuthReadiness,
+  formatSliceProviderList,
+  formatSliceScope,
+  sliceProviderAuthCoverage,
+} from "@chariox/kernel-client/slice-format"
+import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
+import { providerRunRecoveryActions } from "@chariox/kernel-client/provider-run-recovery"
+import { formatSessionHomeKernelLabel } from "@chariox/kernel-client/session-runtime-labels"
+
+export type NativeTuiRuntimeBannerInput = {
+  readonly connectionLabel?: string | null
+  readonly surface: string
+  readonly session: RuntimeSession
+  readonly agent: AgentInstance
+  readonly worktree: string
+  readonly slices?: readonly SliceRecord[]
+  readonly sliceLookupError?: string | null
+  readonly run?: RuntimeProviderRun | null
+  readonly grantedMcps?: readonly string[]
+  readonly grantedSkills?: readonly string[]
+  readonly providerLines?: readonly string[]
+  readonly promptPolicy?: string
+}
+
+export function formatNativeTuiRuntimeBanner(input: NativeTuiRuntimeBannerInput): string {
+  const slice = sliceForRemoteAgent(input.agent, input.slices ?? [])
+  const extensionGrants = nativeBannerExtensionGrants(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [])
+  const remoteNativeRun = isRemoteNativeRun(input.agent, input.run ?? null)
+  return [
+    `[chariox ${input.surface}]`,
+    `  chariox session: ${formatSession(input.session)}`,
+    `  chariox agent:   ${formatAgent(input.agent)}`,
+    `  home kernel:    ${formatHomeKernel(input.session)}`,
+    ...(input.connectionLabel ? [`  connection:     ${input.connectionLabel}`] : []),
+    ...formatSessionOwnerLines(input.session),
+    `  worktree:       ${input.worktree || input.agent.worktree_id || input.session.worktree_id || "-"}`,
+    `  placement:      ${formatAgentPlacement(input.agent, slice)}`,
+    ...formatSliceLines(slice, input.agent, input.sliceLookupError),
+    ...(workspaceLiveSyncUiEnabled ? [`  live sync:      ${formatWorkspaceLiveSyncModeLabel(input.session.workspace_live_sync_mode)}`] : []),
+    `  extensions:     ${formatGrantedExtensions(input.agent, input.grantedMcps ?? [], input.grantedSkills ?? [], remoteNativeRun)}`,
+    `  ext runtime:    ${formatNativeExtensionRuntime(extensionGrants, input.agent, remoteNativeRun)}`,
+    `  ext boundary:   ${formatNativeExtensionBoundary(extensionGrants, input.agent, remoteNativeRun)}`,
+    ...formatRemoteExtensionSync(input.agent, input.grantedMcps ?? [], remoteNativeRun),
+    ...formatProviderRunLines(input.agent, input.run ?? null),
+    ...(input.providerLines ?? []),
+    ...(input.promptPolicy ? [`  prompt policy:  ${input.promptPolicy}`] : []),
+    "",
+  ].join("\n")
+}
+
+function nativeBannerExtensionGrants(
+  agent: AgentInstance,
+  mcps: readonly string[],
+  skills: readonly string[],
+): readonly { readonly kind: string }[] {
+  const grants = [...(agent.extension_grants ?? [])]
+  if (mcps.length > 0 && !grants.some((grant) => grant.kind === "mcp")) {
+    grants.push({ kind: "mcp", name: "__native_banner_mcp__" })
+  }
+  if (skills.length > 0 && !grants.some((grant) => grant.kind === "skill")) {
+    grants.push({ kind: "skill", name: "__native_banner_skill__" })
+  }
+  return grants
+}
+
+function formatGrantedExtensions(
+  agent: AgentInstance,
+  mcps: readonly string[],
+  skills: readonly string[],
+  remoteNativeRun: boolean,
+): string {
+  if (mcps.length === 0 && skills.length === 0) {
+    return agent.remote_extension_manifest_sync?.pending_revoke ? "none (final revoke pending)" : "none"
+  }
+  if (remoteNativeRun) {
+    return [
+      mcps.length > 0 ? `mcp=${mcps.join(",")} (worker-local, hash-validated)` : null,
+      skills.length > 0 ? `skill=${skills.join(",")} (worker-local, hash-validated)` : null,
+    ].filter(Boolean).join("; ")
+  }
+  const remote = Boolean(agent.remote_execution)
+  const activePlacement = formatExtensionGrantPlacement([{ kind: "mcp" }], remote)
+  const skillPlacement = formatExtensionGrantPlacement([{ kind: "skill" }], remote)
+  return [
+    mcps.length > 0 ? `mcp=${mcps.join(",")} (${activePlacement})` : null,
+    skills.length > 0 ? `skill=${skills.join(",")} (${skillPlacement})` : null,
+  ].filter(Boolean).join("; ")
+}
+
+function formatNativeExtensionRuntime(
+  grants: readonly { readonly kind: string }[],
+  agent: AgentInstance,
+  remoteNativeRun: boolean,
+): string {
+  if (!remoteNativeRun) {
+    return formatExtensionGrantRuntimeDetail(grants, Boolean(agent.remote_execution))
+  }
+  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
+  if (hasWorkerLocal && homeProxyGrants.length > 0) {
+    return "native MCP and skill grants use hash-validated worker-local installs; scripts and connectors remain home-proxied"
+  }
+  if (hasWorkerLocal) {
+    return "native MCP and skill grants use hash-validated worker-local installs"
+  }
+  return formatExtensionGrantRuntimeDetail(homeProxyGrants, true)
+}
+
+function formatNativeExtensionBoundary(
+  grants: readonly { readonly kind: string }[],
+  agent: AgentInstance,
+  remoteNativeRun: boolean,
+): string {
+  if (!remoteNativeRun) {
+    return formatExtensionAuthorityBoundaryDetail(grants, Boolean(agent.remote_execution))
+  }
+  const hasWorkerLocal = grants.some((grant) => grant.kind === "mcp" || grant.kind === "skill")
+  const homeProxyGrants = grants.filter((grant) => grant.kind === "script" || grant.kind === "connector")
+  if (hasWorkerLocal && homeProxyGrants.length > 0) {
+    return "worker validates native MCP and skill hashes; home validates script and connector calls without exporting credentials"
+  }
+  if (hasWorkerLocal) {
+    return "worker validates native MCP and skill hashes; provider credentials and execution stay on the worker"
+  }
+  return formatExtensionAuthorityBoundaryDetail(homeProxyGrants, true)
+}
+
+function formatRemoteExtensionSync(
+  agent: AgentInstance,
+  mcps: readonly string[],
+  remoteNativeRun: boolean,
+): string[] {
+  if (!agent.remote_execution) return []
+  const status = agent.remote_extension_manifest_sync
+  const hasActiveHomeProxy = (!remoteNativeRun && mcps.length > 0) || Boolean(agent.extension_grants?.some((grant) => (
+    (!remoteNativeRun && grant.kind === "mcp") || grant.kind === "script" || grant.kind === "connector"
+  )))
+  if (!status && !hasActiveHomeProxy) return []
+  const lines = [`  remote ext sync: ${formatRemoteExtensionSyncStatusLine(status, {
+    includeHash: true,
+    includeNext: false,
+    agentRef: agent.agent_ref,
+    workerMachineId: agent.remote_execution.worker_machine_id,
+    errorPrefix: "error=",
+  })}`]
+  const next = remoteExtensionSyncNextAction(
+    status,
+    agent.agent_ref,
+    agent.remote_execution.worker_machine_id,
+  )
+  if (next) {
+    lines.push(`  ext sync next:  ${next}`)
+  }
+  return lines
+}
+
+function isRemoteNativeRun(agent: AgentInstance, run: RuntimeProviderRun | null): boolean {
+  return Boolean(agent.remote_execution && run?.client_interface === "native_tui")
+}
+
+function formatProviderRunLines(agent: AgentInstance, run: RuntimeProviderRun | null): string[] {
+  const lines = run ? [`  provider run:   ${run.id}`] : []
+  lines.push(...providerRunRecoveryActions({
+    agent,
+    activeProviderRunId: run?.id,
+    activeProviderRunAgentId: run?.agent_instance_id,
+  }).map((action) => `  provider next:  ${action}`))
+  return lines
+}
+
+function formatSession(session: RuntimeSession): string {
+  return `${session.id}${session.alias ? ` (${session.alias})` : ""}`
+}
+
+function formatAgent(agent: AgentInstance): string {
+  const label = agent.agent_ref || agent.id
+  const alias = agent.alias ? ` (${agent.alias})` : ""
+  const id = agent.id && agent.id !== label ? ` [id=${agent.id}]` : ""
+  return `${label}${alias}${id}`
+}
+
+function formatSliceLines(
+  slice: SliceRecord | null,
+  agent: AgentInstance,
+  sliceLookupError: string | null | undefined,
+): string[] {
+  if (slice) {
+    return [
+      `  slice:          ${formatSliceSummary(slice)}`,
+      `  slice auth:     ${formatSliceProviderAuthReadiness(slice)}`,
+      `  slice accounts: ${formatSliceProviderAccounts(slice)}`,
+      ...formatSliceNextLines(slice),
+    ]
+  }
+  if (agent.remote_execution && sliceLookupError) {
+    return [
+      `  slice lookup:   ${sliceLookupError}`,
+      ...formatSliceLookupNextLines(agent),
+    ]
+  }
+  return []
+}
+
+function formatSliceLookupNextLines(agent: AgentInstance): string[] {
+  const workerKernelId = agent.remote_execution?.worker_kernel_id?.trim() ?? ""
+  const sliceRef = workerKernelId.startsWith("slice:") ? workerKernelId.slice("slice:".length).trim() : ""
+  if (sliceRef) {
+    return [
+      `  slice next:     run /slice list; run /slice doctor ${sliceRef} if listed; run /kernel remote-runtime if slice inventory stays unavailable`,
+    ]
+  }
+  return [
+    "  slice next:     run /slice list; run /kernel remote-runtime if slice inventory stays unavailable",
+  ]
+}
+
+function formatSliceNextLines(slice: SliceRecord): string[] {
+  return [
+    ...formatSliceLifecycleNextLines(slice),
+    ...formatSliceAuthNextLines(slice),
+  ]
+}
+
+function formatSliceLifecycleNextLines(slice: SliceRecord): string[] {
+  const sliceRef = slice.name || slice.id
+  if (slice.status === "running") {
+    return []
+  }
+  if (slice.status === "stopped") {
+    return [
+      `  slice next:     run /slice start ${sliceRef}; if it does not become running, run /slice doctor ${sliceRef} and /slice logs ${sliceRef}`,
+    ]
+  }
+  if (slice.status === "starting" || slice.status === "stopping") {
+    return [
+      `  slice next:     wait for slice ${slice.status}; run /slice doctor ${sliceRef} and /slice logs ${sliceRef} if it does not settle`,
+    ]
+  }
+  if (slice.status === "unhealthy") {
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; inspect /slice logs ${sliceRef} and /slice audit ${sliceRef}; then try /slice start ${sliceRef} or recreate the slice`,
+    ]
+  }
+  return [
+    `  slice next:     run /slice doctor ${sliceRef}; inspect /slice logs ${sliceRef} and /slice audit ${sliceRef}`,
+  ]
+}
+
+function formatSliceAuthNextLines(slice: SliceRecord): string[] {
+  const coverage = sliceProviderAuthCoverage(slice)
+  const sliceRef = slice.name || slice.id
+  if (coverage.missingProviders.length > 0) {
+    const provider = coverage.missingProviders[0]!
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.missingProviders)} with /slice auth import ${sliceRef} ${provider} <account-profile> or /slice auth login ${sliceRef} ${provider} <account-profile>`,
+    ]
+  }
+  if (coverage.staleProviders.length > 0) {
+    const provider = coverage.staleProviders[0]!
+    return [
+      `  slice next:     run /slice doctor ${sliceRef}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.staleProviders)} with /slice auth login ${sliceRef} ${provider} <account-profile>`,
+    ]
+  }
+  return []
+}
+
+function formatSliceSummary(slice: SliceRecord): string {
+  return `${slice.name || slice.id} (${[
+    `id=${slice.id}`,
+    `status=${slice.status}`,
+    `display=${slice.display_mode ?? "headless"}`,
+    `worktree=${formatSliceScope(slice)}`,
+    `agents=${slice.agent_ids?.length ?? 0}`,
+  ].join(", ")})`
+}
+
+function formatHomeKernel(session: RuntimeSession): string {
+  return formatSessionHomeKernelLabel(session)
+}
+
+function formatSessionOwnerLines(session: RuntimeSession): string[] {
+  const owner = session.owner_user_id?.trim()
+  return owner ? [`  session owner:  ${owner}`] : []
+}
+
+function formatAgentPlacement(agent: AgentInstance, slice: SliceRecord | null): string {
+  const remote = agent.remote_execution
+  if (!remote) return "worker-local"
+  const placement = slice ? `slice ${slice.name || slice.id}` : "remote"
+  const parts = [
+    remote.worker_machine_id ? `worker=${remote.worker_machine_id}` : null,
+    remote.worker_kernel_id ? `kernel=${remote.worker_kernel_id}` : null,
+    remote.execution_lease_id ? `lease=${remote.execution_lease_id}` : null,
+    remote.leased_agent_id ? `leased_agent=${remote.leased_agent_id}` : null,
+    remote.active_worker_provider_run_id ? `active_run=${remote.active_worker_provider_run_id}` : null,
+  ].filter(Boolean)
+  return `${placement}${parts.length > 0 ? ` (${parts.join(", ")})` : ""}`
+}
+
+function sliceForRemoteAgent(
+  agent: AgentInstance,
+  slices: readonly SliceRecord[],
+): SliceRecord | null {
+  const remote = agent.remote_execution
+  if (!remote) return null
+  return slices.find((slice) => slice.agent_ids?.includes(agent.id))
+    ?? slices.find((slice) =>
+      slice.worker_kernel_id === remote.worker_kernel_id
+      || slice.worker_kernel_ref === remote.worker_kernel_id
+      || slice.worker_machine_id === remote.worker_machine_id,
+    )
+    ?? null
+}

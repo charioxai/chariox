@@ -1,0 +1,426 @@
+import type { ExtensionGrant } from "./kernel-types-extensions.js"
+import type {
+  AgentInstance,
+  AgentPromptState,
+  AgentRuntimeActivity,
+  KernelSudoTurn,
+  PromptQueueItem,
+  RuntimeInteraction,
+  SessionInvite,
+  SessionMember,
+  SessionConfigState,
+  RuntimeAttachment,
+} from "./kernel-types-runtime.js"
+import type {
+  WorkflowConsole,
+  WorkflowDefinition,
+  WorkflowEventDeliveryReceipt,
+  WorkflowEndpointRuntimeInstance,
+  WorkflowPromptQueueDefinition,
+  WorkflowPublicationDefinition,
+  WorkflowQueuedPrompt,
+  WorkflowRun,
+  WorkflowScheduleDefinition,
+  WorkflowWatchdogDefinition,
+  RoomWorkflowInventory,
+} from "./kernel-types-workflow.js"
+import type { ProjectEnvironmentDefinition } from "./kernel-types-project-environment.js"
+import type { SessionHistoryOutline } from "./kernel-types-history.js"
+
+/** MP-08 / MP-10: protocol 508 bundles existing, caller-scoped replies. */
+export type SessionViewAttachedResponse = {
+  SessionViewAttached: {
+    attachment: RuntimeAttachment
+    state: { SessionState: {
+      session: RuntimeSession
+      agent_activity: Record<string, AgentRuntimeActivity>
+      agent_activity_revision: number
+      room_workflows: RoomWorkflowInventory
+    } }
+    history: { SessionHistoryOutline: SessionHistoryOutline }
+  }
+}
+
+export type RuntimeSession = {
+  pinned?: boolean
+  id: string
+  project_id: string
+  alias?: string | null
+  workspace_id: string
+  worktree_id: string
+  owner_user_id?: string
+  host_machine_id?: string | null
+  host_daemon_id?: string | null
+  members?: SessionMember[]
+  invites?: SessionInvite[]
+  created_at_ms: number
+  last_used_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
+  status: string
+  agent_defaults?: SessionAgentDefaults
+  active_provider_run_id: string | null
+  attachment_ids: string[]
+  active_prompt: PromptQueueItem | null
+  queued_prompts: PromptQueueItem[]
+  prompt_states?: Record<string, AgentPromptState>
+  agent_activity?: Record<string, AgentRuntimeActivity>
+  agent_activity_revision?: number
+  active_interactions?: RuntimeInteraction[]
+  agent_tasks?: AgentTaskExecution[]
+  // Protocol 460: live sudo windows for every client's status row.
+  sudo_windows?: KernelSudoTurn[]
+  agent_wakes?: AgentWake[]
+  metaagent_tasks?: MetaagentTask[]
+  queued_metaagent_tasks?: QueuedMetaagentTask[]
+  agent_prompt_schedules?: AgentPromptSchedule[]
+  focused_agent_id: string | null
+  max_agents: number
+  agents: AgentInstance[]
+  collaboration_agent_counts?: SessionCollaborationAgentCounts | null
+  config_state: SessionConfigState
+  workflows?: WorkflowDefinition[]
+  workflow_publications?: WorkflowPublicationDefinition[]
+  workflow_event_delivery_receipts?: Record<string, WorkflowEventDeliveryReceipt>
+  workflow_runs?: WorkflowRun[]
+  workflow_runtime_instances?: WorkflowEndpointRuntimeInstance[]
+  workflow_prompt_queues?: WorkflowPromptQueueDefinition[]
+  workflow_queued_prompts?: WorkflowQueuedPrompt[]
+  workflow_schedules?: WorkflowScheduleDefinition[]
+  workflow_watchdogs?: WorkflowWatchdogDefinition[]
+  workflow_consoles?: WorkflowConsole[]
+  workspace_links?: WorkspaceLinkDefinition[]
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  external_provider_imports?: ExternalProviderImportMetadata[]
+}
+
+export type RuntimeProjectKind = "default" | "named"
+export type RuntimeProjectStatus = "active" | "archived"
+
+export type SessionProjectSelection =
+  | { kind: "default" }
+  | { kind: "existing"; project_id: string }
+  | { kind: "new"; name?: string }
+
+export type RuntimeProject = {
+  pinned?: boolean
+  id: string
+  owner_user_id: string
+  workspace_id: string
+  workspace_ids?: string[]
+  name: string
+  kind: RuntimeProjectKind
+  status: RuntimeProjectStatus
+  created_at_ms: number
+  updated_at_ms: number
+  archived_at_ms?: number | null
+  environment_definition?: ProjectEnvironmentDefinition | null
+}
+
+export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
+
+export type AgentPromptSchedule = {
+  id: string
+  agent_id: string
+  kind: "once" | "recurring"
+  interval_seconds: number
+  prompt: string
+  created_at_ms: number
+  next_run_at_ms: number
+  runs_dispatched: number
+  last_triggered_at_ms?: number | null
+  last_error?: string | null
+}
+
+export type MetaagentTask = {
+  task_id: string
+  metaagent_id: string
+  status: MetaagentTaskStatus
+  task_markdown: string
+  plan_markdown: string
+  revision: number
+  created_at_ms: number
+  updated_at_ms: number
+  completed_at_ms?: number | null
+  blocked_reason?: string | null
+  aborted_reason?: string | null
+  completion_summary?: string | null
+}
+
+export type QueuedMetaagentTask = {
+  id: string
+  metaagent_id: string
+  source_attachment_id: string
+  task_markdown: string
+  attachments?: PromptQueueItem["attachments"]
+  created_at_ms: number
+}
+
+export type ExternalProviderObservedCursor = {
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  last_observed_merge_key?: string | null
+  chariox_owned_observed_prompt_turn_ids?: string[]
+}
+
+export type ExternalProviderImportMetadata = {
+  external_provider_session_id: string
+  external_provider: string
+  external_provider_session_provider_id: string
+  observed_cursor: ExternalProviderObservedCursor
+  last_observed_turn_id?: string | null
+  last_observed_at_ms?: number | null
+  imported_at_ms: number
+}
+
+export type SessionCollaborationAgentCounts = {
+  owned_agent_count: number
+  other_user_agent_count: number
+  total_agent_count: number
+  collaborator_count: number
+}
+
+export type SessionAgentDefaults = {
+  provider: string
+  model?: string | null
+  effort?: string | null
+  account_profile?: string | null
+  execution_mode?: "build" | "plan" | null
+  permission_level?: "required" | "yolo" | null
+}
+
+export type WaitingRoomPublicSessionSummary = {
+  pinned?: boolean
+  id: string
+  project_id: string
+  kernel_id?: string | null
+  kernel_alias?: string | null
+  machine_id?: string | null
+  machine_alias?: string | null
+  alias?: string | null
+  repository_state?: "ready" | "not-repository" | "unborn" | null
+  workspace_id: string
+  worktree_id: string
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
+  created_at_ms: number
+  last_used_at_ms?: number | null
+  last_prompt_sent_at_ms?: number | null
+  status: string
+  connected_cli_count: number
+  joined_collaborator_count?: number
+  pending_collaboration_invite_count?: number
+  activity?: WaitingRoomSessionActivitySummary
+  agents?: WaitingRoomPublicAgentSummary[]
+  workflows?: WaitingRoomPublicWorkflowSummary[]
+}
+
+export type WaitingRoomPublicProjectSummary = RuntimeProject & {
+  session_count: number
+  last_session_activity_at_ms?: number | null
+  joined_collaborator_count: number
+  pending_collaboration_invite_count: number
+}
+
+export type WaitingRoomSessionActivitySummary = {
+  pending_interaction_count?: number
+  agent_count: number
+  working_agent_count: number
+  active_prompt_count: number
+  queued_prompt_count: number
+  error_agent_count: number
+  remote_agent_count?: number
+  missing_worker_provider_run_count?: number
+  home_proxy_agent_count?: number
+  remote_extension_sync_issue_count?: number
+  remote_extension_pending_revoke_count?: number
+  unread_idle_agent_count?: number
+}
+
+export type WaitingRoomPublicItemActivitySummary = {
+  working: boolean
+  active_prompt_count: number
+  queued_prompt_count: number
+  error: boolean
+  unread_idle_output?: boolean
+}
+
+export type WaitingRoomPublicAgentSummary = {
+  id: string
+  agent_ref: string
+  alias?: string | null
+  created_at_ms: number
+  last_prompt_sent_at_ms?: number | null
+  provider: string
+  account_profile: string
+  account_label?: string | null
+  model?: string | null
+  variant?: string | null
+  permission?: string | null
+  workspace_id: string
+  worktree_id: string
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  runtime_placement: WaitingRoomAgentRuntimePlacement
+  extension_grants?: ExtensionGrant[]
+  activity?: WaitingRoomPublicItemActivitySummary
+}
+
+export type WaitingRoomAgentRuntimePlacement = {
+  kernel_id: string
+  machine_id: string
+  slice_id?: string | null
+  slice_name?: string | null
+  slice_display_endpoint?: import("./kernel-types-cloud.js").SliceDisplayEndpoint | null
+}
+
+export type WaitingRoomPublicWorkflowSummary = {
+  id: string
+  alias?: string | null
+  created_at_ms: number
+  activity?: WaitingRoomPublicItemActivitySummary
+  nodes?: WaitingRoomPublicWorkflowNodeSummary[]
+  edges?: WaitingRoomPublicWorkflowEdgeSummary[]
+  endpoints?: WaitingRoomPublicWorkflowEndpointSummary[]
+}
+
+export type WaitingRoomPublicWorkflowNodeSummary = {
+  id: string
+  agent_id: string
+  label: string
+  wait_for_all_inputs?: boolean
+}
+
+export type WaitingRoomPublicWorkflowEdgeSummary = {
+  id: string
+  from_node_id: string
+  to_node_id: string
+}
+
+export type WaitingRoomPublicWorkflowEndpointSummary = {
+  id: string
+  alias?: string | null
+  entry_node_id: string
+}
+
+export type WorkspaceLinkAttachment = {
+  link_id: string
+  user_id: string
+  machine_id: string
+  kernel_id: string
+  repo_root: string
+  branch?: string | null
+  repo_fingerprint?: string | null
+  attached_at_ms: number
+}
+
+export type WorkspaceLinkDefinition = {
+  link_id: string
+  session_id: string
+  name: string
+  created_by_user_id: string
+  created_at_ms: number
+  attachments?: WorkspaceLinkAttachment[]
+}
+
+export type WorkspaceLiveSyncFooterState = "off" | "managed" | "tracked" | "syncing" | "conflict" | "degraded"
+
+export type WorkspaceLiveSyncTargetState = "ready" | "degraded" | "conflict"
+
+export type WorkspaceLiveSyncTargetStatus = {
+  link_id: string
+  link_name: string
+  user_id: string
+  machine_id: string
+  kernel_id: string
+  repo_root: string
+  branch?: string | null
+  repo_fingerprint?: string | null
+  status: WorkspaceLiveSyncTargetState
+  attached_at_ms: number
+}
+
+export type WorkspaceLiveSyncGroupStatus = {
+  group_id: string
+  group_name: string
+  target_count: number
+  ready_targets: number
+  degraded_targets: number
+  conflicted_targets: number
+}
+
+export type WorkspaceLiveSyncConflictSummary = {
+  conflict_id: string
+  link_id: string
+  source_agent_id: string
+  target_user_id: string
+  target_repo_root: string
+  path: string
+  next_action: string
+}
+
+export type WorkspaceLiveSyncIgnoreStatus = {
+  ignore_file?: string | null
+  rules: string[]
+  force_excludes: string[]
+}
+
+export type WorkspaceLiveSyncStatus = {
+  session_id: string
+  mode: "managed" | "tracked" | "unrestricted"
+  footer_state: WorkspaceLiveSyncFooterState
+  sync_groups: WorkspaceLiveSyncGroupStatus[]
+  targets: WorkspaceLiveSyncTargetStatus[]
+  conflicts: WorkspaceLiveSyncConflictSummary[]
+  ignore: WorkspaceLiveSyncIgnoreStatus
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A02, protocol 452; agent_wakes since 459 (A03).
+// MP-08 / MP-09 / MP-10 / MP-11 A12: home-owned goal projection.
+export type AgentGoal = {
+  schema_version: 1; id: string; owner_user_id: string; room_id: string; agent_id: string
+  objective: string; original_prompt_id: string; objective_revision: number; created_at_ms: number
+  legacy_run_id?: string | null
+  active_elapsed_ms: number; waiting_elapsed_ms: number; state_since_ms: number
+  check_in_minutes: number; next_check_in_ms: number | null; paused: boolean
+  continuation_sequence: number; check_count: number
+  evaluation: { origin: "completion_check"; prompt_id: string; work_prompt_id: string; work_provider_run_id: string | null; objective_revision: number; ledger_revision: number; started_at_ms: number; deadline_ms: number; paused_at_ms?: number; lease?: { worker_kernel_id: string; worker_machine_id: string; execution_lease_id: string; leased_agent_id: string }; retried?: boolean; result: Record<string, unknown> | null } | null
+  final_answer: string | null; evidence: string[]
+}
+export type AgentTaskExecution = {
+  goal?: AgentGoal | null
+  task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
+  provider_run_id: string | null; revision: number; blocked_revision: number
+  state: "working" | "waiting" | "blocked" | "done" | "cancelled"
+  reason: string
+  obligations: { id: string; kind: string; resource_id: string | null; completion_task_id: string | null; status: string; dispatch_state: string }[]
+  wait: { registration_ids: string[]; deadline_ms: number; started_at_ms: number; inbox_cursor: number; long_wait_notified: boolean; last_checked_at_ms: number } | null
+  last_progress_at_ms: number; progress_sequence: number; no_progress_wakes: number
+  correction_used: boolean; pending_prompt_id: string | null
+}
+// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source with its receipts.
+// `kind` names the driver ("timer", "process", ...); `summary` is the driver's
+// redacted one-line description and `detail` its redacted driver-owned data.
+export type AgentWake = {
+  id: string; task_id: string; room_id: string; agent_id: string; registration_id: string
+  kind: string; label: string
+  state: "scheduled" | "starting" | "running" | "cancelling" | "fired" | "exited" | "lost" | "cancelled"
+  created_at_ms: number; verified_at_ms: number | null; next_due_ms: number | null; interval_ms: number | null
+  command: string[]; match_text: string | null; matched_at_ms: number | null; pid: number | null; exit_code: number | null
+  summary: string; detail: unknown
+  fire_count: number; missed_fires: number; last_fired_at_ms: number | null; last_sequence: number | null
+  last_delivery: string | null; last_delivered_at_ms: number | null; last_acknowledged_at_ms: number | null
+  alerted_sequence: number | null
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: executor-local durable lane stop receipt.
+export type AgentDeadline = {
+  session_id: string
+  agent_id: string
+  deadline_ms: number
+  state: "armed" | "reached"
+  reached_at_ms: number | null
+  stopped_at_ms: number | null
+}

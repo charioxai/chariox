@@ -1,0 +1,262 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  createPromptSubmitCoordinator,
+  type PromptSubmitCoordinatorDeps,
+} from "./prompt-submit-coordinator.js"
+
+test("prompt submit coordinator is idle without prompt text", async () => {
+  const harness = createHarness({ promptText: null })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.ensureCount(), 0)
+  assert.deepEqual(harness.calls(), [])
+})
+
+test("prompt submit coordinator clears empty prompts without attachments", async () => {
+  const harness = createHarness({ promptText: "   " })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.clearCount(), 1)
+  assert.deepEqual(harness.calls(), ["ensure"])
+})
+
+test("prompt submit coordinator routes workspace shell commands and clears input", async () => {
+  const harness = createHarness({ promptText: "@ status", workflowScreen: true })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "workspace:@ status"])
+  assert.equal(harness.clearCount(), 1)
+})
+
+test("prompt submit coordinator reports workspace shell failures and clears input", async () => {
+  const harness = createHarness({
+    promptText: "@ status",
+    workflowScreen: true,
+    submitWorkspaceShellCommand: async () => {
+      throw new Error("shell failed")
+    },
+  })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.footerMessages().at(-1)?.message, "shell failed")
+  assert.equal(harness.clearCount(), 1)
+})
+
+test("prompt submit coordinator blocks prompt text while instructions editor is open", async () => {
+  const harness = createHarness({ promptText: "new instructions", instructionsEditorOpen: true })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.footerMessages().at(-1)?.tone, "info")
+  assert.equal(harness.clearCount(), 1)
+  assert.deepEqual(harness.calls(), ["ensure"])
+})
+
+test("prompt submit coordinator lets handled slash commands stop routing", async () => {
+  const harness = createHarness({ promptText: "/session list", slashHandled: true })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.slashCalls(), [{
+    rawPrompt: "/session list",
+    allowSlashCommandSubmission: true,
+    trimmedPrompt: "/session list",
+  }])
+  assert.deepEqual(harness.calls(), ["ensure", "slash:/session list"])
+})
+
+test("prompt submit coordinator lets an active project-name entry consume slash-looking text first", async () => {
+  const harness = createHarness({ promptText: "/stop", attached: false, nameEntryHandled: true, slashHandled: true, detachedSlashHandled: true })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "name-entry:/stop"])
+})
+
+test("prompt submit coordinator allows slash commands on workflow screen", async () => {
+  const harness = createHarness({ promptText: "/session list", workflowScreen: true, slashHandled: true })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.slashCalls().at(-1)?.allowSlashCommandSubmission, true)
+})
+
+test("prompt submit coordinator routes provider namespace prompts before attached checks", async () => {
+  const harness = createHarness({ promptText: "/codex help", providerHandled: true, attached: false })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "provider:/codex help"])
+  assert.deepEqual(harness.footerMessages(), [])
+})
+
+test("prompt submit coordinator reports detached normal prompts", async () => {
+  const harness = createHarness({ promptText: "hello", attached: false })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.footerMessages().at(-1)?.tone, "error")
+  assert.equal(harness.clearCount(), 1)
+})
+
+test("prompt submit coordinator bootstraps detached waiting-room prompts once", async () => {
+  let attached = false
+  const harness = createHarness({
+    promptText: "hello",
+    attached: () => attached,
+    bootstrapDetachedPrompt: async () => {
+      attached = true
+      return "bootstrapped"
+    },
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello", "normal:hello"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator keeps detached prompt draft when bootstrap handles failure", async () => {
+  const harness = createHarness({
+    promptText: "hello",
+    attached: false,
+    bootstrapDetachedPrompt: async () => "handled",
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "bootstrap:hello"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator blocks detached attachments without bootstrapping", async () => {
+  const harness = createHarness({
+    promptText: "hello",
+    attached: false,
+    pendingAttachmentCount: 1,
+    bootstrapDetachedPrompt: async () => "bootstrapped",
+  })
+
+  await harness.coordinator.submit()
+
+  assert.equal(harness.footerMessages().at(-1)?.message, "attachments require an open session")
+  assert.deepEqual(harness.calls(), ["ensure"])
+  assert.equal(harness.clearCount(), 0)
+})
+
+test("prompt submit coordinator lets detached slash policy stop routing", async () => {
+  const harness = createHarness({
+    promptText: "/agent focus 1",
+    attached: false,
+    detachedSlashHandled: true,
+  })
+
+  await harness.coordinator.submit()
+
+  assert.deepEqual(harness.calls(), ["ensure", "detached-slash:/agent focus 1"])
+})
+
+test("prompt submit coordinator routes attached workflow and normal prompts", async () => {
+  const workflowHarness = createHarness({ promptText: "run workflow", workflowScreen: true })
+  await workflowHarness.coordinator.submit()
+  assert.deepEqual(workflowHarness.calls(), ["ensure", "workflow:run workflow"])
+
+  const normalHarness = createHarness({ promptText: "hello" })
+  await normalHarness.coordinator.submit()
+  assert.deepEqual(normalHarness.calls(), ["ensure", "normal:hello"])
+})
+
+function createHarness(options: {
+  promptText?: string | null
+  pendingAttachmentCount?: number
+  workflowScreen?: boolean
+  instructionsEditorOpen?: boolean
+  slashHandled?: boolean
+  nameEntryHandled?: boolean
+  providerHandled?: boolean
+  attached?: boolean | (() => boolean)
+  detachedSlashHandled?: boolean
+  bootstrapDetachedPrompt?: PromptSubmitCoordinatorDeps["bootstrapDetachedPrompt"]
+  submitWorkspaceShellCommand?: PromptSubmitCoordinatorDeps["submitWorkspaceShellCommand"]
+} = {}) {
+  const calls: string[] = []
+  const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
+  const slashCalls: Array<{
+    rawPrompt: string
+    allowSlashCommandSubmission: boolean
+    trimmedPrompt: string
+  }> = []
+  let ensureCount = 0
+  let clearCount = 0
+
+  const coordinator = createPromptSubmitCoordinator({
+    getPromptText: () => Object.prototype.hasOwnProperty.call(options, "promptText") ? options.promptText : "hello",
+    ensureBackgroundPollersStarted: () => {
+      ensureCount += 1
+      calls.push("ensure")
+    },
+    getPendingAttachmentCount: () => options.pendingAttachmentCount ?? 0,
+    clearPromptText: () => {
+      clearCount += 1
+    },
+    workflowScreenShowing: () => options.workflowScreen ?? false,
+    submitProjectNameEntry: async (rawPrompt) => {
+      if (!options.nameEntryHandled) return false
+      calls.push(`name-entry:${rawPrompt}`)
+      return true
+    },
+    submitWorkspaceShellCommand: async (rawPrompt) => {
+      calls.push(`workspace:${rawPrompt}`)
+      if (options.submitWorkspaceShellCommand) {
+        await options.submitWorkspaceShellCommand(rawPrompt)
+      }
+    },
+    workflowNodeInstructionsEditorOpen: () => options.instructionsEditorOpen ?? false,
+    submitDetachedSlashCommand: async (rawPrompt) => {
+      if (options.detachedSlashHandled === undefined) {
+        return false
+      }
+      calls.push(`detached-slash:${rawPrompt}`)
+      return options.detachedSlashHandled
+    },
+    submitSlashCommand: async (rawPrompt, submitOptions) => {
+      slashCalls.push({ rawPrompt, ...submitOptions })
+      calls.push(`slash:${rawPrompt}`)
+      return options.slashHandled ?? false
+    },
+    submitProviderNamespacePrompt: async (rawPrompt) => {
+      calls.push(`provider:${rawPrompt}`)
+      return options.providerHandled ?? false
+    },
+    bootstrapDetachedPrompt: async (rawPrompt) => {
+      calls.push(`bootstrap:${rawPrompt}`)
+      return await options.bootstrapDetachedPrompt?.(rawPrompt) ?? "unhandled"
+    },
+    isAttached: () => typeof options.attached === "function" ? options.attached() : options.attached ?? true,
+    submitWorkflowPrompt: async (rawPrompt) => {
+      calls.push(`workflow:${rawPrompt}`)
+    },
+    submitNormalPrompt: async (rawPrompt) => {
+      calls.push(`normal:${rawPrompt}`)
+    },
+    flashFooter: (message, tone) => {
+      footerMessages.push({ message, tone })
+    },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+  })
+
+  return {
+    coordinator,
+    calls: () => calls,
+    footerMessages: () => footerMessages,
+    slashCalls: () => slashCalls,
+    ensureCount: () => ensureCount,
+    clearCount: () => clearCount,
+  }
+}

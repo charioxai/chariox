@@ -1,0 +1,980 @@
+# Chariox v1 Specification
+
+## Status
+
+Draft v1.
+
+This document defines the implementation target for Chariox v1. It is more specific than the high-level architecture summary in `agents/AGENTS.md` and is intended to guide code, schema, and protocol design.
+
+Terminology note:
+
+- the docs now use `Chariox Kernel` as the architectural term for the runtime authority hosted by the `chariox-kernel` process
+- the docs now use `workspace` as the target term for the persistent collaboration domain that is still mostly implemented as a `session` in the current code
+
+Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under **Implementation Choices (v1 baseline)**.
+Daemon v1 implementation language baseline is Rust.
+Current primary local CLI implementation baseline is TypeScript/OpenTUI, with the previous Rust-only CLI retained only as a phased-out compatibility fallback.
+
+Current delivery sequence:
+
+1. close the one-provider development cycle around `opencode`
+2. finish local agent interactions for harnessing and multi-machine session behavior on that same OpenCode-first path
+3. polish the TypeScript CLI as the reference client
+4. add multi-platform clients on the same daemon/protocol model, starting with web and then iOS/Android
+5. only after that, expand to additional providers such as Claude Code and Codex and harden the provider-generic adapter/protocol design
+
+## 1. Product Definition
+
+Chariox v1 is a Chariox-Kernel-centered orchestrator for native AI coding CLIs and compatible agent runtimes.
+
+It provides:
+
+- native provider terminal passthrough
+- daemon-owned capabilities invoked outside normal provider input
+- lightweight provider integration where needed for file attachment
+- local-first workspace hosting with optional remote attachment through a relay server
+- one Chariox Kernel owning a local runtime domain that may include both local and relay-attached clients or agents
+
+Chariox is a wrapper around provider CLIs, not a replacement for their execution engines.
+Chariox owns the slash-command surface and routes provider behavior through adapters.
+
+## 2. Goals
+
+- Preserve native provider PTY behavior for ordinary prompt and terminal work.
+- Allow multiple local or remote clients to attach to the same workspace.
+- Allow multiple local or remote runtime members, including clients and agents, to attach to the same kernel-owned runtime domain.
+- Finish one provider deeply before expanding provider breadth.
+- Support multiple top-level Chariox-managed agents inside one session, each with its own runtime context.
+- Let users invoke Chariox actions through daemon-owned slash commands.
+- Reserve `/<provider> ...` as the provider-specific command namespace exposed by Chariox for the focused agent provider, while `/agent ...` remains Chariox-owned agent management.
+- Support daemon-owned capabilities for shell, file, git, screenshot, scheduling, and transfer workflows.
+- Support transferring a file to the daemon host and attaching it to the active provider when the provider supports attachment.
+- Keep the provider control boundary intentionally small in v1.
+- Add memory management so users do not need to repeatedly restate durable project context across runs, providers, or machines.
+- Add daemon-owned workspace coordination so multi-agent edits can be integrated safely without assuming a human will manually resolve every conflict.
+
+## 3. Non-Goals
+
+- Replacing provider-native session state or hidden context mechanisms.
+- Persisting full prompts or model outputs on the server by default.
+- Building a provider-agnostic rich RPC surface beyond what v1 strictly needs.
+- Requiring structured provider integration for a provider to function at all.
+
+## 4. Core Principles
+
+- Provider-native PTY first: provider terminal behavior must remain intact for ordinary non-command traffic.
+- Prefer the strongest provider-native contract: when a provider exposes a stable local structured protocol, Chariox should prefer that protocol over PTY-derived heuristics for prompt lifecycle, output ordering, and command discovery.
+- Slash-command ownership: Chariox owns `/...` command parsing and completion.
+- Kernel-centered runtime: the Chariox Kernel is the source of truth for live workspace state.
+- Node-centered routing: the kernel is the source of truth for routing between local and remote members attached to the same runtime domain.
+- Local-first execution: workspaces run on the user's machine.
+- Relay is transport, not authority: relay infrastructure may forward connections but must not become the authority for session/runtime state.
+- Directory is discovery, not relay: directory/discovery and relay/transport are separate concerns.
+- All user-generated remote payloads must be end-to-end encrypted: prompts, workflow payloads, and transferred artifacts must remain opaque to relay infrastructure, including self-hosted relay deployments.
+- Graceful degradation: a provider without structured control support must still work through raw PTY passthrough.
+- Cross-platform consistency: terminal behavior should be consistent across web, CLI, desktop, and mobile clients by following a shared terminal protocol/conformance profile.
+- OpenCode-first sequencing: v1 should finish the full local development loop around `opencode` before broadening supported provider families.
+- Future-compatible abstraction without premature breadth: daemon, protocol, and adapter boundaries must stay compatible with later providers and clients, but OpenCode correctness and end-to-end UX take priority over early provider-generalization work.
+
+## 5. Runtime Components
+
+Chariox v1 has four runtime components:
+
+- Client
+- Machine
+- Daemon
+- Server
+
+### 5.1 Client
+
+Clients are terminal interfaces that attach to daemon-managed sessions.
+
+Examples:
+
+- local CLI client
+- future web terminal client after the CLI is polished
+- future desktop or mobile clients after the web path proves out
+- third-party messaging clients (for example Telegram, Discord, Slack, or WhatsApp adapters)
+
+Responsibilities:
+
+- render the provider terminal stream
+- render focused-agent state and, when a session contains multiple top-level agents, render per-agent history/runtime views without making the client the runtime authority
+- render Chariox slash-command help, completions, warnings, and command results
+- send terminal keystrokes or structured prompt/config actions to the daemon through the appropriate surface
+- invoke daemon capabilities
+- upload artifacts for transfer when requested
+- show queue/config/session state reported by the daemon
+
+### 5.2 Machine
+
+A machine is a host where Chariox can run agent workloads through its daemon.
+
+Properties:
+
+- each machine has one daemon per OS user account
+- a user may register and use multiple machines for the same Chariox account
+- machines are the execution hosts for session workspaces, provider processes, and artifacts
+
+### 5.3 Chariox Kernel
+
+There is one Chariox Kernel per machine OS user account, hosted by the `chariox-kernel` process.
+
+The kernel is responsible for:
+
+- hosting workspaces
+- routing workspace events and prompt lifecycle to attached local or remote members
+- launching and parking provider runs
+- managing PTYs
+- managing client attachments
+- managing agent endpoint attachments and bindings
+- executing capabilities
+- tracking worktrees and git state
+- running scheduled jobs
+- coordinating file transfer and file attachment
+- coordinating workspace claims, worktree allocation, and integration safety for top-level agents
+
+The kernel is the source of truth for live runtime state.
+
+Kernel component boundaries:
+
+- **Scheduler**: owns workflow execution scheduling (node readiness, graph progression, run state transitions).
+- **Transport**: owns the kernel-facing transport contract, local transport runtime, and prompt flow control (queue advancement, prompt idle/timeout policy, cancellation/complete transitions). Relay is an external member that speaks the same transport contract.
+- **I/O Collision Manager**: owns resource locking and conflict prevention across agents (file paths, ports, shared resources).
+
+Node membership model:
+
+- a member of a kernel-owned runtime domain may be local or remote
+- local and remote members attached to the same kernel are in the same runtime domain
+- remote attachment is a transport detail; it does not create a second session authority
+
+### 5.4 Server
+
+The server is intentionally lightweight.
+
+Responsibilities:
+
+- authentication
+- machine registry
+- session discovery
+- WebSocket relay
+- presence tracking
+- queued prompt and config-state metadata when server-side operational metadata is needed
+- schedule metadata storage
+- operational metadata storage
+
+The server should not depend on interpreting user content.
+
+Near-term architectural role:
+
+- the server should evolve into relay infrastructure for kernel, client, and remote-agent connectivity
+- same-kernel remote connections should ideally preserve the illusion of direct kernel membership even when the physical path is relayed
+- directory and federation concerns remain later work and should stay intentionally lightweight in the current implementation phase
+
+Security boundary requirement:
+
+- the server relays encrypted payloads and should not require plaintext access to user-generated content
+- end-to-end encryption keys are session-scoped so each session has an isolated cryptographic context
+
+## 6. Interaction Lanes
+
+Chariox v1 has three interaction lanes between clients, daemon, and providers.
+
+### 6.1 Terminal Lane
+
+The terminal lane carries the raw provider PTY stream and user terminal input.
+
+Properties:
+
+- preserves native provider CLI behavior for ordinary non-command traffic
+- transports provider stdout, stderr, and terminal control sequences
+- transports user keystrokes as terminal input when they are not intercepted as Chariox slash commands
+- is the default interaction path for ordinary user work
+
+Transmission requirement:
+
+- user-generated information sent through this lane (for example prompts and terminal-entered content) must be protected with session-scoped end-to-end encryption whenever it traverses remote transport
+
+Chariox must not require ordinary non-command terminal traffic to be parsed into structured commands.
+
+Provider-specific note:
+
+- some providers MAY expose a richer local session/event API in addition to PTY traffic
+- when that API is stable and supported by the adapter, Chariox MAY derive provider output, turn lifecycle, and command discovery from that structured surface instead of from PTY silence or screen scraping
+- OpenCode is the current reference provider-specific use of this model
+
+### 6.2 Capability Lane
+
+The capability lane is used for daemon-owned Chariox commands invoked through the slash-command dispatcher.
+
+Capabilities are executed by the daemon, not typed into the provider terminal.
+
+The capability lane is used for:
+
+- schedule management and execution
+- screenshots
+- file transfer into the daemon host
+- git and worktree inspection
+- directory tree display
+- file view
+- file edit flows
+- shell command execution
+
+Transmission requirement:
+
+- user-generated capability payloads (for example uploaded files, prompt templates, and edit instructions) must be transmitted with session-scoped end-to-end encryption when crossing client, server, and daemon boundaries
+
+### 6.3 Control Lane
+
+The control lane is a structured daemon to provider adapter boundary for coordination that cannot be modeled as raw terminal input.
+
+In v1, the canonical control surface contains three operations:
+
+- `attach_file`
+- `request_memory_update`
+- `request_compaction_summary`
+
+The control lane may also carry `/<provider> ...` command invocations after Chariox resolves the focused provider command catalog and target adapter behavior.
+
+OpenCode-specific v1.1 target:
+
+- OpenCode should use its local server/session/event protocol as the primary adapter contract
+- prompt submission should map to OpenCode session operations rather than PTY writes
+- turn completion should map to OpenCode session/message lifecycle signals rather than daemon idle timers
+- PTY integration remains the fallback path for providers that do not expose a comparable structured surface
+- OpenCode remains the reference provider for the current development cycle; later provider adapters must fit behind the same daemon/client contract rather than forcing that contract to be generalized prematurely
+
+### 6.3.1 Node Transport Direction
+
+Current implementation baseline:
+
+- daemon-client communication is still local request/response IPC
+- daemon-OpenCode communication already combines local HTTP control with an event stream
+
+Target direction:
+
+- daemon-client communication should use one daemon-owned bidirectional transport that supports both local and relayed connections without changing workspace semantics
+- daemon-agent communication remains adapter-specific for now, with OpenCode as the reference structured integration
+- a generic agent transport protocol is intentionally deferred until Chariox has integrated more than one concrete agent family
+- current transport differences are implementation history, not a long-term architectural principle
+
+### 6.4 Slash Command System
+
+Chariox owns the slash-command namespace.
+
+Required rules:
+
+- `/...` is reserved for Chariox command dispatch and completion.
+- `/<provider> ...` is the provider-specific namespace exposed by the focused Chariox adapter.
+- command completion is daemon-managed and may depend on session, provider, and attachment context.
+- ordinary non-command input continues to flow through the terminal lane unchanged.
+
+OpenCode-specific note:
+
+- OpenCode command discovery SHOULD use machine-readable provider surfaces before falling back to shipped Chariox catalogs
+- this includes provider-exposed command, agent, and skill listing where available
+
+Provider command discovery policy:
+
+- Chariox ships built-in provider command catalogs for explicitly supported provider version families.
+- Chariox augments those catalogs by reading supported custom-command files or config locations when the provider supports that model.
+- Chariox does not rely on scraping human-oriented `/help` output as the primary compatibility mechanism.
+- if the detected provider version is unsupported, Chariox MUST warn the user but MUST still keep best-effort `/<provider> ...` completions enabled.
+
+### 6.5 Agent-Scoped Extensions
+
+Chariox manages provider-facing extensions as daemon-owned assets rather than treating project-local provider files as the authoritative source of truth.
+
+Extension classes include:
+
+- skills
+- MCP server definitions
+- custom command packs
+- instruction packs
+- hooks or provider-specific plugin-like assets
+
+Required rules:
+
+- extensions are installed once on the machine and bound per Chariox-managed top-level agent or provider run
+- extension visibility defaults to the bound agent only
+- Chariox materializes provider-specific extension views at launch time rather than requiring the project directory to be the canonical source of truth
+- provider-facing generated files MAY be written for compatibility, but the daemon-owned registry remains authoritative
+- top-level Chariox agents are the scoping boundary for extensions; provider-native subagents are not separately orchestrated by Chariox
+
+Extension visibility policies MAY include:
+
+- `agent_private`
+- `session_shared`
+
+### 6.6 Workflow Console
+
+Chariox SHOULD provide one kernel-owned append-only console per workflow definition.
+
+Initial v1 rules:
+
+- the console is scoped to the workflow, not the workspace
+- it is separate from provider traces, mailbox content, handoff payloads, and audit events
+- nodes MAY read, write, and clear the workflow console through Chariox-managed MCP tools
+- the kernel/CLI MUST NOT rewrite or curate the visible console stream; it renders appended output as-is
+- the console is transient runtime state in v1 and does not require persistence across daemon restarts
+- workflow-level prompts MAY mention the console, but nodes should use it only when the workflow-level prompt explicitly says so
+
+Ownership split:
+
+- transport owns MCP exposure and authenticated tool dispatch
+- scheduler/runtime owns workflow-scoped console semantics and state
+- CLI renders the selected workflow console in the right-side workflow panel
+
+## 7. Node and Agent Endpoint Model
+
+Chariox should distinguish between the kernel's internal runtime model and provider-specific integration details.
+
+### 7.1 Node Members
+
+Possible members of the same kernel-owned runtime domain include:
+
+- local CLI clients
+- remote CLI clients attached through relay
+- local agent endpoints
+- remote agent endpoints attached through relay
+
+All such members may participate in the same workspace/workflow domain when attached to the same kernel.
+
+### 7.2 Agent Endpoint Modes
+
+Chariox should support both:
+
+- `managed` endpoints launched by the kernel
+- `external` endpoints discovered/configured and connected to by the kernel
+
+This allows:
+
+- first-party local convenience integrations
+- third-party agent runtimes Chariox does not ship itself
+- remote agent runtimes attached through relay while still belonging to the same kernel-owned runtime domain
+
+### 7.3 Workspace Coordination
+
+Multi-agent orchestration must not assume human-mediated conflict resolution as the only safety mechanism.
+
+The kernel should therefore evolve a workspace-coordination subsystem responsible for:
+
+- branch/worktree allocation per top-level agent
+- file or workspace claims
+- mergeability and integration validation
+- conflict detection before shared integration
+
+The baseline coordination strategy should begin with worktree/branch isolation and file-level coordination before any more advanced region-level locking.
+
+Scope rule:
+
+- coordination is workspace-scoped, not repo-scoped across every workspace on a machine
+- different workspaces may still collide later in the same way independent PRs can conflict
+`request_compaction_summary` is a daemon-owned control event used during Chariox-triggered compaction to request a compaction summary from the active provider run before warm-starting a fresh run.
+
+Implications:
+
+- memory-update inquiries are formal control-plane events in v1 and are distinct from normal user prompt/response traffic
+- commit-description generation is not a formal control-plane request in v1
+- provider functionality must not depend on the control lane except for enhanced attachment support, memory-update coordination, and Chariox-driven compaction coordination when available
+
+## 7. Sessions and Provider Runs
+
+### 7.1 Session
+
+A session is the top-level execution unit.
+
+A session is bound to:
+
+- one workspace
+- one primary worktree in single-agent mode
+- one active provider run at a time in single-agent mode
+- a set of eligible agent machines, with one active execution host at a time
+
+A session may have:
+
+- multiple top-level Chariox-managed agents
+- multiple attached clients
+- multiple parked provider runs
+- agent-scoped provider runs when multi-agent session mode or workflow mode is active
+- agent-scoped histories and worktree assignments when multi-agent session mode or workflow mode is active
+- multiple node-scoped provider runs when workflow mode is active and daemon resource policy allows it
+- multiple worktree assignments when workflow mode is active
+- multiple eligible agent machine options (local or remote)
+- scheduled jobs
+
+Sessions do not move across workspaces in v1.
+
+A session can be reassigned between its eligible agent machines over time, but only one machine hosts the active provider run at any moment.
+
+### 7.1.1 Session Agent Model
+
+Chariox-managed top-level agents are first-class session entities in v1.
+
+Required rules:
+
+- a session MAY contain one or more top-level Chariox-managed agents
+- each top-level agent MUST have its own stable agent id within the session
+- each top-level agent SHOULD carry its own provider context, prompt target, history, and worktree-assignment metadata even when the initial implementation reuses shared session infrastructure
+- the daemon MUST track a focused top-level agent for direct user interaction in multi-agent session mode
+- direct prompt submission in multi-agent session mode MUST target the focused agent, not merely the session at large
+- clients SHOULD make focused-agent changes visible in session chrome and in the main transcript/work area
+- pane-based clients SHOULD render one visible sub-area per top-level agent when multiple agents are active in the session
+
+Implementation note for the current codebase:
+
+- the daemon and TypeScript CLI now expose a first real multi-agent session slice: `spawn`, `destroy`, `focus`, `list`, `cycle`, focused-agent prompt targeting, agent-scoped history metadata, and initial split-pane transcript behavior
+- this slice still needs OpenCode-path stabilization, broader pane/layout completion, and multi-machine/runtime hardening before the one-provider development cycle can be considered closed
+
+### 7.1.2 Session Lifecycle Semantics
+
+Chariox sessions are intended to be persistent by default.
+
+Required rules:
+
+- detaching a client MUST NOT delete the session
+- exiting a client SHOULD detach from the session rather than terminate it
+- sessions SHOULD remain attachable after the last client disconnects until the user explicitly deletes them
+- session deletion is an explicit user action and MUST NOT be implicit in ordinary client exit flows
+- deleting a session MUST tear down provider runs, prompt/runtime state, and live attachments for that session
+
+User-facing session operations in v1 SHOULD converge on:
+
+- create
+- list
+- attach
+- detach
+- delete
+
+The current daemon API still exposes an internal `end` operation, but the intended user-facing lifecycle is explicit session deletion rather than implicit session ending on CLI exit.
+
+Deleting the currently attached session is valid. The client should transition to an unattached "no session" state rather than being forced to terminate the entire CLI process.
+
+### 7.1.3 Session Identity and Aliases
+
+Session references should become user-friendly and resumable.
+
+Required rules:
+
+- each session MUST have a stable primary id
+- session ids SHOULD use short commit-like lowercase hexadecimal strings rather than `session-N` numeric labels
+- each session MAY have one optional human-readable alias
+- session references supplied by users MAY resolve by:
+  - full session id
+  - unique session-id prefix
+  - alias
+  - unique alias prefix
+- if a provided reference is ambiguous, the daemon/client MUST reject it and require disambiguation instead of guessing
+
+Recommended v1 default:
+
+- 16-character lowercase hexadecimal ids
+- exact alias match preferred over prefix match
+- prefix resolution allowed only when unambiguous
+
+Current implementation note:
+
+- the current local implementation now uses 16-character lowercase hexadecimal ids with optional aliases
+- alias matching is workspace-scoped and normalized to lowercase
+
+### 7.2 Provider Run
+
+A provider run is one live native provider process.
+
+States:
+
+- active
+- parked
+- terminated
+
+Switching providers:
+
+1. The user requests a switch through the Chariox UI.
+2. Chariox prepares a transfer package from Chariox-managed memory (short-term and long-term) plus workspace state, and it must not rely on provider-private state.
+3. A new provider process is launched.
+4. The old provider run may be parked.
+5. The user may resume a parked run later if supported by the provider process model.
+
+Provider switching must remain minimally intrusive.
+
+### 7.2.1 Provider Authentication Model
+
+Chariox uses a wrapper-style provider authentication model.
+
+Required rules:
+
+- Chariox launches native provider CLIs on the host machine and reuses their native local login state.
+- Chariox MUST NOT require Anthropic API keys or other provider API credentials when the provider CLI already supports native end-user login/subscription access.
+- Chariox MUST NOT store, mint, proxy, or relay provider credentials in v1.
+- provider authentication remains local to the machine hosting the provider run.
+- Chariox account/server authentication is separate from provider authentication.
+
+Operational behavior:
+
+- if a provider CLI is already logged in for the selected local profile, the daemon may launch it directly
+- if a provider CLI is installed but not logged in, the daemon surfaces `not_logged_in` status and instructs the user to complete the provider-native login flow on that machine
+- if the provider login has expired or become invalid, the daemon surfaces `expired` status and a reauthentication hint
+- remote Chariox clients may observe and acknowledge provider-auth state, but the actual provider login flow remains provider-native on the host machine
+
+`account_profile` semantics:
+
+- `account_profile` selects a provider-native local account/config context
+- it is not a Chariox-managed credential container
+- adapters MAY map it to provider-specific config roots, profile names, or environment selections
+
+### 7.2.1.1 Provider Rollout Order
+
+Provider breadth is intentionally sequenced late.
+
+Required rules:
+
+- OpenCode is the only provider that needs to be fully closed end-to-end before provider expansion begins.
+- Multi-provider abstractions in v1 MUST be designed so later adapters can fit cleanly, but they MUST NOT block finishing the OpenCode-first runtime, harnessing, multi-machine, and client UX work.
+- Claude Code, Codex, and broader provider-generic adapter/protocol work come after the OpenCode-first local cycle and after the reference CLI plus multi-platform client surfaces have stabilized.
+
+### 7.2.2 Provider-Native Subagents
+
+Provider-native subagents are not first-class Chariox workflow agents in v1.
+
+Required rules:
+
+- Chariox orchestrates only top-level session agents or workflow nodes that it launches explicitly
+- any subagents internally spawned by a provider run are treated as provider-owned implementation details
+- Chariox MUST NOT require separate scheduling, extension binding, or worktree allocation per provider-native subagent by default
+- provider-native subagents may use the skills, MCPs, commands, and instructions available to their parent top-level provider run
+
+Future implementations MAY surface debug or telemetry metadata about provider-native subagents when a provider exposes stable support for that, but such subagents remain outside Chariox's orchestration model.
+
+### 7.3 Workflow Layer Above Workspaces
+
+Chariox v1 MUST support both manually directed multi-agent workspaces and a workflow layer above the single-agent workspace model.
+
+Delivery priority inside v1:
+
+- graph-derived serial execution is the earlier implementation target
+- graph-derived barrier/fan-in and bounded-cycle handling remain in scope for v1, but are expected to land later in v1 after the lower-level runtime and protocol foundations are stable
+
+Normative rules:
+
+- A workspace MAY run in single-agent mode, multi-agent manual mode, or multi-agent workflow mode.
+- Multi-agent manual mode is user-directed: the user selects the active top-level agent and the kernel routes direct interaction to that agent.
+- A workspace MAY contain multiple workflow definitions.
+- Multi-agent execution MUST be modeled as a general directed workflow graph.
+- Execution policy MUST be derived from the graph the user created rather than from a separate user-declared topology category.
+- Nodes with indegree `> 1` require barrier/fan-in handling.
+- Nodes with outdegree `> 1` are branching points.
+- Cycles are a separate graph property and MUST be handled independently from input/output synchronization policy.
+- The runtime MUST still be designed so future DAGs, bounded loops, conditional routing, richer aggregation, and more advanced topologies can be added without redesigning the core workflow engine.
+- Contributors MUST NOT implement multi-agent behavior as topology-specific special cases scattered through unrelated codepaths.
+
+### 7.4 Workflow Endpoints
+
+Every workflow definition MUST expose one or more endpoints.
+
+Rules:
+
+- every workflow endpoint MUST target exactly one entry node in that workflow
+- a workflow MAY have multiple endpoints
+- multiple endpoints MAY target the same entry node
+- initial input enters the workflow through the endpoint's target entry node
+- the same logical workflow endpoint MAY be invoked by a terminal user or an external system
+- the workflow should be agnostic to the source of the initial input once it has been normalized into the workflow message model
+- disconnected subgraphs inside one workflow are allowed; a subgraph is only invokable if some endpoint targets an entry node within it
+
+### 7.4.1 Workflow Outputs
+
+Workflow output SHOULD start as a run-level concept rather than a mandatory graph-level exit-point object.
+
+Rules:
+
+- a workflow run MAY emit zero or more outputs
+- output-producing nodes MAY be the same nodes that serve as endpoint targets
+- explicit output-endpoint objects MAY be added later for published/integrated workflows
+
+### 7.4.2 Workflow Runnable Validation
+
+Workflows must be validated for runnable state before execution.
+
+Required rules:
+
+- the daemon MUST reject invocation when the endpoint is missing, invalid, or targets a missing node
+- the daemon MUST reject invocation when any required node references a missing agent
+- disconnected subgraphs MAY remain defined, but invocations MUST fail if the entry subgraph is invalid
+- the daemon SHOULD surface a structured preflight report describing all blocking reasons
+
+### 7.5 Inter-Agent Communication Contract
+
+Inter-agent communication in workflow mode MUST be kernel-orchestrated.
+
+Required rules:
+
+- agents MUST NOT communicate directly
+- the kernel MUST own all routing and message passing between nodes
+- inter-agent communication MUST NOT be modeled as raw terminal transcript forwarding
+- workflow progression MUST advance on kernel-owned message routing and turn state, not arbitrary provider turns
+
+Message model:
+
+- `message`
+- `recipients`
+- `artifacts`
+
+Rules:
+
+- the kernel should not impose richer semantic fields by default
+- artifacts may be text, JSON, files, paths, URLs, images, or lists of those
+- a sender may emit at most one message per recipient in one turn
+
+### 7.5.1 Queue and Turn Semantics
+
+Each workflow node/agent MUST have an inbound queue.
+
+Rules:
+
+- when an agent is idle and eligible, the kernel MAY start a turn
+- at turn start, the agent MUST use a kernel-owned tool to consume the currently available queued inputs for that turn
+- once a turn starts, the visible input set for that turn is fixed
+- messages arriving while a turn is running remain queued for a later turn
+- the running agent MUST NOT re-check the queue mid-turn
+
+Required kernel tools:
+
+- `consume_input_messages`
+- `validate_output_messages`
+
+### 7.5.2 Sync vs Async Workflow Execution
+
+Synchronization policy is per node.
+
+Node-level execution policy:
+
+- `input_gate`
+  - `first_input`
+  - `all_inputs`
+- `output_release`
+  - `on_completion`
+  - `immediate`
+
+Default derivation rules:
+
+- if indegree `<= 1`, the default `input_gate` is `first_input`
+- if indegree `> 1`, the default `input_gate` is `all_inputs`
+- the default `output_release` is `on_completion`
+
+Rules:
+
+- `summary` is a human-facing completion field and MUST NOT be treated as the downstream workflow payload by default
+- downstream delivery SHOULD use explicit `output` messages plus optional artifact refs
+- if `output_release = on_completion`, validated outputs are released only when the turn ends
+- if `output_release = immediate`, validated outputs may be released as soon as they are produced
+- the daemon, not the node, decides when outputs are released downstream
+- for `all_inputs` gating, the daemon MAY enqueue released outputs on the target node before the target becomes runnable
+- cycles require bounded-cycle handling and are orthogonal to these node-level synchronization controls
+
+### 7.5.3 Workflow/Agent Binding
+
+Workflow definitions are user-authored structures and MUST NOT silently rewrite themselves when workspace agents change.
+
+Rules:
+
+- creating a new agent MUST NOT automatically add that agent to existing workflows
+- deleting an agent MUST NOT automatically delete workflow nodes or edges
+- if a workflow node references an agent that no longer exists, that node MUST remain in the workflow and be marked missing/unavailable
+- workflows with missing nodes or missing endpoint targets MUST remain listable/editable and SHOULD be blocked from execution until repaired
+
+### 7.5.4 Workflow Node Instructions and Output Validation
+
+Workflow nodes require daemon-owned instruction artifacts and schema validation.
+
+Required rules:
+
+- the daemon MUST maintain per-node instruction content used as system or preamble context
+- the daemon MUST maintain an optional workflow-level prompt used as shared context for all nodes
+- the daemon MUST provide a stable reference (path or artifact ref) so a node can reload its instructions after compaction
+- node instruction artifacts MUST be daemon-managed and not silently overwritten by agents
+- workflow prompt injection MUST be rendered by the scheduler-owned prompt injection layer, not by provider adapters, transport handlers, CLI scripts, or per-dispatch ad hoc string assembly
+- local workflow dispatch, remote workflow dispatch, retry/replay dispatch, and tests MUST enter the same prompt renderer so turn index, last-turn guidance, final-output tool guidance, runtime-tool instructions, handoff payloads, edge contracts, and control mailbox content stay consistent
+- the daemon MUST provide a kernel-owned validation tool for node outputs
+- node completion outputs SHOULD be validated against per-edge schema constraints before downstream routing
+- the daemon MUST reject or flag invalid output payloads and surface the validation errors to the node
+- validation failures MUST follow a daemon-owned policy (warn-and-continue vs halt-run) and MAY be configured per edge, with `warn` as the default
+
+Runtime delivery and retention rules:
+
+- workflow dispatch delivery acknowledgment is part of the runtime contract, not a direct daemon/kernel-only escape hatch
+- the runtime MUST expose a dedicated workflow-turn acknowledgment operation distinct from output validation
+- the runtime MUST persist the rendered workflow turn envelope until the turn reaches a validated terminal state
+- transient workflow inputs such as mailbox content and handoff payloads MUST NOT be deleted at dispatch time
+- transient workflow inputs MAY be marked delivered when the node acknowledges the turn, but MUST remain retained until the node turn completes and final validation passes
+- transient workflow inputs become eligible for deletion only after the turn is both acknowledged and completed with validation success
+- if a provider run disconnects or becomes unreachable before that validated terminal state, the runtime MUST retain enough durable dispatch state to retry or reconcile the turn
+
+Workflow failure and notification rules:
+
+- the runtime MUST classify workflow failures into structured kinds rather than only free-form notices
+- a workflow failure event MUST include:
+  - `kind`
+  - `source_node_run_id`
+  - related `edge_ids`
+  - `message`
+  - `timestamp_ms`
+- the runtime MUST support a failure-policy concept with at least:
+  - `none`
+  - `notify`
+- the default policy SHOULD be `notify`
+- under `notify`, the runtime MUST notify the source node and affected sink-side nodes for edge-related failures
+- node-local failures without related edges SHOULD notify the source node only
+- mailbox notifications are retry/control context and MUST remain available until the notified node reaches validated completion
+- workflow failure events MUST be queryable through structured runtime surfaces and MUST NOT rely only on free-form history text
+- runtime policy expansion beyond `none` and `notify` MAY be added later, but is out of scope for the current implementation
+
+Resume rules:
+
+- if a workflow run stops while node turns are active, the runtime MUST allow those active node runs to resume
+- resuming a stopped workflow run MUST preserve the rendered prompt, mailbox content, and handoff inputs for the stopped node runs
+- the runtime SHOULD resume the stopped node runs directly and let agents continue from preserved context rather than reconstructing extra history
+
+Suggested workflow turn runtime states:
+
+- `prepared`
+- `dispatched`
+- `acknowledged`
+- `validated_completed`
+- `cancelled`
+- `failed`
+
+### 7.6 Graph-Derived Barrier and Cycle Rules
+
+Rules:
+
+- barrier/fan-in is derived from inbound dependencies, not from a separate topology label
+- a node with indegree `> 1` SHOULD default to `all_inputs` gating unless explicitly overridden
+- branching is derived from outdegree, not from a workflow-wide mode
+- cycles SHOULD be detected from the graph before execution and handled through bounded-cycle policy
+- the runtime MUST avoid conflating cycle handling with barrier/fan-in semantics
+
+### 7.8 Worktree Isolation Rules
+
+Parallel code-writing branches MUST NOT share the same active worktree.
+
+Required rules:
+
+- each active parallel code-writing branch or subtree SHOULD operate in an isolated worktree and git branch
+- worktree assignment MUST be explicit in runtime state and the data model
+- the daemon MUST enforce write-safety through the I/O collision manager when multiple agents share a worktree
+- resource locks SHOULD be scoped by `resource_key` and MAY be further scoped by `worktree_id` when relevant
+- `resource_key` is an abstract identifier (file path, port, external resource), not inherently tied to git
+- if agents are isolated in distinct worktrees, the collision manager SHOULD treat them as independent scopes
+- if agents share a worktree, the collision manager MUST prevent conflicting writes to the same resource key
+
+## 8. Attachments and Provider Adapter Model
+
+### 8.0 Shared Attachment Semantics
+
+Attachments are shared session participants, not exclusive control roles.
+
+Required rules:
+
+- every attachment MAY submit prompts
+- every attachment MAY request supported config changes
+- the daemon MUST remain the single source of truth for prompt scheduling and effective session config state
+- at most one prompt may execute at a time per single-agent session
+- if a prompt arrives while another prompt is running, the daemon MUST enqueue it rather than dropping or interleaving it
+- when a prompt is enqueued, the daemon MUST notify all other attachments in the session that a queued message exists and expose the canonical queue state
+- attachments MUST be able to fetch canonical session state and daemon notices through a structured daemon-owned surface
+- attachments MUST render daemon-owned queue and config state, not rely on locally assumed state
+
+Scheduler/runtime boundary rule:
+
+- the daemon MUST own explicit scheduler state for session work such as `idle`, `runnable`, `running`, and `waiting`
+- queue advancement and prompt completion semantics MUST remain daemon-owned runtime decisions, even when a client triggers the completion action through a structured API
+- for providers with structured turn lifecycle signals, the daemon SHOULD drive prompt completion from adapter-reported provider state rather than PTY output quiet windows
+
+Config behavior:
+
+- config changes that are safe during execution MAY be applied immediately
+- config changes that are unsafe during execution MUST be rejected with an explicit busy-state error while a prompt is running
+- after an accepted config change, the daemon MUST propagate the canonical updated config state to all session attachments
+
+Worktree compatibility rule:
+
+- even in single-agent mode, the runtime SHOULD keep explicit worktree-assignment metadata so future isolated branches/worktrees can extend the same runtime shape without redesign
+
+### 8.1 Provider Adapter Requirement
+
+Each supported provider has an adapter owned by Chariox.
+
+The adapter is responsible for:
+
+- launching the provider process
+- exposing PTY integration details
+- declaring whether provider file attachment and memory-update control are supported
+- implementing canonical control operations when supported
+- probing provider installation and authentication status before launch when possible
+- probing the installed provider version
+- selecting a shipped built-in command catalog for supported versions when available
+- discovering custom commands from provider-supported files or config when available
+- projecting daemon-managed extensions into provider-compatible runtime views when required
+
+### 8.1.1 Extension Projection Requirement
+
+Provider adapters MUST translate Chariox's daemon-owned extension bindings into the provider-specific shape expected by that provider runtime.
+
+Examples:
+
+- generated skills or command files under a provider-specific runtime view
+- provider config overlays or environment variables
+- scoped MCP configuration visible only to the selected top-level run
+
+Isolation rule:
+
+- if a provider supports custom config roots, home directories, or equivalent launch-time overrides, Chariox SHOULD use them to keep agent-scoped extension views isolated
+- if a provider only supports project-local extension files, Chariox SHOULD rely on worktree or projected-workspace isolation to preserve per-agent visibility boundaries
+
+### 8.2 Canonical Control Operations
+
+v1 defines three structured provider control operations: `attach_file`, `request_memory_update`, and `request_compaction_summary`.
+
+#### 8.2.1 `attach_file`
+
+Inputs:
+
+- session identifier
+- provider run identifier
+- absolute path to the transferred file on the daemon host
+- optional attachment metadata such as display name or mime type
+
+Expected behavior:
+
+- if supported, the adapter requests the provider to import, attach, or otherwise reference the file in the active run
+- if unsupported, the adapter returns a structured unsupported result without breaking the session
+
+Outputs:
+
+- success with provider-specific attachment reference if available
+- unsupported
+- failed with error details suitable for user-facing reporting
+
+#### 8.2.2 `request_memory_update`
+
+Purpose:
+
+- allow the daemon to initiate an out-of-band memory-management inquiry to the active provider run
+- collect memory-relevant signals when the provider has compacted, reset, or otherwise changed usable context
+
+Inputs:
+
+- session identifier
+- provider run identifier
+- reason code (for example `compaction_detected`, `user_requested_refresh`, `before_provider_switch`)
+- optional policy hints indicating what the daemon is requesting (for example recency summary only vs full memory update)
+
+Expected behavior:
+
+- request is treated as control-lane traffic, not ordinary terminal prompt traffic
+- provider adapter returns structured memory update payloads or a structured unsupported result
+- failure or unsupported results do not terminate the provider run
+
+Outputs:
+
+- success with structured memory update payload for Chariox short-term/long-term memory pipelines
+- unsupported
+- failed with error details suitable for user-facing reporting
+
+#### 8.2.3 `request_compaction_summary`
+
+Purpose:
+
+- allow the daemon to request a model-authored compaction summary during Chariox-driven user-triggered compaction
+- produce a summary artifact suitable for warming a fresh provider run with an empty context window
+
+Inputs:
+
+- session identifier
+- provider run identifier
+- compaction intent (`user_triggered_chariox_compact`)
+- optional output policy hints (for example target length or required headings)
+
+Expected behavior:
+
+- request is treated as control-lane traffic, not ordinary terminal prompt traffic
+- provider adapter returns structured compaction summary payload or structured unsupported result
+- failure or unsupported results do not terminate provider run
+
+Outputs:
+
+- success with structured compaction summary payload
+- unsupported
+- failed with error details suitable for user-facing reporting
+
+### 8.3 Degradation Rule
+
+If a provider adapter does not implement `attach_file`, `request_memory_update`, and/or `request_compaction_summary`, the session still functions normally through PTY passthrough.
+
+Provider-specific structured adapter note:
+
+- some adapters MAY expose richer provider-owned operations beyond the canonical v1 control trio when Chariox needs them for correctness
+- OpenCode is expected to use provider-specific session operations for prompt submit, command invoke, turn abort, and event subscription
+- those richer provider-specific operations remain adapter-internal and do not change Chariox's provider-agnostic user-facing model
+
+In that case Chariox must:
+
+- store the transferred file in the session workspace or a session-scoped staging location
+- surface the local path to the user
+- avoid pretending the provider has received the file
+- continue memory transfer using Chariox-managed memory sources without requiring provider-side memory update signals
+- if compaction summary is unsupported, allow Chariox-driven compaction using Chariox-managed memory snapshots as fallback warm-up
+
+### 8.4 Provider Command Compatibility
+
+Chariox MUST surface provider command compatibility status to the user.
+
+Minimum compatibility state:
+
+- detected provider name and version
+- matched Chariox catalog version or version family when one exists
+- support status (`supported` | `best_effort` | `unsupported_not_installed`)
+- warning text when Chariox does not officially support the detected version
+
+Compatibility rule:
+
+- unsupported provider versions MUST NOT disable `/agent` completions by default
+- instead, Chariox continues with best-effort completions from the nearest shipped catalog plus discovered custom commands and surfaces a warning that behavior may drift
+
+### 8.5 Provider Login Procedure
+
+Provider login remains provider-native.
+
+Required rules:
+
+- Chariox SHOULD prefer prompting the user to use the provider's normal CLI login flow rather than reimplementing login itself
+- Chariox MAY surface provider-specific login instructions, but those instructions are advisory and adapter-owned
+- Chariox MUST NOT treat provider login as a server-side or relay-side concern
+- if the provider CLI supports multiple local profiles, the adapter MAY expose those through `account_profile`
+
+Minimum provider auth states:
+
+- `authenticated`
+- `not_logged_in`
+- `expired`
+- `unknown`
+- `provider_not_installed`
+
+### 8.6 Extension and MCP Management
+
+Chariox owns extension installation and binding in v1.
+
+Required rules:
+
+- skills, MCP definitions, command packs, and similar extension assets are installed through Chariox-managed flows rather than delegated to provider CLIs
+- installation is machine-scoped; availability is determined by per-agent binding
+- MCP servers are daemon-managed runtime components and MAY be launched or terminated independently of provider CLIs
+- only the MCPs bound to a given top-level provider run should be exposed to that run
+- extension installation metadata, compatibility state, and bindings should be inspectable through daemon-owned APIs
+- workflow runtime tools are part of the Chariox runtime contract and SHOULD be projected to providers through Chariox-managed MCP bindings rather than provider-specific direct daemon access
+- for managed provider runs, Chariox SHOULD attach its daemon-owned MCP runtime automatically during launch
+- day-1 implementation MAY use statically advertised runtime tools with runtime-side scope validation; release hardening SHOULD add dynamic per-turn scoping, stronger per-run isolation, and MCP health/reconnect handling
+
+## 9. Capability, Scheduling, Memory, Storage, and Evolution Details
+
+Detailed capability catalog, scheduling model, memory/context transfer rules, git/file operation requirements, data/storage boundaries, failure compatibility rules, suggested core entities, and summary notes now live in [spec-v1-capability-and-evolution.md](spec-v1-capability-and-evolution.md). Keep this main specification focused on product definition, runtime components, interaction lanes, node/agent/session/provider/workflow contracts, and provider adapter requirements.

@@ -1,0 +1,278 @@
+import assert from "node:assert/strict"
+import { readFile } from "node:fs/promises"
+import test from "node:test"
+
+import {
+  getProviderActivityLabel,
+  isProviderIdleStatus,
+  normalizeProviderActivityLabel,
+  buildApplyPatchNewPreview,
+  formatToolDisplay,
+  formatToolTranscriptUpdate,
+  readApplyPatchFiles,
+  shouldRenderProviderStatus,
+  toProviderPresentParticiplePhrase,
+  type ToolTranscriptUpdate,
+} from "./index.js"
+
+async function fixture(path: string) {
+  return JSON.parse(await readFile(new URL(`../fixtures/${path}`, import.meta.url), "utf8")) as {
+    input: ToolTranscriptUpdate
+    expect: Record<string, unknown>
+  }
+}
+
+test("formatToolDisplay produces shared patch display with new-change preview", async () => {
+  const { input, expect } = await fixture("apply_patch/update.json")
+  const display = formatToolDisplay(input)
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.version, 1)
+  assert.equal(display.tool, "apply_patch")
+  assert.equal(display.summary, expect.summary)
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+  assert.equal(
+    patch?.files[0]?.previewLines.some((line) => line.kind === "removed" || line.text.includes("oldValue")),
+    false,
+  )
+})
+
+test("formatToolDisplay summarizes shell commands without requiring client JSON parsing", async () => {
+  const { input, expect } = await fixture("bash/command.json")
+  const display = formatToolDisplay(input)
+
+  assert.equal(display.summary, expect.summary)
+  assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
+})
+
+test("formatToolDisplay normalizes OpenCode Chariox read tool aliases", async () => {
+  const { input, expect } = await fixture("opencode/managed-read.json")
+  const display = formatToolDisplay(input)
+
+  assert.equal(display.summary, expect.summary)
+  assert.equal(display.title, "Read seed.txt")
+  assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
+  assert.match(JSON.stringify(display.blocks), /TOOL_DISPLAY_FIXTURE_SEED/)
+})
+
+test("formatToolDisplay normalizes OpenCode Chariox patch aliases", async () => {
+  const { input, expect } = await fixture("opencode/managed-apply-patch.json")
+  const display = formatToolDisplay(input)
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.summary, expect.summary)
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+})
+
+test("formatToolDisplay accepts Codex runtime patch_text input", async () => {
+  const { input, expect } = await fixture("codex/managed-apply-patch.json")
+  const display = formatToolDisplay(input)
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.summary, expect.summary)
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
+})
+
+test("formatToolDisplay unwraps live MCP envelopes for Chariox read output", () => {
+  const display = formatToolDisplay({
+    id: "call_read",
+    tool: "chariox.read_artifact",
+    status: "completed",
+    input: { path: "src/app.ts", domain: "text" },
+    output: JSON.stringify({
+      _meta: null,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            content_text: "export const value = 1\n",
+            domain: "text",
+            path: "src/app.ts",
+          }),
+        },
+      ],
+    }),
+  })
+
+  assert.equal(display.title, "Read src/app.ts")
+  assert.equal(display.summary, "src/app.ts")
+  assert.deepEqual(display.blocks, [
+    { kind: "code", language: "typescript", text: "export const value = 1" },
+  ])
+})
+
+test("formatToolDisplay unwraps live MCP envelopes for Chariox mutation output", () => {
+  const display = formatToolDisplay({
+    id: "call_write",
+    tool: "chariox.write_artifact",
+    status: "completed",
+    input: { path: "src/app.ts", content_text: "next()\n", domain: "text" },
+    output: JSON.stringify({
+      _meta: null,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            applied: true,
+            change: {
+              path: "src/app.ts",
+              kind: "update",
+              diff: "diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,1 @@\n-old()\n+next()",
+              diff_truncated: false,
+            },
+          }),
+        },
+      ],
+    }),
+  })
+  const patch = display.blocks.find((block) => block.kind === "patch")
+
+  assert.equal(display.title, "Edited src/app.ts (+1 −1)")
+  assert.equal(display.summary, "Patched src/app.ts")
+  assert.equal(patch?.kind, "patch")
+  assert.deepEqual(patch?.files[0]?.previewLines, [
+    { kind: "meta", text: "@@ -1,1 +1,1 @@" },
+    { kind: "added", text: "next()" },
+  ])
+})
+
+test("formatToolDisplay distinguishes home-proxy tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-home-1",
+    tool: "home_lookup",
+    placement: "home-proxy",
+    authority: "home",
+    execution_location: "home",
+    status: "completed",
+    input: { query: "status" },
+    output: "ok",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*Called home lookup\*\* · HOME-PROXY · COMPLETED/)
+  assert.equal(display.title, "home-proxy · Called home lookup")
+  assert.equal(display.collapsed.title, "home-proxy · Called home lookup · COMPLETED")
+})
+
+test("formatToolDisplay distinguishes worker-local tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-worker-1",
+    tool: "worker_lookup",
+    placement: "worker-local",
+    authority: "worker",
+    execution_location: "worker",
+    status: "completed",
+    input: { query: "status" },
+    output: "ok",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*Called worker lookup\*\* · WORKER-LOCAL · COMPLETED/)
+  assert.equal(display.title, "worker-local · Called worker lookup")
+  assert.equal(display.collapsed.title, "worker-local · Called worker lookup · COMPLETED")
+})
+
+test("provider status helpers map OpenCode status text to activity labels", () => {
+  assert.equal(getProviderActivityLabel("OpenCode is idle."), null)
+  assert.equal(getProviderActivityLabel("OpenCode is thinking..."), "thinking")
+  assert.equal(getProviderActivityLabel("OpenCode status: reconnecting"), "reconnecting")
+  assert.equal(getProviderActivityLabel("OpenCode status: retry_auth"), "retry authing")
+  assert.equal(getProviderActivityLabel("OpenCode status: compile"), "compiling")
+  assert.equal(getProviderActivityLabel("OpenCode is writing."), "writing")
+  assert.equal(getProviderActivityLabel("OpenCode is compile."), "compile")
+  assert.equal(getProviderActivityLabel("unrecognized"), null)
+})
+
+test("provider status helpers identify idle and renderable statuses", () => {
+  assert.equal(isProviderIdleStatus("OpenCode is idle."), true)
+  assert.equal(isProviderIdleStatus("OpenCode is idle"), true)
+  assert.equal(isProviderIdleStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is idle."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode is thinking..."), false)
+  assert.equal(shouldRenderProviderStatus("OpenCode status: reconnecting"), true)
+})
+
+test("provider status helpers normalize activity label vocabulary", () => {
+  assert.equal(normalizeProviderActivityLabel(" Writing "), "writing")
+  assert.equal(normalizeProviderActivityLabel(""), null)
+  assert.equal(toProviderPresentParticiplePhrase("run"), "running")
+  assert.equal(toProviderPresentParticiplePhrase("die"), "dying")
+  assert.equal(toProviderPresentParticiplePhrase("compile"), "compiling")
+})
+
+test("formatToolDisplay distinguishes skill snapshot tool calls", () => {
+  const update: ToolTranscriptUpdate = {
+    id: "tool-skill-1",
+    tool: "skill_context",
+    placement: "skill snapshot",
+    authority: "home",
+    execution_location: "none",
+    status: "completed",
+    text: "loaded",
+  }
+
+  const markdown = formatToolTranscriptUpdate(update)
+  const display = formatToolDisplay(update)
+
+  assert.match(markdown, /^\*\*Called skill context\*\* · SKILL SNAPSHOT · COMPLETED/)
+  assert.equal(display.title, "skill snapshot · Called skill context")
+  assert.equal(display.collapsed.title, "skill snapshot · Called skill context · COMPLETED")
+})
+
+test("formatToolTranscriptUpdate keeps legacy markdown summaries stable", () => {
+  assert.equal(
+    formatToolTranscriptUpdate({
+      id: "tool-12",
+      tool: "apply_patch",
+      status: "completed",
+      input: {
+        patchText: [
+          "*** Begin Patch",
+          "*** Update File: src/app.ts",
+          "@@",
+          "-const oldValue = 1",
+          "+const newValue = 2",
+          "*** Delete File: src/old.ts",
+          "*** End Patch",
+        ].join("\n"),
+      },
+    }),
+    [
+      "**patch** · COMPLETED",
+      "2 files · 1 updated, 1 deleted",
+      "- Patched src/app.ts",
+      "- Deleted src/old.ts",
+    ].join("\n"),
+  )
+})
+
+test("buildApplyPatchNewPreview hides old-side lines", () => {
+  const [file] = readApplyPatchFiles({
+    id: "tool-1",
+    tool: "apply_patch",
+    input: {
+      patchText: [
+        "*** Begin Patch",
+        "*** Update File: src/app.ts",
+        "@@",
+        "-before()",
+        "+after()",
+        " context()",
+        "*** End Patch",
+      ].join("\n"),
+    },
+  })
+  assert.ok(file)
+  assert.deepEqual(buildApplyPatchNewPreview(file), [
+    { kind: "meta", text: "@@" },
+    { kind: "added", text: "after()" },
+    { kind: "context", text: "context()" },
+  ])
+})

@@ -1,0 +1,376 @@
+use std::path::PathBuf;
+
+use super::CommandRouter;
+use crate::error::DaemonError;
+use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::provider::OpenCodeProviderCatalog;
+use crate::runtime::projection::{SessionSnapshotProjection, TransportHealthStore};
+use crate::slice::SliceRecord;
+
+impl CommandRouter {
+    pub(crate) fn runtime_state(&self) -> crate::runtime::state::KernelRuntimeState {
+        self.runtime_state.clone()
+    }
+
+    /// Every durable state event appended from now on.
+    pub(crate) fn subscribe_durable_state_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::durable_state::DurableStateEvent> {
+        self.runtime_state
+            .durable_state_store()
+            .subscribe_appended_events()
+    }
+
+    pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
+        let config = self.config_projection.snapshot();
+        (config.kernel_websocket_host, config.kernel_websocket_port)
+    }
+
+    pub(crate) fn kernel_websocket_connection_config(&self) -> (usize, u64) {
+        let config = self.config_projection.snapshot();
+        (
+            config.kernel_websocket_queue_capacity,
+            config.kernel_websocket_write_delay_ms,
+        )
+    }
+
+    pub(crate) fn kernel_event_counter_path(&self) -> PathBuf {
+        self.config_projection
+            .snapshot()
+            .kernel_event_counter_path()
+    }
+
+    pub(crate) fn relay_event_counter_path(&self) -> PathBuf {
+        self.config_projection
+            .snapshot()
+            .kernel_relay_event_counter_path()
+    }
+
+    pub(crate) fn transport_health_store(&self) -> TransportHealthStore {
+        self.transport_health.clone()
+    }
+
+    pub(crate) fn durable_snapshot_scheduler(
+        &self,
+    ) -> Option<crate::durable_snapshot::DurableSnapshotScheduler> {
+        self.runtime_state.durable_snapshot_scheduler()
+    }
+
+    pub(crate) async fn pump_transport_runtime(&self) {
+        self.runtime_state.pump_transport_runtime().await;
+    }
+
+    pub(crate) async fn record_terminal_attachment_heartbeat(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        self.runtime_state
+            .record_terminal_attachment_heartbeat(session_id, attachment_id, now_ms)
+            .await
+    }
+
+    pub(crate) async fn detach_terminal_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        self.runtime_state.detach(attachment_id).await
+    }
+
+    pub(crate) fn terminal_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.runtime_state
+            .terminal_session_change_sequence(session_id)
+    }
+
+    pub(crate) fn terminal_attachment_change_sequence(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> u64 {
+        self.runtime_state
+            .terminal_attachment_change_sequence(session_id, attachment_id)
+    }
+
+    pub(crate) async fn wait_for_terminal_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
+        self.runtime_state
+            .wait_for_terminal_session_change_after(session_id, sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_terminal_attachment_change_after(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        sequence: u64,
+    ) {
+        self.runtime_state
+            .wait_for_terminal_attachment_change_after(session_id, attachment_id, sequence)
+            .await;
+    }
+
+    pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
+        self.runtime_state.waiting_room_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_waiting_room_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn session_projection_change_sequence(&self) -> u64 {
+        self.runtime_state.session_projection_change_sequence()
+    }
+
+    pub(crate) fn session_projection_session_change_sequence(&self, session_id: &str) -> u64 {
+        self.runtime_state
+            .session_projection_session_change_sequence(session_id)
+    }
+
+    pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_session_projection_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_session_projection_session_change_after(
+        &self,
+        session_id: &str,
+        sequence: u64,
+    ) {
+        self.runtime_state
+            .wait_for_session_projection_session_change_after(session_id, sequence)
+            .await;
+    }
+
+    /// Protocol 403: the passkey prompts pending for `user_id`.
+    pub(crate) fn passkey_prompts_for(&self, user_id: &str) -> Vec<crate::local::PasskeyPrompt> {
+        self.runtime_state.passkey_prompts_for(user_id)
+    }
+
+    pub(crate) fn passkey_prompt_closure_reason(
+        &self,
+        prompt: &crate::local::PasskeyPrompt,
+    ) -> crate::local::PasskeyPromptClosureReason {
+        self.runtime_state.passkey_prompt_closure_reason(prompt)
+    }
+
+    pub(crate) fn passkey_prompt_change_sequence(&self) -> u64 {
+        self.runtime_state.passkey_prompt_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_passkey_prompt_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_passkey_prompt_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn workflow_design_change_sequence(&self) -> u64 {
+        self.runtime_state.workflow_design_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_workflow_design_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_workflow_design_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_change_sequence(&self) -> u64 {
+        self.runtime_state.transport_runtime_pump_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_transport_runtime_pump_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_transport_runtime_pump_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) async fn wait_for_started_app_refreshes(&self) {
+        self.runtime_state.wait_for_started_app_refreshes().await;
+    }
+
+    pub(crate) fn pty_output_change_sequence(&self) -> u64 {
+        self.runtime_state.pty_output_change_sequence()
+    }
+
+    pub(crate) async fn wait_for_pty_output_change_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_pty_output_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn provider_run_actor_completion_sequence(&self) -> u64 {
+        self.runtime_state.provider_run_actor_completion_sequence()
+    }
+
+    pub(crate) async fn wait_for_provider_run_actor_completion_after(&self, sequence: u64) {
+        self.runtime_state
+            .wait_for_provider_run_actor_completion_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_runtime_pump_interval_ms(
+        &self,
+        active_interval_ms: u64,
+        idle_interval_ms: u64,
+        now_ms: u64,
+    ) -> u64 {
+        self.runtime_state.transport_runtime_pump_interval_ms(
+            active_interval_ms,
+            idle_interval_ms,
+            now_ms,
+        )
+    }
+
+    pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        self.runtime_state.shutdown_cleanup().await
+    }
+
+    pub(crate) async fn transport_relay_status_snapshot(&self) -> RelayStatus {
+        crate::runtime::remote_relay_inventory::projected_relay_status(
+            self.relay_state.clone(),
+            self.config_projection.clone(),
+        )
+        .await
+    }
+
+    pub(crate) fn relay_owner_directory_allowed(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> bool {
+        let config = self.config_projection.snapshot();
+        config.cloud_relay.is_none()
+            || crate::runtime::cloud_relay_authorization::cloud_relay_caller_owner(&config, caller)
+    }
+
+    pub(crate) fn relay_remote_machines_snapshot(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Vec<RemoteMachineRecord> {
+        if self.relay_owner_directory_allowed(caller) {
+            self.transport_remote_machines_snapshot()
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn transport_remote_machines_snapshot(&self) -> Vec<RemoteMachineRecord> {
+        let (machines, _) = self.remote_relay_inventory_projection.snapshot();
+        machines
+    }
+
+    pub(crate) fn client_catalog_change_sequence(&self) -> u64 {
+        self.provider_catalog_projection.change_sequence()
+    }
+
+    pub(crate) async fn wait_for_client_catalog_change_after(&self, sequence: u64) {
+        self.provider_catalog_projection
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    pub(crate) fn transport_provider_catalog_snapshot(&self) -> Option<OpenCodeProviderCatalog> {
+        self.provider_catalog_projection.cached()
+    }
+
+    pub(crate) fn transport_slices_snapshot(&self) -> Vec<SliceRecord> {
+        self.runtime_state.list_slices()
+    }
+
+    pub(crate) fn clear_remote_relay_inventory_projection(&self) {
+        self.remote_relay_inventory_projection.clear();
+    }
+
+    pub(crate) async fn refresh_remote_relay_inventory_projection(
+        &self,
+    ) -> Result<(), DaemonError> {
+        let (_, previous) = self.remote_relay_inventory_projection.snapshot();
+        crate::transport::relay_client::refresh_remote_inventory_projection(
+            self.config_projection.clone(),
+            self.remote_relay_inventory_projection.clone(),
+        )
+        .await?;
+        let (_, workers) = self.remote_relay_inventory_projection.snapshot();
+        if previous
+            .iter()
+            .map(|p| (&p.kernel_id, &p.public_key))
+            .collect::<std::collections::BTreeMap<_, _>>()
+            != workers
+                .iter()
+                .map(|p| (&p.kernel_id, &p.public_key))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        {
+            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+                self.runtime_state
+                    .refresh_notification_sources_from_inventory(&profile.user_id, true)
+                    .await?;
+            }
+        }
+        let authenticated_workers = {
+            let relay_state = self.relay_state.read().await;
+            workers
+                .into_iter()
+                .filter(|worker| worker_presence_is_authenticated(&relay_state, worker))
+                .collect::<Vec<_>>()
+        };
+        for worker in authenticated_workers {
+            self.runtime_state
+                .reconcile_authenticated_slice_worker_presence(&worker)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn session_snapshot_projection_for_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+        last_event_id: u64,
+    ) -> Result<SessionSnapshotProjection, DaemonError> {
+        self.runtime_state
+            .session_snapshot_projection_for_attachment(session_id, attachment_id, last_event_id)
+    }
+}
+
+fn worker_presence_is_authenticated(
+    relay_state: &crate::transport::relay_client::RelayClientState,
+    worker: &chariox_relay::protocol::RelayKernelPresence,
+) -> bool {
+    relay_state
+        .pinned_peer_public_key(&worker.kernel_id)
+        .as_deref()
+        == Some(worker.public_key.as_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_presence_is_authenticated;
+
+    #[test]
+    fn slice_health_reconciliation_requires_pinned_worker_presence() {
+        let mut relay_state = crate::transport::relay_client::RelayClientState::default();
+        relay_state.pin_peer_public_key("worker-1", "authenticated-key");
+        let mut worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "worker-1".to_string(),
+            machine_id: "slice:slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: None,
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "unauthenticated-key".to_string(),
+        };
+
+        assert!(!worker_presence_is_authenticated(&relay_state, &worker));
+        worker.public_key = "authenticated-key".to_string();
+        assert!(worker_presence_is_authenticated(&relay_state, &worker));
+    }
+}

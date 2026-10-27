@@ -1,0 +1,258 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    # Opening a non-draft PR or marking a draft ready starts the final CI run.
+    # A later push has no CI run. Return the PR to draft, complete review, then
+    # mark the exact head ready again, or dispatch this workflow for that head.
+    types: [opened, ready_for_review]
+
+jobs:
+  node:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Fetch MP-11 frozen inventory source
+        run: git fetch --no-tags --depth=1 origin 9334141d420f8a32393f206102c5b8b4a1b0b609
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared TypeScript packages
+        run: pnpm build:kernel-client
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: MP-07 signed upgrade recovery and ownership regressions
+        # MP-07: the root journal ownership fixture would skip as the runner user.
+        run: sudo "$(command -v node)" --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs scripts/managed-kernel-upgrade-recovery.test.mjs
+
+  python:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Node.js
+        # browser-lifecycle.py closes the owned browser through browser-cdp.mjs.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust toolchain
+        # scripts/slice-capture-preflight.test.py compiles its harness with rustc.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Install Python test dependencies
+        # python3-pil: observation masks. python3-av/ffmpeg: browser display codec tests.
+        # python3-xlib: the native X11 input, clipboard and accessibility modules.
+        run: sudo apt-get update && sudo apt-get install -y python3-pil python3-xlib python3-av ffmpeg
+
+      - name: Test Python scripts
+        # Every tracked Python test runs as its own script with the runner's
+        # stdlib python3, unprivileged; one failure does not hide the others.
+        # Excluded: these import the hash-pinned Selkies runtime (aiohttp,
+        # psutil), which exists only in the slice image venv. The slice image
+        # build runs docker/test_*.py (test_slice_selkies.py) in that venv.
+        # apps/browser-display/lan-kit-probe.test.py chroots, so it runs in the
+        # root-only step below.
+        #   apps/kernel/slice-linux-docker/docker/canonical-display.test.py
+        #   apps/kernel/slice-linux-docker/docker/test_slice_selkies.py
+        #   apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py
+        env:
+          PYTHONDONTWRITEBYTECODE: 1
+        run: |
+          failed=()
+          count=0
+          while IFS= read -r test_file; do
+            case "$test_file" in
+              apps/kernel/slice-linux-docker/docker/canonical-display.test.py | \
+              apps/kernel/slice-linux-docker/docker/test_slice_selkies.py | \
+              apps/kernel/slice-linux-docker/docker/test_slice_keyboard_overlays.py | \
+              apps/browser-display/lan-kit-probe.test.py) continue ;;
+            esac
+            count=$((count + 1))
+            echo "::group::$test_file"
+            if python3 -B "$test_file" </dev/null; then status=0; else status=$?; fi
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              echo "::error file=$test_file::exited with status $status"
+              failed+=("$test_file")
+            fi
+          done < <(git ls-files -- ':(glob)**/*.test.py' ':(glob)**/*_test.py' ':(glob)**/test_*.py')
+          test "$count" -gt 0
+          echo "Ran $count Python test files; ${#failed[@]} failed."
+          if [ "${#failed[@]}" -gt 0 ]; then
+            printf 'FAILED %s\n' "${failed[@]}"
+            exit 1
+          fi
+
+      - name: Test root-only Python cases
+        # These files skip their root-only cases when unprivileged; the hosted
+        # runner is disposable, so run them again as root. The namespace cases
+        # of managed-extension-build.test.py stay behind their explicit opt-in
+        # (CHARIOX_RUN_PRIVILEGED_MOUNT_TESTS=1) and do not run here.
+        if: ${{ !cancelled() }}
+        run: |
+          failed=0
+          for test_file in \
+            scripts/docker-admission-lock.test.py \
+            apps/browser-display/lan-kit-probe.test.py \
+            apps/kernel/slice-linux-docker/test_development_workspace_access.py
+          do
+            sudo python3 -B "$test_file" || failed=1
+          done
+          exit "$failed"
+
+  rust:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    # MP-08/MP-10: CI does not consume DWARF; retain normal test assertions.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Add swap for the kernel test build
+        # MP-08/MP-10: rustc peaks near 18 GiB resident while compiling the
+        # chariox-kernel test crate, more than the hosted runner's RAM; the
+        # unswapped runner killed the build with SIGTERM (exit 143).
+        run: |
+          sudo fallocate -l 24G /mnt/chariox-swap
+          sudo chmod 600 /mnt/chariox-swap
+          sudo mkswap /mnt/chariox-swap
+          sudo swapon /mnt/chariox-swap
+          free -h
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: rustfmt, clippy
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux isolation test dependency
+        # MP-01/MP-03: inner-slice/shared-host launch assembly validates bwrap.
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+
+      - name: Install native display build dependencies
+        # Clippy builds --all-features, which compiles the native-display C sources.
+        run: sudo apt-get install -y xvfb libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
+
+      - name: Allow unprivileged user namespaces for Bubblewrap
+        # Ubuntu 24.04 runners set kernel.apparmor_restrict_unprivileged_userns=1, which blocks
+        # bwrap's UID map; product hosts load chariox-slice-provider.apparmor instead
+        # (docs/MANAGED_REMOTE_KERNEL_IMAGE.md).
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Performance drills
+        run: node scripts/performance-drills.mjs
+
+      - name: Client protocol conformance gate
+        run: cargo test -p chariox-kernel client_protocol_conformance -- --nocapture
+
+      - name: Release session project assignment regression
+        # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
+        # keep kernel release optimization and disabled debug assertions unchanged.
+        # The dev-only App fixture dependency requires debug assertions; production
+        # App builds retain their default release guard against this feature.
+        run: >-
+          cargo --config 'profile.release.package.chariox-kernel.codegen-units=256'
+          --config 'profile.release.package.chariox-app-runtime.debug-assertions=true'
+          test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
+
+      - name: Clippy
+        run: |
+          node --test scripts/clippy-changed-lines-gate.test.mjs
+          node scripts/clippy-changed-lines-gate.mjs
+        env:
+          CHARIOX_NATIVE_DISPLAY_INCLUDE: /usr/include
+          CHARIOX_NATIVE_DISPLAY_LIB: /usr/lib/x86_64-linux-gnu
+
+      - name: Install official provider test harnesses
+        run: |
+          npm install --global @anthropic-ai/claude-code@2.1.212 @openai/codex@0.144.0 opencode-ai@1.18.23
+          test "$(claude --version)" = "2.1.212 (Claude Code)"
+          test "$(codex --version)" = "codex-cli 0.144.0"
+          test "$(opencode --version)" = "1.18.23"
+
+      - name: Test
+        run: cargo test --workspace
+        env:
+          RUST_MIN_STACK: 16777216
+          RUST_TEST_THREADS: 1
+
+      - name: Native display worker
+        # MP-08/MP-10/MP-11 (#933 review 8): the Linux kernel's XShm/x264
+        # worker (unsafe FFI, sessions, C harnesses on a real Xvfb).
+        run: |
+          cargo test -p chariox-kernel --lib --features native-display display_native
+          node --test apps/browser-display/native-capture-*.test.mjs scripts/native-display-runtime.test.mjs scripts/native-codec-runtime.test.mjs
+        env:
+          CHARIOX_BROWSER_DISPLAY_SOFTWARE: '1'
+          CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER: libx264
+          CHARIOX_NATIVE_DISPLAY_INCLUDE: /usr/include
+          CHARIOX_NATIVE_DISPLAY_LIB: /usr/lib/x86_64-linux-gnu

@@ -1,0 +1,530 @@
+import type { LocalIpcClient } from "./ipc.js"
+import type { CharioxPreferences } from "./preferences.js"
+import type { ProviderCatalog } from "./provider-catalog.js"
+import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
+import type {
+  ExternalProviderSessionCapabilities,
+  ExternalProviderSessionRecord,
+} from "@chariox/kernel-client/external-provider-sessions"
+import type { QueuedPromptTranscriptMetadata as KernelQueuedPromptTranscriptMetadata } from "@chariox/kernel-client/queued-prompt-strip-state"
+import type { SessionHistoryCursorSelection as KernelSessionHistoryCursorSelection } from "@chariox/kernel-client/session-history-outline"
+import type { SessionHistoryTranscriptEntry as KernelSessionHistoryTranscriptEntry } from "@chariox/kernel-client/session-history-transcript"
+import type {
+  AgentInstance as KernelAgentInstance,
+  AgentSubstituteProfile as KernelAgentSubstituteProfile,
+  CharioxConnectorAdapterDefinition as KernelCharioxConnectorAdapterDefinition,
+  CharioxConnectorDefinition as KernelCharioxConnectorDefinition,
+  CharioxCredentialConfig as KernelCharioxCredentialConfig,
+  CharioxEnvironmentConfig as KernelCharioxEnvironmentConfig,
+  CharioxMcpServerConfig as KernelCharioxMcpServerConfig,
+  CharioxScriptMetadata as KernelCharioxScriptMetadata,
+  CharioxSkillMetadata as KernelCharioxSkillMetadata,
+  CharioxUserConfig as KernelCharioxUserConfig,
+  CharioxUserConfigPayload as KernelCharioxUserConfigPayload,
+  CharioxUserConfigSchemaPayload as KernelCharioxUserConfigSchemaPayload,
+  CollaborationLevel as KernelCollaborationLevel,
+  AgentPromptState as KernelAgentPromptState,
+  AgentQueuedPromptControl as KernelAgentQueuedPromptControl,
+  AgentForkPayload as KernelAgentForkPayload,
+  AgentRuntimeActivity as KernelAgentRuntimeActivity,
+  CompletedGitTurnActionProjection as KernelCompletedGitTurnActionProjection,
+  CaptureScreenshotResult as KernelCaptureScreenshotResult,
+  ExternalProviderImportMetadata as KernelExternalProviderImportMetadata,
+  ExternalProviderObservedCursor as KernelExternalProviderObservedCursor,
+  MetaagentTask as KernelMetaagentTask,
+  MetaagentTaskStatus as KernelMetaagentTaskStatus,
+  PromptAttachmentPart as KernelPromptAttachmentPart,
+  PromptInputHistoryEntry as KernelPromptInputHistoryEntry,
+  PromptInputHistoryEntryKind as KernelPromptInputHistoryEntryKind,
+  PromptInputHistoryPage as KernelPromptInputHistoryPage,
+  PromptQueueItem as KernelPromptQueueItem,
+  PromptSubmittedPayload as KernelPromptSubmittedPayload,
+  ProviderAuthStatus as KernelProviderAuthStatus,
+  ProviderAccountProfile as KernelProviderAccountProfile,
+  ProviderLoginStart as KernelProviderLoginStart,
+  ProviderLoginStatus as KernelProviderLoginStatus,
+  ProviderLogoutResult as KernelProviderLogoutResult,
+  ProviderLogoutOutcome as KernelProviderLogoutOutcome,
+  ProviderProcessInfo as KernelProviderProcessInfo,
+  RemoteExtensionManifestSyncStatus as KernelRemoteExtensionManifestSyncStatus,
+  RuntimeAttachment as KernelRuntimeAttachment,
+  RuntimeSession as KernelRuntimeSession,
+  RuntimeInteraction as KernelRuntimeInteraction,
+  RuntimeInteractionChoice as KernelRuntimeInteractionChoice,
+  RuntimeInteractionCustomChoice as KernelRuntimeInteractionCustomChoice,
+  RuntimeNoticeRecord as KernelRuntimeNoticeRecord,
+  RuntimeProviderRun as KernelRuntimeProviderRun,
+  ExtensionGrant as KernelExtensionGrant,
+  ExtensionKind as KernelExtensionKind,
+  SessionAgentDefaults as KernelSessionAgentDefaults,
+  SessionCollaborationAgentCounts as KernelSessionCollaborationAgentCounts,
+  SessionConfigState as KernelSessionConfigState,
+  SessionHistoryBlobContent as KernelSessionHistoryBlobContent,
+  SessionHistoryEntry as KernelSessionHistoryEntry,
+  SessionHistoryExternalObservation as KernelSessionHistoryExternalObservation,
+  SessionHistoryOutline as KernelSessionHistoryOutline,
+  SessionHistoryOutlineAgent as KernelSessionHistoryOutlineAgent,
+  SessionHistoryOutlineBlob as KernelSessionHistoryOutlineBlob,
+  SessionHistoryOutlineCursor as KernelSessionHistoryOutlineCursor,
+  SessionHistoryOutlineTurn as KernelSessionHistoryOutlineTurn,
+  SessionHistoryPageEntry as KernelSessionHistoryPageEntry,
+  SessionHistoryPromptAttachment as KernelSessionHistoryPromptAttachment,
+  SessionInvite as KernelSessionInvite,
+  SessionMember as KernelSessionMember,
+  StoredTransferArtifact as KernelStoredTransferArtifact,
+  SliceBackupRecord as KernelSliceBackupRecord,
+  SliceDisplayEndpoint as KernelSliceDisplayEndpoint,
+  SliceLocalDockerPorts as KernelSliceLocalDockerPorts,
+  SliceLogEntry as KernelSliceLogEntry,
+  SliceRecord as KernelSliceRecord,
+  SliceRelayEndpoint as KernelSliceRelayEndpoint,
+  SliceSavedStateRecord as KernelSliceSavedStateRecord,
+  RelayKernelPresence as KernelRelayKernelPresence,
+  RelayStatus as KernelRelayStatus,
+  RemoteMachineRecord as KernelRemoteMachineRecord,
+  TerminalRecord as KernelTerminalRecord,
+  TerminalCommandCatalog,
+  TerminalOutputRecord as KernelTerminalOutputRecord,
+  TurnUndoResult as KernelTurnUndoResult,
+  McpImportOutcome as KernelMcpImportOutcome,
+  McpImportSkip as KernelMcpImportSkip,
+  UserConfigMutationEffect as KernelUserConfigMutationEffect,
+  UserConfigSchemaEntry as KernelUserConfigSchemaEntry,
+  QueuedPromptCancelledPayload as KernelQueuedPromptCancelledPayload,
+  QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
+  QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
+  ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
+  SkillImportOutcome as KernelSkillImportOutcome,
+  SkillImportSkip as KernelSkillImportSkip,
+  WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
+  WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
+  WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
+  WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
+  WaitingRoomPublicSnapshot as KernelWaitingRoomPublicSnapshot,
+  WaitingRoomPublicWorkflowEdgeSummary as KernelWaitingRoomPublicWorkflowEdgeSummary,
+  WaitingRoomPublicWorkflowEndpointSummary as KernelWaitingRoomPublicWorkflowEndpointSummary,
+  WaitingRoomPublicWorkflowNodeSummary as KernelWaitingRoomPublicWorkflowNodeSummary,
+  WaitingRoomPublicWorkflowSummary as KernelWaitingRoomPublicWorkflowSummary,
+  WaitingRoomSessionActivitySummary as KernelWaitingRoomSessionActivitySummary,
+  WorkflowConsole as KernelWorkflowConsole,
+  WorkflowConsoleEntry as KernelWorkflowConsoleEntry,
+  WorkflowDefinition as KernelWorkflowDefinition,
+  WorkflowEdgeDefinition as KernelWorkflowEdgeDefinition,
+  WorkflowEndpointDefinition as KernelWorkflowEndpointDefinition,
+  WorkflowEndpointRuntimeInstance as KernelWorkflowEndpointRuntimeInstance,
+  WorkflowFailureEvent as KernelWorkflowFailureEvent,
+  WorkflowMessage as KernelWorkflowMessage,
+  WorkflowNodeDefinition as KernelWorkflowNodeDefinition,
+  WorkflowNodeRun as KernelWorkflowNodeRun,
+  WorkflowPromptQueueDefinition as KernelWorkflowPromptQueueDefinition,
+  WorkflowQueuedPrompt as KernelWorkflowQueuedPrompt,
+  WorkflowRun as KernelWorkflowRun,
+  WorkflowScheduleDefinition as KernelWorkflowScheduleDefinition,
+  WorkflowScheduleTrigger as KernelWorkflowScheduleTrigger,
+  WorkflowSchemaDefinition as KernelWorkflowSchemaDefinition,
+  WorkflowWatchdogDefinition as KernelWorkflowWatchdogDefinition,
+  WorkspaceLinkAttachment as KernelWorkspaceLinkAttachment,
+  WorkspaceLinkDefinition as KernelWorkspaceLinkDefinition,
+  WorkspaceLiveSyncApplyStatus as KernelWorkspaceLiveSyncApplyStatus,
+  WorkspaceLiveSyncGroupStatus as KernelWorkspaceLiveSyncGroupStatus,
+  WorkspaceLiveSyncPathApplyResult as KernelWorkspaceLiveSyncPathApplyResult,
+  WorkspaceLiveSyncStatus as KernelWorkspaceLiveSyncStatus,
+  WorkspaceLiveSyncTargetStatus as KernelWorkspaceLiveSyncTargetStatus,
+} from "@chariox/kernel-client/kernel-types"
+import {
+  normalizeAgentPromptState as normalizeKernelAgentPromptState,
+  normalizeRuntimeSession as normalizeKernelRuntimeSession,
+  normalizeRuntimeSessionWithAgentActivity as normalizeKernelRuntimeSessionWithAgentActivity,
+} from "@chariox/kernel-client/runtime-session-normalization"
+import type { ThemeRegistry } from "./theme-registry.js"
+import type { DirectoryTreeEntry } from "./tree-view.js"
+
+export type {
+  ExternalProviderSessionCapabilities,
+  ExternalProviderSessionRecord,
+}
+
+export type CharioxMcpServerConfig = KernelCharioxMcpServerConfig
+
+export type McpImportSkip = KernelMcpImportSkip
+
+export type McpImportOutcome = KernelMcpImportOutcome
+
+export type CharioxSkillMetadata = KernelCharioxSkillMetadata
+
+export type CharioxEnvironmentConfig = KernelCharioxEnvironmentConfig
+
+export type CharioxScriptMetadata = KernelCharioxScriptMetadata
+
+export type CharioxConnectorDefinition = KernelCharioxConnectorDefinition
+
+export type CharioxConnectorAdapterDefinition = KernelCharioxConnectorAdapterDefinition
+
+export type CharioxCredentialConfig = KernelCharioxCredentialConfig
+
+export type ExtensionKind = KernelExtensionKind
+
+export type ExtensionGrant = KernelExtensionGrant
+
+export type SkillImportSkip = KernelSkillImportSkip
+
+export type SkillImportOutcome = KernelSkillImportOutcome
+
+export type RuntimeSession = KernelRuntimeSession & {
+  room_workflows?: import("@chariox/kernel-client/kernel-types").RoomWorkflowInventory | undefined
+  room_workflows_fresh?: boolean | undefined
+  workspace_label?: string | null
+  directory?: string | null
+  worktree_label?: string | null
+  hidden?: boolean
+}
+
+export type MetaagentTaskStatus = KernelMetaagentTaskStatus
+
+export type MetaagentTask = KernelMetaagentTask
+
+export type ExternalProviderObservedCursor = KernelExternalProviderObservedCursor
+
+export type ExternalProviderImportMetadata = KernelExternalProviderImportMetadata
+
+export type SessionCollaborationAgentCounts = KernelSessionCollaborationAgentCounts
+
+export type SessionMember = KernelSessionMember
+
+export type SessionInvite = KernelSessionInvite
+
+export type CollaborationLevel = KernelCollaborationLevel
+
+export type SessionAgentDefaults = KernelSessionAgentDefaults
+
+export type WaitingRoomPublicSessionSummary = KernelWaitingRoomPublicSessionSummary
+
+export type WaitingRoomSessionActivitySummary = KernelWaitingRoomSessionActivitySummary
+
+export type WaitingRoomPublicItemActivitySummary = KernelWaitingRoomPublicItemActivitySummary
+
+export type WaitingRoomPublicAgentSummary = KernelWaitingRoomPublicAgentSummary
+
+export type WaitingRoomPublicWorkflowSummary = KernelWaitingRoomPublicWorkflowSummary
+
+export type WaitingRoomPublicWorkflowNodeSummary = KernelWaitingRoomPublicWorkflowNodeSummary
+
+export type WaitingRoomPublicWorkflowEdgeSummary = KernelWaitingRoomPublicWorkflowEdgeSummary
+
+export type WaitingRoomPublicWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEndpointSummary
+
+export type WaitingRoomRelayStatusView = KernelRelayStatus
+
+export type WaitingRoomRemoteMachineView = KernelRemoteMachineRecord
+
+export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
+
+export type WaitingRoomTerminalView = KernelTerminalRecord
+
+export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
+
+export type WaitingRoomGitCredentialSummary = KernelWaitingRoomGitCredentialSummary
+
+export type WorkspaceLinkAttachment = KernelWorkspaceLinkAttachment
+
+export type WorkspaceLinkDefinition = KernelWorkspaceLinkDefinition
+
+export type WorkspaceLiveSyncTargetStatus = KernelWorkspaceLiveSyncTargetStatus
+
+export type WorkspaceLiveSyncGroupStatus = KernelWorkspaceLiveSyncGroupStatus
+
+export type WorkspaceLiveSyncStatus = KernelWorkspaceLiveSyncStatus
+
+export type AgentPromptState = KernelAgentPromptState
+
+export type AgentRuntimeActivity = KernelAgentRuntimeActivity
+
+export type AgentQueuedPromptControl = KernelAgentQueuedPromptControl
+
+export type CompletedGitTurnActionProjection = KernelCompletedGitTurnActionProjection
+
+export type WorkspaceLiveSyncApplyStatus = KernelWorkspaceLiveSyncApplyStatus
+
+export type WorkspaceLiveSyncPathApplyResult = KernelWorkspaceLiveSyncPathApplyResult
+
+export type TurnUndoResult = KernelTurnUndoResult
+
+export type AgentForkPayload = Omit<KernelAgentForkPayload, "session"> & {
+  session: RuntimeSession
+}
+
+export type RuntimeInteraction = KernelRuntimeInteraction
+
+export type RuntimeInteractionChoice = KernelRuntimeInteractionChoice
+
+export type RuntimeInteractionCustomChoice = KernelRuntimeInteractionCustomChoice
+
+export type SessionConfigState = KernelSessionConfigState
+
+export type CharioxUserConfig = KernelCharioxUserConfig
+
+export type CharioxUserConfigPayload = KernelCharioxUserConfigPayload
+
+export type CharioxUserConfigSchemaPayload = KernelCharioxUserConfigSchemaPayload
+
+export type UserConfigSchemaEntry = KernelUserConfigSchemaEntry
+
+export type UserConfigMutationEffect = KernelUserConfigMutationEffect
+
+export type SliceDisplayEndpoint = KernelSliceDisplayEndpoint
+
+export type SliceRelayEndpoint = KernelSliceRelayEndpoint
+
+export type SliceRecord = KernelSliceRecord
+
+export type SliceSavedStateRecord = KernelSliceSavedStateRecord
+
+export type SliceBackupRecord = KernelSliceBackupRecord
+
+export type SliceLocalDockerPorts = KernelSliceLocalDockerPorts
+
+export type SliceLogEntry = KernelSliceLogEntry
+
+export type AgentInstance = KernelAgentInstance
+
+export type RemoteExtensionManifestSyncStatus = KernelRemoteExtensionManifestSyncStatus
+
+export type AgentSubstituteProfile = KernelAgentSubstituteProfile
+
+export type PromptQueueItem = KernelPromptQueueItem
+
+export type RuntimeAttachment = KernelRuntimeAttachment
+
+export type RuntimeProviderRun = KernelRuntimeProviderRun
+
+export type ProviderProcessInfo = KernelProviderProcessInfo
+
+export type ProviderAuthStatus = KernelProviderAuthStatus
+
+export type ProviderAccountProfile = KernelProviderAccountProfile
+
+export type ProviderLoginStart = KernelProviderLoginStart
+
+export type ProviderLoginStatus = KernelProviderLoginStatus
+
+export type ProviderLogoutResult = KernelProviderLogoutResult
+
+export type ProviderLogoutOutcome = KernelProviderLogoutOutcome
+
+export type PromptAttachmentPart = KernelPromptAttachmentPart
+
+export type StoredTransferArtifact = KernelStoredTransferArtifact
+
+export type CaptureScreenshotResult = KernelCaptureScreenshotResult
+
+export type RuntimeNoticeRecord = KernelRuntimeNoticeRecord
+
+export type TerminalOutputRecord = KernelTerminalOutputRecord
+
+export type PromptSubmittedPayload = KernelPromptSubmittedPayload
+
+export type QueuedPromptSteeredPayload = KernelQueuedPromptSteeredPayload
+
+export type QueuedPromptCancelledPayload = KernelQueuedPromptCancelledPayload
+
+export type QueuedPromptUpdatedPayload = KernelQueuedPromptUpdatedPayload
+
+export type SessionHistoryPageEntry = KernelSessionHistoryPageEntry
+
+export type SessionHistoryEntry = KernelSessionHistoryEntry
+
+export type SessionHistoryExternalObservation = KernelSessionHistoryExternalObservation
+
+export type SessionHistoryPromptAttachment = KernelSessionHistoryPromptAttachment
+
+export type SessionHistoryOutline = KernelSessionHistoryOutline
+
+export type SessionHistoryOutlineAgent = KernelSessionHistoryOutlineAgent
+
+export type SessionHistoryOutlineCursor = KernelSessionHistoryOutlineCursor
+
+export type SessionHistoryCursorState = KernelSessionHistoryCursorSelection
+
+export type SessionHistoryOutlineTurn = KernelSessionHistoryOutlineTurn
+
+export type SessionHistoryOutlineBlob = KernelSessionHistoryOutlineBlob
+
+export type SessionHistoryBlobContent = KernelSessionHistoryBlobContent
+
+export type PromptInputHistoryEntryKind = KernelPromptInputHistoryEntryKind
+
+export type PromptInputHistoryEntry = KernelPromptInputHistoryEntry
+
+export type PromptInputHistoryPage = KernelPromptInputHistoryPage
+
+export type TranscriptEntry = KernelSessionHistoryTranscriptEntry & {
+  queuedPrompt?: KernelQueuedPromptTranscriptMetadata
+  turnTracking?: "none"
+}
+
+export type WorkflowDefinition = KernelWorkflowDefinition
+
+export type WorkflowSchemaDefinition = KernelWorkflowSchemaDefinition
+
+export type WorkflowEndpointDefinition = KernelWorkflowEndpointDefinition
+
+export type WorkflowEndpointRuntimeInstance = KernelWorkflowEndpointRuntimeInstance
+
+export type WorkflowScheduleTrigger = KernelWorkflowScheduleTrigger
+
+export type WorkflowScheduleDefinition = KernelWorkflowScheduleDefinition
+
+export type WorkflowWatchdogDefinition = KernelWorkflowWatchdogDefinition
+
+export type WorkflowPromptQueueDefinition = KernelWorkflowPromptQueueDefinition
+
+export type WorkflowQueuedPrompt = KernelWorkflowQueuedPrompt
+
+export type WorkflowNodeDefinition = KernelWorkflowNodeDefinition
+
+export type WorkflowEdgeDefinition = KernelWorkflowEdgeDefinition
+
+export type WorkflowMessage = KernelWorkflowMessage
+
+export type WorkflowNodeRun = KernelWorkflowNodeRun
+
+export type WorkflowFailureEvent = KernelWorkflowFailureEvent
+
+export type WorkflowRun = KernelWorkflowRun
+
+export type WorkflowConsoleEntry = KernelWorkflowConsoleEntry
+
+export type WorkflowConsole = KernelWorkflowConsole
+
+export type ReadDirectoryTreeResult = Omit<KernelReadDirectoryTreeResult, "entries"> & {
+  entries: DirectoryTreeEntry[]
+}
+
+export type CliOptions = {
+  kernelUrl?: string
+  socketPath?: string
+  automationSocket?: string
+  relayUrl?: string
+  relayToken?: string
+  relayTokenIssuer?: { endpoint: string; daemonId: string }
+  targetDaemonId?: string
+  targetDaemonAlias?: string
+  detached?: boolean
+  sessionId?: string
+  createSession?: boolean
+  deleteSessionRef?: string
+  alias?: string
+  clientId: string
+  provider?: string
+  model: string
+  accountProfile: string
+  effort: string
+  workspace?: string
+  worktree?: string
+}
+
+export type SessionBinding = {
+  session: RuntimeSession
+  attachment: RuntimeAttachment
+  providerRun: RuntimeProviderRun | null
+  createdSession: boolean
+  historyEntries: TranscriptEntry[]
+  promptHistoryEntries: string[]
+  nextHistoryCursor: SessionHistoryCursorState
+}
+
+export type ComposerInventory = {
+  catalogRevisions?: import("./ipc-requests.js").ClientCatalogRevisions
+  sessionId: string
+  providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog
+  promptHistoryEntries: string[]
+  reconciliation?: Promise<ComposerInventory>
+}
+
+export type AttachLaunchIssue = "credential_vault_locked"
+
+export type AttachLaunch = {
+  providerLaunch?: BootstrapDeferredState["providerLaunch"]
+  sessionId: string
+  session: RuntimeSession | null
+  providerRun: RuntimeProviderRun | null
+  issue: AttachLaunchIssue | null
+}
+
+export type BootstrapDeferredState = {
+  // attachedHistory comes from the attach reply, so it is available without another request.
+  historyIsBundled?: true
+  attachLaunch?: Promise<AttachLaunch>
+  composerScopeKey?: () => string
+  loadPromptInputHistory?: (sessionId: string) => Promise<{ sessionId: string; entries: string[] }>
+  loadComposer?: () => Promise<ComposerInventory>
+
+  promptInputHistory?: Promise<{ sessionId: string; entries: string[] }>
+  providerLaunch?: {
+    sessionId: string
+    agentId: string | null
+    isPending: () => boolean
+    start: () => Promise<{ providerRun: RuntimeProviderRun | null; issue: AttachLaunchIssue | null }>
+  }
+  waitingRoomDefaults?: Promise<{ provider?: string; model?: string; effort?: string }>
+  providerCatalog?: Promise<ProviderCatalog>
+  providerCommandCatalogs?: Promise<ProviderCommandCatalogs>
+  terminalCommandCatalog?: Promise<TerminalCommandCatalog>
+  attachedHistory?: Promise<{
+    sessionId: string
+    visibleAgentId: string | null
+    agentEntries: Record<string, TranscriptEntry[]>
+    historyEntries: TranscriptEntry[]
+    promptHistoryEntries: string[]
+    includesPromptHistory?: boolean
+    nextHistoryCursor: SessionHistoryCursorState
+  }>
+}
+
+export type BootstrapState = {
+  isTranscriptViewCovered?: () => boolean
+  onTranscriptFrame?: () => void
+  client: LocalIpcClient
+  binding: SessionBinding | null
+  sessions: RuntimeSession[]
+  providerCatalog: ProviderCatalog
+  providerCommandCatalogs: ProviderCommandCatalogs
+  terminalCommandCatalog: TerminalCommandCatalog | null
+  options: CliOptions
+  preferences: CharioxPreferences
+  themeRegistry?: ThemeRegistry
+  deferred?: BootstrapDeferredState
+}
+
+export function normalizeAgentPromptState(
+  state: Partial<AgentPromptState> | null | undefined,
+): AgentPromptState {
+  return normalizeKernelAgentPromptState(
+    state as Partial<KernelAgentPromptState> | null | undefined,
+  ) as unknown as AgentPromptState
+}
+
+export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession {
+  const normalized = normalizeKernelRuntimeSession(session as unknown as KernelRuntimeSession) as unknown as RuntimeSession
+  return { ...normalized, agents: normalized.agents.filter(agent => !agent.archived) }
+}
+
+export function normalizeRuntimeSessionWithAgentActivity(payload: {
+  session: RuntimeSession
+  agent_activity?: RuntimeSession["agent_activity"] | null | undefined
+  agent_activity_revision?: number | null | undefined
+}): RuntimeSession {
+  return normalizeRuntimeSession(normalizeKernelRuntimeSessionWithAgentActivity(
+    payload as unknown as {
+      session: KernelRuntimeSession
+      agent_activity?: KernelRuntimeSession["agent_activity"] | null | undefined
+      agent_activity_revision?: number | null | undefined
+    },
+  ) as unknown as RuntimeSession)
+}
+
+export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {
+  return sessions.map(normalizeRuntimeSession)
+}

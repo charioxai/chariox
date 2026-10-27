@@ -1,0 +1,118 @@
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import {
+  getWorkflowRunRequest,
+  invokeWorkflowEndpointRequest,
+} from "@chariox/kernel-client/ipc-requests"
+
+import type {
+  NormalizedInvocation,
+  WorkflowPublicationInvocationEnvelope,
+  WorkflowInvocationResult,
+  WorkflowPublicationConfig,
+  WorkflowRun,
+} from "./publication-types.js"
+import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
+import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
+import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
+
+export function defaultKernelEndpoint() {
+  return process.env.CHARIOX_KERNEL_URL ?? `ws://${process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"}:${process.env.CHARIOX_KERNEL_PORT ?? "43118"}`
+}
+
+export async function invokeKernelWorkflow(
+  publication: WorkflowPublicationConfig,
+  invocation: NormalizedInvocation,
+): Promise<WorkflowInvocationResult> {
+  const client = new LocalIpcClient(publication.kernel_endpoint ?? defaultKernelEndpoint())
+  try {
+    const prompt = promptFromInvocationInput(invocation.input)
+    const publicationInvocation = publicationInvocationEnvelope(publication, invocation)
+    const response = await client.send<Record<string, unknown>>(invokeWorkflowEndpointRequest(
+      publication.session_id,
+      publication.workflow_ref,
+      publication.endpoint_ref,
+      prompt,
+      publication.queue_ref ?? null,
+      publicationInvocation as unknown as Record<string, unknown>,
+    ))
+    if ("WorkflowPromptEnqueued" in response) {
+      return { accepted: true, queued: true, response: response.WorkflowPromptEnqueued }
+    }
+    const invoked = response.WorkflowRunInvoked as { workflow_run: WorkflowRun } | undefined
+    if (!invoked?.workflow_run) {
+      throw new Error(`unexpected workflow invoke response: ${JSON.stringify(response)}`)
+    }
+    if ((publication.mode ?? "sync") === "async") {
+      return { accepted: true, workflow_run: invoked.workflow_run }
+    }
+    const workflowRun = await waitForWorkflowRun(client, publication, invoked.workflow_run.id)
+    return { accepted: true, workflow_run: workflowRun }
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+export function promptFromInvocationInput(input: unknown): string | null {
+  if (typeof input === "string") return input
+  if (input && typeof input === "object" && !Array.isArray(input)) {
+    const record = input as Record<string, unknown>
+    const prompt = record.prompt
+    if (typeof prompt === "string") return prompt
+    const body = record.body
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      const bodyPrompt = (body as Record<string, unknown>).prompt
+      if (typeof bodyPrompt === "string") return bodyPrompt
+    }
+  }
+  if (input == null) return null
+  return JSON.stringify(input)
+}
+
+export function publicationInvocationEnvelope(
+  publication: WorkflowPublicationConfig,
+  invocation: NormalizedInvocation,
+): WorkflowPublicationInvocationEnvelope {
+  return {
+    publication_id: invocation.publication_id,
+    hook_id: publication.hook_id ?? null,
+    invocation_id: invocation.request_id,
+    transport: publication.transport ?? "human_http",
+    endpoint_id: publication.endpoint_ref,
+    queue_ref: publication.queue_ref ?? "default",
+    input: invocation.input,
+    artifacts: invocationArtifacts(invocation.input),
+    mode: invocation.mode,
+    caller: invocation.caller,
+  }
+}
+
+function invocationArtifacts(input: unknown): unknown[] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return []
+  const artifacts = (input as Record<string, unknown>).artifacts
+  return Array.isArray(artifacts) ? artifacts : []
+}
+
+async function waitForWorkflowRun(
+  client: LocalIpcClient,
+  publication: WorkflowPublicationConfig,
+  workflowRunId: string,
+) {
+  const timeoutMs = publicationWaitTimeoutMs(publication)
+  const pollMs = publication.poll_ms ?? 500
+  const deadline = Date.now() + timeoutMs
+  let latest: WorkflowRun | null = null
+  while (Date.now() < deadline) {
+    await pumpPublicationRuntime(client, publication)
+    const response = await client.send<Record<string, unknown>>(
+      getWorkflowRunRequest(publication.session_id, workflowRunId),
+    )
+    latest = (response.WorkflowRun as { workflow_run: WorkflowRun } | undefined)?.workflow_run ?? null
+    if (latest && isTerminalWorkflowRunStatus(latest.status)) return latest
+    await sleep(pollMs)
+  }
+  return latest ?? { id: workflowRunId, status: "unknown" }
+}
+
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}

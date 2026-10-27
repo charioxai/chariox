@@ -1,0 +1,420 @@
+#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
+
+const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const repoRoot = path.resolve(cliRoot, '..', '..')
+
+function parseArgs(argv) {
+  const options = { keepArtifactsOnFailure: false }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--keep-artifacts-on-failure') options.keepArtifactsOnFailure = true
+    else if (arg === '--help' || arg === '-h') {
+      console.log('Usage: node apps/cli/scripts/live-shell-scriptability-drill.mjs [--keep-artifacts-on-failure]')
+      process.exit(0)
+    } else {
+      throw new Error(`unknown option: ${arg}`)
+    }
+  }
+  return options
+}
+
+function makePorts() {
+  const kernelPort = 47000 + Math.floor(Math.random() * 1000)
+  return {
+    kernelPort,
+    mcpPort: kernelPort + 1000,
+    opencodePort: kernelPort + 2000,
+    codexPort: kernelPort + 2001,
+  }
+}
+
+function log(name, details) {
+  if (details === undefined) console.log(`[shell-drill] ${name}`)
+  else console.log(`[shell-drill] ${name}`, JSON.stringify(details))
+}
+
+async function run(command, args, options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd ?? repoRoot,
+      env: options.env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString() })
+    child.on('error', reject)
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }))
+  })
+}
+
+async function runChecked(command, args, options = {}) {
+  const result = await run(command, args, options)
+  if (result.code !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`)
+  }
+  return result
+}
+
+async function initGitWorktree(root) {
+  await runChecked('git', ['init', '-b', 'main'], { cwd: root })
+  await runChecked('git', ['config', 'user.email', 'shell-drill@example.com'], { cwd: root })
+  await runChecked('git', ['config', 'user.name', 'Shell Drill'], { cwd: root })
+}
+
+async function buildKernel() {
+  const existingBinary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
+  const existing = await stat(existingBinary).then((info) => info.isFile()).catch(() => false)
+  if (existing) return existingBinary
+  const result = await run('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
+  if (result.code !== 0) {
+    throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
+  }
+  return existingBinary
+}
+
+async function waitForDaemon(shellBin, kernelUrl, workspace, env) {
+  const scriptPath = path.join(workspace, 'wait.chariox')
+  await writeFile(scriptPath, 'session list\n', 'utf8')
+  const deadline = Date.now() + 20_000
+  let last = null
+  while (Date.now() < deadline) {
+    last = await run(process.execPath, [shellBin, 'run', scriptPath, '--kernel-url', kernelUrl, '--workspace', workspace, '--worktree', workspace], { env })
+    if (last.code === 0) return
+    await new Promise((resolve) => setTimeout(resolve, 250))
+  }
+  throw new Error(`daemon did not become ready\nstdout:\n${last?.stdout ?? ''}\nstderr:\n${last?.stderr ?? ''}`)
+}
+
+function requireOutput(output, pattern, label) {
+  if (!pattern.test(output)) {
+    throw new Error(`missing ${label}: ${pattern}\n--- output ---\n${output}`)
+  }
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+async function cleanupSession(kernelUrl, sessionId) {
+  if (!sessionId) return
+  const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
+  const { endSessionRequest } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
+  const client = new LocalIpcClient(kernelUrl)
+  try {
+    await client.send(endSessionRequest(sessionId)).catch(() => {})
+  } finally {
+    await client.close().catch(() => {})
+  }
+}
+
+async function terminateChild(child, signal = 'SIGTERM') {
+  if (!child || child.exitCode != null || child.signalCode != null) return
+  child.kill(signal)
+  await Promise.race([
+    new Promise((resolve) => child.once('exit', resolve)),
+    new Promise((resolve) => setTimeout(resolve, 5_000)),
+  ])
+  if (child.exitCode == null && child.signalCode == null) {
+    child.kill('SIGKILL')
+    await Promise.race([
+      new Promise((resolve) => child.once('exit', resolve)),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ])
+  }
+}
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  const rootDir = path.join(repoRoot, 'target', 'live-shell-scriptability-drill', `${process.pid}-${Date.now()}`)
+  const workspace = path.join(rootDir, 'workspace')
+  const home = path.join(rootDir, 'home')
+  const scriptsDir = path.join(rootDir, 'scripts')
+  const skillDir = path.join(rootDir, 'shell-drill-skill')
+  const mcpPath = path.join(rootDir, 'echo-mcp.mjs')
+  const ports = makePorts()
+  const kernelUrl = `ws://127.0.0.1:${ports.kernelPort}`
+  const shellBin = path.join(repoRoot, 'apps/shell/dist/shell.js')
+  const env = {
+    ...process.env,
+    HOME: home,
+    CHARIOX_KERNEL_PORT: String(ports.kernelPort),
+    CHARIOX_MCP_PORT: String(ports.mcpPort),
+    CHARIOX_OPENCODE_PORT: String(ports.opencodePort),
+    CHARIOX_CODEX_PORT: String(ports.codexPort),
+    CHARIOX_DAEMON_ID: `shell-drill-${process.pid}-${Date.now()}`,
+    CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
+    CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'history'),
+  }
+
+  let daemon = null
+  let sessionId = null
+  let succeeded = false
+  let failure = null
+  try {
+    await prepareDrillArtifacts(rootDir)
+    await mkdir(workspace, { recursive: true })
+    await initGitWorktree(workspace)
+    await mkdir(home, { recursive: true })
+    await mkdir(scriptsDir, { recursive: true })
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: shell-drill-skill\ndescription: Skill used by the chariox-shell live drill.\n---\nUse this only for shell live drills.\n', 'utf8')
+    await writeFile(mcpPath, [
+      "process.stdin.resume()",
+      "process.stdin.on('data', () => {})",
+    ].join('\n'), 'utf8')
+    await writeFile(path.join(workspace, 'sourced.chariox'), [
+      'set effort low',
+      'vars',
+    ].join('\n'), 'utf8')
+
+    const kernelBinary = await buildKernel()
+    daemon = spawn(kernelBinary, [], { cwd: repoRoot, env, stdio: ['ignore', 'ignore', 'inherit'] })
+    await waitForDaemon(shellBin, kernelUrl, workspace, env)
+    log('daemon-ready', { kernelUrl })
+
+    const successScript = path.join(scriptsDir, 'success.chariox')
+    await writeFile(successScript, [
+      'set provider dev-stub',
+      'set model shell-drill-model',
+      'set effort low',
+      'context',
+      'pwd',
+      'vars',
+      'source sourced.chariox',
+      'session list',
+      'session new $workspace as session',
+      'session use $session',
+      'agent list',
+      'agent spawn alpha shell-drill-model as alpha',
+      'agent spawn beta shell-drill-model as beta',
+      'agent list',
+      'agent focus $alpha',
+      'agent cycle',
+      'config path',
+      'config show',
+      'config set providers.model shell-drill-model',
+      'config workspace-live-sync off',
+      'config unset providers.model',
+      'workspace link create shell-live-sync as sync_link',
+      'workspace link list',
+      'workspace link show $sync_link',
+      'workspace sync link $sync_link',
+      'workspace sync status',
+      'workspace sync targets',
+      'workspace sync conflicts',
+      'workspace sync ignore',
+      'workspace sync mode tracked',
+      'workspace sync enable managed',
+      'workspace sync disable',
+      'workspace link detach $sync_link',
+      'mcp list',
+      'mcp install shell_echo --command node --arg $mcp',
+      'mcp show shell_echo',
+      'mcp grant $alpha shell_echo',
+      'mcp grants $alpha',
+      'mcp revoke $alpha shell_echo',
+      'mcp uninstall shell_echo',
+      'skill list',
+      'skill install $skill',
+      'skill show shell-drill-skill',
+      'skill grant $alpha shell-drill-skill',
+      'skill grants $alpha',
+      'skill revoke $alpha shell-drill-skill',
+      'skill uninstall shell-drill-skill',
+      'workflow list',
+      'workflow new shell-flow as workflow',
+      'workflow show $workflow',
+      'workflow alias $workflow shell-flow-alias',
+      'workflow node add $workflow $alpha as node1',
+      'workflow node add $workflow $beta as node2',
+      'workflow node can-complete-run $workflow $node1 false',
+      'workflow node can-emit-intermediate-output $workflow $node1 true',
+      'workflow node intermediate-output-schema $workflow $node1 none',
+      'workflow node max-turns $workflow $node1 2',
+      'workflow edge add $workflow $node1 $node2',
+      'workflow endpoint new $workflow $node1 shell-entry',
+      'workflow endpoint alias $workflow shell-entry shell-entry-2',
+      'workflow endpoint bind $workflow shell-entry-2 $node1',
+      'workflow flush-context $workflow true',
+      'workflow run-output-schema $workflow none',
+      'workflow intermediate-output-schema $workflow none',
+      'workflow max-turns off',
+      'workflow schedule list',
+      'workflow schedule add $workflow shell-entry-2 --every 30s --overlap skip --prompt shell-drill-schedule',
+      'workflow schedule list',
+      'workflow queue list',
+      'workflow queue flush',
+      'workflow runs',
+      'provider processes',
+      'provider processes teardown dev-stub',
+    ].join('\n'), 'utf8')
+
+    const success = await run(process.execPath, [
+      shellBin,
+      'run',
+      successScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      `workspace=${workspace}`,
+      '--var',
+      `mcp=${mcpPath}`,
+      '--var',
+      `skill=${skillDir}`,
+    ], { env })
+    if (success.code !== 0) {
+      throw new Error(`success script failed\nstdout:\n${success.stdout}\nstderr:\n${success.stderr}`)
+    }
+    requireOutput(success.stdout, /bound \$session = /, 'session binding')
+    requireOutput(success.stdout, /provider: dev-stub/, 'context provider')
+    requireOutput(success.stdout, new RegExp(escapeRegex(workspace)), 'pwd workspace')
+    requireOutput(success.stdout, /bound \$alpha = /, 'agent binding')
+    requireOutput(success.stdout, /installed MCP shell_echo/, 'MCP install')
+    requireOutput(success.stdout, /installed skill shell-drill-skill/, 'skill install')
+    requireOutput(success.stdout, /created workflow/, 'workflow create')
+    requireOutput(success.stdout, /created workflow schedule/, 'schedule create')
+    sessionId = success.stdout.match(/bound \$session = (\S+)/)?.[1] ?? null
+    if (!sessionId) {
+      throw new Error(`success script did not expose a session id\n${success.stdout}`)
+    }
+    log('success-script-passed', { sessionId })
+
+    const unconfirmedBatchScript = path.join(scriptsDir, 'batch-spawn-unconfirmed.chariox')
+    await writeFile(unconfirmedBatchScript, [
+      'set provider dev-stub',
+      'set model shell-drill-model',
+      'set effort low',
+      'session use $session',
+      'agents spawn 50 reviewer',
+    ].join('\n'), 'utf8')
+    const unconfirmedBatch = await run(process.execPath, [
+      shellBin,
+      'run',
+      unconfirmedBatchScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      `session=${sessionId}`,
+    ], { env })
+    if (unconfirmedBatch.code === 0) {
+      throw new Error(`unconfirmed batch spawn unexpectedly exited 0\nstdout:\n${unconfirmedBatch.stdout}\nstderr:\n${unconfirmedBatch.stderr}`)
+    }
+    requireOutput(unconfirmedBatch.stdout, /spawning 50 agents requires confirmation/, 'large batch confirmation prompt')
+    requireOutput(unconfirmedBatch.stdout, /--confirm-large/, 'large batch confirmation flag')
+
+    const batchScript = path.join(scriptsDir, 'batch-spawn.chariox')
+    await writeFile(batchScript, [
+      'set provider dev-stub',
+      'set model shell-drill-model',
+      'set effort low',
+      'session use $session',
+      'agents spawn 50 reviewer --confirm-large',
+      'agents spawn 10 promptbot --prompt "shell drill batch prompt" --concurrency 5',
+      'stop',
+      'agent list',
+    ].join('\n'), 'utf8')
+    const batch = await run(process.execPath, [
+      shellBin,
+      'run',
+      batchScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      `session=${sessionId}`,
+    ], { env })
+    if (batch.code !== 0) {
+      throw new Error(`batch spawn script failed\nstdout:\n${batch.stdout}\nstderr:\n${batch.stderr}`)
+    }
+    requireOutput(batch.stdout, /spawned 50 agents \([0-9a-f]+\.\.[0-9a-f]+\)/, 'confirmed 50-agent batch spawn')
+    requireOutput(batch.stdout, /spawned 10 agents \([0-9a-f]+\.\.[0-9a-f]+\); prompted 10 agents with concurrency 5/, 'prompted 10-agent batch spawn')
+    requireOutput(batch.stdout, /cancellation requested for prompt/, 'prompted batch cleanup stop')
+    requireOutput(batch.stdout, /reviewer-50/, 'batch agent list tail alias')
+    requireOutput(batch.stdout, /promptbot-10/, 'prompted batch agent list tail alias')
+    log('batch-spawn-script-passed')
+
+    const auditScript = path.join(scriptsDir, 'continue-on-error.chariox')
+    await writeFile(auditScript, [
+      'vars',
+      'session use $session',
+      'stop',
+      'waiting',
+      'machine list',
+      'relay status',
+      'session list',
+    ].join('\n'), 'utf8')
+    const audit = await run(process.execPath, [
+      shellBin,
+      'run',
+      auditScript,
+      '--kernel-url',
+      kernelUrl,
+      '--workspace',
+      workspace,
+      '--worktree',
+      workspace,
+      '--var',
+      'seeded=yes',
+      '--var',
+      `session=${sessionId}`,
+      '--continue-on-error',
+    ], { env })
+    if (audit.code === 0) {
+      throw new Error(`continue-on-error script unexpectedly exited 0\nstdout:\n${audit.stdout}\nstderr:\n${audit.stderr}`)
+    }
+    requireOutput(audit.stdout, /\$seeded = yes/, 'seeded variable')
+    requireOutput(audit.stdout, /line 3 failed; continuing/, 'line 3 continue diagnostic')
+    requireOutput(audit.stdout, /line 4 failed; continuing/, 'line 4 continue diagnostic')
+    requireOutput(audit.stdout, /relay not configured/, 'relay status output')
+    requireOutput(audit.stdout, /session/, 'continued command after failures')
+    log('continue-on-error-script-passed')
+
+    succeeded = true
+  } catch (error) {
+    failure = error
+    throw error
+  } finally {
+    await cleanupSession(kernelUrl, sessionId)
+    await terminateChild(daemon)
+    await finalizeDrillArtifacts({
+      rootDir,
+      passed: succeeded,
+      preserveOnFailure: options.keepArtifactsOnFailure,
+      failure,
+      metadata: {
+        drill: 'shell-scriptability',
+        kernelUrl,
+        sessionId,
+        workspace,
+        scriptsDir,
+        skillDir,
+        mcpPath,
+      },
+      log,
+    })
+  }
+  log('passed')
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.stack ?? error.message : error)
+  process.exit(1)
+})

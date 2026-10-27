@@ -1,0 +1,1177 @@
+use std::future::Future;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tokio::sync::mpsc;
+use tokio::time::{sleep, timeout};
+
+#[cfg(test)]
+use crate::error::DaemonError;
+use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};
+use crate::runtime::projection::SessionSnapshotProjection;
+use crate::runtime::router::CommandRouter;
+use crate::terminal::{
+    AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalOutputRecord,
+};
+use crate::transport::kernel_protocol::{
+    event_is_relevant_to_attachment, event_session_id, event_stream_id_for_event,
+    kernel_event_trace_payload, subscription_event_stream_id, KernelEvent, KernelOutgoingFrame,
+    KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
+    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+};
+
+use crate::transport::agent_turn_feed::AgentTurnFeed;
+use crate::transport::home_audit_feed::HomeAuditFeed;
+use crate::transport::passkey_prompt_feed::PasskeyPromptFeed;
+
+use super::outgoing::{try_send_outgoing_frame, KernelOutgoingSender};
+use super::{
+    ConnectionCloseCommand, KernelSubscription, KernelTransportRuntime, HEARTBEAT_INTERVAL_TICKS,
+    RELAY_DISCOVERY_INTERVAL_TICKS, SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS,
+    WAITING_ROOM_INVENTORY_INTERVAL_TICKS, WAITING_ROOM_ROW_COALESCE_MS, WATCH_INTERVAL_MS,
+};
+
+pub(super) async fn run_subscription_loop(
+    router: Arc<CommandRouter>,
+    runtime: Arc<KernelTransportRuntime>,
+    outgoing_tx: KernelOutgoingSender,
+    close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: Arc<AtomicBool>,
+    subscription: KernelSubscription,
+) {
+    // Local subscriptions follow Cloud link/unlink through the current projection.
+    let mut passkey_prompts = PasskeyPromptFeed::new_local(subscription.connection_class, &router);
+    if subscription.subscription_scope == KernelSubscriptionScope::WaitingRoomInventory {
+        run_waiting_room_inventory_subscription_loop(
+            subscription.heartbeat_interval,
+            router,
+            runtime,
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            passkey_prompts,
+        )
+        .await;
+        return;
+    }
+    let mut previous_catalog_revision = None;
+    let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
+    let mut last_workflow_design_sequence = 0_u64;
+    let mut last_snapshot_projection_sequence: Option<u64> = None;
+    let mut next_snapshot_reconciliation_at = Instant::now();
+    let mut next_heartbeat_at = Instant::now();
+    let mut agent_turns = AgentTurnFeed::default();
+    let mut home_audit = HomeAuditFeed::new(&router);
+    let event_stream_id =
+        subscription_event_stream_id(&subscription.session_id, &subscription.attachment_id);
+
+    loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                event,
+                Some(&event_stream_id),
+                Some(&subscription.session_id),
+                Some(&subscription.attachment_id),
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+                Some(&event_stream_id),
+                Some(&subscription.session_id),
+                Some(&subscription.attachment_id),
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let terminal_attachment_change_sequence = router.terminal_attachment_change_sequence(
+            &subscription.session_id,
+            &subscription.attachment_id,
+        );
+        let terminal_session_change_sequence =
+            router.terminal_session_change_sequence(&subscription.session_id);
+        let session_projection_change_sequence =
+            router.session_projection_session_change_sequence(&subscription.session_id);
+        let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let now = Instant::now();
+        let should_check_snapshot = previous_snapshot.is_none()
+            || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
+            || now >= next_snapshot_reconciliation_at;
+        let previous_snapshot_for_watch = if should_check_snapshot {
+            previous_snapshot.clone()
+        } else {
+            None
+        };
+        let Some(watch_result) = await_subscription_work_with_heartbeats(
+            router.relay_watch_subscription_state(
+                &subscription.session_id,
+                &subscription.attachment_id,
+                should_check_snapshot,
+                previous_snapshot_for_watch,
+                last_workflow_design_sequence,
+            ),
+            &mut next_heartbeat_at,
+            subscription.heartbeat_interval,
+            || {
+                emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::Heartbeat {
+                        session_id: subscription.session_id.clone(),
+                    },
+                    Some(&event_stream_id),
+                    Some(&subscription.session_id),
+                    Some(&subscription.attachment_id),
+                )
+            },
+        )
+        .await
+        else {
+            break;
+        };
+        if should_check_snapshot {
+            last_snapshot_projection_sequence = Some(session_projection_change_sequence);
+            next_snapshot_reconciliation_at =
+                Instant::now() + subscription_snapshot_reconciliation_interval();
+        }
+
+        match watch_result {
+            WatchResult::Ok {
+                records,
+                notices,
+                completions,
+                workflow_design_events,
+                workflow_run_updates,
+                snapshot,
+            } => {
+                // The same wake can contain an accepted prompt and a large output
+                // backlog. Publish its authoritative projection before that backlog.
+                let projection_events = (*snapshot)
+                    .map(|snapshot| {
+                        let events = crate::runtime_transport::session_projection_events(
+                            &snapshot,
+                            previous_snapshot.as_ref(),
+                            !workflow_run_updates.is_empty(),
+                        );
+                        agent_turns.observe_snapshot(&snapshot);
+                        previous_snapshot = Some(snapshot);
+                        events
+                    })
+                    .unwrap_or_default();
+                for event in projection_events {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+                for agent_id in records
+                    .iter()
+                    .filter_map(|record| record.agent_id.as_deref())
+                {
+                    agent_turns.mark_changed(agent_id);
+                }
+                if !records.is_empty()
+                    && !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::TerminalOutput { records },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                {
+                    break;
+                }
+                if !notices.is_empty()
+                    && !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::RuntimeNotices { notices },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                {
+                    break;
+                }
+                for completion in completions {
+                    if let Some(agent_id) = completion.agent_id.as_deref() {
+                        agent_turns.mark_changed(agent_id);
+                    }
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::AssistantMessageCompleted {
+                            session_id: completion.session_id,
+                            provider_run_id: completion.provider_run_id,
+                            agent_id: completion.agent_id,
+                            recipient_attachment_ids: completion.recipient_attachment_ids,
+                            message_id: completion.message_id,
+                            completed_at_ms: completion.completed_at_ms,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                for workflow_event in workflow_design_events {
+                    last_workflow_design_sequence =
+                        last_workflow_design_sequence.max(workflow_event.kernel_sequence);
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WorkflowDesignOp {
+                            design_op: workflow_event,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                for workflow_run in workflow_run_updates {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: subscription.session_id.clone(),
+                            workflow_run,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
+                let Some(feed_events) = await_subscription_work_with_heartbeats(
+                    async {
+                        let mut events = agent_turns.flush(&router, &subscription.session_id).await;
+                        events.extend(
+                            home_audit
+                                .next_events(
+                                    &router,
+                                    &subscription.session_id,
+                                    &subscription.attachment_id,
+                                    agent_turns.session_agents(),
+                                )
+                                .await,
+                        );
+                        events
+                    },
+                    &mut next_heartbeat_at,
+                    subscription.heartbeat_interval,
+                    || {
+                        emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            KernelEvent::Heartbeat {
+                                session_id: subscription.session_id.clone(),
+                            },
+                            Some(&event_stream_id),
+                            Some(&subscription.session_id),
+                            Some(&subscription.attachment_id),
+                        )
+                    },
+                )
+                .await
+                else {
+                    break;
+                };
+                for event in feed_events {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        event,
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                }
+
+                if Instant::now() >= next_heartbeat_at {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::Heartbeat {
+                            session_id: subscription.session_id.clone(),
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                    next_heartbeat_at = advance_subscription_deadline(
+                        next_heartbeat_at,
+                        subscription.heartbeat_interval,
+                    );
+                }
+            }
+            WatchResult::Unavailable(message) => {
+                let _ = emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::SessionUnavailable {
+                        session_id: subscription.session_id.clone(),
+                        message,
+                    },
+                    Some(&event_stream_id),
+                    Some(&subscription.session_id),
+                    Some(&subscription.attachment_id),
+                )
+                .await;
+                break;
+            }
+        }
+
+        let _ = timeout(
+            next_subscription_wait_duration(
+                next_heartbeat_at,
+                agent_turns
+                    .next_due()
+                    .map_or(next_snapshot_reconciliation_at, |due| {
+                        due.min(next_snapshot_reconciliation_at)
+                    }),
+            ),
+            async {
+                tokio::select! {
+                    _ = router.wait_for_terminal_attachment_change_after(
+                        &subscription.session_id,
+                        &subscription.attachment_id,
+                        terminal_attachment_change_sequence
+                    ) => {}
+                    _ = router.wait_for_terminal_session_change_after(
+                        &subscription.session_id,
+                        terminal_session_change_sequence
+                    ) => {}
+                    _ = router.wait_for_session_projection_session_change_after(
+                        &subscription.session_id,
+                        session_projection_change_sequence
+                    ) => {}
+                    _ = router.wait_for_workflow_design_change_after(
+                        workflow_design_change_sequence
+                    ) => {}
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
+                    _ = passkey_prompts.changed(&router) => {}
+                    _ = home_audit.changed() => {}
+                }
+            },
+        )
+        .await;
+    }
+}
+
+pub(super) fn subscription_heartbeat_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * HEARTBEAT_INTERVAL_TICKS)
+}
+
+fn subscription_snapshot_reconciliation_interval() -> Duration {
+    Duration::from_millis(WATCH_INTERVAL_MS * SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS)
+}
+
+fn next_subscription_wait_duration(
+    next_heartbeat_at: Instant,
+    next_snapshot_reconciliation_at: Instant,
+) -> Duration {
+    next_heartbeat_at
+        .min(next_snapshot_reconciliation_at)
+        .checked_duration_since(Instant::now())
+        .unwrap_or(Duration::ZERO)
+}
+
+fn advance_subscription_deadline(mut deadline: Instant, interval: Duration) -> Instant {
+    let now = Instant::now();
+    while deadline <= now {
+        deadline += interval;
+    }
+    deadline
+}
+
+pub(crate) async fn await_subscription_work_with_heartbeats<F, T, Emit, EmitFuture>(
+    work: F,
+    next_heartbeat_at: &mut Instant,
+    heartbeat_interval: Duration,
+    mut emit_heartbeat: Emit,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+    Emit: FnMut() -> EmitFuture,
+    EmitFuture: Future<Output = bool>,
+{
+    tokio::pin!(work);
+    loop {
+        if Instant::now() >= *next_heartbeat_at {
+            if !emit_heartbeat().await {
+                return None;
+            }
+            *next_heartbeat_at =
+                advance_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            continue;
+        }
+        let heartbeat_wait = next_heartbeat_at
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        tokio::select! {
+            result = &mut work => return Some(result),
+            _ = sleep(heartbeat_wait) => {
+                if !emit_heartbeat().await {
+                    return None;
+                }
+                *next_heartbeat_at =
+                    advance_subscription_deadline(*next_heartbeat_at, heartbeat_interval);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod workflow_run_updates;
+
+#[cfg(test)]
+fn build_session_snapshot(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+    attachment_owner_user_id: &str,
+) -> Result<SessionSnapshotProjection, DaemonError> {
+    let snapshot = SessionSnapshotProjection::from_daemon_app_for_user(
+        app,
+        session_id,
+        0,
+        Some(attachment_owner_user_id),
+    )?;
+    snapshot.redacted_for_user(attachment_owner_user_id, &app.durable_state_store())
+}
+
+pub(crate) enum WatchResult {
+    Ok {
+        records: Vec<TerminalOutputRecord>,
+        notices: Vec<RuntimeNoticeRecord>,
+        completions: Vec<AssistantMessageCompletionRecord>,
+        workflow_design_events: Vec<crate::local::WorkflowDesignOpForwarded>,
+        workflow_run_updates: Vec<crate::session::WorkflowRun>,
+        snapshot: Box<Option<SessionSnapshotProjection>>,
+    },
+    Unavailable(String),
+}
+
+#[cfg(test)]
+pub(crate) fn watch_subscription_state(
+    app: &mut crate::app::DaemonApp,
+    session_id: &str,
+    attachment_id: &str,
+    should_check_snapshot: bool,
+    previous_snapshot: Option<SessionSnapshotProjection>,
+    last_workflow_design_sequence: u64,
+) -> WatchResult {
+    let attachment = if let Ok(attachment) = crate::app::KernelSessionReadService::new(app)
+        .ensure_attachment_in_session(session_id, attachment_id)
+    {
+        attachment
+    } else {
+        return WatchResult::Unavailable("Current session is no longer available.".to_string());
+    };
+    let attachment_owner_user_id = attachment.owner_user_id().to_string();
+
+    let records = match crate::app::provider_output::pump_terminal_output_for_attachment(
+        app,
+        session_id,
+        attachment_id,
+    ) {
+        Ok(records) => records,
+        Err(DaemonError::NoActiveProviderRun { .. }) => Vec::new(),
+        Err(DaemonError::SessionNotFound { .. })
+        | Err(DaemonError::AttachmentNotFound { .. })
+        | Err(DaemonError::AttachmentNotInSession { .. }) => {
+            return WatchResult::Unavailable("Current session is no longer available.".to_string());
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.runtime_transport",
+                "kernel event loop failed to pump terminal output",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "attachment_id": attachment_id,
+                    "error": error.to_string(),
+                }),
+            );
+            Vec::new()
+        }
+    };
+
+    let notices = app
+        .terminal_mut()
+        .drain_notice_records(session_id, attachment_id);
+    let completions = app
+        .terminal_mut()
+        .drain_completion_records(session_id, attachment_id);
+    let workflow_run_updates = match workflow_run_updates::drain_visible_workflow_run_updates(
+        app,
+        session_id,
+        attachment_id,
+        &attachment_owner_user_id,
+    ) {
+        Ok(updates) => updates,
+        Err(_) => {
+            return WatchResult::Unavailable(
+                "Workflow history is currently unavailable.".to_string(),
+            );
+        }
+    };
+    let workflow_design_events = app.workflow_design_event_store().events_since(
+        session_id,
+        last_workflow_design_sequence,
+        attachment_id,
+    );
+    let snapshot = if should_check_snapshot {
+        match build_session_snapshot(app, session_id, &attachment_owner_user_id) {
+            Ok(snapshot) => {
+                if previous_snapshot.as_ref() != Some(&snapshot) {
+                    Box::new(Some(snapshot))
+                } else {
+                    Box::new(None)
+                }
+            }
+            Err(DaemonError::SessionNotFound { .. }) => {
+                return WatchResult::Unavailable(
+                    "Current session is no longer available.".to_string(),
+                );
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "kernel event loop failed to build session snapshot",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "attachment_id": attachment_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                Box::new(None)
+            }
+        }
+    } else {
+        Box::new(None)
+    };
+
+    WatchResult::Ok {
+        records,
+        notices,
+        completions,
+        workflow_design_events,
+        workflow_run_updates,
+        snapshot,
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserve the existing emit_kernel_event operation signature and explicit context arguments"
+)]
+async fn emit_kernel_event(
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &KernelOutgoingSender,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    event: KernelEvent,
+    event_stream_id: Option<&str>,
+    session_id: Option<&str>,
+    attachment_id: Option<&str>,
+) -> bool {
+    let stream_id = event_stream_id
+        .map(str::to_string)
+        .or_else(|| event_stream_id_for_event(&event, session_id));
+    let event_id = if let Some(stream_id) = stream_id.as_deref() {
+        match runtime
+            .event_log
+            .append(stream_id.to_string(), event.clone())
+            .await
+        {
+            Ok(logged) => logged.event_id,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "failed to reserve kernel event id",
+                    serde_json::json!({
+                        "stream_id": stream_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return false;
+            }
+        }
+    } else {
+        match runtime.event_log.append("daemon", event.clone()).await {
+            Ok(logged) => logged.event_id,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime_transport",
+                    "failed to reserve kernel event id",
+                    serde_json::json!({
+                        "stream_id": "daemon",
+                        "error": error.to_string(),
+                    }),
+                );
+                return false;
+            }
+        }
+    };
+    if let Some(trace_session_id) = event_session_id(&event).or(session_id) {
+        crate::debug_trace::record_terminal_turn(
+            trace_session_id,
+            "kernel_event_emit",
+            kernel_event_trace_payload(event_id, &event),
+        );
+    }
+    runtime.transport_health.record_emitted_event();
+    try_send_outgoing_frame(
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        &runtime.transport_health,
+        KernelOutgoingFrame::Event {
+            event_id,
+            kernel: None,
+            event: Box::new(event),
+        },
+        session_id,
+        attachment_id,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ReplaySubscriptionResult {
+    NoCursor,
+    Complete,
+    Gap(ReplayGap),
+    Overflow,
+}
+
+pub(super) async fn replay_recent_events(
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &KernelOutgoingSender,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    session_id: &str,
+    attachment_id: &str,
+    resume_from_event_id: Option<u64>,
+) -> ReplaySubscriptionResult {
+    let Some(cursor) = resume_from_event_id else {
+        return ReplaySubscriptionResult::NoCursor;
+    };
+    let stream_id = subscription_event_stream_id(session_id, attachment_id);
+    let replay = runtime.event_log.replay_after(&stream_id, cursor).await;
+
+    let events = match replay {
+        ReplayOutcome::Replayed(events) => events,
+        ReplayOutcome::Gap(gap) => {
+            runtime.transport_health.record_replay_gap();
+            let _ = emit_kernel_event(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelEvent::ReplayGap {
+                    session_id: session_id.to_string(),
+                    requested_from_event_id: gap.requested_from_event_id,
+                    first_retained_event_id: gap.first_retained_event_id,
+                    latest_event_id: gap.latest_event_id,
+                    message: "Replay cursor is outside the retained kernel event window; refresh the session projection.".to_string(),
+                },
+                Some(&stream_id),
+                Some(session_id),
+                Some(attachment_id),
+            )
+            .await;
+            return ReplaySubscriptionResult::Gap(gap);
+        }
+    };
+
+    for persisted in compact_replay_events(events) {
+        if !event_is_relevant_to_attachment(&persisted.event, attachment_id) {
+            continue;
+        }
+        if !try_send_outgoing_frame(
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            &runtime.transport_health,
+            KernelOutgoingFrame::Event {
+                event_id: persisted.event_id,
+                kernel: None,
+                event: Box::new(persisted.event.clone()),
+            },
+            Some(session_id),
+            Some(attachment_id),
+        ) {
+            return ReplaySubscriptionResult::Overflow;
+        }
+    }
+
+    if !try_send_outgoing_frame(
+        outgoing_tx,
+        close_tx,
+        close_requested,
+        &runtime.transport_health,
+        KernelOutgoingFrame::Event {
+            kernel: None,
+            event_id: match runtime
+                .event_log
+                .append(
+                    stream_id,
+                    KernelEvent::TransportResumed {
+                        session_id: session_id.to_string(),
+                        resumed_from_event_id: Some(cursor),
+                    },
+                )
+                .await
+            {
+                Ok(logged) => logged.event_id,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "failed to reserve transport-resumed event id",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "attachment_id": attachment_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    return ReplaySubscriptionResult::Overflow;
+                }
+            },
+            event: Box::new(KernelEvent::TransportResumed {
+                session_id: session_id.to_string(),
+                resumed_from_event_id: Some(cursor),
+            }),
+        },
+        Some(session_id),
+        Some(attachment_id),
+    ) {
+        return ReplaySubscriptionResult::Overflow;
+    }
+    ReplaySubscriptionResult::Complete
+}
+
+fn compact_replay_events(events: Vec<LoggedEvent<KernelEvent>>) -> Vec<LoggedEvent<KernelEvent>> {
+    let latest_session_snapshot_event_id =
+        events.iter().rev().find_map(|event| match event.event {
+            KernelEvent::SessionSnapshot { .. } => Some(event.event_id),
+            _ => None,
+        });
+
+    events
+        .into_iter()
+        .filter(|event| match &event.event {
+            KernelEvent::TransportResumed { .. } => false,
+            KernelEvent::SessionSnapshot { .. } => {
+                latest_session_snapshot_event_id == Some(event.event_id)
+            }
+            _ => true,
+        })
+        .collect()
+}
+
+pub(super) async fn emit_replay_gap_snapshot(
+    router: &Arc<CommandRouter>,
+    runtime: &Arc<KernelTransportRuntime>,
+    outgoing_tx: &KernelOutgoingSender,
+    close_tx: &mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: &Arc<AtomicBool>,
+    session_id: &str,
+    attachment_id: &str,
+) {
+    let event_stream_id = subscription_event_stream_id(session_id, attachment_id);
+    let snapshot = router.session_snapshot_projection_for_attachment(
+        session_id,
+        attachment_id,
+        router.session_projection_change_sequence(),
+    );
+    match snapshot {
+        Ok(projection) => {
+            let _ = emit_kernel_event(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                KernelEvent::SessionSnapshot {
+                    room_workflows: projection.room_workflows,
+                    session: Box::new(projection.session),
+                    provider_run: Box::new(
+                        projection
+                            .provider_run
+                            .map(crate::provider::PublicProviderRun::from),
+                    ),
+                    agent_activity: Box::new(projection.agent_activity),
+                    agent_activity_revision: projection.metadata.last_event_id,
+                },
+                Some(&event_stream_id),
+                Some(session_id),
+                Some(attachment_id),
+            )
+            .await;
+        }
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.runtime_transport",
+                "kernel replay gap snapshot failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "attachment_id": attachment_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+}
+
+async fn run_waiting_room_inventory_subscription_loop(
+    heartbeat_interval: Duration,
+    router: Arc<CommandRouter>,
+    runtime: Arc<KernelTransportRuntime>,
+    outgoing_tx: KernelOutgoingSender,
+    close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
+    close_requested: Arc<AtomicBool>,
+    mut passkey_prompts: PasskeyPromptFeed,
+) {
+    let mut previous_catalog_revision = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
+    let mut previous_relay_status: Option<RelayStatus> = None;
+    let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
+    let mut previous_provider_catalog = None;
+    let mut previous_slices = None;
+    let mut inventory_dirty = true;
+    let mut tick: u64 = 0;
+    let mut next_heartbeat_at = Instant::now();
+    let mut next_relay_status_at = Instant::now();
+    loop {
+        if let Some(event) = passkey_prompts.next_event(&router) {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                event,
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let client_catalog_sequence = router.client_catalog_change_sequence();
+        if previous_catalog_revision != Some(client_catalog_sequence) {
+            previous_catalog_revision = Some(client_catalog_sequence);
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::ClientCatalogChanged {
+                    revision: client_catalog_sequence,
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let waiting_room_change_sequence = router.waiting_room_change_sequence();
+        let session_projection_change_sequence = router.session_projection_change_sequence();
+        if inventory_dirty || tick.is_multiple_of(WAITING_ROOM_INVENTORY_INTERVAL_TICKS) {
+            let Some(snapshot_result) = await_subscription_work_with_heartbeats(
+                router.waiting_room_public_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None),
+                &mut next_heartbeat_at,
+                heartbeat_interval,
+                || {
+                    emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::Heartbeat {
+                            session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                        },
+                        Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                        None,
+                        None,
+                    )
+                },
+            )
+            .await
+            else {
+                break;
+            };
+            match snapshot_result {
+                Ok(snapshot) => {
+                    inventory_dirty = false;
+                    for event in waiting_room_event_projection.project(snapshot) {
+                        if !emit_kernel_event(
+                            &runtime,
+                            &outgoing_tx,
+                            &close_tx,
+                            &close_requested,
+                            event,
+                            Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                            None,
+                            None,
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.runtime_transport",
+                        "kernel waiting-room inventory subscription failed to build snapshot",
+                        serde_json::json!({ "error": error.to_string() }),
+                    );
+                }
+            }
+        }
+        if Instant::now() >= next_heartbeat_at {
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::Heartbeat {
+                    session_id: WAITING_ROOM_INVENTORY_SENTINEL_ID.to_string(),
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+            next_heartbeat_at =
+                advance_subscription_deadline(next_heartbeat_at, heartbeat_interval);
+        }
+        if Instant::now() >= next_relay_status_at {
+            let status = router.transport_relay_status_snapshot().await;
+            if previous_relay_status.as_ref() != Some(&status) {
+                previous_relay_status = Some(status.clone());
+                if !emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::RelayStatusChanged { status },
+                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    None,
+                    None,
+                )
+                .await
+                {
+                    break;
+                }
+            }
+            next_relay_status_at =
+                advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
+        }
+        if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
+            let machines = router.transport_remote_machines_snapshot();
+            if previous_remote_machines.as_ref() != Some(&machines) {
+                previous_remote_machines = Some(machines.clone());
+                if !emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::RemoteMachinesChanged { machines },
+                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    None,
+                    None,
+                )
+                .await
+                {
+                    break;
+                }
+            }
+        }
+        if let Some(catalog) = router.transport_provider_catalog_snapshot() {
+            if previous_provider_catalog.as_ref() != Some(&catalog) {
+                previous_provider_catalog = Some(catalog.clone());
+                if !emit_kernel_event(
+                    &runtime,
+                    &outgoing_tx,
+                    &close_tx,
+                    &close_requested,
+                    KernelEvent::ProviderCatalogChanged {
+                        generated_at_ms: crate::session::unix_epoch_ms(),
+                        catalog,
+                    },
+                    Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                    None,
+                    None,
+                )
+                .await
+                {
+                    break;
+                }
+            }
+        }
+        let slices = router.transport_slices_snapshot();
+        if previous_slices.as_ref() != Some(&slices) {
+            previous_slices = Some(slices.clone());
+            if !emit_kernel_event(
+                &runtime,
+                &outgoing_tx,
+                &close_tx,
+                &close_requested,
+                KernelEvent::SlicesChanged {
+                    generated_at_ms: crate::session::unix_epoch_ms(),
+                    slices,
+                },
+                Some(WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE),
+                None,
+                None,
+            )
+            .await
+            {
+                break;
+            }
+        }
+        let wait_started = Instant::now();
+        let wait_result = timeout(
+            next_heartbeat_at
+                .checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO),
+            async {
+                tokio::select! {
+                    _ = wait_for_waiting_room_inventory_change(
+                        router.wait_for_waiting_room_change_after(waiting_room_change_sequence),
+                        router.wait_for_session_projection_change_after(
+                            session_projection_change_sequence,
+                        ),
+                    ) => true,
+                    // Popups are sent at once, without the inventory coalescing.
+                    _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => false,
+                    _ = passkey_prompts.changed(&router) => false,
+                }
+            },
+        )
+        .await;
+        if matches!(wait_result, Ok(true)) {
+            sleep(Duration::from_millis(WAITING_ROOM_ROW_COALESCE_MS)).await;
+            inventory_dirty = true;
+        }
+        let elapsed_ticks =
+            ((wait_started.elapsed().as_millis() as u64) / WATCH_INTERVAL_MS).max(1);
+        tick = tick.wrapping_add(elapsed_ticks);
+    }
+}
+
+async fn wait_for_waiting_room_inventory_change(
+    waiting_room_change: impl std::future::Future<Output = ()>,
+    session_projection_change: impl std::future::Future<Output = ()>,
+) {
+    tokio::pin!(waiting_room_change);
+    tokio::pin!(session_projection_change);
+    tokio::select! {
+        _ = &mut waiting_room_change => {}
+        _ = &mut session_projection_change => {}
+    }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn waiting_room_inventory_wait_wakes_for_either_projection_source() {
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        wait_for_waiting_room_inventory_change(
+            std::future::ready(()),
+            std::future::pending::<()>(),
+        ),
+    )
+    .await
+    .expect("waiting-room changes should wake inventory projection");
+
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        wait_for_waiting_room_inventory_change(
+            std::future::pending::<()>(),
+            std::future::ready(()),
+        ),
+    )
+    .await
+    .expect("session activity projection changes should wake waiting-room inventory");
+}

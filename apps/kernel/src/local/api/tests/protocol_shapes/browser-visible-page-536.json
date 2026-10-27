@@ -1,0 +1,76 @@
+{
+  "local": 536,
+  "relay_peer": 144,
+  "requests": [
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "display_subscribe",
+          "tab_id": "t",
+          "generation": 2,
+          "codecs": [
+            "png",
+            "avc1.420033"
+          ],
+          "bitrate": 2000000,
+          "device_scale_factor": 2
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "display_input",
+          "tab_id": "t",
+          "generation": 2,
+          "document_id": "d",
+          "binding_id": "r",
+          "sequence": 3,
+          "input": {
+            "kind": "click",
+            "x": 12,
+            "y": 700
+          }
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "display_ack",
+          "subscription_id": "s",
+          "generation": 2,
+          "sequence": 3,
+          "lost": false,
+          "held_ms": 30
+        }
+      }
+    }
+  ],
+  "response": {
+    "KernelBrowser": {
+      "result": {
+        "generation": 2,
+        "subscription_id": "s",
+        "codec": "avc1.420033",
+        "bitrate": 2000000,
+        "device_scale_factor": 1,
+        "source_kind": "region",
+        "binding_id": "r",
+        "document_id": "d",
+        "sequence": 3,
+        "css_width": 1264,
+        "css_height": 712
+      }
+    }
+  },
+  "ack_response": {
+    "KernelBrowser": {
+      "result": {
+        "acknowledged": true,
+        "push": "running",
+        "ack_timing": true
+      }
+    }
+  }
+}

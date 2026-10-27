@@ -1,0 +1,575 @@
+//! Runtime request handlers for workflow run invoke, cancel, and resume operations.
+
+use super::workflow_request_runtime_state::workflow_response_session;
+#[cfg(test)]
+#[path = "workflow_interrupt_durability_tests.rs"]
+mod workflow_interrupt_durability_tests;
+
+use super::*;
+
+impl KernelRuntimeState {
+    pub(super) async fn execute_workflow_invoke_endpoint_request(
+        &self,
+        request: crate::local::InvokeWorkflowEndpointRequest,
+        caller_user_id: &str,
+        caller_agent_id: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
+        let owned = &self.owned;
+        let result = match owned.ensure_workflow_endpoint_owner(
+            &request.session_id,
+            &request.workflow_ref,
+            &request.endpoint_ref,
+            caller_user_id,
+            "invoke workflow endpoint",
+        ) {
+            Ok(()) => {
+                let obligation = match caller_agent_id
+                    .map(|id| {
+                        let actor = self.owned.agent_store.get_agent(id)?;
+                        self.register_room_dispatch_obligation(
+                            &actor,
+                            "workflow_run",
+                            Some(&request.workflow_ref),
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(id) => id.flatten(),
+                    Err(error) => return (Err(error), None),
+                };
+                let (outcome, dispatches) = match owned
+                    .workflow_enqueue_prompt_by_agent_and_maybe_start(
+                        &request.session_id,
+                        &request.workflow_ref,
+                        &request.endpoint_ref,
+                        request.prompt.clone(),
+                        request.queue_ref.as_deref(),
+                        request.publication_invocation.clone(),
+                        caller_agent_id,
+                        caller_agent_id.is_none().then_some(caller_user_id),
+                        obligation.as_deref(),
+                    ) {
+                    Ok(outcome) => outcome,
+                    Err(error) => return (Err(error), None),
+                };
+                let dev_stub_workflow_run_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } if self.workflow_dispatches_start_only_dev_stub_providers(&dispatches) => {
+                        Some(workflow_run.id().to_string())
+                    }
+                    _ => None,
+                };
+                let resource_id = match &outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        workflow_run,
+                        ..
+                    } => workflow_run.id(),
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
+                        ..
+                    } => queued_prompt.id(),
+                };
+                // Admission already committed: receipt failure must not discard dispatches.
+                if let Err(error) =
+                    self.finish_room_dispatch(obligation.as_deref(), Some(resource_id), || {
+                        self.spawn_workflow_prompt_dispatches(dispatches)
+                    })
+                {
+                    return (Err(error), None);
+                }
+                let refreshed_workflow_run = match dev_stub_workflow_run_id.as_deref() {
+                    Some(workflow_run_id) => {
+                        self.wait_for_dev_stub_workflow_run_start(
+                            &request.session_id,
+                            workflow_run_id,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                let session = match owned.session_snapshot(&request.session_id) {
+                    Ok(session) => session,
+                    Err(error) => return (Err(error), None),
+                };
+                match outcome {
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
+                        mut workflow_run,
+                        workflow,
+                        endpoint,
+                    } => {
+                        if let Some(refreshed) = refreshed_workflow_run {
+                            *workflow_run = refreshed;
+                        }
+                        Ok(LocalDaemonResponse::WorkflowRunInvoked {
+                            workflow_run: *workflow_run,
+                            workflow,
+                            endpoint,
+                            session,
+                        })
+                    }
+                    crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
+                        queued_prompt,
+                        workflow,
+                        endpoint,
+                    } => Ok(LocalDaemonResponse::WorkflowPromptEnqueued {
+                        queued_prompt: *queued_prompt,
+                        workflow,
+                        endpoint,
+                        session,
+                    }),
+                }
+            }
+            Err(error) => Err(error),
+        };
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
+    fn workflow_dispatches_start_only_dev_stub_providers(
+        &self,
+        dispatches: &WorkflowPromptDispatches,
+    ) -> bool {
+        !dispatches.starting_provider_runs.is_empty()
+            && dispatches.starting_provider_runs.iter().all(|run_id| {
+                self.owned
+                    .provider_store
+                    .get_run(run_id)
+                    .is_ok_and(|run| run.adapter_key() == "dev-stub")
+            })
+    }
+
+    async fn wait_for_dev_stub_workflow_run_start(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Option<crate::session::WorkflowRun> {
+        for _ in 0..50 {
+            if let Ok(workflow_run) = self
+                .owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(session_id, workflow_run_id)
+            {
+                if workflow_run.status() == crate::session::WorkflowRunStatus::Running {
+                    return Some(workflow_run);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        self.owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .ok()
+    }
+
+    pub(super) async fn execute_workflow_cancel_run_request(
+        &self,
+        request: crate::local::CancelWorkflowRunRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        self.execute_workflow_cancel_run_request_for_user(request, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_cancel_run_request_for_user(
+        &self,
+        request: crate::local::CancelWorkflowRunRequest,
+        stop_user: Option<&str>,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let result = self
+            .execute_workflow_interrupt_run_for_user(
+                &request.session_id,
+                &request.workflow_run_ref,
+                false,
+                stop_user,
+            )
+            .await
+            .map(
+                |(workflow_run, session)| LocalDaemonResponse::WorkflowRunCancelled {
+                    workflow_run,
+                    session,
+                },
+            );
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
+    pub(super) async fn execute_workflow_pause_run_request(
+        &self,
+        request: crate::local::PauseWorkflowRunRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let result = self
+            .execute_workflow_interrupt_run(&request.session_id, &request.workflow_run_ref, true)
+            .await
+            .map(
+                |(workflow_run, session)| LocalDaemonResponse::WorkflowRunPaused {
+                    workflow_run,
+                    session,
+                },
+            );
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
+    pub(super) async fn execute_workflow_interrupt_run(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+        pause: bool,
+    ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
+        self.execute_workflow_interrupt_run_for_user(session_id, workflow_run_ref, pause, None)
+            .await
+    }
+
+    pub(super) async fn execute_workflow_interrupt_run_for_user(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+        pause: bool,
+        stop_user: Option<&str>,
+    ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
+        self.authorize_current_external_command()?;
+        let owned = &self.owned;
+        let session = owned.session_store.get_session(session_id)?;
+        let resolved_workflow_run = owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)
+            .ok()
+            .or(owned.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                session.id(),
+                workflow_run_ref,
+            )?)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_ref.to_string(),
+            })?;
+        owned.ensure_workflow_run_interrupt_allowed(
+            &session,
+            &resolved_workflow_run,
+            pause,
+            stop_user,
+        )?;
+        let workflow_run_id = resolved_workflow_run.id().to_string();
+        let expected_status = if pause {
+            crate::session::WorkflowRunStatus::Paused
+        } else {
+            crate::session::WorkflowRunStatus::Stopped
+        };
+        if resolved_workflow_run.status() == expected_status {
+            if !pause {
+                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                    .await?;
+            }
+            return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
+        }
+        let mut provider_run_ids = owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter_map(|agent| {
+                owned
+                    .provider_store
+                    .get_run_for_agent(session_id, agent.id())
+                    .map(|run| run.id().to_string())
+            })
+            .collect::<Vec<_>>();
+        provider_run_ids.sort();
+        provider_run_ids.dedup();
+        let mut _provider_run_permits = Vec::with_capacity(provider_run_ids.len());
+        for provider_run_id in provider_run_ids {
+            _provider_run_permits.push(self.provider_runtime_lanes.acquire(&provider_run_id).await);
+            self.authorize_current_external_command()?;
+        }
+        self.authorize_current_external_command()?;
+        let activity_mutation = owned.begin_managed_activity_mutation();
+        let durable_state_store = owned.durable_state_store.clone();
+        let mut unsent_prompts = Vec::new();
+        let (workflow_run, archived_runs) = durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                self.authorize_current_external_command()?;
+                let mut sessions = owned.session_store.write();
+                let session_before_interrupt = sessions.get_session(session_id)?;
+                let current_run = sessions
+                    .resolve_workflow_run_ref(session_id, &workflow_run_id)
+                    .ok()
+                    .or(durable_state_store.resolve_workflow_run(
+                        session_before_interrupt.host_daemon_id(),
+                        session_id,
+                        &workflow_run_id,
+                    )?)
+                    .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                        session_id: session_id.into(),
+                        workflow_run_id: workflow_run_id.clone(),
+                    })?;
+                owned.ensure_workflow_run_interrupt_allowed(
+                    &session_before_interrupt,
+                    &current_run,
+                    pause,
+                    stop_user,
+                )?;
+                // Prompt records of every agent holding this run's queued prompts commit in
+                // the interrupt's SQLite transaction; the live prompt owner is untouched
+                // until that write succeeds, so a rejected write needs no owner restore.
+                let affected_prompt_agent_ids = session_before_interrupt
+                    .prompt_states()
+                    .iter()
+                    .filter(|(_, state)| {
+                        state.queued_prompts().iter().any(|prompt| {
+                            prompt.workflow_run_id() == Some(workflow_run_id.as_str())
+                        })
+                    })
+                    .map(|(agent_id, _)| agent_id.clone())
+                    .collect::<Vec<_>>();
+                unsent_prompts = session_before_interrupt
+                    .prompt_states()
+                    .values()
+                    .flat_map(|state| state.queued_prompts().iter())
+                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
+                    .cloned()
+                    .collect();
+                let workflow_run = if pause {
+                    sessions.pause_workflow_run(session_id, workflow_run_ref)
+                } else {
+                    sessions.cancel_workflow_run(session_id, workflow_run_ref)
+                };
+                let workflow_run = match workflow_run {
+                    Ok(workflow_run) => workflow_run,
+                    Err(error) => {
+                        sessions.restore_session(session_before_interrupt);
+                        return Err(error);
+                    }
+                };
+                let durable_session = sessions.get_session(session_id)?;
+                if let Err(error) = durable_state_store.persist_workflow_prompt_transitions(
+                    &durable_session,
+                    &affected_prompt_agent_ids,
+                    if pause {
+                        "workflow_run_paused"
+                    } else {
+                        "workflow_run_cancelled"
+                    },
+                ) {
+                    // Restore before releasing the write guard, so unrelated session mutations
+                    // cannot be overwritten by a stale pre-interrupt value.
+                    sessions.restore_session(session_before_interrupt);
+                    return Err(error);
+                }
+                let archived_runs = sessions.archive_terminal_workflow_runs(session_id)?;
+                Ok((workflow_run, archived_runs))
+            })?;
+        let committed_session = owned.session_store.get_session(session_id)?;
+        let removed = owned
+            .prompt_state_owner
+            .remove_queued_prompts_by_workflow_run(&committed_session, &workflow_run_id);
+        for prompt in removed {
+            if !unsent_prompts
+                .iter()
+                .any(|unsent| unsent.id() == prompt.id())
+            {
+                unsent_prompts.push(prompt);
+            }
+        }
+        if !pause {
+            owned.release_unsent_agent_events(session_id, &unsent_prompts);
+        }
+        if !archived_runs.is_empty() {
+            let recipient_attachment_ids = owned
+                .attachment_store
+                .list_session_attachment_ids(session_id);
+            for archived_run in archived_runs {
+                owned.terminal_stream.record_workflow_run_update(
+                    session_id,
+                    recipient_attachment_ids.clone(),
+                    archived_run,
+                );
+            }
+        }
+        activity_mutation.record();
+        let workflow_claim_owner_prefix = format!("{workflow_run_id}:");
+        let _ = owned.prompt_workspace_claims.remove_matching(|claim| {
+            claim.session_id == session_id
+                && claim
+                    .attachment_id
+                    .as_deref()
+                    .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
+                && claim.operation == "workflow_node_dispatch"
+        });
+        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
+        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
+        let session = owned.session_store.get_session(session_id)?;
+        let active_agents = owned
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter_map(|agent| {
+                owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .filter(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()))
+                    .map(|prompt| {
+                        (
+                            agent.id().to_string(),
+                            prompt.source_attachment_id().to_string(),
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        for (agent_id, attachment_id) in active_agents {
+            let cancellation = match self
+                .cancel_agent_prompt_with_external_authority(
+                    session_id,
+                    &agent_id,
+                    &attachment_id,
+                    // The interrupt and queued-prompt removal already committed atomically.
+                    // Cancellation is required kernel settlement of that transition.
+                    None,
+                )
+                .await
+            {
+                Ok(cancellation) => cancellation,
+                Err(DaemonError::NoActivePrompt { .. }) => continue,
+                Err(error) => return Err(error),
+            };
+            if let Some(dispatch) = cancellation.dispatch {
+                self.spawn_prompt_abort(dispatch, self.provider_runtime_lanes.clone());
+            }
+        }
+        if !pause {
+            self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
+                .await?;
+        }
+        Ok((workflow_run, owned.session_snapshot(session_id)?))
+    }
+
+    pub(super) async fn execute_workflow_resume_run_request(
+        &self,
+        request: crate::local::ResumeWorkflowRunRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<crate::session::RuntimeSession>,
+    ) {
+        let owned = &self.owned;
+        let session_id = request.session_id.clone();
+        let admitted = (|| {
+            let session = owned.session_store.get_session(&request.session_id)?;
+            // MP-08/MP-10/MP-11: history may already be pruned from hot state.
+            // Resolve the same durable archive used by reads before classifying control.
+            let run = owned
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)
+                .ok()
+                .or(owned.durable_state_store.resolve_workflow_run(
+                    session.host_daemon_id(),
+                    session.id(),
+                    &request.workflow_run_ref,
+                )?)
+                .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                    session_id: request.session_id.clone(),
+                    workflow_run_id: request.workflow_run_ref.clone(),
+                })?;
+            owned.ensure_workflow_run_has_control_provenance(&session, &run)
+        })();
+        if let Err(error) = admitted {
+            return (Err(error), None);
+        }
+        if let Err(error) = owned.require_publication_activation() {
+            return (Err(error), owned.session_snapshot(&session_id).ok());
+        }
+        if let Err(error) = self
+            .wait_for_workflow_prompt_cancellation_settlement(
+                &request.session_id,
+                &request.workflow_run_ref,
+            )
+            .await
+        {
+            return (Err(error), owned.session_snapshot(&session_id).ok());
+        }
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
+        let result = match owned.workflow_resume_run(&request.session_id, &request.workflow_run_ref)
+        {
+            Ok((workflow_run, dispatches)) => {
+                self.spawn_workflow_prompt_dispatches(dispatches);
+                owned.workflow_session(&request.session_id).map(|session| {
+                    LocalDaemonResponse::WorkflowRunResumed {
+                        workflow_run,
+                        session,
+                    }
+                })
+            }
+            Err(error) => return (Err(error), None),
+        };
+        let session = result.as_ref().ok().and_then(workflow_response_session);
+        (result, session)
+    }
+
+    async fn wait_for_workflow_prompt_cancellation_settlement(
+        &self,
+        session_id: &str,
+        workflow_run_ref: &str,
+    ) -> Result<(), DaemonError> {
+        let workflow_run = self
+            .owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?
+            .clone();
+        if workflow_run.status() != crate::session::WorkflowRunStatus::Paused {
+            return Ok(());
+        }
+        let workflow_run_id = workflow_run.id().to_string();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
+        loop {
+            self.authorize_current_external_command()?;
+            self.reap_structured_prompt_jobs_and_dispatch();
+            let session = self.owned.session_store.get_session(session_id)?;
+            // Paused is published before cancellation admission. Its preceding
+            // prompt must settle even if it has not entered Cancelling yet.
+            let settling = self
+                .owned
+                .agent_store
+                .get_session_agents(session_id)
+                .into_iter()
+                .filter_map(|agent| {
+                    self.owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent.id())
+                })
+                .any(|prompt| prompt.workflow_run_id() == Some(workflow_run_id.as_str()));
+            if !settling {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(DaemonError::LocalTransport {
+                    operation: "resume workflow run",
+                    message: format!(
+                        "workflow run `{workflow_run_id}` is still settling its paused provider turn"
+                    ),
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+}

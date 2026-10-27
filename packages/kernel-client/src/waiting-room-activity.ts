@@ -1,0 +1,296 @@
+import type {
+  WaitingRoomPublicItemActivitySummary,
+  WaitingRoomSessionActivitySummary,
+} from "./kernel-types.js"
+import { remoteExtensionAggregateNextAction } from "./home-extension-audit-policy.js"
+import { remoteWorkerProviderRunRecoveryAction } from "./provider-run-recovery.js"
+
+export type WaitingRoomActivityBadgeState =
+  | "none"
+  | "queued"
+  | "working"
+  | "done"
+  | "mixedQueuedDone"
+  | "mixedWorkingDone"
+
+export function waitingRoomLifecycleStatusLabel(
+  status: string | null | undefined,
+  fallback = "-",
+): string {
+  const normalized = status?.trim().toLowerCase().replace(/[_-]+/g, " ") ?? ""
+  const label = normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+  return label || fallback
+}
+
+export function waitingRoomActivityBadgeLabel(state: WaitingRoomActivityBadgeState): string | null {
+  switch (state) {
+    case "mixedWorkingDone":
+      return "Working+Done"
+    case "mixedQueuedDone":
+      return "Queued+Done"
+    case "working":
+      return "Working"
+    case "queued":
+      return "Queued"
+    case "done":
+      return "Done"
+    case "none":
+      return null
+  }
+}
+
+export function waitingRoomSessionStatusLabel(
+  session: {
+    readonly status?: string | null | undefined
+    readonly activity?: Pick<
+      WaitingRoomSessionActivitySummary,
+      "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
+    > | null | undefined
+  } | null | undefined,
+  fallback = "-",
+): string {
+  if ((session?.activity?.pending_interaction_count ?? 0) > 0) return "Needs you"
+  return waitingRoomActivityBadgeLabel(waitingRoomSessionActivityBadgeState(session?.activity))
+    ?? waitingRoomLifecycleStatusLabel(session?.status, fallback)
+}
+
+export function waitingRoomTimestampLabel(
+  value: number | null | undefined,
+  options: {
+    readonly missingLabel?: string
+    readonly timeZone?: string
+    readonly includeTimeZone?: boolean
+  } = {},
+): string {
+  if (!isFiniteNumber(value)) {
+    return options.missingLabel ?? "-"
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return options.missingLabel ?? "-"
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: options.timeZone,
+    timeZoneName: options.includeTimeZone === false ? undefined : "short",
+  }).formatToParts(date)
+  const values = new Map(parts.map((part) => [part.type, part.value]))
+  const label = `${values.get("year")}-${values.get("month")}-${values.get("day")} ${values.get("hour")}:${values.get("minute")}`
+  const zone = values.get("timeZoneName")
+  return zone ? `${label} ${zone}` : label
+}
+
+export function waitingRoomSessionRecencyMs(
+  session: {
+    readonly last_prompt_sent_at_ms?: number | null | undefined
+    readonly last_activity_at_ms?: number | null | undefined
+    readonly last_used_at_ms?: number | null | undefined
+    readonly created_at_ms?: number | null | undefined
+  },
+): number {
+  return numberOrZero(session.last_prompt_sent_at_ms)
+    || numberOrZero(session.last_activity_at_ms)
+    || numberOrZero(session.last_used_at_ms)
+    || numberOrZero(session.created_at_ms)
+}
+
+export function waitingRoomSessionActivityHasWork(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working_agent_count"
+  > | null | undefined,
+): boolean {
+  return (activity?.working_agent_count ?? 0) > 0
+    || (activity?.active_prompt_count ?? 0) > 0
+    || (activity?.queued_prompt_count ?? 0) > 0
+}
+
+export function waitingRoomSessionActivityHasUnreadIdleOutput(
+  activity: Pick<WaitingRoomSessionActivitySummary, "unread_idle_agent_count"> | null | undefined,
+): boolean {
+  return (activity?.unread_idle_agent_count ?? 0) > 0
+}
+
+export function waitingRoomSessionActivityBadgeState(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working_agent_count" | "unread_idle_agent_count" | "pending_interaction_count"
+  > | null | undefined,
+): WaitingRoomActivityBadgeState {
+  const activeWork = waitingRoomSessionActivityHasActiveWork(activity)
+  const queued = (activity?.queued_prompt_count ?? 0) > 0
+  const done = waitingRoomSessionActivityHasUnreadIdleOutput(activity)
+  if (activeWork && done) {
+    return "mixedWorkingDone"
+  }
+  if (activeWork) {
+    return "working"
+  }
+  if (queued && done) {
+    return "mixedQueuedDone"
+  }
+  if (queued) {
+    return "queued"
+  }
+  return done ? "done" : "none"
+}
+
+export function waitingRoomSessionActivityWorkLabel(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working_agent_count"
+  > | null | undefined,
+  fallback = "-",
+): string {
+  const workingAgents = activity?.working_agent_count ?? 0
+  const activePrompts = activity?.active_prompt_count ?? 0
+  const queuedPrompts = activity?.queued_prompt_count ?? 0
+  return [
+    workingAgents > 0 ? `${workingAgents} working` : "",
+    activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
+    queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(", ") || fallback
+}
+
+export function waitingRoomSessionActivityNextAction(
+  session: {
+    readonly activity?: Pick<
+      WaitingRoomSessionActivitySummary,
+      "missing_worker_provider_run_count" | "remote_extension_sync_issue_count" | "remote_extension_pending_revoke_count" | "pending_interaction_count"
+    > | null | undefined
+  } | null | undefined,
+): string | null {
+  const activity = session?.activity
+  if (!activity) {
+    return null
+  }
+  if ((activity.pending_interaction_count ?? 0) > 0) return "Attach to this session to review the pending request"
+  if ((activity.missing_worker_provider_run_count ?? 0) > 0) {
+    return remoteWorkerProviderRunRecoveryAction(null, null)
+  }
+  if ((activity.remote_extension_sync_issue_count ?? 0) > 0) {
+    return remoteExtensionAggregateNextAction(activity)
+  }
+  return null
+}
+
+export function waitingRoomSessionRemoteActivityLabel(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    | "remote_agent_count"
+    | "missing_worker_provider_run_count"
+    | "home_proxy_agent_count"
+    | "remote_extension_sync_issue_count"
+    | "remote_extension_pending_revoke_count"
+  > | null | undefined,
+  fallback = "",
+): string {
+  const remoteAgents = activity?.remote_agent_count ?? 0
+  const workerRunGaps = activity?.missing_worker_provider_run_count ?? 0
+  const homeProxyAgents = activity?.home_proxy_agent_count ?? 0
+  const remoteExtensionSyncIssues = activity?.remote_extension_sync_issue_count ?? 0
+  const pendingRevokes = activity?.remote_extension_pending_revoke_count ?? 0
+  return [
+    remoteAgents > 0 ? `${remoteAgents} remote/slice ${remoteAgents === 1 ? "agent" : "agents"}` : "",
+    workerRunGaps > 0 ? `${workerRunGaps} worker run ${workerRunGaps === 1 ? "gap" : "gaps"}` : "",
+    homeProxyAgents > 0 ? `${homeProxyAgents} home-proxy ${homeProxyAgents === 1 ? "agent" : "agents"}` : "",
+    remoteExtensionSyncIssues > 0
+      ? `${remoteExtensionSyncIssues} extension sync ${remoteExtensionSyncIssues === 1 ? "issue" : "issues"}`
+      : "",
+    pendingRevokes > 0 ? `${pendingRevokes} pending ${pendingRevokes === 1 ? "revoke" : "revokes"}` : "",
+  ].filter(Boolean).join(", ") || fallback
+}
+
+export function waitingRoomItemActivityHasWork(
+  activity: Pick<
+    WaitingRoomPublicItemActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working"
+  > | null | undefined,
+): boolean {
+  return activity?.working === true
+    || (activity?.active_prompt_count ?? 0) > 0
+    || (activity?.queued_prompt_count ?? 0) > 0
+}
+
+export function waitingRoomItemActivityHasUnreadIdleOutput(
+  activity: Pick<WaitingRoomPublicItemActivitySummary, "unread_idle_output"> | null | undefined,
+): boolean {
+  return activity?.unread_idle_output === true
+}
+
+export function waitingRoomItemActivityBadgeState(
+  activity: Pick<
+    WaitingRoomPublicItemActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working" | "unread_idle_output"
+  > | null | undefined,
+): WaitingRoomActivityBadgeState {
+  const activeWork = waitingRoomItemActivityHasActiveWork(activity)
+  const queued = (activity?.queued_prompt_count ?? 0) > 0
+  const done = waitingRoomItemActivityHasUnreadIdleOutput(activity)
+  if (activeWork && done) {
+    return "mixedWorkingDone"
+  }
+  if (activeWork) {
+    return "working"
+  }
+  if (queued && done) {
+    return "mixedQueuedDone"
+  }
+  if (queued) {
+    return "queued"
+  }
+  return done ? "done" : "none"
+}
+
+export function waitingRoomItemActivityWorkLabel(
+  activity: Pick<
+    WaitingRoomPublicItemActivitySummary,
+    "active_prompt_count" | "queued_prompt_count" | "working"
+  > | null | undefined,
+  fallback = "active work",
+): string {
+  const activePrompts = activity?.active_prompt_count ?? 0
+  const queuedPrompts = activity?.queued_prompt_count ?? 0
+  return [
+    activity?.working === true ? "working" : "",
+    activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
+    queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(", ") || fallback
+}
+
+function numberOrZero(value: number | null | undefined): number {
+  return isFiniteNumber(value) ? value : 0
+}
+
+function waitingRoomSessionActivityHasActiveWork(
+  activity: Pick<
+    WaitingRoomSessionActivitySummary,
+    "active_prompt_count" | "working_agent_count"
+  > | null | undefined,
+): boolean {
+  return (activity?.working_agent_count ?? 0) > 0
+    || (activity?.active_prompt_count ?? 0) > 0
+}
+
+function waitingRoomItemActivityHasActiveWork(
+  activity: Pick<
+    WaitingRoomPublicItemActivitySummary,
+    "active_prompt_count" | "working"
+  > | null | undefined,
+): boolean {
+  return activity?.working === true
+    || (activity?.active_prompt_count ?? 0) > 0
+}
+
+function isFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value)
+}

@@ -1,0 +1,727 @@
+use std::collections::BTreeMap;
+use std::fmt::Write;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::error::DaemonError;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+
+#[path = "artifacts/blob.rs"]
+mod blob;
+pub(crate) mod inspect;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactRecord {
+    pub artifact_id: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    pub display_name: String,
+    pub source_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    pub operational_path: PathBuf,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, serde_json::Value>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreArtifactRequest {
+    pub source_path: PathBuf,
+    pub display_name: String,
+    pub source_kind: String,
+    pub media_type: Option<String>,
+    pub enqueue_archive: bool,
+    pub session_id: Option<String>,
+    pub attachment_id: Option<String>,
+    pub workspace_id: Option<String>,
+    pub worktree_path: Option<String>,
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactArchiveOutboxItem {
+    pub record: ArtifactRecord,
+    pub attempts: u32,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactChunkRead {
+    pub data: Vec<u8>,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct OperationalArtifactStore {
+    root: PathBuf,
+    connection: Arc<Mutex<Connection>>,
+}
+
+impl OperationalArtifactStore {
+    pub fn open(root: PathBuf, index_path: PathBuf) -> Result<Self, DaemonError> {
+        fs::create_dir_all(root.join("blobs"))
+            .map_err(|error| artifact_error("create operational artifact blob directory", error))?;
+        if let Some(parent) = index_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                artifact_error("create operational artifact index directory", error)
+            })?;
+        }
+        let connection =
+            Connection::open(&index_path).map_err(|error| artifact_sql_error("open", error))?;
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|error| artifact_sql_error("enable WAL mode", error))?;
+        connection
+            .execute_batch(OPERATIONAL_ARTIFACT_SCHEMA)
+            .map_err(|error| artifact_sql_error("migrate schema", error))?;
+        Ok(Self {
+            root,
+            connection: Arc::new(Mutex::new(connection)),
+        })
+    }
+
+    pub fn store_existing_file(
+        &self,
+        request: StoreArtifactRequest,
+    ) -> Result<ArtifactRecord, DaemonError> {
+        let (sha256, size_bytes, blob_path) = blob::store(&self.root, &request.source_path)?;
+        let created_at_ms = unix_epoch_ms();
+        // Equal bytes can belong to different Rooms or attachments. Only the
+        // blob is deduplicated; each admission gets its own opaque identity.
+        let artifact_id = format!("art_{created_at_ms}_{:032x}", rand::random::<u128>());
+        let record = ArtifactRecord {
+            artifact_id,
+            sha256,
+            size_bytes,
+            media_type: request.media_type,
+            display_name: request.display_name,
+            source_kind: request.source_kind,
+            session_id: request.session_id,
+            attachment_id: request.attachment_id,
+            workspace_id: request.workspace_id,
+            worktree_path: request.worktree_path,
+            operational_path: blob_path,
+            metadata: request.metadata,
+            created_at_ms,
+            archived_at_ms: None,
+        };
+        self.insert_record(&record, request.enqueue_archive)?;
+        Ok(record)
+    }
+
+    pub fn load_artifact(&self, artifact_id: &str) -> Result<Option<ArtifactRecord>, DaemonError> {
+        let record_json = {
+            let connection = self.lock("lock operational artifact store")?;
+            connection
+                .query_row(
+                    "SELECT record_json FROM artifacts WHERE artifact_id = ?1",
+                    params![artifact_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| artifact_sql_error("load artifact record", error))?
+        };
+        let Some(record_json) = record_json else {
+            return Ok(None);
+        };
+        let mut record = serde_json::from_str::<ArtifactRecord>(&record_json).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "decode artifact record",
+                message: error.to_string(),
+            }
+        })?;
+        if record.artifact_id != artifact_id || !is_sha256_hex(&record.sha256) {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "validate artifact record",
+                message: "artifact index record is inconsistent".to_string(),
+            });
+        }
+        record.operational_path = self.blob_path(&record.sha256);
+        Ok(Some(record))
+    }
+
+    pub fn read_artifact_chunk(
+        &self,
+        record: &ArtifactRecord,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<ArtifactChunkRead, DaemonError> {
+        if max_bytes == 0 || offset > record.size_bytes || !is_sha256_hex(&record.sha256) {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "read artifact chunk",
+                message: "artifact chunk range is invalid".to_string(),
+            });
+        }
+        let remaining = record.size_bytes - offset;
+        let read_len = remaining.min(max_bytes as u64) as usize;
+        let mut file = blob::open_regular(&self.blob_path(&record.sha256))
+            .map_err(|error| artifact_error("open artifact blob", error))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| artifact_error("seek artifact blob", error))?;
+        let mut data = vec![0; read_len];
+        file.read_exact(&mut data)
+            .map_err(|error| artifact_error("read artifact blob chunk", error))?;
+        Ok(ArtifactChunkRead {
+            data,
+            eof: offset + read_len as u64 == record.size_bytes,
+        })
+    }
+
+    pub fn load_pending_archive_artifacts(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ArtifactArchiveOutboxItem>, DaemonError> {
+        let connection = self.lock("lock artifact archive outbox")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT record_json, attempts, last_error
+                 FROM artifact_archive_outbox
+                 WHERE archived_at_ms IS NULL
+                 ORDER BY created_at_ms ASC, artifact_id ASC
+                 LIMIT ?1",
+            )
+            .map_err(|error| artifact_sql_error("prepare artifact archive outbox load", error))?;
+        let mut rows = statement
+            .query(params![limit.clamp(1, 500) as i64])
+            .map_err(|error| artifact_sql_error("load artifact archive outbox", error))?;
+        let mut items = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| artifact_sql_error("read artifact archive outbox", error))?
+        {
+            let record_json = row
+                .get::<_, String>(0)
+                .map_err(|error| artifact_sql_error("read artifact archive record", error))?;
+            let record = serde_json::from_str::<ArtifactRecord>(&record_json).map_err(|error| {
+                DaemonError::SessionHistoryFailed {
+                    session_id: None,
+                    operation: "decode artifact archive record",
+                    message: error.to_string(),
+                }
+            })?;
+            items.push(ArtifactArchiveOutboxItem {
+                record,
+                attempts: row.get::<_, i64>(1).unwrap_or_default().max(0) as u32,
+                last_error: row.get::<_, Option<String>>(2).unwrap_or_default(),
+            });
+        }
+        Ok(items)
+    }
+
+    pub fn mark_archive_artifacts_accepted(
+        &self,
+        artifact_ids: &[String],
+    ) -> Result<(), DaemonError> {
+        if artifact_ids.is_empty() {
+            return Ok(());
+        }
+        let now = unix_epoch_ms();
+        let connection = self.lock("lock artifact archive outbox")?;
+        for artifact_id in artifact_ids {
+            connection
+                .execute(
+                    "UPDATE artifact_archive_outbox
+                     SET archived_at_ms = ?2, updated_at_ms = ?2, last_error = NULL
+                     WHERE artifact_id = ?1",
+                    params![artifact_id.as_str(), now as i64],
+                )
+                .map_err(|error| artifact_sql_error("mark artifact archive accepted", error))?;
+            connection
+                .execute(
+                    "UPDATE artifacts SET archived_at_ms = ?2 WHERE artifact_id = ?1",
+                    params![artifact_id.as_str(), now as i64],
+                )
+                .map_err(|error| artifact_sql_error("mark artifact record archived", error))?;
+        }
+        Ok(())
+    }
+
+    pub fn mark_archive_artifacts_failed(
+        &self,
+        artifact_ids: &[String],
+        message: &str,
+    ) -> Result<(), DaemonError> {
+        if artifact_ids.is_empty() {
+            return Ok(());
+        }
+        let now = unix_epoch_ms();
+        let connection = self.lock("lock artifact archive outbox")?;
+        for artifact_id in artifact_ids {
+            connection
+                .execute(
+                    "UPDATE artifact_archive_outbox
+                     SET attempts = attempts + 1, last_error = ?2, updated_at_ms = ?3
+                     WHERE artifact_id = ?1 AND archived_at_ms IS NULL",
+                    params![artifact_id.as_str(), message, now as i64],
+                )
+                .map_err(|error| artifact_sql_error("mark artifact archive failed", error))?;
+        }
+        Ok(())
+    }
+
+    pub fn blob_path_for_record(&self, record: &ArtifactRecord) -> PathBuf {
+        self.blob_path(&record.sha256)
+    }
+
+    fn blob_path(&self, sha256: &str) -> PathBuf {
+        self.root
+            .join("blobs")
+            .join(&sha256[0..2])
+            .join(&sha256[2..4])
+            .join(sha256)
+    }
+
+    fn insert_record(
+        &self,
+        record: &ArtifactRecord,
+        enqueue_archive: bool,
+    ) -> Result<(), DaemonError> {
+        let record_json =
+            serde_json::to_string(record).map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "encode artifact record",
+                message: error.to_string(),
+            })?;
+        let metadata_json = serde_json::to_string(&record.metadata).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "encode artifact metadata",
+                message: error.to_string(),
+            }
+        })?;
+        let mut connection = self.lock("lock operational artifact store")?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| artifact_sql_error("begin artifact record", error))?;
+        transaction
+            .execute(
+                "INSERT INTO artifacts (
+                    artifact_id, sha256, size_bytes, media_type, display_name, source_kind,
+                    session_id, attachment_id, workspace_id, worktree_path, operational_path,
+                    metadata_json, record_json, created_at_ms, archived_at_ms
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL)",
+                params![
+                    record.artifact_id.as_str(),
+                    record.sha256.as_str(),
+                    record.size_bytes as i64,
+                    record.media_type.as_deref(),
+                    record.display_name.as_str(),
+                    record.source_kind.as_str(),
+                    record.session_id.as_deref(),
+                    record.attachment_id.as_deref(),
+                    record.workspace_id.as_deref(),
+                    record.worktree_path.as_deref(),
+                    record.operational_path.display().to_string(),
+                    metadata_json,
+                    record_json,
+                    record.created_at_ms as i64,
+                ],
+            )
+            .map_err(|error| artifact_sql_error("insert artifact record", error))?;
+        if enqueue_archive {
+            transaction
+                .execute(
+                    "INSERT INTO artifact_archive_outbox (
+                        artifact_id, record_json, attempts, last_error, archived_at_ms,
+                        created_at_ms, updated_at_ms
+                     ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)",
+                    params![
+                        record.artifact_id.as_str(),
+                        record_json,
+                        record.created_at_ms as i64,
+                    ],
+                )
+                .map_err(|error| artifact_sql_error("enqueue artifact archive record", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| artifact_sql_error("commit artifact record", error))
+    }
+
+    fn lock(
+        &self,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, Connection>, DaemonError> {
+        self.connection
+            .lock()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation,
+                message: error.to_string(),
+            })
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut output, "{byte:02x}").expect("writing hex to string should not fail");
+    }
+    output
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn unix_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn artifact_error(operation: &'static str, error: std::io::Error) -> DaemonError {
+    DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation,
+        message: error.to_string(),
+    }
+}
+
+fn artifact_sql_error(operation: &'static str, error: rusqlite::Error) -> DaemonError {
+    DaemonError::SessionHistoryFailed {
+        session_id: None,
+        operation,
+        message: error.to_string(),
+    }
+}
+
+const OPERATIONAL_ARTIFACT_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    media_type TEXT,
+    display_name TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    session_id TEXT,
+    attachment_id TEXT,
+    workspace_id TEXT,
+    worktree_path TEXT,
+    operational_path TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    archived_at_ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_sha256 ON artifacts(sha256);
+CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_artifacts_source_kind ON artifacts(source_kind, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS artifact_archive_outbox (
+    artifact_id TEXT PRIMARY KEY,
+    record_json TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    archived_at_ms INTEGER,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_archive_outbox_pending
+    ON artifact_archive_outbox(archived_at_ms, created_at_ms);
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // MP-08/MP-10/MP-11: a content address is not an ownership identity.
+    #[test]
+    fn artifact_id_collision_rejects_a_second_owner_without_archiving_it() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-owner-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"same bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let original = store
+            .store_existing_file(test_request(source, "room-a"))
+            .unwrap();
+        let mut collision = original.clone();
+        collision.session_id = Some("room-b".into());
+        assert!(store.insert_record(&collision, true).is_err());
+        assert_eq!(
+            store.load_artifact(&original.artifact_id).unwrap(),
+            Some(original)
+        );
+        assert!(store.load_pending_archive_artifacts(10).unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn artifact_reuse_rejects_corrupt_content_addressed_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-integrity-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"approved bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let first = store
+            .store_existing_file(test_request(source.clone(), "room-a"))
+            .unwrap();
+        fs::write(&first.operational_path, b"corrupted blob").unwrap();
+        assert!(store
+            .store_existing_file(test_request(source, "room-b"))
+            .is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_equal_bytes_keep_distinct_ownership_and_one_private_blob() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-concurrent-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, "Grüße 世界\n").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let records = std::thread::scope(|scope| {
+            (0..8)
+                .map(|i| {
+                    let store = &store;
+                    let source = source.clone();
+                    scope.spawn(move || {
+                        store
+                            .store_existing_file(test_request(source, &format!("room-{i}")))
+                            .unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let mut ids = std::collections::BTreeSet::new();
+        for record in &records {
+            assert!(ids.insert(&record.artifact_id));
+            assert_eq!(
+                store.load_artifact(&record.artifact_id).unwrap().as_ref(),
+                Some(record)
+            );
+            assert_eq!(record.operational_path, records[0].operational_path);
+            assert_eq!(
+                fs::read(&record.operational_path).unwrap(),
+                "Grüße 世界\n".as_bytes()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&record.operational_path)
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+        }
+        assert!(!fs::read_dir(root.join("store/blobs"))
+            .unwrap()
+            .any(|entry| entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".pending-")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_archive_enqueue_rolls_back_the_ownership_record() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-rollback-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("source.txt");
+        fs::write(&source, b"fixture").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let mut record = store
+            .store_existing_file(test_request(source, "room-a"))
+            .unwrap();
+        record.artifact_id = "art_synthetic_enqueue_failure".into();
+        store.lock("fixture").unwrap().execute_batch("CREATE TRIGGER reject_archive BEFORE INSERT ON artifact_archive_outbox BEGIN SELECT RAISE(FAIL, 'fixture failure'); END;").unwrap();
+        assert!(store.insert_record(&record, true).is_err());
+        assert!(store.load_artifact(&record.artifact_id).unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08/MP-10/MP-11: a blob substitution must never read another file.
+    #[cfg(unix)]
+    #[test]
+    fn mp08_mp10_mp11_browser_artifact_read_rejects_symlinked_blob() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-b207-blob-read-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = TestRootCleanup(root.clone());
+        let source = root.join("fixture.txt");
+        fs::write(&source, b"approved bytes").unwrap();
+        let store =
+            OperationalArtifactStore::open(root.join("store"), root.join("index.db")).unwrap();
+        let record = store
+            .store_existing_file(test_request(source.clone(), "room-a"))
+            .unwrap();
+        fs::remove_file(&record.operational_path).unwrap();
+        std::os::unix::fs::symlink(&source, &record.operational_path).unwrap();
+        assert!(store.read_artifact_chunk(&record, 0, 1).is_err());
+    }
+
+    struct TestRootCleanup(PathBuf);
+    impl Drop for TestRootCleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_request(source_path: PathBuf, session_id: &str) -> StoreArtifactRequest {
+        StoreArtifactRequest {
+            source_path,
+            display_name: "fixture.txt".into(),
+            source_kind: "transfer".into(),
+            media_type: Some("text/plain".into()),
+            enqueue_archive: false,
+            session_id: Some(session_id.into()),
+            attachment_id: None,
+            workspace_id: None,
+            worktree_path: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn stores_artifact_blob_and_loads_archive_outbox() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-store-{}-{}",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let source = root.join("source.txt");
+        fs::create_dir_all(&root).expect("root should exist");
+        fs::write(&source, "hello artifact").expect("source should write");
+        let store = OperationalArtifactStore::open(root.join("store"), root.join("index.db"))
+            .expect("store should open");
+
+        let record = store
+            .store_existing_file(StoreArtifactRequest {
+                source_path: source,
+                display_name: "source.txt".to_string(),
+                source_kind: "transfer".to_string(),
+                media_type: None,
+                enqueue_archive: true,
+                session_id: Some("session-1".to_string()),
+                attachment_id: Some("attachment-1".to_string()),
+                workspace_id: Some("workspace-1".to_string()),
+                worktree_path: Some("/tmp/worktree".to_string()),
+                metadata: BTreeMap::new(),
+            })
+            .expect("artifact should store");
+
+        assert!(record.operational_path.exists());
+        assert_eq!(record.size_bytes, 14);
+        let pending = store
+            .load_pending_archive_artifacts(10)
+            .expect("pending should load");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].record.artifact_id, record.artifact_id);
+        store
+            .mark_archive_artifacts_accepted(&[record.artifact_id])
+            .expect("accept should mark");
+        assert!(store
+            .load_pending_archive_artifacts(10)
+            .expect("pending should reload")
+            .is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn loads_artifact_records_and_reads_bounded_chunks() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-read-{}-{}",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let source = root.join("screenshot.png");
+        fs::create_dir_all(&root).expect("root should exist");
+        fs::write(&source, b"hello artifact").expect("source should write");
+        let store = OperationalArtifactStore::open(root.join("store"), root.join("index.db"))
+            .expect("store should open");
+        let record = store
+            .store_existing_file(StoreArtifactRequest {
+                source_path: source,
+                display_name: "room-screenshot.png".to_string(),
+                source_kind: "room_environment_screenshot".to_string(),
+                media_type: Some("image/png".to_string()),
+                enqueue_archive: false,
+                session_id: Some("room-1".to_string()),
+                attachment_id: None,
+                workspace_id: None,
+                worktree_path: None,
+                metadata: BTreeMap::from([(
+                    "slice_id".to_string(),
+                    serde_json::Value::String("slice-1".to_string()),
+                )]),
+            })
+            .expect("artifact should store");
+
+        let loaded = store
+            .load_artifact(&record.artifact_id)
+            .expect("artifact lookup should succeed")
+            .expect("artifact should exist");
+        assert_eq!(loaded, record);
+        assert!(store
+            .load_pending_archive_artifacts(10)
+            .expect("operational-only artifact should not enqueue")
+            .is_empty());
+        let first = store
+            .read_artifact_chunk(&loaded, 0, 5)
+            .expect("first chunk should read");
+        assert_eq!(first.data, b"hello");
+        assert!(!first.eof);
+        let second = store
+            .read_artifact_chunk(&loaded, 5, 32)
+            .expect("second chunk should read");
+        assert_eq!(second.data, b" artifact");
+        assert!(second.eof);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+}

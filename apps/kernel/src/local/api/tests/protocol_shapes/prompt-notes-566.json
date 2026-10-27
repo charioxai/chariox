@@ -1,0 +1,30 @@
+{
+  "note": {
+    "quote": "Selected text",
+    "comment": "Please fix this",
+    "source": {
+      "kind": "kernel_browser",
+      "title": "Docs",
+      "url": "https://example.test/a",
+      "document_id": "doc-1",
+      "prefix": "Say ",
+      "suffix": " now"
+    }
+  },
+  "request": {
+    "SubmitPrompt": {
+      "session_id": "session-1",
+      "attachment_id": "attachment-1",
+      "target_agent_id": "agent-1",
+      "prompt": "Look at my notes",
+      "attachments": [
+        {
+          "url": "chariox-terminal://prompt-attachment/note-1/Note",
+          "mime": "application/vnd.chariox.note+json",
+          "filename": "Note: Please fix this",
+          "contents_base64": "eyJxdW90ZSI6IlNlbGVjdGVkIHRleHQiLCJjb21tZW50IjoiUGxlYXNlIGZpeCB0aGlzIiwic291cmNlIjp7ImtpbmQiOiJrZXJuZWxfYnJvd3NlciIsInRpdGxlIjoiRG9jcyIsInVybCI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2EiLCJkb2N1bWVudF9pZCI6ImRvYy0xIiwicHJlZml4IjoiU2F5ICIsInN1ZmZpeCI6IiBub3cifX0="
+        }
+      ]
+    }
+  }
+}

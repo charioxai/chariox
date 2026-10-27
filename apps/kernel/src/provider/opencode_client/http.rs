@@ -1,0 +1,812 @@
+//! Minimal HTTP response parsing for the OpenCode local app-server client.
+
+use std::io::{ErrorKind, Read, Write};
+use std::net::TcpStream;
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+
+use crate::error::DaemonError;
+
+use super::OpenCodeClient;
+
+impl OpenCodeClient {
+    const REQUEST_RETRY_ATTEMPTS: usize = 5;
+    const REQUEST_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    pub(super) fn send_json_request<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+
+        serde_json::from_slice(&response_body).map_err(|error| {
+            self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "{}; response body: {}",
+                    error,
+                    preview_response_body(&response_body)
+                ),
+            )
+        })
+    }
+
+    pub(super) fn send_no_content_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(), DaemonError> {
+        let (status_code, response_body) = self.send_request(method, path, body)?;
+        if status_code >= 400 {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!("OpenCode returned HTTP {status_code}"),
+            ));
+        }
+        if !response_body.is_empty() {
+            return Err(self.protocol_error(
+                method_to_operation(method, path),
+                format!(
+                    "expected empty response body; got {}",
+                    preview_response_body(&response_body)
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn send_request(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(u16, Vec<u8>), DaemonError> {
+        let mut last_error = None;
+        let retry_attempts = retry_attempts_for_request(method, path);
+        let deadline = is_instance_bootstrap_request(method, path)
+            .then(|| Instant::now() + read_timeout_for_request(method, path));
+        let mut attempts = 0;
+        for attempt in 0..retry_attempts {
+            let read_timeout = deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|| read_timeout_for_request(method, path));
+            if read_timeout.is_zero() {
+                break;
+            }
+            attempts += 1;
+            // MP-08 / MP-10: timings never include request paths or payloads.
+            let started = Instant::now();
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request started",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt}),
+            );
+            let result = self.send_request_once(method, path, body, read_timeout);
+            crate::logging::debug_with_fields(
+                "daemon.provider.opencode.timing",
+                "http request finished",
+                serde_json::json!({"provider_run_id": self.provider_run_id,
+                    "operation": method_to_operation(method, path), "attempt": attempt,
+                    "elapsed_us": started.elapsed().as_micros(), "success": result.is_ok()}),
+            );
+            if let Err(error) = &result {
+                // Operation names are fixed here; never log paths, payloads or credentials.
+                crate::logging::debug_with_fields(
+                    "daemon.provider.opencode",
+                    "opencode native request failed",
+                    serde_json::json!({
+                        "provider_run_id": self.provider_run_id,
+                        "operation": method_to_operation(method, path),
+                        "method": method,
+                        "attempt": attempt + 1,
+                        "attempt_limit": retry_attempts,
+                        "elapsed_ms": started.elapsed().as_millis(),
+                        "io_kind": error.io_kind.map(|kind| format!("{kind:?}")),
+                    }),
+                );
+            }
+            match result {
+                Ok(response) => return Ok(response),
+                Err(error) if is_retryable_opencode_http_error(method, path, &error) => {
+                    last_error = Some(error.into_daemon_error(self, method, path));
+                    if attempt + 1 < retry_attempts {
+                        std::thread::sleep(retry_delay_for_attempt(attempt));
+                    }
+                }
+                Err(error) => return Err(error.into_daemon_error(self, method, path)),
+            }
+        }
+        let operation = method_to_operation(method, path);
+        let message = last_error
+            .map(|error| format!("OpenCode request failed after {attempts} attempts: {error}"))
+            .unwrap_or_else(|| "OpenCode request failed".to_string());
+        Err(self.protocol_error(operation, message))
+    }
+
+    fn send_request_once(
+        &self,
+        method: &'static str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        read_timeout: Duration,
+    ) -> Result<(u16, Vec<u8>), OpenCodeHttpFailure> {
+        let address = self.base_url.strip_prefix("http://").ok_or_else(|| {
+            OpenCodeHttpFailure::protocol(format!(
+                "unsupported OpenCode base URL `{}`",
+                self.base_url
+            ))
+        })?;
+        let mut stream = TcpStream::connect(address).map_err(OpenCodeHttpFailure::io)?;
+        stream
+            .set_read_timeout(Some(read_timeout))
+            .map_err(OpenCodeHttpFailure::io)?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .map_err(OpenCodeHttpFailure::io)?;
+
+        let body_bytes = body
+            .map(serde_json::to_vec)
+            .transpose()
+            .map_err(|error| OpenCodeHttpFailure::protocol(error.to_string()))?
+            .unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nX-Chariox-Provider-Client: kernel\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body_bytes.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .and_then(|_| stream.write_all(&body_bytes))
+            .and_then(|_| stream.flush())
+            .map_err(OpenCodeHttpFailure::io)?;
+
+        read_http_response(&mut stream).map_err(OpenCodeHttpFailure::from)
+    }
+}
+
+#[derive(Debug)]
+struct OpenCodeHttpFailure {
+    message: String,
+    io_kind: Option<ErrorKind>,
+}
+
+impl OpenCodeHttpFailure {
+    fn io(error: std::io::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    fn protocol(message: String) -> Self {
+        Self {
+            message,
+            io_kind: None,
+        }
+    }
+
+    fn into_daemon_error(
+        self,
+        client: &OpenCodeClient,
+        method: &'static str,
+        path: &str,
+    ) -> DaemonError {
+        let operation = method_to_operation(method, path);
+        if matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        ) {
+            crate::logging::warn_with_fields(
+                "daemon.provider.opencode",
+                "MP-08 OpenCode catalog request failed",
+                serde_json::json!({"operation": operation, "endpoint": path, "io_kind": self.io_kind.map(|kind| format!("{kind:?}"))}),
+            );
+        }
+        client.protocol_error(operation, self.message)
+    }
+}
+
+impl std::fmt::Display for OpenCodeHttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl From<HttpResponseReadError> for OpenCodeHttpFailure {
+    fn from(error: HttpResponseReadError) -> Self {
+        Self {
+            message: error.message,
+            io_kind: error.io_kind,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct HttpResponseReadError {
+    message: String,
+    io_kind: Option<ErrorKind>,
+}
+
+impl HttpResponseReadError {
+    fn io(error: std::io::Error) -> Self {
+        Self {
+            message: error.to_string(),
+            io_kind: Some(error.kind()),
+        }
+    }
+
+    fn protocol(message: String) -> Self {
+        Self {
+            message,
+            io_kind: None,
+        }
+    }
+}
+
+fn is_retryable_opencode_http_error(
+    method: &'static str,
+    path: &str,
+    error: &OpenCodeHttpFailure,
+) -> bool {
+    if !is_retryable_request(method, path) {
+        return false;
+    }
+    error.io_kind.is_some_and(is_retryable_io_error_kind)
+        || error
+            .message
+            .contains("connection closed before response header")
+}
+
+fn is_retryable_request(method: &'static str, path: &str) -> bool {
+    method == "GET"
+        // OpenCode prompt submission is retried because the body carries Chariox's stable
+        // messageID, so a retry can be deduplicated by the provider side.
+        || (method == "POST" && path.ends_with("/prompt_async"))
+        // OpenCode can briefly accept TCP connections before the app server is ready
+        // to complete MCP connect requests. Connecting an already-connected MCP is
+        // idempotent for Chariox's runtime initialization path.
+        || (method == "POST" && is_mcp_connect_path(path))
+}
+
+fn is_retryable_io_error_kind(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::WouldBlock
+            | ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+            | ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+    )
+}
+
+fn retry_delay_for_attempt(attempt: usize) -> Duration {
+    OpenCodeClient::REQUEST_RETRY_DELAY * (attempt as u32 + 1)
+}
+
+fn retry_attempts_for_request(method: &'static str, path: &str) -> usize {
+    if method == "POST" && is_mcp_connect_path(path) {
+        return 6;
+    }
+    OpenCodeClient::REQUEST_RETRY_ATTEMPTS
+}
+
+fn is_instance_bootstrap_request(method: &str, path: &str) -> bool {
+    method == "GET" && matches!(path, "/config" | "/agent" | "/provider")
+}
+
+fn read_timeout_for_request(method: &'static str, path: &str) -> Duration {
+    // MP-08 / MP-11: global health does not initialize the native directory Instance.
+    // Bound its cold config/plugin/catalog load across retries, keeping live reads fast.
+    if is_instance_bootstrap_request(method, path) {
+        return Duration::from_secs(30);
+    }
+    if method == "POST" && is_mcp_connect_path(path) {
+        return Duration::from_secs(12);
+    }
+    // MP-08/MP-11: the official server's global health is available before
+    // workspace config, agent defaults and the provider catalog finish loading.
+    // Keep health/status polls short; let a catalog read finish on one socket.
+    if method == "GET"
+        && matches!(
+            path,
+            "/config" | "/agent" | "/provider" | "/config/providers"
+        )
+    {
+        return Duration::from_secs(30);
+    }
+    Duration::from_secs(2)
+}
+
+fn method_to_operation(method: &str, path: &str) -> &'static str {
+    match (method, path) {
+        ("GET", "/global/health") => "health",
+        ("GET", "/provider") => "provider_catalog",
+        ("GET", "/config") => "configuration_read",
+        ("GET", "/agent") => "agent_catalog",
+        ("GET", "/mcp") => "mcp_status",
+        ("POST", "/mcp") => "mcp_registration",
+        ("GET", "/config/providers") => "provider_configuration",
+        ("GET", "/event") => "event_subscribe",
+        ("POST", "/session") => "session_create",
+        ("GET", "/session/status") => "session_status",
+        _ if method == "POST" && path.ends_with("/prompt_async") => "session_prompt",
+        _ if method == "POST" && path.ends_with("/message") => "session_prompt",
+        _ if method == "POST" && path.ends_with("/abort") => "session_abort",
+        _ if method == "POST" && is_mcp_connect_path(path) => "mcp_connect",
+        _ if method == "GET" && path.ends_with("/message") => "session_messages",
+        _ if method == "PATCH" && path.starts_with("/session/") => "session_permissions",
+        _ => "opencode_http",
+    }
+}
+
+fn is_mcp_connect_path(path: &str) -> bool {
+    path.starts_with("/mcp/") && path.ends_with("/connect")
+}
+
+pub(super) fn preview_response_body(body: &[u8]) -> String {
+    if body.is_empty() {
+        return "<empty>".to_string();
+    }
+
+    let preview = String::from_utf8_lossy(body);
+    let preview = preview.trim();
+    if preview.len() > 240 {
+        format!("{}...", &preview[..240])
+    } else {
+        preview.to_string()
+    }
+}
+
+pub(super) fn read_http_headers(stream: &mut TcpStream) -> Result<(u16, Vec<u8>), String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let size = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if size == 0 {
+            return Err("connection closed before response header".to_string());
+        }
+        buffer.extend_from_slice(&chunk[..size]);
+        if let Some(index) = find_double_crlf(&buffer) {
+            let header_end = index + 4;
+            let header_text = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+            let status_code = header_text
+                .lines()
+                .next()
+                .ok_or_else(|| "missing HTTP status line".to_string())?
+                .split_whitespace()
+                .nth(1)
+                .ok_or_else(|| "missing HTTP status code".to_string())?
+                .parse::<u16>()
+                .map_err(|error| error.to_string())?;
+            return Ok((status_code, buffer[header_end..].to_vec()));
+        }
+    }
+}
+
+pub(super) fn read_http_response(
+    stream: &mut TcpStream,
+) -> Result<(u16, Vec<u8>), HttpResponseReadError> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let header_end;
+    loop {
+        let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
+        if size == 0 {
+            return Err(HttpResponseReadError::protocol(
+                "connection closed before response header".to_string(),
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..size]);
+        if let Some(index) = find_double_crlf(&buffer) {
+            header_end = index + 4;
+            break;
+        }
+    }
+
+    let header_text = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let mut lines = header_text.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| HttpResponseReadError::protocol("missing HTTP status line".to_string()))?;
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| HttpResponseReadError::protocol("missing HTTP status code".to_string()))?
+        .parse::<u16>()
+        .map_err(|error| HttpResponseReadError::protocol(error.to_string()))?;
+    let mut content_length = None;
+    let mut is_chunked = false;
+    for line in lines {
+        let mut parts = line.splitn(2, ':');
+        let Some(name) = parts.next().map(str::trim) else {
+            continue;
+        };
+        let Some(value) = parts.next().map(str::trim) else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            content_length = value.parse::<usize>().ok();
+        } else if name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+        {
+            is_chunked = true;
+        }
+    }
+
+    let body = if is_chunked {
+        read_chunked_http_body(buffer[header_end..].to_vec(), stream)?
+    } else {
+        let mut body = buffer[header_end..].to_vec();
+        let content_length = content_length.unwrap_or(0);
+        while body.len() < content_length {
+            let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
+            if size == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..size]);
+        }
+        body
+    };
+    Ok((status_code, body))
+}
+
+fn find_double_crlf(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn read_chunked_http_body(
+    mut buffered: Vec<u8>,
+    stream: &mut TcpStream,
+) -> Result<Vec<u8>, HttpResponseReadError> {
+    let mut decoded = Vec::new();
+    let mut chunk = [0_u8; 1024];
+
+    loop {
+        let header_end = loop {
+            if let Some(index) = buffered.windows(2).position(|window| window == b"\r\n") {
+                break index;
+            }
+            let size = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
+            if size == 0 {
+                return Err(HttpResponseReadError::protocol(
+                    "unexpected EOF while reading chunk header".to_string(),
+                ));
+            }
+            buffered.extend_from_slice(&chunk[..size]);
+        };
+
+        let size_line = String::from_utf8_lossy(&buffered[..header_end]).into_owned();
+        let size_hex = size_line
+            .split(';')
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| HttpResponseReadError::protocol("missing chunk size".to_string()))?;
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|error| HttpResponseReadError::protocol(error.to_string()))?;
+        buffered.drain(..header_end + 2);
+
+        if size == 0 {
+            loop {
+                if buffered.len() >= 2 && &buffered[..2] == b"\r\n" {
+                    buffered.drain(..2);
+                    break;
+                }
+                let read = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
+                if read == 0 {
+                    break;
+                }
+                buffered.extend_from_slice(&chunk[..read]);
+            }
+            break;
+        }
+
+        while buffered.len() < size + 2 {
+            let read = stream.read(&mut chunk).map_err(HttpResponseReadError::io)?;
+            if read == 0 {
+                return Err(HttpResponseReadError::protocol(
+                    "unexpected EOF while reading chunk body".to_string(),
+                ));
+            }
+            buffered.extend_from_slice(&chunk[..read]);
+        }
+        decoded.extend_from_slice(&buffered[..size]);
+        buffered.drain(..size + 2);
+    }
+
+    Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::ErrorKind;
+
+    use std::time::Duration;
+
+    use super::{
+        is_retryable_opencode_http_error, method_to_operation, read_timeout_for_request,
+        retry_attempts_for_request, OpenCodeHttpFailure,
+    };
+
+    // MP-08/MP-10/MP-11: health can pass before an official catalog read is ready.
+    #[test]
+    fn catalog_read_waits_for_response_after_health_timeout() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        use std::thread;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_done = done.clone();
+        let server_requests = requests.clone();
+        let server = thread::spawn(move || {
+            while !server_done.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = [0; 1024];
+                        if let Ok(count) = stream.read(&mut request) {
+                            assert!(String::from_utf8_lossy(&request[..count])
+                                .starts_with("GET /provider "));
+                            server_requests.fetch_add(1, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(2500));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("owned listener failed: {error}"),
+                }
+            }
+        });
+        let client = super::OpenCodeClient::new("run", format!("http://{address}")).unwrap();
+        let result = client.send_json_request::<serde_json::Value>("GET", "/provider", None);
+        done.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "healthy server catalog readiness must outlive the two-second health socket timeout"
+        );
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "wait for one response instead of duplicating a slow catalog read"
+        );
+    }
+
+    #[test]
+    fn instance_bootstrap_timeout_keeps_health_and_session_reads_fast() {
+        for path in ["/config", "/agent", "/provider"] {
+            assert_eq!(
+                read_timeout_for_request("GET", path),
+                Duration::from_secs(30)
+            );
+        }
+        for (method, path) in [
+            ("GET", "/global/health"),
+            ("GET", "/session/status"),
+            ("POST", "/session"),
+            ("POST", "/session/s1/prompt_async"),
+            ("POST", "/config"),
+        ] {
+            assert_eq!(
+                read_timeout_for_request(method, path),
+                Duration::from_secs(2)
+            );
+        }
+    }
+
+    #[test]
+    fn cold_instance_catalog_survives_fast_global_health() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for (path, body) in [
+                ("/global/health", r#"{"healthy":true}"#),
+                ("/provider", r#"{"all":[],"default":{},"connected":[]}"#),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let size = stream.read(&mut chunk).unwrap();
+                    assert!(size > 0);
+                    request.extend_from_slice(&chunk[..size]);
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with(&format!("GET {path} ")));
+                if path == "/provider" {
+                    // Native global health precedes per-directory Instance bootstrap.
+                    std::thread::sleep(Duration::from_millis(2_300));
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let client = super::OpenCodeClient::new("cold-start", format!("http://{address}")).unwrap();
+        client.check_health().unwrap();
+        let catalog = client.provider_catalog();
+        server.join().unwrap();
+        assert!(catalog
+            .expect("healthy native server must finish its cold Instance bootstrap")
+            .all
+            .is_empty());
+    }
+
+    #[test]
+    fn cold_native_catalog_and_defaults_can_finish_after_health_is_ready() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let stopped = Arc::new(AtomicBool::new(false));
+        let server_stopped = Arc::clone(&stopped);
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut replies = Vec::new();
+            while !server_stopped.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(5)))
+                            .unwrap();
+                        let mut request = [0; 2048];
+                        let count = stream.read(&mut request).unwrap();
+                        requests.push(
+                            String::from_utf8_lossy(&request[..count])
+                                .lines()
+                                .next()
+                                .unwrap()
+                                .to_string(),
+                        );
+                        replies.push(thread::spawn(move || {
+                            // A healthy cold native server can still be initializing its catalog.
+                            thread::sleep(Duration::from_millis(3200));
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        }));
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("test listener failed: {error}"),
+                }
+            }
+            for reply in replies {
+                reply.join().unwrap();
+            }
+            requests
+        });
+        let client = super::OpenCodeClient::new("cold-native", &endpoint).unwrap();
+        let responses = ["/provider", "/config", "/agent"]
+            .map(|path| client.send_json_request::<serde_json::Value>("GET", path, None));
+        stopped.store(true, Ordering::Release);
+        let requests = server.join().unwrap();
+        for response in responses {
+            assert!(
+                response.is_ok(),
+                "cold native initialization timed out: {response:?}"
+            );
+        }
+        assert_eq!(
+            requests.len(),
+            3,
+            "initialization requests must not restart while the native server is still replying"
+        );
+    }
+
+    #[test]
+    fn names_native_initialization_and_permission_dispatch_failures() {
+        assert_eq!(method_to_operation("GET", "/mcp"), "mcp_status");
+        assert_eq!(method_to_operation("POST", "/mcp"), "mcp_registration");
+        assert_eq!(
+            method_to_operation("GET", "/config/providers"),
+            "provider_configuration"
+        );
+        assert_eq!(method_to_operation("GET", "/config"), "configuration_read");
+        assert_eq!(method_to_operation("GET", "/agent"), "agent_catalog");
+        assert_eq!(
+            method_to_operation("PATCH", "/session/private-session"),
+            "session_permissions"
+        );
+        assert_eq!(
+            read_timeout_for_request("PATCH", "/session/private-session"),
+            Duration::from_secs(2)
+        );
+        assert!(!is_retryable_opencode_http_error(
+            "PATCH",
+            "/session/private-session",
+            &OpenCodeHttpFailure {
+                message: "timed out".into(),
+                io_kind: Some(ErrorKind::TimedOut),
+            }
+        ));
+    }
+
+    #[test]
+    fn retries_opencode_mcp_connect_startup_io_failures() {
+        let error = OpenCodeHttpFailure {
+            message: "Resource temporarily unavailable (os error 35)".to_string(),
+            io_kind: Some(ErrorKind::WouldBlock),
+        };
+
+        assert!(is_retryable_opencode_http_error(
+            "POST",
+            "/mcp/chariox/connect",
+            &error
+        ));
+        assert_eq!(
+            method_to_operation("POST", "/mcp/chariox/connect"),
+            "mcp_connect"
+        );
+        assert_eq!(
+            read_timeout_for_request("POST", "/mcp/chariox/connect"),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            retry_attempts_for_request("POST", "/mcp/chariox/connect"),
+            6
+        );
+    }
+
+    #[test]
+    fn retries_prompt_submission_when_the_prior_abort_closes_the_connection() {
+        let error = OpenCodeHttpFailure {
+            message: "Software caused connection abort (os error 53)".to_string(),
+            io_kind: Some(ErrorKind::ConnectionAborted),
+        };
+
+        assert!(is_retryable_opencode_http_error(
+            "POST",
+            "/session/session-1/prompt_async",
+            &error
+        ));
+    }
+
+    #[test]
+    fn does_not_retry_unclassified_opencode_posts() {
+        let error = OpenCodeHttpFailure {
+            message: "Resource temporarily unavailable (os error 35)".to_string(),
+            io_kind: Some(ErrorKind::WouldBlock),
+        };
+
+        assert!(!is_retryable_opencode_http_error("POST", "/mcp", &error));
+    }
+}

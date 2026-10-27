@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflow Code Specification</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f7f8fb;
+        --ink: #17202f;
+        --muted: #596579;
+        --line: #d8deea;
+        --panel: #ffffff;
+        --accent: #0f766e;
+        --accent-soft: #e7f4f2;
+        --warn: #8a4b09;
+        --warn-soft: #fff3df;
+        --code: #f0f3f8;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      main {
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 48px 24px 72px;
+      }
+
+      h1,
+      h2,
+      h3 {
+        line-height: 1.15;
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 34px;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 22px;
+        margin-top: 34px;
+        padding-top: 28px;
+        border-top: 1px solid var(--line);
+      }
+
+      h3 {
+        font-size: 17px;
+        margin-top: 22px;
+      }
+
+      p {
+        margin: 10px 0;
+      }
+
+      ul,
+      ol {
+        margin: 10px 0 0 22px;
+        padding: 0;
+      }
+
+      li {
+        margin: 6px 0;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 5px;
+        background: var(--code);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.93em;
+      }
+
+      pre {
+        overflow-x: auto;
+        margin: 14px 0 0;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #101827;
+        color: #edf2ff;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+
+      th,
+      td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #eef2f8;
+        font-weight: 700;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .hero,
+      .callout,
+      .warning {
+        border-radius: 8px;
+      }
+
+      .hero {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 28px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .summary {
+        margin-top: 14px;
+        color: var(--muted);
+        max-width: 860px;
+      }
+
+      .callout {
+        margin-top: 18px;
+        border: 1px solid #b7d8d3;
+        border-left: 4px solid var(--accent);
+        background: var(--accent-soft);
+        padding: 14px 16px;
+      }
+
+      .warning {
+        margin-top: 18px;
+        border: 1px solid #e5c08f;
+        border-left: 4px solid var(--warn);
+        background: var(--warn-soft);
+        padding: 14px 16px;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Chariox kernel design spec</p>
+        <h1>Workflow Code</h1>
+        <p class="summary">
+          Workflow code is a saved, portable artifact that lets users and authorized metaagents define
+          complete Chariox workflows with code. The kernel compiles the artifact into the normal workflow
+          definition model, allocates fresh workflow graph identifiers, optionally spawns agents, validates
+          every reference and limit, and can then run the resulting workflow through existing runtime paths.
+        </p>
+        <div class="callout">
+          <strong>Final objective:</strong> a metaagent can write a self-contained workflow-code file,
+          validate it, apply it in the current kernel, and export or share it so another user or kernel can
+          apply the same workflow after rebinding unavailable generated-agent providers and models,
+          while validating target-kernel agent and extension availability before mutation.
+        </div>
+      </section>
+
+      <h2>Goals</h2>
+      <ul>
+        <li>Make workflow generation expressible as JavaScript through a compiler IR that can support additional scripting front ends without changing kernel workflow semantics.</li>
+        <li>Cover the same design surface that workflow slash commands cover: workflows, nodes, edges, endpoints, queues, watchdogs, schemas, output capabilities, node limits, canvas layout, and extension grants.</li>
+        <li>Keep execution authority in the kernel. The script produces a design IR; it does not mutate runtime state directly.</li>
+        <li>Let each application of the same script create a new workflow with fresh workflow, node, edge, endpoint, queue, watchdog, and generated-agent ids.</li>
+        <li>Support generated agents for portable workflows and existing-agent bindings for local, non-portable workflows.</li>
+        <li>Make schemas first-class workflow objects instead of ad hoc filesystem path strings.</li>
+        <li>Give metaagents a safe authoring path even when they are in plan mode by exposing workflow-code artifact tools through runtime MCP.</li>
+      </ul>
+
+      <h2>Non-Goals</h2>
+      <ul>
+        <li>Do not add edge-level conditional expressions. Conditional routing is node behavior expressed through normal workflow output.</li>
+        <li>Do not let scripts execute provider runs, shell commands, or direct kernel mutations while compiling.</li>
+        <li>Do not make publication creation part of workflow-code. Publication/export remains a separate operation once a workflow exists.</li>
+        <li>Do not reuse graph ids across script applications. Workflow code is a generator, not a durable execution replay format.</li>
+      </ul>
+
+      <h2>Current Kernel Morphology</h2>
+      <p>
+        The script API must compile to the existing workflow shape unless this spec explicitly calls out a
+        needed refactor. The core object is <code>WorkflowDefinition</code>. It contains graph and endpoint
+        definitions, not pre-spawned runs.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Kernel primitive</th>
+            <th>Current fields</th>
+            <th>Workflow-code mapping</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Workflow</td>
+            <td><code>id</code>, <code>alias</code>, <code>controlled_by_metaagent_id</code>, <code>revision</code>, <code>canvas_layout</code>, <code>flush_agent_context_before_run</code>, <code>run_output_schema_ref</code>, <code>intermediate_output_schema_ref</code>, <code>nodes</code>, <code>edges</code>, <code>endpoints</code></td>
+            <td><code>workflow.define({ alias, prompt, flushAgentContextBeforeRun, runOutputSchema, intermediateOutputSchema, maxConcurrent })</code>. <code>maxConcurrent</code> maps to the existing workflow scheduler concurrency setting.</td>
+          </tr>
+          <tr>
+            <td>Node</td>
+            <td><code>id</code>, <code>agent_id</code>, <code>owner_user_id</code>, <code>created_by_user_id</code>, <code>public_label</code>, <code>instructions</code>, <code>can_complete_workflow_run</code>, <code>can_emit_intermediate_run_output</code>, <code>wait_for_all_inputs</code>, <code>intermediate_output_schema_ref</code>, <code>max_turns</code></td>
+            <td><code>workflow.node({ agent, publicLabel, instructions, canCompleteWorkflowRun, canEmitIntermediateRunOutput, waitForAllInputs, intermediateOutputSchema, maxTurns, extensions, canvas })</code>. One node owns exactly one agent, and one agent may appear in only one node in the workflow.</td>
+          </tr>
+          <tr>
+            <td>Agent attached to node</td>
+            <td>Existing agent id today; regular agents only.</td>
+            <td><code>workflow.newAgent({ alias, provider, model, effort, ... })</code> or <code>workflow.existingAgent(ref)</code>. The agent handle is nested into the node definition.</td>
+          </tr>
+          <tr>
+            <td>Edge</td>
+            <td><code>id</code>, <code>from_node_id</code>, <code>to_node_id</code>, <code>created_by_user_id</code>, <code>source_side</code>, <code>target_side</code>, <code>handoff_schema_ref</code>, <code>validation_policy</code></td>
+            <td><code>workflow.edge(from, to, { handoffSchema, validationPolicy, sourceSide, targetSide, canvas })</code>. Canvas coordinates are optional; if omitted, kernel auto-layout places the edge in the web terminal canvas.</td>
+          </tr>
+          <tr>
+            <td>Endpoint</td>
+            <td><code>id</code>, <code>owner_user_id</code>, <code>alias</code>, <code>entry_node_id</code></td>
+            <td><code>workflow.endpoint(entryNode, { alias, canvas })</code>. Endpoint prompt is supplied when invoking, queueing, or watchdog-triggering a run.</td>
+          </tr>
+          <tr>
+            <td>Prompt queue</td>
+            <td><code>id</code>, <code>workflow_id</code>, <code>alias</code>, <code>priority</code>, <code>enabled</code></td>
+            <td><code>workflow.queue({ alias, priority, enabled })</code>. Optional. If omitted, the kernel creates the existing default queue. The queue handle <code>default</code> is reserved for the kernel default queue and is valid only when the queue alias also normalizes to <code>default</code>.</td>
+          </tr>
+          <tr>
+            <td>Queued prompt</td>
+            <td><code>queue_id</code>, <code>workflow_id</code>, <code>endpoint_id</code>, <code>prompt</code>, <code>source</code>, <code>status</code></td>
+            <td>Not a static builder primitive. Use <code>chariox.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>. Endpoint and queue values may be script handles; the kernel maps them to generated runtime ids before starting a run or creating a queued prompt.</td>
+          </tr>
+          <tr>
+            <td>Watchdog</td>
+            <td><code>workflow_id</code>, <code>endpoint_id</code>, <code>enabled</code>, <code>interval_seconds</code>, <code>invocation_prompt</code>, <code>policy</code>, <code>max_wakeups</code></td>
+            <td><code>workflow.watchdog(endpoint, { queue, intervalSeconds, invocationPrompt, policy, maxWakeups })</code>. <code>queue</code> is a script queue handle; <code>"default"</code> targets the kernel-created default queue even when the script defines additional queues.</td>
+          </tr>
+          <tr>
+            <td>Run prompt</td>
+            <td><code>WorkflowRun.invocation_prompt</code>, rendered as <code>Workflow-level prompt</code> in the turn prompt.</td>
+            <td><code>workflow.define({ prompt })</code> stores the workflow-code default invocation prompt. <code>chariox.meta.workflow_code.run</code> and <code>RunWorkflowCode*</code> use the explicit runtime prompt when present, otherwise this saved default. Endpoint invocation and <code>workflow.watchdog(... invocationPrompt)</code> provide their own runtime prompts.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Slash Command Parity</h2>
+      <p>
+        Workflow code defines every persistent workflow component covered by slash-command construction.
+        Read-only commands, run inspection, cancellation, resume, and publication export stay outside the
+        static design artifact.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Slash command surface</th>
+            <th>Script support</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>workflow new</code>, <code>workflow alias</code>, <code>workflow flush-context</code></td>
+            <td><code>define({ alias, flushAgentContextBeforeRun })</code></td>
+          </tr>
+          <tr>
+            <td><code>agent spawn</code> plus <code>workflow node add</code></td>
+            <td><code>node({ agent: newAgent(...) })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node add</code> with existing agent</td>
+            <td><code>node({ agent: existingAgent(ref) })</code>, subject to ownership checks</td>
+          </tr>
+          <tr>
+            <td><code>workflow node instructions</code></td>
+            <td><code>node({ instructions })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node can-complete</code></td>
+            <td><code>node({ canCompleteWorkflowRun })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node intermediate-output</code></td>
+            <td><code>node({ canEmitIntermediateRunOutput })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node wait-for-all-inputs</code></td>
+            <td><code>node({ waitForAllInputs })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node intermediate-output-schema</code></td>
+            <td><code>node({ intermediateOutputSchema })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow node max-turns</code></td>
+            <td><code>node({ maxTurns })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow edge add</code>, edge schema, edge validation policy</td>
+            <td><code>edge(from, to, { handoffSchema, validationPolicy })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow endpoint new</code>, <code>workflow endpoint alias</code></td>
+            <td><code>endpoint({ alias, entryNode })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow endpoint bind</code></td>
+            <td><code>endpoint({ entryNode })</code> at creation time, or <code>endpoint.bind(entryNode)</code> if update-style builder operations are added. The current session service bind operation changes the endpoint entry node.</td>
+          </tr>
+          <tr>
+            <td><code>workflow run-output-schema</code>, <code>workflow intermediate-output-schema</code></td>
+            <td><code>define({ runOutputSchema, intermediateOutputSchema })</code></td>
+          </tr>
+          <tr>
+            <td><code>workflow queue create/update/remove/clear</code></td>
+            <td><code>queue({ alias, priority, enabled })</code>; clearing is a runtime operation, not static design</td>
+          </tr>
+          <tr>
+            <td><code>workflow watchdog create/enable/disable/remove</code></td>
+            <td><code>watchdog({ endpoint, enabled, intervalSeconds, invocationPrompt, policy, maxWakeups })</code></td>
+          </tr>
+          <tr>
+            <td><code>mcp grant</code>, <code>skill grant</code>, script extensions</td>
+            <td><code>node({ extensions: [...] })</code>, compiled into existing owned-agent extension grants</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Limits And Configuration</h2>
+      <p>
+        Kernel configuration sets large but bounded defaults so generated workflows can fan out without
+        making the runtime unbounded.
+      </p>
+      <pre><code>[workflow]
+session_default_max_agents = 1024
+max_queues_per_workflow = 1024
+
+[workflow.code]
+max_concurrent = 32
+max_nodes = 1024
+max_agents = 1024
+max_edges = 4096
+max_endpoints = 1024
+max_queues = 1024
+max_watchdogs = 1024
+max_schema_bytes = 1048576
+max_generated_prompt_bytes = 4194304
+script_timeout_ms = 30000
+script_memory_bytes = 268435456</code></pre>
+      <ul>
+        <li>The session agent cap is TOML-backed at <code>workflow.session_default_max_agents</code> with default <code>1024</code>.</li>
+        <li><code>maxConcurrent</code> defaults to <code>32</code> through <code>workflow.code.max_concurrent</code> and may be lowered or raised per workflow-code artifact up to the configured kernel limit.</li>
+        <li>Compile validation enforces max nodes, generated agents, edges, endpoints, queues, watchdogs, concurrency, schemas, and generated prompt bytes before the workflow is accepted.</li>
+      </ul>
+
+      <h2>First-Class Schemas</h2>
+      <p>
+        Current workflows store schema references as strings such as <code>handoff_schema_ref</code>,
+        <code>run_output_schema_ref</code>, and <code>intermediate_output_schema_ref</code>. Runtime validation
+        reads those refs as JSON schema paths. That is not strong enough for portable workflow code.
+      </p>
+      <p>
+        Workflow-code apply creates kernel-owned schema definitions:
+      </p>
+      <pre><code>WorkflowSchemaDefinition {
+  id: String,
+  alias: Option&lt;String&gt;,
+  description: Option&lt;String&gt;,
+  schema: serde_json::Value
+}</code></pre>
+      <ul>
+        <li>Workflow code defines schemas inline with <code>workflow.schema({ alias, description, schema })</code>.</li>
+        <li>Optional <code>schemaFromFile(path)</code> is authoring sugar only. The compiler embeds the JSON value into the workflow-code artifact or compiled IR.</li>
+        <li>Exported workflow-code packages include <code>source_sha256</code> and <code>definition_sha256</code>; import verifies both hashes before saving the artifact.</li>
+        <li>Workflow-code handles are resolved to generated schema ids in workflow, node, and edge <code>*_schema_ref</code> fields during apply.</li>
+        <li>Compiled workflow-code artifacts and exported packages carry embedded schemas so another kernel can import without local filesystem dependencies.</li>
+        <li>Runtime validation tools validate against schema definitions resolved by id, while existing string refs remain compatible for non-workflow-code workflows.</li>
+      </ul>
+
+      <h2>Agents And Ownership</h2>
+      <p>
+        A workflow node has an agent. The script expresses that directly instead of building a separate
+        agent action list.
+      </p>
+      <ul>
+        <li><code>newAgent(...)</code> means the apply step spawns a regular agent and attaches it to exactly one node.</li>
+        <li><code>existingAgent(ref)</code> means the apply step binds an already-spawned regular agent. This is not portable.</li>
+        <li>A metaagent may only bind an existing agent it spawned or controls. It must not attach arbitrary session agents.</li>
+        <li>A user may bind agents according to normal session ownership policy.</li>
+        <li>The compiler must reject metaagents as workflow worker nodes and reject the same agent appearing in more than one node.</li>
+        <li>If a provider or model is unavailable in the target kernel, validate/apply reports a target diagnostic. Callers pass <code>provider_rebindings</code> keyed by node handle to replace provider, model, effort, or account profile for generated-agent nodes.</li>
+      </ul>
+
+      <h2>Extensions</h2>
+      <p>
+        Workflow code may declare node extensions because extensions are part of what makes a worker node
+        function. Applying a workflow-code artifact translates extension declarations into the same
+        kernel extension grants used outside workflows.
+      </p>
+      <pre><code>extensions: [
+  { kind: "mcp", name: "playwright" },
+  { kind: "skill", name: "frontend-design" },
+  { kind: "script", name: "schema-normalizer", environment: "node" },
+]</code></pre>
+      <ul>
+        <li>Extension definitions are portability requirements, not hidden script execution privileges.</li>
+        <li>Apply-time validation checks that declared extensions already exist in the target kernel registry and rejects the workflow before mutation when a requirement is unavailable.</li>
+        <li>Credentialed connectors require target-kernel binding and must not be serialized with secrets.</li>
+        <li>Home-worker and slice-backed behavior must follow existing Chariox provider and skill/MCP transfer rules.</li>
+      </ul>
+
+      <h2>Routing Model</h2>
+      <p>
+        Conditional routing is a required node-driven capability. A node with multiple outgoing edges can
+        either fan out to every outgoing edge or choose specific outgoing edges by producing a routed handoff
+        object in <code>output.message</code>. The runtime already recognizes <code>workflow_handoffs</code>
+        entries with <code>edge_id</code> or <code>to_node_id</code>.
+      </p>
+      <pre><code>{
+  "workflow_handoffs": [
+    {
+      "edge_id": "edge_abc",
+      "summary": "Send implementation details to reviewer",
+      "output": {
+        "message": {
+          "task": "review",
+          "files": ["apps/kernel/src/session/service/turns.rs"]
+        }
+      }
+    }
+  ]
+}</code></pre>
+      <ul>
+        <li>If <code>workflow_handoffs</code> is absent or empty, the runtime fans out the same output to all outgoing edges.</li>
+        <li>If <code>workflow_handoffs</code> is present, only matching edges receive output.</li>
+        <li>A handoff can target by <code>edge_id</code> or <code>to_node_id</code>.</li>
+        <li>A handoff with a null message suppresses output for that route.</li>
+        <li>Scripts never hard-code generated edge ids. The apply report maps script handles to concrete ids, and node runtime context lists outgoing edge contracts with the real <code>edge_id</code>, <code>to_node_id</code>, target label, target instruction excerpt, handoff schema ref, and validation policy.</li>
+      </ul>
+
+      <h2>Workflow Code API Shape</h2>
+      <p>
+        The JavaScript API is small and builder-oriented. Handles are compile-time references only.
+        They are not durable Chariox ids.
+      </p>
+      <pre><code>workflow.define({
+  alias: "triage-review-loop",
+  prompt: "Triage, route, review, and synthesize the requested task.",
+  flushAgentContextBeforeRun: true,
+  maxConcurrent: 32,
+});
+
+// Define schemas, nodes, edges, endpoints, queues, and watchdogs here.</code></pre>
+      <p>
+        Mandatory components are at least one node, at least one endpoint, and an entry node
+        for every endpoint. Workflow alias, edges, queues, watchdogs, schemas, extensions, canvas layout, generated agents,
+        existing-agent bindings, and apply-and-run actions are optional.
+      </p>
+
+      <h2>Example Script</h2>
+      <p>
+        This example defines a one-two-one workflow: an intake node fans out to two workers, both feed a
+        synthesis node, and the synthesis node can loop back to intake for revision or complete the workflow.
+      </p>
+      <pre><code>workflow.define({
+  alias: "one-two-one-loop",
+  prompt: "Coordinate a 1-2-1 workflow with a synthesis loop.",
+  flushAgentContextBeforeRun: true,
+  maxConcurrent: 32,
+});
+
+const partialOutput = workflow.schema({
+  handle: "partial_output",
+  alias: "partial-output",
+  description: "Intermediate status visible to the endpoint while the run continues.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["status", "summary"],
+    properties: {
+      status: { type: "string", enum: ["triaging", "working", "reviewing"] },
+      summary: { type: "string" },
+    },
+  },
+});
+
+const finalOutput = workflow.schema({
+  handle: "final_output",
+  alias: "final-output",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["result", "evidence"],
+    properties: {
+      result: { type: "string", enum: ["complete", "needs_user_input"] },
+      evidence: { type: "array", items: { type: "string" } },
+    },
+  },
+});
+
+const workerHandoff = workflow.schema({
+  handle: "worker_handoff",
+  alias: "worker-handoff",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["task", "constraints"],
+    properties: {
+      task: { type: "string" },
+      constraints: { type: "array", items: { type: "string" } },
+    },
+  },
+});
+
+workflow.define({
+  runOutputSchema: finalOutput,
+  intermediateOutputSchema: partialOutput,
+});
+
+const intake = workflow.node({
+  handle: "intake",
+  publicLabel: "Intake",
+  agent: workflow.newAgent({
+    alias: "wf-intake",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: `
+Read the workflow-level prompt for the requested task.
+Split the work between the two worker nodes.
+When choosing a downstream route, use the outgoing edge contracts listed in the system prompt.
+If the synthesis node asks for revision, incorporate its feedback and send updated tasks.
+`,
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: partialOutput,
+  maxTurns: 4,
+  extensions: [
+    { kind: "skill", name: "openai-docs" },
+  ],
+  canvas: { x: 120, y: 240 },
+});
+
+const implementer = workflow.node({
+  handle: "implementer",
+  publicLabel: "Implementer",
+  agent: workflow.newAgent({
+    alias: "wf-implementer",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "high",
+  }),
+  instructions: "Implement or draft the requested change. Hand off concrete files, commands, and unresolved risks.",
+  maxTurns: 3,
+  extensions: [
+    { kind: "mcp", name: "node_repl" },
+  ],
+  canvas: { x: 420, y: 120 },
+});
+
+const reviewer = workflow.node({
+  handle: "reviewer",
+  publicLabel: "Reviewer",
+  agent: workflow.newAgent({
+    alias: "wf-reviewer",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: "Review independently. Hand off only findings, verification status, and recommended next action.",
+  maxTurns: 3,
+  canvas: { x: 420, y: 360 },
+});
+
+const synthesize = workflow.node({
+  handle: "synthesize",
+  publicLabel: "Synthesis",
+  agent: workflow.newAgent({
+    alias: "wf-synthesis",
+    provider: "codex",
+    model: "gpt-5",
+    effort: "medium",
+  }),
+  instructions: `
+Combine both incoming worker results.
+If more work is required, route a revision request back to Intake using the outgoing edge whose target node is Intake.
+If the work is complete, call validate_and_submit_workflow_run_output with the final-output schema.
+`,
+  waitForAllInputs: true,
+  canCompleteWorkflowRun: true,
+  canEmitIntermediateRunOutput: true,
+  intermediateOutputSchema: partialOutput,
+  maxTurns: 5,
+  canvas: { x: 740, y: 240 },
+});
+
+workflow.edge(intake, implementer, {
+  handle: "intake_to_implementer",
+  handoffSchema: workerHandoff,
+  validationPolicy: "halt",
+  sourceSide: "right",
+  targetSide: "left",
+});
+
+workflow.edge(intake, reviewer, {
+  handle: "intake_to_reviewer",
+  handoffSchema: workerHandoff,
+  validationPolicy: "halt",
+  sourceSide: "right",
+  targetSide: "left",
+});
+
+workflow.edge(implementer, synthesize, {
+  handle: "implementer_to_synthesize",
+  sourceSide: "right",
+  targetSide: "left",
+});
+
+workflow.edge(reviewer, synthesize, {
+  handle: "reviewer_to_synthesize",
+  sourceSide: "right",
+  targetSide: "left",
+});
+
+workflow.edge(synthesize, intake, {
+  handle: "revision_loop",
+  validationPolicy: "warn",
+  sourceSide: "left",
+  targetSide: "right",
+});
+
+const start = workflow.endpoint(intake, {
+  handle: "start",
+  alias: "start",
+});
+
+const urgent = workflow.queue({
+  handle: "urgent",
+  alias: "urgent",
+  priority: 10,
+  enabled: true,
+});
+
+workflow.watchdog(start, {
+  handle: "follow_up",
+  queue: urgent,
+  intervalSeconds: 3600,
+  invocationPrompt: "Check whether queued work needs follow-up.",
+  policy: "queue",
+  maxWakeups: 24,
+});</code></pre>
+      <p>
+        Edge handles such as <code>revision_loop</code> are compile-time references only. Apply/run returns
+        the real edge id in <code>edge_ids</code>, and workflow node prompts list the real outgoing edge ids
+        when an agent needs to route with <code>workflow_handoffs</code>.
+      </p>
+
+      <h2>Compilation And Validation</h2>
+      <p>
+        Applying workflow code is an atomic kernel operation with explicit phases.
+      </p>
+      <ol>
+        <li>Parse the artifact and execute it in a deterministic workflow-code runtime with no filesystem, shell, network, provider, or kernel mutation access except approved schema file imports.</li>
+        <li>Collect a typed compiler IR containing schemas, nodes, agent specs, edges, endpoints, queues, watchdogs, extension requirements, and canvas layout.</li>
+        <li>Validate shape: required fields, enum values, graph references, endpoint entry nodes, workflow/endpoint/queue aliases using the same lowercase alias rules as slash commands, reserved default queue handle usage, no duplicate normalized queue aliases, no duplicate agent bindings, no metaagent worker nodes, no impossible queue/watchdog references.</li>
+        <li>Validate policy: caller authority, metaagent ownership, provider/model availability or replacement bindings, extension availability, configured limits, and max generated prompt bytes.</li>
+        <li>Allocate fresh kernel ids for workflow graph objects and generated agents.</li>
+        <li>Expose outgoing edge contracts at run time with allocated <code>edge_id</code>, <code>to_node_id</code>, public target label, handoff schema ref, and validation policy. Keep downstream node instructions private to that node.</li>
+        <li>Validate schemas and prompt templates after id allocation.</li>
+        <li>Apply state changes through the normal session and workflow services, not through a parallel mutation path.</li>
+        <li>Return a compile report with created ids, warnings, binding requirements, and a graph summary.</li>
+      </ol>
+      <p>
+        Dry-run validation returns the same compile report without mutating state. A failed compile leaves no
+        partial workflow, generated agent, extension grant, queue, or watchdog behind.
+      </p>
+
+      <h2>Handle To Kernel Id Translation</h2>
+      <p>
+        Scripts do not assign workflow graph ids. Every builder call returns an opaque compile-time handle.
+        Handles let the script connect objects to each other, but they are not Chariox ids and are not persisted
+        as ids in the workflow definition.
+      </p>
+      <pre><code>const intake = workflow.node({ ... });
+const reviewer = workflow.node({ ... });
+const reviewEdge = workflow.edge(intake, reviewer, { ... });
+const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
+      <p>
+        The compiler turns those handles into an intermediate representation. The IR may name handles with
+        compiler-local references such as <code>node#1</code>, <code>edge#3</code>, or <code>endpoint#1</code>,
+        but those references only exist during validation and apply.
+      </p>
+      <ol>
+        <li>The script runtime collects objects and references by handle, not by kernel id.</li>
+        <li>The validator checks that every handle points to an object of the expected type.</li>
+        <li>The apply phase creates the workflow and generated agents through normal kernel services.</li>
+        <li>As each object is created, the kernel records an allocation map: schema handle to schema id, agent handle to agent id, node handle to node id, edge handle to edge id, endpoint handle to endpoint id, queue handle to queue id, and watchdog handle to watchdog id.</li>
+        <li>References are resolved through that allocation map before calling existing workflow services. For example, an edge IR with <code>from: node#1</code> and <code>to: node#2</code> becomes <code>add_workflow_edge(workflow_id, allocated_node_id_1, allocated_node_id_2, ...)</code>.</li>
+        <li>Instruction templates that need allocated ids are rendered only after allocation, using the same map.</li>
+        <li>The apply response returns a creation report mapping script handles, aliases, and public labels to the actual ids created in this kernel.</li>
+      </ol>
+      <p>
+        Workflow-code scripts do not execute runs while compiling. Run and queue side effects happen only after
+        validation through <code>chariox.meta.workflow_code.run</code>, <code>workflow_code.run</code>, or normal endpoint invocation APIs, which receive the
+        allocated endpoint and queue references from the apply report.
+      </p>
+      <p>
+        Existing agents are the exception. <code>workflow.existingAgent("agent-12")</code> carries an external
+        kernel id or user-supplied binding. The compiler validates that the caller may use that agent, then
+        records the existing id in the allocation map instead of spawning a new agent. Generated agents still
+        receive fresh ids every time the script is applied.
+      </p>
+      <p>
+        This is what makes the same script reusable: applying it twice yields the same graph shape but different
+        kernel ids. Subsequent operations use the returned creation report, workflow aliases, endpoint
+        aliases, node public labels, or normal resolve/list commands to inspect the concrete instance.
+      </p>
+
+      <h2>Metaagent Authoring</h2>
+      <p>
+        Metaagents are normally in plan mode, so they do not depend on direct file writes or shell access
+        to author workflow code. The kernel exposes runtime MCP endpoints that create and manage
+        workflow-code artifacts.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Runtime MCP endpoint</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>chariox.meta.workflow_code.create</code></td>
+            <td>Create a saved workflow-code artifact from name, source, optional language (<code>javascript</code> or <code>typescript</code>; legacy <code>java_script</code>/<code>type_script</code> are accepted), and optional Node.js path.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.update</code></td>
+            <td>Update a saved artifact revision from name, source, optional language (<code>javascript</code> or <code>typescript</code>), and optional Node.js path.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.list</code></td>
+            <td>List saved workflow-code artifact metadata.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.read</code></td>
+            <td>Read a saved artifact for review or iteration.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.delete</code></td>
+            <td>Delete a saved artifact from the session/workspace registry.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.validate</code></td>
+            <td>Compile inline source or validate a saved artifact by name without mutating workflow state. Accepts optional language, Node.js path for inline source, and provider/model rebindings.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.apply</code></td>
+            <td>Compile and instantiate a workflow in the current session, using explicit provider/model rebinding for generated-agent nodes and strict validation for existing-agent and extension requirements.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.run</code></td>
+            <td>Apply saved or inline workflow-code as a fresh workflow, then invoke one endpoint with a prompt. <code>endpoint</code> and <code>queue</code> accept script handles from the generated workflow and are resolved through the apply report.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.export</code></td>
+            <td>Export artifact source, embedded schemas, manifest, extension requirements, compatibility metadata, and source/definition hashes.</td>
+          </tr>
+          <tr>
+            <td><code>chariox.meta.workflow_code.import</code></td>
+            <td>Import a portable artifact package from another user or kernel without trusting embedded credentials.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Metaagents receive compact workflow-code authoring guides through the built-in meta guide tools.
+        Those guides include the DSL reference, current kernel limits, examples, routing
+        rules, schema rules, and the required validate-before-apply loop.
+      </p>
+      <p>
+        The isolated metaagent capabilities drill includes an observed workflow-code authoring path:
+        the harness submits one high-level prompt, the plan-mode metaagent discovers the guide,
+        creates a workflow-code artifact, validates it, applies it with provider/model rebinding,
+        runs the entry endpoint, and records the result in its kernel-managed plan. The harness
+        then verifies only projected session state: the created workflow, generated worker agent,
+        controller metadata, and run/enqueue result.
+      </p>
+
+      <h2>Dynamic Pattern Suite</h2>
+      <p>
+        Chariox ships canonical workflow-code scripts for the workflow patterns that matter for
+        metaagent-authored orchestration. The base vocabulary follows Anthropic's agent workflow
+        taxonomy: prompt chaining, routing, parallelization, orchestrator-workers, and
+        evaluator-optimizer. The suite also covers Claude Code dynamic-workflow shapes used for
+        larger scripted runs: fan-out and synthesize, adversarial verification, generate and filter,
+        tournament, and loop until done.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Pattern</th>
+            <th>Canonical Script</th>
+            <th>Chariox Shape</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Prompt chaining</td>
+            <td><code>examples/workflow-code/prompt-chaining.js</code></td>
+            <td>Two generated agents connected by one schema-validated edge.</td>
+          </tr>
+          <tr>
+            <td>Routing</td>
+            <td><code>examples/workflow-code/routing.js</code></td>
+            <td>A classifier node with two outgoing edges selects one specialist by emitting <code>workflow_handoffs</code>.</td>
+          </tr>
+          <tr>
+            <td>Fan-out and synthesize</td>
+            <td><code>examples/workflow-code/fan-out-synthesize.js</code></td>
+            <td>A planner fans out to two workers; a synthesizer waits for all inputs before final output.</td>
+          </tr>
+          <tr>
+            <td>Parallelization</td>
+            <td><code>examples/workflow-code/parallelization.js</code></td>
+            <td>A dispatcher sends the same task to two reviewers; an aggregator waits for both votes.</td>
+          </tr>
+          <tr>
+            <td>Adversarial verification</td>
+            <td><code>examples/workflow-code/adversarial-verification.js</code></td>
+            <td>A proposer, critic, and judge use a critique loop plus a final judge edge.</td>
+          </tr>
+          <tr>
+            <td>Generate and filter</td>
+            <td><code>examples/workflow-code/generate-filter.js</code></td>
+            <td>A generator creates candidates, a filter selects them, and a finisher completes.</td>
+          </tr>
+          <tr>
+            <td>Tournament</td>
+            <td><code>examples/workflow-code/tournament.js</code></td>
+            <td>A seeder fans out to two contestants; a judge waits for both entries and picks a winner.</td>
+          </tr>
+          <tr>
+            <td>Loop until done</td>
+            <td><code>examples/workflow-code/loop-until-done.js</code></td>
+            <td>A worker and checker loop through revision feedback until the checker accepts final output.</td>
+          </tr>
+          <tr>
+            <td>Orchestrator-workers</td>
+            <td><code>examples/workflow-code/orchestrator-workers.js</code></td>
+            <td>An orchestrator delegates a subtask to a worker and a synthesizer produces final output.</td>
+          </tr>
+          <tr>
+            <td>Evaluator-optimizer</td>
+            <td><code>examples/workflow-code/evaluator-optimizer.js</code></td>
+            <td>An optimizer proposes candidates and an evaluator either loops feedback or completes.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        The built-in <code>workflows/workflow-code-patterns</code> meta guide embeds these scripts
+        verbatim so a metaagent can read, adapt, validate, apply, run, export, and import them through
+        <code>chariox.meta.workflow_code.*</code>. Kernel tests compile every script, apply it with
+        provider/model rebindings to <code>dev-stub/default</code>, verify node/agent/edge/endpoint/schema
+        id allocation, check canvas application, and assert final output schema materialization.
+      </p>
+
+      <h2>Portability</h2>
+      <p>
+        Portable workflow code must separate stable intent from local bindings.
+      </p>
+      <ul>
+        <li>Source, schemas, graph topology, prompts, watchdog definitions, queue definitions, canvas hints, and extension requirements are portable.</li>
+        <li>Existing agent ids, local filesystem schema paths, credentials, provider login state, and connector secrets are not portable.</li>
+        <li>Provider/model replacement is explicit at validate/apply/run time through <code>provider_rebindings</code>, for example <code>{ "node": "planner", "provider": "dev-stub", "model": "default" }</code>.</li>
+        <li>Imported artifacts validate package integrity, workflow-code schema version, configured limits, and embedded schema validity before being saved.</li>
+      </ul>
+
+      <h2>Implemented Surfaces</h2>
+      <ol>
+        <li>Workflow turn prompts include outgoing edge contracts and drills for multi-edge routing with <code>workflow_handoffs</code>.</li>
+        <li>TOML-backed defaults cover session max agents and workflow-code max concurrency.</li>
+        <li>Workflow-code schemas are embedded in artifacts/packages and applied as kernel workflow schemas while existing <code>*_schema_ref</code> strings remain compatible.</li>
+        <li>The kernel has a workflow-code artifact type, compiler IR, validation report, apply report, and run result.</li>
+        <li>Runtime MCP endpoints exist under the metaagent bundle: <code>chariox.meta.workflow_code.create</code>, <code>chariox.meta.workflow_code.read</code>, <code>chariox.meta.workflow_code.list</code>, <code>chariox.meta.workflow_code.update</code>, <code>chariox.meta.workflow_code.delete</code>, <code>chariox.meta.workflow_code.validate</code>, <code>chariox.meta.workflow_code.apply</code>, <code>chariox.meta.workflow_code.run</code>, <code>chariox.meta.workflow_code.import</code>, and <code>chariox.meta.workflow_code.export</code>.</li>
+        <li>Nodes-first workflow scripts compile into existing workflow services atomically.</li>
+        <li>Metaagent workflow-code authoring and pattern guides are built into the meta guide surface and searchable by workflow-code tool and pattern names.</li>
+        <li>Focused kernel/runtime tests cover Meta mode workflow-code authorization, validation, apply, and run policy; real-provider Meta mode drills provide behavior evidence.</li>
+      </ol>
+
+      <h2>Protocol Impact</h2>
+      <p>
+        Adding workflow schemas, workflow-code artifacts, compiler reports, or runtime MCP/local daemon request
+        shapes changes serialized protocol. Each such change must bump the local daemon protocol version,
+        update protocol shape/hash tests, update client minimum supported versions when required, and add a
+        focused drill that exercises the new behavior.
+      </p>
+    </main>
+  </body>
+</html>

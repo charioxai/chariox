@@ -1,0 +1,585 @@
+use crate::agent::GitWorktreePlacement;
+use crate::error::DaemonError;
+use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
+use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+use crate::runtime::projection::{
+    ProviderRunProjectionStore, SessionSnapshotProjection, SessionStateProjectionStore,
+};
+use crate::runtime::state::KernelRuntimeState;
+use crate::runtime_transport::WatchResult;
+use crate::session::{PromptCancellation, PromptCompletion, PromptSubmissionOutcome};
+use crate::skill::CharioxSkillPackage;
+use crate::transport::relay_peer::{
+    RelayPeerEvent, RelayProjectEnvironmentSetupStatus, RelayPromptAttachment,
+    RemoteGitObservation, RemoteGitTurnContext, RemoteMcpAvailability, RemoteMcpCheckContext,
+    RemoteSkillMaterialization, RemoteSkillSyncContext, RequiredRemoteMcp,
+};
+
+pub(crate) async fn ensure_relay_subscription_attachment(
+    runtime_state: &KernelRuntimeState,
+    session_projection: &SessionStateProjectionStore,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<(), DaemonError> {
+    // The projection trails the kernel by an event or two; a miss there is not a refusal.
+    if session_projection
+        .get(session_id)
+        .is_some_and(|session| session.has_attachment(attachment_id))
+    {
+        return Ok(());
+    }
+    runtime_state
+        .ensure_attachment_in_session(session_id, attachment_id)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn watch_relay_subscription_state(
+    runtime_state: &KernelRuntimeState,
+    session_id: &str,
+    attachment_id: &str,
+    should_check_snapshot: bool,
+    previous_snapshot: Option<SessionSnapshotProjection>,
+    last_workflow_design_sequence: u64,
+) -> WatchResult {
+    runtime_state
+        .watch_relay_subscription_state(
+            session_id,
+            attachment_id,
+            should_check_snapshot,
+            previous_snapshot,
+            last_workflow_design_sequence,
+        )
+        .await
+}
+
+pub(crate) async fn create_relay_execution_lease(
+    runtime_state: &KernelRuntimeState,
+    home_kernel_id: &str,
+    home_session_id: &str,
+    home_agent_id: &str,
+    home_agent_metaagent: bool,
+    owner_user_id: &str,
+) -> Result<ExecutionLease, DaemonError> {
+    runtime_state
+        .create_relay_execution_lease(
+            home_kernel_id,
+            home_session_id,
+            home_agent_id,
+            home_agent_metaagent,
+            owner_user_id,
+        )
+        .await
+}
+
+pub(crate) async fn destroy_relay_execution_lease(
+    runtime_state: &KernelRuntimeState,
+    lease_id: &str,
+) -> Result<(), DaemonError> {
+    runtime_state.destroy_relay_execution_lease(lease_id).await
+}
+
+// These transport adapters preserve the explicit relay request fields.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_relay_leased_agent(
+    runtime_state: &KernelRuntimeState,
+    lease_id: &str,
+    provider: &str,
+    account_profile: &str,
+    model: Option<String>,
+    effort: Option<String>,
+    execution_mode: Option<AgentExecutionMode>,
+    permission_level: Option<AgentPermissionLevel>,
+    workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
+    worktree_id: Option<String>,
+    worktree_placement: Option<GitWorktreePlacement>,
+) -> Result<LeasedAgent, DaemonError> {
+    runtime_state
+        .create_relay_leased_agent(
+            lease_id,
+            provider,
+            account_profile,
+            model,
+            effort,
+            execution_mode,
+            permission_level,
+            workspace_live_sync_mode,
+            worktree_id,
+            worktree_placement,
+        )
+        .await
+}
+
+pub(crate) async fn destroy_relay_leased_agent(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .destroy_relay_leased_agent(leased_agent_id)
+        .await
+}
+
+pub(crate) async fn update_relay_leased_agent_config(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    execution_mode: AgentExecutionMode,
+    permission_level: AgentPermissionLevel,
+) -> Result<LeasedAgent, DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_config(leased_agent_id, execution_mode, permission_level)
+        .await
+}
+
+pub(crate) async fn update_relay_leased_agent_profile(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider: String,
+    account_profile: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<LeasedAgent, DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_profile(
+            leased_agent_id,
+            provider,
+            account_profile,
+            model,
+            effort,
+        )
+        .await
+}
+
+pub(crate) async fn update_relay_leased_agent_meta_mode(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    active: bool,
+) -> Result<LeasedAgent, DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_meta_mode(leased_agent_id, active)
+        .await
+}
+
+pub(crate) async fn update_relay_leased_agent_remote_extension_manifest(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .update_relay_leased_agent_remote_extension_manifest(
+            leased_agent_id,
+            remote_extension_manifest,
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn launch_relay_leased_native_provider_run(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    adapter_key: &str,
+    provider: &str,
+    account_profile: &str,
+    model: &str,
+    variant: Option<String>,
+    structured_endpoint: Option<String>,
+    provider_session_id: Option<String>,
+    required_mcps: Vec<crate::transport::relay_peer::RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    provider_launch_credential: Option<
+        crate::transport::relay_peer::RemoteProviderLaunchCredential,
+    >,
+) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+    runtime_state
+        .launch_relay_leased_native_provider_run(
+            leased_agent_id,
+            adapter_key,
+            provider,
+            account_profile,
+            model,
+            variant,
+            structured_endpoint,
+            provider_session_id,
+            required_mcps,
+            required_skills,
+            remote_extension_manifest,
+            provider_launch_credential,
+        )
+        .await
+}
+
+pub(crate) async fn send_relay_leased_native_provider_input(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    attachment_id: &str,
+    data_base64: &str,
+) -> Result<usize, DaemonError> {
+    runtime_state
+        .send_relay_leased_native_provider_input(
+            leased_agent_id,
+            provider_run_id,
+            attachment_id,
+            data_base64,
+        )
+        .await
+}
+
+pub(crate) async fn resize_relay_leased_provider_terminal(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    cols: u16,
+    rows: u16,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .resize_relay_leased_provider_terminal(leased_agent_id, provider_run_id, cols, rows)
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn submit_relay_leased_prompt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+    provider_resume_state: Option<crate::provider::ProviderResumeState>,
+    prompt: &str,
+    hidden_system_context: &str,
+    attachments: Vec<RelayPromptAttachment>,
+    workflow_context: Option<RemoteWorkflowTurnContext>,
+    git_context: Option<RemoteGitTurnContext>,
+    required_mcps: Vec<RequiredRemoteMcp>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+    remote_extension_manifest: crate::extension::RemoteExtensionManifest,
+    provider_launch_credential: Option<
+        crate::transport::relay_peer::RemoteProviderLaunchCredential,
+    >,
+) -> Result<(String, PromptSubmissionOutcome), DaemonError> {
+    runtime_state
+        .submit_relay_leased_prompt(
+            leased_agent_id,
+            expected_profile,
+            provider_resume_state,
+            prompt,
+            hidden_system_context,
+            attachments,
+            workflow_context,
+            git_context,
+            required_mcps,
+            required_skills,
+            remote_extension_manifest,
+            provider_launch_credential,
+        )
+        .await
+}
+
+pub(crate) async fn query_relay_leased_prompt_receipt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    home_prompt_id: &str,
+) -> Result<Option<crate::transport::relay_peer::LeasedPromptReceipt>, DaemonError> {
+    runtime_state
+        .query_relay_leased_prompt_receipt(leased_agent_id, home_prompt_id)
+        .await
+}
+
+pub(crate) async fn reconcile_relay_leased_prompt_steer_receipt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    steer_id: &str,
+    target_home_prompt_id: &str,
+    worker_provider_run_id: &str,
+    execution_lease_id: &str,
+) -> Result<crate::transport::relay_peer::LeasedPromptReceipt, DaemonError> {
+    runtime_state
+        .reconcile_relay_leased_prompt_steer_receipt(
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            worker_provider_run_id,
+            execution_lease_id,
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn steer_relay_leased_prompt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    steer_id: &str,
+    target_home_prompt_id: &str,
+    prompt: &str,
+    hidden_system_context: &str,
+    attachments: Vec<RelayPromptAttachment>,
+    required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
+) -> Result<(String, bool), DaemonError> {
+    runtime_state
+        .steer_relay_leased_prompt(
+            leased_agent_id,
+            steer_id,
+            target_home_prompt_id,
+            prompt,
+            hidden_system_context,
+            attachments,
+            required_skills,
+        )
+        .await
+}
+
+pub(crate) async fn ensure_relay_remote_skill_packages(
+    runtime_state: &KernelRuntimeState,
+    context: RemoteSkillSyncContext,
+    packages: Vec<CharioxSkillPackage>,
+) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
+    runtime_state
+        .ensure_relay_remote_skill_packages(context, packages)
+        .await
+}
+
+pub(crate) async fn ensure_relay_remote_provider_account(
+    runtime_state: &KernelRuntimeState,
+    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+    materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    runtime_state
+        .ensure_relay_remote_provider_account(context, materialization)
+        .await
+}
+
+pub(crate) async fn check_relay_remote_mcp_availability(
+    runtime_state: &KernelRuntimeState,
+    context: RemoteMcpCheckContext,
+    required_mcps: Vec<RequiredRemoteMcp>,
+) -> Result<Vec<RemoteMcpAvailability>, DaemonError> {
+    runtime_state
+        .check_relay_remote_mcp_availability(context, required_mcps)
+        .await
+}
+
+pub(crate) async fn complete_relay_leased_prompt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+) -> Result<PromptCompletion, DaemonError> {
+    runtime_state
+        .complete_relay_leased_prompt(leased_agent_id)
+        .await
+}
+
+pub(crate) async fn resolve_relay_leased_project_environment_setup_target(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    home_session_id: String,
+    home_agent_id: String,
+) -> Result<(String, String), DaemonError> {
+    runtime_state
+        .relay_resolve_leased_project_environment_setup_target(
+            leased_agent_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn start_relay_leased_project_environment_setup(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    attempt: u32,
+    project_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+    workspace_id: String,
+    target_worker_id: String,
+    target_platform: String,
+    definition: Option<crate::session::ProjectEnvironmentDefinition>,
+    validation_commands: Vec<String>,
+) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    runtime_state
+        .start_relay_leased_project_environment_setup(
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            workspace_id,
+            target_worker_id,
+            target_platform,
+            definition,
+            validation_commands,
+        )
+        .await
+}
+
+pub(crate) async fn get_relay_leased_project_environment_setup_status(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    runtime_state
+        .get_relay_leased_project_environment_setup_status(
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
+)]
+pub(crate) async fn acknowledge_relay_leased_project_environment_setup_definition(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    attempt: u32,
+    project_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+    definition_digest: String,
+) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError> {
+    runtime_state
+        .relay_acknowledge_leased_project_environment_setup_definition(
+            leased_agent_id,
+            operation_id,
+            attempt,
+            project_id,
+            home_session_id,
+            home_agent_id,
+            definition_digest,
+        )
+        .await
+}
+
+pub(crate) async fn cancel_relay_leased_project_environment_setup(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    runtime_state
+        .cancel_relay_leased_project_environment_setup(
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+}
+
+pub(crate) async fn retry_relay_leased_project_environment_setup(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    operation_id: String,
+    home_session_id: String,
+    home_agent_id: String,
+) -> Result<RelayProjectEnvironmentSetupStatus, DaemonError> {
+    runtime_state
+        .retry_relay_leased_project_environment_setup(
+            leased_agent_id,
+            operation_id,
+            home_session_id,
+            home_agent_id,
+        )
+        .await
+}
+
+pub(crate) async fn observe_relay_leased_git_after(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    require_authorization: bool,
+) -> Result<
+    (
+        Vec<RemoteGitObservation>,
+        Option<crate::git_observer::WorkspaceLiveSyncChange>,
+    ),
+    DaemonError,
+> {
+    runtime_state
+        .observe_relay_leased_git_after(leased_agent_id, provider_run_id, require_authorization)
+        .await
+}
+
+pub(crate) async fn cancel_relay_leased_prompt(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    home_prompt_id: &str,
+    worker_provider_run_id: &str,
+) -> Result<PromptCancellation, DaemonError> {
+    runtime_state
+        .cancel_relay_leased_prompt(leased_agent_id, home_prompt_id, worker_provider_run_id)
+        .await
+}
+
+pub(crate) async fn relay_leased_agent_provider_run_id(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+) -> Result<Option<String>, DaemonError> {
+    runtime_state
+        .relay_leased_agent_provider_run_id(leased_agent_id)
+        .await
+}
+
+pub(crate) async fn relay_leased_agent_provider_termination(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+) -> Result<Option<crate::provider::ProviderRunTermination>, DaemonError> {
+    runtime_state
+        .relay_leased_agent_provider_termination(leased_agent_id, provider_run_id)
+        .await
+}
+
+pub(crate) fn relay_provider_run_terminal_diagnostic(
+    provider_run_projection: &ProviderRunProjectionStore,
+    provider_run_id: &str,
+) -> Option<String> {
+    provider_run_projection
+        .get(provider_run_id)
+        .and_then(|run| run.terminal_diagnostic().map(str::to_string))
+        .filter(|message| !message.trim().is_empty())
+}
+
+pub(crate) async fn try_pump_relay_leased_runtime_projections(
+    runtime_state: &KernelRuntimeState,
+) -> Result<Option<Vec<(String, RelayPeerEvent)>>, DaemonError> {
+    runtime_state
+        .try_pump_relay_leased_runtime_projections()
+        .await
+}
+
+pub(crate) async fn drain_relay_leased_runtime_projection(
+    runtime_state: &KernelRuntimeState,
+    leased_agent_id: &str,
+    provider_run_id: &str,
+    pump_output: bool,
+    replay_settled_completion: bool,
+    require_authorization: bool,
+) -> Result<Option<(String, RelayPeerEvent)>, DaemonError> {
+    runtime_state
+        .drain_relay_leased_runtime_projection(
+            leased_agent_id,
+            provider_run_id,
+            pump_output,
+            replay_settled_completion,
+            require_authorization,
+        )
+        .await
+}
+
+pub(crate) async fn project_relay_remote_runtime_projection(
+    runtime_state: &KernelRuntimeState,
+    authority: crate::runtime::relay_peer_authority::RemoteProjectionAuthority,
+    event: crate::transport::relay_peer::RelayPeerEvent,
+) -> Result<(), DaemonError> {
+    runtime_state
+        .project_relay_remote_runtime_projection(authority, event)
+        .await
+}

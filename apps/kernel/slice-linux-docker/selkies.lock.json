@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "upstream_validation_url": "https://github.com/selkies-project/selkies/actions/runs/33318518640",
+  "selkies": {
+    "revision": "3f87241fcd6abc44e205b22f6596e78ef4946670",
+    "license": "MPL-2.0",
+    "source": {
+      "url": "https://github.com/selkies-project/selkies/archive/3f87241fcd6abc44e205b22f6596e78ef4946670.tar.gz",
+      "filename": "selkies.tar.gz",
+      "sha256": "9aee9dcaf6e6617194b84a667fd7fe441b2cf85718abf63e109f29db18c90d51",
+      "size": 2160379
+    }
+  },
+  "pixelflux": {
+    "version": "2.1.0",
+    "revision": "6974a8c16a14dc0040d5ed937d633a6ceb4c926d",
+    "license": "MPL-2.0",
+    "wheel_flavor": "gpl",
+    "bundled_license_notes": "Official wheels include libx264 under GPL-2.0-or-later and FFmpeg under LGPL-2.1-or-later. See the pinned source LICENSES.md.",
+    "source": {
+      "url": "https://github.com/selkies-project/pixelflux/archive/6974a8c16a14dc0040d5ed937d633a6ceb4c926d.tar.gz",
+      "filename": "pixelflux.tar.gz",
+      "sha256": "2560ec20d456ef06ee98a9c28e3e4ce491ee367dfab304753822aabddafa4367",
+      "size": 609857
+    },
+    "wheels": {
+      "amd64": {
+        "url": "https://github.com/selkies-project/pixelflux/releases/download/6974a8c/pixelflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "filename": "pixelflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "sha256": "97a1b6b289373373b8a32699bade666d758848be11fda470f5e49a5d50512756",
+        "size": 17473957
+      },
+      "arm64": {
+        "url": "https://github.com/selkies-project/pixelflux/releases/download/6974a8c/pixelflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "filename": "pixelflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "sha256": "b86783c2fb7eb14b105f123b8182be7144afb9bd4d2c2af181b5731b5e966342",
+        "size": 16762150
+      }
+    }
+  },
+  "pcmflux": {
+    "version": "2.1.0",
+    "revision": "a8fac8d8ea89117a1c2480bdbefbb3b8b717d956",
+    "license": "MPL-2.0",
+    "bundled_license_notes": "Official wheels include replaceable LGPL libraries for PulseAudio and its dependencies. See the pinned source LICENSES.md.",
+    "source": {
+      "url": "https://github.com/selkies-project/pcmflux/archive/a8fac8d8ea89117a1c2480bdbefbb3b8b717d956.tar.gz",
+      "filename": "pcmflux.tar.gz",
+      "sha256": "a32c9cac8332753831cad2916d9be73fabc172966cda7c86bb5e77a3d3535406",
+      "size": 77454
+    },
+    "wheels": {
+      "amd64": {
+        "url": "https://github.com/selkies-project/pcmflux/releases/download/a8fac8d/pcmflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "filename": "pcmflux-2.1.0-cp311-cp311-manylinux_2_28_x86_64.whl",
+        "sha256": "5fc902b41888eaf8185f891709c995198152fd7febfd158d130cba18bd07508c",
+        "size": 3729444
+      },
+      "arm64": {
+        "url": "https://github.com/selkies-project/pcmflux/releases/download/a8fac8d/pcmflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "filename": "pcmflux-2.1.0-cp311-cp311-manylinux_2_28_aarch64.whl",
+        "sha256": "d34fb03f25ad0a977bbcb19d8aee061b5125b8ee8be96be2a8398bd6097681ef",
+        "size": 3509040
+      }
+    }
+  }
+}

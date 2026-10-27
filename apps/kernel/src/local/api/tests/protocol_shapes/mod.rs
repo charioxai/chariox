@@ -1,0 +1,118 @@
+use super::*;
+use crate::local::{
+    GetTerminalCommandCatalogRequest, TerminalCommandCatalog,
+    TerminalCommandCatalogExecutionTarget, TerminalCommandCatalogNode,
+    TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
+};
+
+mod agent_deadline;
+mod agent_lifecycle;
+mod agent_workflow;
+mod aggregate_agent_model;
+mod app_events;
+mod app_fetch;
+mod app_install;
+mod app_publisher;
+mod apps;
+mod browser_artifact;
+mod browser_import;
+mod browser_mirror;
+mod client_catalog_revisions;
+mod cloud_relay;
+mod computer_hold;
+mod core;
+mod credential_enrollment;
+mod dictation;
+mod display_resumption;
+mod disposable_worker;
+mod event_publication;
+mod extension_apps;
+mod fresh_remote_relay_inventory;
+mod handoff_config;
+mod kernel_access;
+mod kernel_browser;
+mod kernel_computer;
+mod kernel_gateway;
+mod kernel_operation_interactions;
+mod managed_activity;
+mod managed_context;
+mod managed_environment;
+mod native_spawn_slice;
+mod notes;
+mod panes_history;
+mod project_environment_aggregate;
+mod project_environment_manifest;
+mod project_environment_setup;
+mod prompt_settings;
+mod provider_account_credential;
+mod provider_auth_recovery;
+mod provider_usage_activity;
+mod publication;
+mod recall_terminal_metaagent;
+mod released_provider_run;
+mod resource_telemetry;
+mod room_controller;
+mod room_environment;
+mod room_environment_placement;
+mod room_exec;
+mod room_terminal;
+mod session_feed_596;
+mod session_view;
+mod slice_disk_quota;
+mod slice_display;
+mod slice_logs;
+mod user_app_views;
+mod user_domain_access;
+mod workflow_code;
+mod workflow_notifications;
+mod workspace_history_external;
+
+fn history_page_entry(
+    sequence: usize,
+    kind: crate::history::SessionHistoryEntryKind,
+    agent_id: &str,
+    text: &str,
+) -> crate::session_history_page::SessionHistoryPageEntry {
+    crate::session_history_page::SessionHistoryPageEntry {
+        entry_index: sequence,
+        sequence_end: None,
+        sequence_byte_lengths: Vec::new(),
+        sequence_indices: Vec::new(),
+        fragment_start: 0,
+        fragment_end: text.chars().count(),
+        total_chars: text.chars().count(),
+        entry: crate::history::SessionHistoryEntry {
+            session_id: "session-1".to_string(),
+            provider_run_id: Some("provider-run-1".to_string()),
+            agent_id: Some(agent_id.to_string()),
+            source_attachment_id: Some("attachment-1".to_string()),
+            prompt_origin: match kind {
+                crate::history::SessionHistoryEntryKind::UserPrompt => {
+                    Some(crate::session::PromptOrigin::Chariox)
+                }
+                _ => None,
+            },
+            kind,
+            merge_key: None,
+            source: None,
+            external_provider: None,
+            external_provider_session_id: None,
+            external_provider_turn_id: None,
+            observed_at_ms: None,
+            external_observation: None,
+            attachments: Vec::new(),
+            text: text.to_string(),
+            timestamp_ms: 42 + sequence as u64,
+        },
+    }
+}
+
+mod owner_handoff;
+mod relay_transport;
+mod room_workflows;
+mod screenshot;
+mod ssh_machine;
+mod waiting_room_workspace;
+
+mod room_pin;
+mod usage_snapshot;

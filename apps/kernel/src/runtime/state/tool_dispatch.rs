@@ -1,0 +1,1030 @@
+//! Runtime MCP tool dispatch.
+//!
+//! Provider tool calls enter here and are routed to workspace live sync handlers or other runtime-owned
+//! tool surfaces with consistent authorization and JSON payload shaping.
+
+use super::*;
+
+mod agent_events;
+mod agent_messaging;
+mod agent_process_permission;
+mod agent_wakes;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app;
+mod capability_registry;
+mod computer_secret;
+mod connector;
+mod credential;
+mod extension_list_tool;
+mod extension_registration_tool;
+mod extension_request_tool;
+mod home_connector_executor;
+mod home_extension_authorizer;
+pub(super) fn authorize_remote_home_context_for_peer(
+    state: &KernelRuntimeState,
+    context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
+) -> Result<crate::agent::AgentInstance, DaemonError> {
+    home_extension_authorizer::authorize_remote_home_context(
+        state,
+        context,
+        "authorize forwarded home context",
+    )
+}
+mod home_extension_execution_policy;
+mod home_mcp_proxy_executor;
+mod home_room_browser_runtime;
+mod home_script_executor;
+mod meta;
+mod permission_prompt;
+mod recall;
+mod remote_capability_sync;
+mod remote_extension_control_plane;
+mod script;
+mod skill_package_response;
+mod slice;
+mod terminal;
+pub(super) use slice::{
+    capture_computer_secret_target, capture_room_environment_screenshot,
+    execute_room_computer_observation, reset_room_computer_input,
+    run_room_clipboard_read_authorized, run_room_clipboard_write, run_room_computer_hold,
+    run_room_keyboard_key, run_room_keyboard_text, run_room_pointer_click, run_room_pointer_drag,
+    run_room_pointer_move, run_room_pointer_scroll, run_room_secret_text_input,
+};
+mod worker_home_credential_client;
+mod worker_home_extension_client;
+mod worker_home_relay_client;
+mod worker_home_room_browser_client;
+mod workflow_authenticated;
+mod workflow_forwarding;
+mod workspace_live_sync_access;
+mod workspace_live_sync_local;
+mod workspace_live_sync_managed_fanout;
+mod workspace_live_sync_permission;
+mod workspace_live_sync_remote_dispatch;
+
+use workspace_live_sync_managed_fanout::*;
+
+impl KernelRuntimeState {
+    /// Marks every run this token authenticates as waiting on a runtime tool
+    /// call, for as long as the returned guards live.
+    pub(crate) fn begin_claude_runtime_tool_waits(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::provider::ClaudeRuntimeToolWait> {
+        self.owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .iter()
+            .map(|run| crate::provider::begin_claude_runtime_tool_wait(run.id()))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_mcp_auth_token_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<String> {
+        self.owned
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+    }
+
+    pub(crate) fn runtime_tool_specs_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        let mut specs = self.runtime_tool_specs_without_apps_for_auth_token(auth_token);
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        // Legacy synchronous callers have a Vec-only interface. Production HTTP
+        // discovery uses the Result-returning async path below so a failed App
+        // projection is never cached as a successful incomplete catalog.
+        specs.extend(
+            self.app_runtime_tool_specs_for_auth_token(auth_token, &specs, None)
+                .unwrap_or_default(),
+        );
+        specs
+    }
+
+    /// HTTP discovery can touch current App trust in SQLite. Reserve admission
+    /// before submitting blocking work and keep the async coordinator free.
+    pub(crate) async fn runtime_tool_specs_for_auth_token_async(
+        &self,
+        auth_token: String,
+    ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let needs_apps = self.has_app_grants_for_auth_token(&auth_token);
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        let needs_apps = false;
+        if !needs_apps {
+            return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+        }
+        let Ok(permit) = self.app_control().try_admit() else {
+            // Saturated: an agent whose Apps neither run nor are dormant keeps
+            // its other tools now, and a catalog refresh lists its Apps once a
+            // slot frees; a running App's tools must not silently disappear.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if !self.has_active_apps_for_auth_token(&auth_token) {
+                self.refresh_app_catalog_later(&auth_token);
+                return Ok(self.runtime_tool_specs_without_apps_for_auth_token(&auth_token));
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tools.list",
+                message: "App tool discovery is busy".into(),
+            });
+        };
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut specs = state.runtime_tool_specs_without_apps_for_auth_token(&auth_token);
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            specs.extend(state.app_runtime_tool_specs_for_auth_token(
+                &auth_token,
+                &specs,
+                Some(&permit),
+            )?);
+            drop(permit);
+            Ok(specs)
+        })
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "runtime_tools.list",
+            message: "App tool discovery did not complete".into(),
+        })?
+    }
+
+    fn runtime_tool_specs_without_apps_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        let provider_runs = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token);
+        let mut specs = self.kernel_browser_tool_specs(&provider_runs);
+        specs.extend(self.kernel_computer_tool_specs(&provider_runs));
+        if matches!(provider_runs.as_slice(), [run]
+            if crate::provider::provider_run_uses_claude_permission_prompt_tool(run))
+        {
+            specs.push(crate::transport::runtime_tools::permission_prompt_runtime_tool_spec());
+        }
+        // Official provider harnesses cache MCP discovery before sudo begins.
+        // Advertising an interface conveys no authority: dispatch still checks
+        // the live exact sudo prompt on every invocation.
+        if matches!(provider_runs.as_slice(), [run]
+            if run.state() != crate::provider::ProviderRunState::Ended)
+        {
+            specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
+                name: sudo::SUDO_TOOL.into(),
+                description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListSessions\":null}}. Do not use method/params or type fields. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
+                input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
+            });
+            specs.push(super::sudo::vault_generate_spec());
+        }
+        if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
+            let room_tools = self.room_agent_tools_enabled();
+            specs.extend(
+                crate::transport::runtime_tools::meta_runtime_tool_specs()
+                    .into_iter()
+                    .filter(|spec| {
+                        room_tools
+                            || spec.name
+                                != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                    }),
+            );
+            specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
+            specs.extend(
+                crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs()
+                    .into_iter()
+                    .filter(|spec| {
+                        spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                    }),
+            );
+            if !room_tools {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
+            specs.extend(
+                provider_runs
+                    .iter()
+                    .filter(|_| provider_runs.len() == 1)
+                    .flat_map(|run| {
+                        run.remote_extension_manifest()
+                            .tools
+                            .iter()
+                            .filter(|tool| {
+                                tool.kind == crate::extension::ExtensionKind::App
+                                    && tool.execution_location
+                                        == crate::extension::ExtensionExecutionLocation::Home
+                            })
+                            .map(|tool| crate::transport::runtime_tools::RuntimeToolSpec {
+                                name: tool.tool_name.clone(),
+                                description: tool.description.clone(),
+                                input_schema: tool.input_schema.clone(),
+                            })
+                    }),
+            );
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
+            return specs;
+        }
+        if matches!(provider_runs.as_slice(), [_]) {
+            if self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+            }
+            specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::workspace_live_sync_runtime_tool_specs());
+            specs.extend(crate::transport::runtime_tools::extension_runtime_tool_specs());
+            if !self.room_agent_tools_enabled() {
+                specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
+            }
+            specs.extend(crate::transport::runtime_tools::terminal_runtime_tool_specs());
+            specs.extend(provider_runs.iter().flat_map(|run| {
+                run.remote_extension_manifest()
+                    .home_proxy_runtime_tool_specs()
+            }));
+            specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
+            specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
+            specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
+        }
+        // MCP discovery runs independently of the app mutex.  Leased-run identity is
+        // projected into the lock-free provider projection when the lease launches or
+        // reuses a backing run, so contention cannot silently hide lease-only tools.
+        let leased_provider_run = provider_runs.iter().any(|run| {
+            self.owned
+                .provider_run_projection
+                .is_leased_provider_run(run.id())
+        });
+        let workflow_tools_enabled =
+            leased_provider_run || provider_runs.iter().any(|run| run.workflow_tools_enabled());
+        if workflow_tools_enabled {
+            specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
+        }
+        specs
+    }
+
+    pub(crate) async fn dispatch_authenticated_runtime_tool_call(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let rooms = self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+            .into_iter()
+            .map(|run| run.session_id().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        // MD-4: do not inline every provider/tool future into transport callers.
+        let mut result = match Box::pin(
+            self.dispatch_authenticated_runtime_tool_call_inner(auth_token, tool_name, arguments),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(mut error) => {
+                for room in rooms {
+                    error = self
+                        .owned
+                        .room_secret_observations
+                        .scrub_runtime_error(&room, error);
+                }
+                return Err(error);
+            }
+        };
+        for room in rooms {
+            result = self
+                .owned
+                .room_secret_observations
+                .scrub_runtime_result(&room, result)?;
+        }
+        Ok(result)
+    }
+
+    async fn dispatch_authenticated_runtime_tool_call_inner(
+        &self,
+        auth_token: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        for run in self
+            .owned
+            .provider_store
+            .get_runs_by_runtime_mcp_auth_token(auth_token)
+        {
+            if let Some(agent) = run.agent_instance_id() {
+                let session = self.owned.session_store.get_session(run.session_id())?;
+                if self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent)
+                    .is_some_and(|p| {
+                        p.prompt_origin() == crate::session::PromptOrigin::CompletionCheck
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error(
+                        "completion_check cannot run tools",
+                    ));
+                }
+                if self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(run.session_id()), Some(agent))?
+                    .iter()
+                    .any(|t| {
+                        t.state == crate::durable_state::agent_lifecycle::ExecutionState::Working
+                            && crate::durable_state::agent_lifecycle::goals::is_check(
+                                t,
+                                &t.prompt_id,
+                            )
+                    })
+                {
+                    return Err(crate::durable_state::agent_lifecycle::error("completion_check is assessment only; tools cannot run work or mint authority"));
+                }
+            }
+        }
+        if let Some(result) =
+            Box::pin(self.try_kernel_browser_tool(auth_token, tool_name, arguments.clone())).await
+        {
+            return result;
+        }
+        if tool_name == super::sudo::VAULT_GENERATE {
+            return Box::pin(self.vault_generate(auth_token, arguments)).await;
+        }
+        {
+            let owned = &self.owned;
+            let canonical_tool_name =
+                crate::transport::runtime_tools::canonical_agent_messaging_tool_name(tool_name)
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_workspace_live_sync_tool_name(
+                            tool_name,
+                        )
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_recall_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_credential_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_slice_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_terminal_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name)
+                    })
+                    .unwrap_or_else(|| tool_name.strip_prefix("chariox_").unwrap_or(tool_name));
+            let provider_runs = owned
+                .provider_store
+                .get_runs_by_runtime_mcp_auth_token(auth_token);
+            if provider_runs.is_empty() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "dispatch_authenticated_runtime_tool_call",
+                    message: "invalid runtime MCP auth token".to_string(),
+                });
+            }
+            let _runtime_tool_call = owned.runtime_tool_call_activity.begin(
+                provider_runs.iter().map(|run| run.id().to_string()),
+                owned.provider_output_deadlines.clone(),
+            );
+            if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                return Box::pin(self.dispatch_permission_prompt_runtime_tool_call(run, arguments))
+                    .await;
+            }
+            if let Some(name) =
+                crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            {
+                let run = unambiguous_runtime_tool_provider_run(&provider_runs, name)?;
+                // A10: a leased run's events belong to the home ledger.
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(run, name, arguments.clone())
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return self.dispatch_agent_event_tool(run, name, arguments).await;
+            }
+            let is_metaagent_auth_token =
+                self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token);
+            // Apps share the current binding and operation dispatcher in every
+            // agent mode. Their exact known tools are checked before the Meta
+            // fixed-tool allowlist, with the same unique provider-run identity.
+            #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+            if canonical_tool_name.starts_with("app_") {
+                let run =
+                    unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
+                if run
+                    .remote_extension_manifest()
+                    .home_proxy_tool(canonical_tool_name)
+                    .is_some_and(|tool| tool.kind == crate::extension::ExtensionKind::App)
+                {
+                    if let Some(result) =
+                        Box::pin(self.try_dispatch_remote_home_extension_runtime_tool_call(
+                            run,
+                            canonical_tool_name,
+                            arguments.clone(),
+                        ))
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
+                if let Some(result) = Box::pin(self.try_dispatch_app_runtime_tool_call(
+                    run,
+                    auth_token,
+                    canonical_tool_name,
+                    arguments.clone(),
+                ))
+                .await?
+                {
+                    return Ok(result);
+                }
+            }
+            let is_meta_tool =
+                crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
+            let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(
+                canonical_tool_name,
+                self.slice_kernel_id().is_some()
+                    || matches!(provider_runs.as_slice(), [run]
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    )),
+            );
+            if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({
+                        "error": format!("runtime tool `{canonical_tool_name}` is not available to agents in Meta mode"),
+                        "tool": canonical_tool_name,
+                    }),
+                });
+            }
+            if is_meta_tool {
+                let (provider_run, _, _) = self.metaagent_context_for_auth_token(auth_token)?;
+                if let Some(result) = self
+                    .try_dispatch_remote_meta_runtime_tool_call(
+                        &provider_run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    )
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return Box::pin(self.dispatch_meta_runtime_tool_call(
+                    &provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            let is_workflow_tool =
+                crate::transport::runtime_tools::canonical_workflow_tool_name(tool_name).is_some();
+            let provider_run = if is_workflow_tool {
+                None
+            } else {
+                Some(unambiguous_runtime_tool_provider_run(
+                    &provider_runs,
+                    canonical_tool_name,
+                )?)
+            };
+            if is_workflow_tool {
+                return Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
+                    &provider_runs,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::EDIT_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::APPLY_PATCH_TOOL
+                    | crate::transport::runtime_tools::DELETE_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::MOVE_ARTIFACT_TOOL
+                    | crate::transport::runtime_tools::WRITE_ARTIFACT_TOOL
+            ) {
+                if let Some(result) = Box::pin(
+                    self.try_dispatch_remote_workspace_live_sync_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments.clone(),
+                    ),
+                )
+                .await?
+                {
+                    return Ok(result);
+                }
+                return Box::pin(self.dispatch_workspace_live_sync_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+                    | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+                    | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+                    | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
+                    | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
+                    | crate::transport::runtime_tools::REGISTER_MCP_TOOL
+                    | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL
+                    | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
+                    | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
+            ) {
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_capability_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments.clone(),
+                    ))
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return Box::pin(self.dispatch_capability_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            if crate::transport::runtime_tools::canonical_terminal_tool_name(canonical_tool_name)
+                .is_some()
+            {
+                return self
+                    .dispatch_terminal_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+                    | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+            ) {
+                return Box::pin(self.dispatch_recall_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            if let Some(result) =
+                Box::pin(self.try_dispatch_remote_home_extension_runtime_tool_call(
+                    provider_run.expect("non-workflow tool should have provider run"),
+                    canonical_tool_name,
+                    arguments.clone(),
+                ))
+                .await?
+            {
+                return Ok(result);
+            }
+            if let Some(result) = Box::pin(self.try_dispatch_script_runtime_tool_call(
+                provider_run.expect("non-workflow tool should have provider run"),
+                canonical_tool_name,
+                arguments.clone(),
+            ))
+            .await?
+            {
+                return Ok(result);
+            }
+            if let Some(result) = Box::pin(self.try_dispatch_connector_runtime_tool_call(
+                provider_run.expect("non-workflow tool should have provider run"),
+                canonical_tool_name,
+                arguments.clone(),
+            ))
+            .await?
+            {
+                return Ok(result);
+            }
+            if matches!(
+                canonical_tool_name,
+                crate::transport::runtime_tools::META_SESSION_OVERVIEW_TOOL
+                    | crate::transport::runtime_tools::META_SEARCH_COMMANDS_TOOL
+                    | crate::transport::runtime_tools::META_LIST_COMMANDS_TOOL
+                    | crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL
+                    | crate::transport::runtime_tools::META_SEARCH_GUIDES_TOOL
+                    | crate::transport::runtime_tools::META_LIST_GUIDES_TOOL
+                    | crate::transport::runtime_tools::META_READ_GUIDE_TOOL
+                    | crate::transport::runtime_tools::META_RUN_COMMAND_TOOL
+                    | crate::transport::runtime_tools::META_LIST_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_READ_EVENT_TOOL
+                    | crate::transport::runtime_tools::META_ACK_EVENT_TOOL
+                    | crate::transport::runtime_tools::META_TURN_OVERVIEW_TOOL
+                    | crate::transport::runtime_tools::META_TURN_BLOB_TOOL
+                    | crate::transport::runtime_tools::META_SUBSCRIBE_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_POLL_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_WAIT_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_UNSUBSCRIBE_TRACE_TOOL
+                    | crate::transport::runtime_tools::META_SUBSCRIBE_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_UNSUBSCRIBE_EVENTS_TOOL
+                    | crate::transport::runtime_tools::META_LIST_SUBSCRIPTIONS_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_CREATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_LIST_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_UPDATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_DELETE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_VALIDATE_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_APPLY_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_EXPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_IMPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_EXPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_PACKAGE_IMPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_SOURCE_EXPORT_DIRECTORY_TOOL
+                    | crate::transport::runtime_tools::META_WORKFLOW_CODE_CANVAS_CONTRACT_TOOL
+            ) {
+                if let Some(result) = Box::pin(self
+                    .try_dispatch_remote_meta_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments.clone(),
+                    ))
+                    .await?
+                {
+                    return Ok(result);
+                }
+                return Box::pin(self
+                    .dispatch_meta_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments,
+                    ))
+                    .await;
+            }
+            if is_home_credential_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_home_credential_runtime_tool_call(
+                        provider_run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    ))
+                    .await?
+                {
+                    return Ok(result);
+                }
+                if canonical_tool_name
+                    == crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+                {
+                    let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                        DaemonError::LocalTransport {
+                            operation: "runtime_tool_paste_secret_to_computer",
+                            message: "provider run is not bound to an agent".to_string(),
+                        }
+                    })?;
+                    return Box::pin(self.dispatch_computer_secret_input_tool(
+                        provider_run,
+                        agent_id,
+                        arguments,
+                    ))
+                    .await;
+                }
+                return Box::pin(self.dispatch_credential_runtime_tool_call(
+                    provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            if is_slice_runtime_tool(canonical_tool_name) {
+                let provider_run =
+                    provider_run.expect("non-workflow tool should have provider run");
+                if let Some(result) =
+                    Box::pin(self.try_dispatch_remote_room_browser_runtime_tool_call(
+                        provider_run,
+                        canonical_tool_name,
+                        arguments.clone(),
+                    ))
+                    .await?
+                {
+                    return Ok(result);
+                }
+                ensure_leased_room_browser_context(
+                    owned
+                        .provider_run_projection
+                        .is_leased_provider_run(provider_run.id()),
+                    is_room_browser_controller_runtime_tool(canonical_tool_name),
+                )?;
+                return Box::pin(self.dispatch_slice_runtime_tool_call(
+                    provider_run,
+                    canonical_tool_name,
+                    arguments,
+                ))
+                .await;
+            }
+            Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
+                &provider_runs,
+                canonical_tool_name,
+                arguments,
+            ))
+            .await
+        }
+    }
+
+    fn slice_tool_specs_for_provider_runs(
+        &self,
+        runs: &[crate::provider::RuntimeProviderRun],
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|spec| {
+                self.slice_kernel_id().is_some()
+                    || matches!(runs, [run]
+                    if room_browser_tools_available(
+                        self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some(),
+                        run.remote_extension_manifest().room_browser_available,
+                    ))
+            })
+            .collect()
+    }
+
+    fn room_browser_slice_for_tool(&self, session_id: &str, tool_name: &str) -> Option<String> {
+        // Home and leased callers use the same Room controller operations,
+        // including the home-owned Vault insertion path and its aliases.
+        if !is_room_browser_controller_runtime_tool(tool_name) {
+            return None;
+        }
+        self.owned
+            .slice_store
+            .environment_slice(session_id)
+            .map(|slice| slice.id)
+    }
+
+    pub(super) fn slice_kernel_id(&self) -> Option<String> {
+        crate::slice::slice_worker_id_for_config(&self.owned.config_projection.snapshot())
+    }
+}
+
+fn room_browser_tools_available(
+    local_environment_available: bool,
+    home_manifest_available: bool,
+) -> bool {
+    local_environment_available || home_manifest_available
+}
+
+fn ensure_leased_room_browser_context(
+    is_leased_provider_run: bool,
+    is_room_browser_tool: bool,
+) -> Result<(), DaemonError> {
+    if is_leased_provider_run && is_room_browser_tool {
+        return Err(DaemonError::LocalTransport {
+            operation: "dispatch leased Room browser runtime tool",
+            message: "leased Room browser tool has no authoritative home invocation context; refusing local slice fallback".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
+            | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
+            | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+            | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
+    )
+}
+
+fn is_slice_runtime_tool(tool_name: &str) -> bool {
+    crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
+        || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+}
+
+fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
+    canonical_room_browser_runtime_tool(tool_name).is_some()
+}
+
+fn canonical_room_browser_runtime_tool(tool_name: &str) -> Option<&'static str> {
+    use crate::transport::runtime_tools::*;
+    let canonical =
+        canonical_slice_tool_name(tool_name).or_else(|| canonical_credential_tool_name(tool_name));
+    if matches!(
+        canonical,
+        Some(
+            PASTE_SECRET_TO_SLICE_TOOL
+                | SLICE_SCREEN_STATUS_TOOL
+                | SLICE_OCR_TOOL
+                | SLICE_ACCESSIBILITY_TOOL
+                | SLICE_TARGET_ACTION_TOOL
+                | SLICE_FIND_TEXT_TOOL
+                | SLICE_BROWSER_STATUS_TOOL
+                | SLICE_BROWSER_TAB_TOOL
+                | SLICE_BROWSER_HISTORY_TOOL
+                | SLICE_SCREENSHOT_TOOL
+                | SLICE_MOUSE_TOOL
+                | SLICE_KEYBOARD_TOOL
+                | SLICE_CLIPBOARD_WRITE_TOOL
+                | SLICE_OPEN_URL_TOOL
+                | SLICE_BROWSER_CLICK_TOOL
+                | SLICE_BROWSER_FILL_TOOL
+                | SLICE_BROWSER_SUBMIT_TOOL
+                | SLICE_BROWSER_DIALOG_TOOL
+                | SLICE_BROWSER_EVENTS_TOOL
+                | SLICE_BROWSER_DOWNLOADS_TOOL
+                | SLICE_BROWSER_UPLOAD_TOOL
+                | SLICE_BROWSER_ARTIFACT_TOOL
+                | SLICE_BROWSER_PERMISSION_TOOL
+                | SLICE_BROWSER_FIND_TOOL
+                | SLICE_BROWSER_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+                | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+        )
+    ) {
+        canonical
+    } else {
+        None
+    }
+}
+
+fn unambiguous_runtime_tool_provider_run<'a>(
+    provider_runs: &'a [crate::provider::RuntimeProviderRun],
+    tool_name: &str,
+) -> Result<&'a crate::provider::RuntimeProviderRun, DaemonError> {
+    match provider_runs {
+        [provider_run] => Ok(provider_run),
+        [] => Err(DaemonError::LocalTransport {
+            operation: "dispatch_authenticated_runtime_tool_call",
+            message: "invalid runtime MCP auth token".to_string(),
+        }),
+        runs => {
+            let mut run_ids = runs
+                .iter()
+                .map(|run| run.id().to_string())
+                .collect::<Vec<_>>();
+            run_ids.sort();
+            Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: format!(
+                    "runtime MCP auth token is bound to multiple active provider runs ({}) while dispatching `{tool_name}`. Non-workflow runtime tools require one authoritative provider run; run /kernel health and /provider processes, then stop duplicate provider runs before retrying.",
+                    run_ids.join(",")
+                ),
+            })
+        }
+    }
+}
+
+fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+            | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
+            | crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL
+            | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
+            | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
+            | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+    ) || (slice_available
+        && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_advertised_slice_tool_uses_the_slice_dispatch_path() {
+        for spec in crate::transport::runtime_tools::slice_runtime_tool_specs() {
+            assert!(
+                super::is_slice_runtime_tool(&spec.name),
+                "advertised slice tool {} must use slice dispatch",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn browser_secret_paste_uses_slice_dispatch_and_computer_secret_uses_home_authority() {
+        assert!(super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+        assert!(super::is_home_credential_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+    }
+
+    #[test]
+    fn worker_room_browser_forwarding_has_one_explicit_tool_allowlist() {
+        use crate::transport::runtime_tools::*;
+        for tool_name in [
+            SLICE_SCREEN_STATUS_TOOL,
+            SLICE_SCREENSHOT_TOOL,
+            SLICE_OCR_TOOL,
+            SLICE_FIND_TEXT_TOOL,
+            SLICE_MOUSE_TOOL,
+            SLICE_KEYBOARD_TOOL,
+            SLICE_CLIPBOARD_WRITE_TOOL,
+            SLICE_BROWSER_STATUS_TOOL,
+            SLICE_BROWSER_TAB_TOOL,
+            SLICE_BROWSER_HISTORY_TOOL,
+            SLICE_OPEN_URL_TOOL,
+            SLICE_BROWSER_CLICK_TOOL,
+            SLICE_BROWSER_FILL_TOOL,
+            SLICE_BROWSER_SUBMIT_TOOL,
+            SLICE_BROWSER_DIALOG_TOOL,
+            SLICE_BROWSER_EVENTS_TOOL,
+            SLICE_BROWSER_DOWNLOADS_TOOL,
+            SLICE_BROWSER_UPLOAD_TOOL,
+            SLICE_BROWSER_PERMISSION_TOOL,
+            SLICE_BROWSER_FIND_TOOL,
+            SLICE_BROWSER_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL,
+            SLICE_BROWSER_WAIT_FOR_IDLE_TOOL,
+        ] {
+            assert!(super::is_room_browser_controller_runtime_tool(tool_name));
+        }
+        assert!(super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_COMPUTER_TOOL
+        ));
+    }
+
+    #[test]
+    fn browser_secret_aliases_use_the_home_room_route_without_admitting_other_credentials() {
+        use crate::transport::runtime_tools::*;
+        for name in [
+            PASTE_SECRET_TO_SLICE_TOOL,
+            PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
+            "mcp__chariox__paste_secret_to_slice",
+            "chariox_paste_secret_to_slice",
+        ] {
+            assert_eq!(
+                super::canonical_room_browser_runtime_tool(name),
+                Some(PASTE_SECRET_TO_SLICE_TOOL)
+            );
+        }
+        for name in [
+            REQUEST_CREDENTIAL_SECRET_TOOL,
+            MANAGE_CREDENTIAL_VAULT_TOOL,
+            PASTE_SECRET_TO_COMPUTER_TOOL,
+            "bash",
+        ] {
+            assert_eq!(super::canonical_room_browser_runtime_tool(name), None);
+        }
+    }
+
+    #[test]
+    fn room_browser_tools_are_not_advertised_without_environment_or_home_capability() {
+        let manifest = crate::extension::RemoteExtensionManifest::default();
+        let available = super::room_browser_tools_available(false, manifest.room_browser_available);
+        let advertised = crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|_| available)
+            .collect::<Vec<_>>();
+
+        assert!(advertised.is_empty());
+        assert!(!super::room_browser_tools_available(false, false));
+        assert!(super::room_browser_tools_available(true, false));
+        assert!(super::room_browser_tools_available(false, true));
+    }
+
+    #[test]
+    fn leased_room_browser_missing_context_fails_closed_before_local_fallback() {
+        let error = super::ensure_leased_room_browser_context(true, true)
+            .expect_err("missing home context must reject the local fallback");
+
+        assert!(error.to_string().contains("refusing local slice fallback"));
+        assert!(super::ensure_leased_room_browser_context(false, true).is_ok());
+        assert!(super::ensure_leased_room_browser_context(true, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+#[path = "tool_dispatch/hosted_worker_tests.rs"]
+mod hosted_worker_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/history_search_tests.rs"]
+mod history_search_tests;
+
+#[cfg(test)]
+#[path = "tool_dispatch/recall_scope_tests.rs"]
+mod recall_scope_tests;

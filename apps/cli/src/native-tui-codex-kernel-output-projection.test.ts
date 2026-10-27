@@ -1,0 +1,256 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import type { TerminalOutputRecord } from "./cli-types.js"
+
+import { createCodexKernelOutputProjection } from "./native-tui/codex-kernel-output-projection.js"
+import {
+  EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+} from "@chariox/kernel-client/external-provider-observation"
+
+test("codex kernel output projection ignores unscoped and wrong-agent records", () => {
+  const broadcasts: unknown[] = []
+  const debug: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: (label, payload) => debug.push({ label, payload }),
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([
+    {
+      agent_id: null,
+      timestamp_ms: 1_000,
+      kind: "provider_output",
+      bytes: [...Buffer.from("unscoped", "utf8")],
+    },
+    {
+      agent_id: "agent-2",
+      timestamp_ms: 1_001,
+      kind: "provider_output",
+      bytes: [...Buffer.from("wrong", "utf8")],
+    },
+  ])
+
+  assert.deepEqual(broadcasts, [])
+  assert.deepEqual(debugLabels(debug, "projection_record_skipped").map((entry) => entry.payload.reason), [
+    "agent_mismatch",
+    "agent_mismatch",
+  ])
+})
+
+test("codex kernel output projection broadcasts matching agent records", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+  })
+  projection.setThreadId("thread-1")
+  projection.startPrompt("admitted-home-prompt")
+
+  projection.project([{
+    agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_000,
+    kind: "provider_output",
+    bytes: [...Buffer.from("hello", "utf8")],
+  }])
+
+  assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("item/agentMessage/delta")), true)
+})
+
+test("codex kernel output projection suppresses passive external telemetry", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([{
+    agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_001,
+    kind: "provider_status",
+    source: EXTERNAL_PROVIDER_OBSERVED_SOURCE,
+    external_provider: "codex",
+    external_provider_session_id: "thread-1",
+    external_provider_turn_id: "token-count",
+    external_observation: {
+      settles_active_prompt: false,
+      passive_telemetry: true,
+    },
+    bytes: [...Buffer.from("codex token_count", "utf8")],
+  }])
+
+  assert.deepEqual(broadcasts, [])
+})
+
+test("codex kernel output projection follows shared live append suppression", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([{
+    agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_002,
+    kind: "provider_status",
+    bytes: [...Buffer.from("OpenCode is idle.", "utf8")],
+  }])
+
+  assert.deepEqual(broadcasts, [])
+})
+
+test("codex kernel output projection normalizes provider errors through shared terminal projection", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+  })
+  projection.setThreadId("thread-1")
+  projection.startPrompt("admitted-home-prompt")
+
+  projection.project([{
+    agent_id: "agent-1",
+    timestamp_ms: 1_700_000_000_003,
+    kind: "provider_error",
+    bytes: [...Buffer.from("failed\r\n", "utf8")],
+  }])
+
+  assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("item/agentMessage/delta")), true)
+  assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("failed\\r\\n")), false)
+  assert.equal(broadcasts.some((message) => JSON.stringify(message).includes("failed")), true)
+})
+
+test("codex kernel output projection uses kernel record timestamps for user item lifecycle", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1",
+    broadcast: (message) => broadcasts.push(message),
+    debug: () => {},
+    nowMs: () => 9_999_999,
+  })
+  projection.setThreadId("thread-1")
+
+  projection.project([{
+    agent_id: "agent-1",
+    prompt_id: "admitted-home-prompt",
+    timestamp_ms: 1_700_000_123_456,
+    kind: "prompt_echo",
+    bytes: [...Buffer.from("hello", "utf8")],
+  }])
+
+  assert.equal(findMethodParam(broadcasts, "item/started", "startedAtMs"), 1_700_000_123_456)
+  assert.equal(findMethodParam(broadcasts, "item/completed", "completedAtMs"), 1_700_000_123_456)
+  const turnStarted = broadcasts.find((message) => messageMethod(message) === "turn/started") as { params?: { turn?: { startedAt?: number } } } | undefined
+  assert.equal(turnStarted?.params?.turn?.startedAt, 1_700_000_123)
+})
+
+function messageMethod(message: unknown): string | undefined {
+  return typeof message === "object" && message !== null && "method" in message
+    ? String((message as { method?: unknown }).method)
+    : undefined
+}
+
+function findMethodParam(messages: readonly unknown[], method: string, param: string): unknown {
+  const message = messages.find((candidate) => messageMethod(candidate) === method)
+  return (message as { params?: Record<string, unknown> } | undefined)?.params?.[param]
+}
+
+function debugLabels(entries: readonly unknown[], label: string) {
+  return entries.filter((entry): entry is { label: string, payload: { reason?: string } } =>
+    typeof entry === "object"
+    && entry !== null
+    && "label" in entry
+    && (entry as { label?: unknown }).label === label
+    && "payload" in entry
+    && typeof (entry as { payload?: unknown }).payload === "object"
+    && (entry as { payload?: unknown }).payload !== null
+  )
+}
+
+test("MP-08 MP-10 steering echoes remain input items on the active prompt turn", () => {
+  const broadcasts: unknown[] = []
+  const mappings: string[] = []
+  const projection = createCodexKernelOutputProjection({
+    agentId: "agent-1", broadcast: (message) => broadcasts.push(message), debug: () => {},
+    onTurnMapped: (_thread, _turn, prompt) => mappings.push(prompt),
+  })
+  projection.setThreadId("thread-1")
+  const record = (kind: TerminalOutputRecord["kind"], prompt: string, text: string, merge_key?: string) => ({
+    agent_id: "agent-1", prompt_id: prompt, timestamp_ms: 1000, kind, bytes: [...Buffer.from(text)],
+    ...(merge_key ? { merge_key } : {}),
+  })
+  projection.project([
+    record("prompt_echo", "A", "ordinary prompt"), record("provider_reasoning", "A", "thinking"),
+    record("prompt_echo", "S", "steer from another attachment", "steering-prompt:S"),
+  ])
+  assert.deepEqual(mappings, ["A"], "steering item S must not replace active prompt A")
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/started").length, 1)
+  const items = broadcasts.filter(m => messageMethod(m) === "item/started") as { params: { turnId: string } }[]
+  assert.equal(new Set(items.map(m => m.params.turnId)).size, 1)
+})
+
+test("MP-08 MP-10 steering echo without an active display turn cannot manufacture work", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: m => broadcasts.push(m), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.project([{ agent_id: "agent-1", prompt_id: "S", merge_key: "steering-prompt:S", timestamp_ms: 1000,
+    kind: "prompt_echo", bytes: [...Buffer.from("orphan steering echo")] }])
+  assert.deepEqual(broadcasts, [])
+})
+
+test("MP-08 MP-10 kernel settlement is prompt scoped, exact once, and preserves failure status", () => {
+  const broadcasts: unknown[] = []
+  const projection = createCodexKernelOutputProjection({ agentId: "agent-1", broadcast: m => broadcasts.push(m), debug: () => {} })
+  projection.setThreadId("thread-1")
+  projection.startPrompt("A")
+  projection.project([{ agent_id: "agent-1", prompt_id: "A", timestamp_ms: 1000, kind: "provider_output", bytes: [...Buffer.from("progress")] }])
+  const settle = (promptId: string, agentId = "agent-1") => projection.projectAgentActivity({
+    last_completed_turn: { agent_id: agentId, prompt_id: promptId, settlement_status: "failed", completed_at_ms: 2000 },
+  } as never)
+  settle("other-prompt")
+  settle("A", "other-agent")
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/completed").length, 0)
+  settle("A")
+  settle("A")
+  projection.project([{ agent_id: "agent-1", prompt_id: "A", timestamp_ms: 1000, kind: "provider_output", bytes: [...Buffer.from("late duplicate")] }])
+  const completed = broadcasts.filter(m => messageMethod(m) === "turn/completed") as { params: { turn: { id: string, status: string } } }[]
+  assert.equal(completed.length, 1)
+  assert.deepEqual([completed[0]!.params.turn.id, completed[0]!.params.turn.status], ["chariox-native-A", "failed"])
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "turn/started").length, 1)
+  assert.equal(broadcasts.filter(m => messageMethod(m) === "item/completed").length, 1)
+})
+
+for (const delayedDrain of [false, true]) {
+  test(`MP-08/MP-11 recovers skipped predecessor settlement with ${delayedDrain ? "delayed" : "same-batch"} output`, async () => {
+    const broadcasts: any[] = []
+    const lookups: string[][] = []
+    const projection = createCodexKernelOutputProjection({
+      agentId: "agent-1", broadcast: message => broadcasts.push(message), debug: () => {},
+      resolveSettledPrompts: async ids => {
+        lookups.push(ids)
+        return new Map([["A", { completedAtMs: 2000, status: "cancelled" as const }]])
+      },
+    })
+    projection.setThreadId("display")
+    const output = (promptId: string, timestamp: number) => ({ agent_id: "agent-1", prompt_id: promptId,
+      timestamp_ms: timestamp, kind: "provider_output" as const, bytes: [...Buffer.from(promptId)] })
+    if (delayedDrain) projection.project([output("A", 1000)])
+    projection.project([...(delayedDrain ? [] : [output("A", 1000)]), output("B", 3000), output("newer", 1000)])
+    const activity = { last_completed_turn: { agent_id: "agent-1", prompt_id: "B", completed_at_ms: 4000, settlement_status: "completed" } } as never
+    await projection.projectAgentActivity(activity)
+    await projection.projectAgentActivity(activity)
+    const completed = broadcasts.filter(message => message.method === "turn/completed")
+    assert.equal(completed.length, 2)
+    assert.deepEqual(completed.map(message => message.params.turn.status).sort(), ["completed", "interrupted"])
+    assert.deepEqual(lookups, [["A"]])
+    projection.project([output("newer", 5000)])
+    assert.equal(broadcasts.filter(message => message.method === "turn/started").length, 3)
+  })
+}

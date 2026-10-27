@@ -1,0 +1,667 @@
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::types::unix_epoch_ms;
+use super::workflow_canvas::{
+    WorkflowCanvasEdgeLayout, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+};
+use super::workflow_graph::{
+    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
+};
+
+fn default_workflow_flush_agent_context_before_run() -> bool {
+    true
+}
+
+fn default_workflow_max_concurrent() -> u32 {
+    super::types::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCodeSourceOrigin {
+    Authored,
+    Generated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowCodeSourceDescriptor {
+    pub(crate) artifact_name: String,
+    pub(crate) language: crate::workflow_code::WorkflowCodeLanguage,
+    pub(crate) source_sha256: String,
+    pub(crate) origin: WorkflowCodeSourceOrigin,
+}
+
+pub(crate) struct WorkflowCodeStructureReplacement {
+    pub(crate) alias: Option<String>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) flush_agent_context_before_run: bool,
+    pub(crate) max_concurrent: u32,
+    pub(crate) run_output_schema_ref: Option<String>,
+    pub(crate) schemas: Vec<WorkflowSchemaDefinition>,
+    pub(crate) nodes: Vec<WorkflowNodeDefinition>,
+    pub(crate) edges: Vec<WorkflowEdgeDefinition>,
+    pub(crate) endpoints: Vec<WorkflowEndpointDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeSourceBinding {
+    artifact_name: String,
+    language: crate::workflow_code::WorkflowCodeLanguage,
+    source_sha256: String,
+    origin: WorkflowCodeSourceOrigin,
+    workflow_revision: u64,
+    bindings: crate::workflow_code::WorkflowCodeApplyReport,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl WorkflowCodeSourceBinding {
+    pub fn artifact_name(&self) -> &str {
+        &self.artifact_name
+    }
+    pub fn language(&self) -> crate::workflow_code::WorkflowCodeLanguage {
+        self.language
+    }
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+    pub fn origin(&self) -> WorkflowCodeSourceOrigin {
+        self.origin
+    }
+    pub fn workflow_revision(&self) -> u64 {
+        self.workflow_revision
+    }
+    pub fn bindings(&self) -> &crate::workflow_code::WorkflowCodeApplyReport {
+        &self.bindings
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+    pub fn updated_at_ms(&self) -> u64 {
+        self.updated_at_ms
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowSchemaDefinition {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    schema: Value,
+}
+
+impl Eq for WorkflowSchemaDefinition {}
+
+impl WorkflowSchemaDefinition {
+    pub fn new(
+        id: impl Into<String>,
+        alias: Option<String>,
+        description: Option<String>,
+        schema: Value,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            alias,
+            description,
+            schema,
+        }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn schema(&self) -> &Value {
+        &self.schema
+    }
+
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+    }
+
+    pub fn set_description(&mut self, description: Option<String>) {
+        self.description = description;
+    }
+
+    pub fn set_schema(&mut self, schema: Value) {
+        self.schema = schema;
+    }
+}
+
+/// Why a workflow was generated from an agent. A Freeform agent gains a
+/// workflow only when it gets a trigger or a deployment; binding Apps or
+/// Extensions to it creates none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOriginReason {
+    Trigger,
+    Deploy,
+}
+
+/// The client surface that requested a generated workflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowOriginSurface {
+    Web,
+    Tui,
+    Cli,
+}
+
+/// Origin of a workflow generated from an agent. The workflow is otherwise
+/// ordinary: visible, editable, with an ordinary alias.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowOrigin {
+    pub source_agent_id: String,
+    pub reason: WorkflowOriginReason,
+    pub surface: WorkflowOriginSurface,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowDefinition {
+    id: String,
+    alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    controlled_by_metaagent_id: Option<String>,
+    #[serde(default)]
+    created_by_agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<WorkflowOrigin>,
+    #[serde(default = "unix_epoch_ms")]
+    created_at_ms: u64,
+    #[serde(default)]
+    revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code_source: Option<WorkflowCodeSourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    canvas_layout: Option<WorkflowCanvasLayout>,
+    #[serde(default = "default_workflow_flush_agent_context_before_run")]
+    flush_agent_context_before_run: bool,
+    #[serde(default = "default_workflow_max_concurrent")]
+    max_concurrent: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_output_schema_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    schemas: Vec<WorkflowSchemaDefinition>,
+    nodes: Vec<WorkflowNodeDefinition>,
+    edges: Vec<WorkflowEdgeDefinition>,
+    endpoints: Vec<WorkflowEndpointDefinition>,
+}
+
+impl WorkflowDefinition {
+    pub fn new(id: impl Into<String>, alias: Option<String>) -> Self {
+        Self {
+            id: id.into(),
+            alias,
+            prompt: None,
+            controlled_by_metaagent_id: None,
+            created_by_agent_id: None,
+            origin: None,
+            created_at_ms: unix_epoch_ms(),
+            revision: 0,
+            code_source: None,
+            canvas_layout: None,
+            flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
+            max_concurrent: default_workflow_max_concurrent(),
+            run_output_schema_ref: None,
+            schemas: Vec::new(),
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            endpoints: Vec::new(),
+        }
+    }
+
+    pub fn new_controlled_by_metaagent(
+        id: impl Into<String>,
+        alias: Option<String>,
+        metaagent_id: impl Into<String>,
+    ) -> Self {
+        let mut workflow = Self::new(id, alias);
+        let creator = metaagent_id.into();
+        workflow.created_by_agent_id = Some(creator.clone());
+        workflow.controlled_by_metaagent_id = Some(creator);
+        workflow
+    }
+
+    pub fn with_max_concurrent(mut self, value: u32) -> Self {
+        self.max_concurrent = value.max(1);
+        self
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn alias(&self) -> Option<&str> {
+        self.alias.as_deref()
+    }
+
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+
+    pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
+        self.controlled_by_metaagent_id.as_deref()
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn code_source(&self) -> Option<&WorkflowCodeSourceBinding> {
+        self.code_source.as_ref()
+    }
+
+    pub(crate) fn bind_code_source(
+        &mut self,
+        artifact_name: String,
+        language: crate::workflow_code::WorkflowCodeLanguage,
+        source_sha256: String,
+        origin: WorkflowCodeSourceOrigin,
+        bindings: crate::workflow_code::WorkflowCodeApplyReport,
+    ) {
+        let now = unix_epoch_ms();
+        let created_at_ms = self
+            .code_source
+            .as_ref()
+            .map_or(now, |binding| binding.created_at_ms);
+        self.bump_revision();
+        self.code_source = Some(WorkflowCodeSourceBinding {
+            artifact_name,
+            language,
+            source_sha256,
+            origin,
+            workflow_revision: self.revision,
+            bindings,
+            created_at_ms,
+            updated_at_ms: now,
+        });
+    }
+
+    pub fn canvas_layout(&self) -> Option<&WorkflowCanvasLayout> {
+        self.canvas_layout.as_ref()
+    }
+
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+
+    pub(crate) fn replace_code_structure(&mut self, replacement: WorkflowCodeStructureReplacement) {
+        self.alias = replacement.alias;
+        self.prompt = replacement.prompt;
+        self.flush_agent_context_before_run = replacement.flush_agent_context_before_run;
+        self.max_concurrent = replacement.max_concurrent.max(1);
+        self.run_output_schema_ref = replacement.run_output_schema_ref;
+        self.schemas = replacement.schemas;
+        self.nodes = replacement.nodes;
+        self.edges = replacement.edges;
+        self.endpoints = replacement.endpoints;
+        self.canvas_layout = None;
+        self.bump_revision();
+    }
+
+    pub fn flush_agent_context_before_run(&self) -> bool {
+        self.flush_agent_context_before_run
+    }
+
+    pub fn max_concurrent(&self) -> u32 {
+        self.max_concurrent
+    }
+
+    pub fn nodes(&self) -> &[WorkflowNodeDefinition] {
+        &self.nodes
+    }
+
+    pub fn run_output_schema_ref(&self) -> Option<&str> {
+        self.run_output_schema_ref.as_deref()
+    }
+
+    pub fn schemas(&self) -> &[WorkflowSchemaDefinition] {
+        &self.schemas
+    }
+
+    pub fn schema(&self, schema_id: &str) -> Option<&WorkflowSchemaDefinition> {
+        self.schemas.iter().find(|schema| schema.id() == schema_id)
+    }
+
+    pub fn schema_mut(&mut self, schema_id: &str) -> Option<&mut WorkflowSchemaDefinition> {
+        self.schemas
+            .iter_mut()
+            .find(|schema| schema.id() == schema_id)
+    }
+
+    pub fn edges(&self) -> &[WorkflowEdgeDefinition] {
+        &self.edges
+    }
+
+    pub fn endpoints(&self) -> &[WorkflowEndpointDefinition] {
+        &self.endpoints
+    }
+
+    pub fn set_alias(&mut self, alias: Option<String>) {
+        self.alias = alias;
+        self.bump_revision();
+    }
+
+    pub fn set_prompt(&mut self, prompt: Option<String>) {
+        self.prompt = prompt
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        self.bump_revision();
+    }
+
+    pub fn set_controlled_by_metaagent_id(&mut self, metaagent_id: Option<String>) {
+        self.controlled_by_metaagent_id = metaagent_id;
+        self.bump_revision();
+    }
+
+    pub fn origin(&self) -> Option<&WorkflowOrigin> {
+        self.origin.as_ref()
+    }
+
+    pub fn set_origin(&mut self, origin: WorkflowOrigin) {
+        self.origin = Some(origin);
+        self.bump_revision();
+    }
+
+    pub fn set_flush_agent_context_before_run(&mut self, value: bool) {
+        self.flush_agent_context_before_run = value;
+        self.bump_revision();
+    }
+
+    pub fn set_max_concurrent(&mut self, value: u32) {
+        self.max_concurrent = value.max(1);
+        self.bump_revision();
+    }
+
+    pub fn set_run_output_schema_ref(&mut self, value: Option<String>) {
+        self.run_output_schema_ref = value;
+        self.bump_revision();
+    }
+
+    pub fn add_schema(&mut self, schema: WorkflowSchemaDefinition) -> WorkflowSchemaDefinition {
+        self.schemas.push(schema.clone());
+        self.bump_revision();
+        schema
+    }
+
+    pub fn remove_schema(&mut self, schema_id: &str) -> Option<WorkflowSchemaDefinition> {
+        let index = self
+            .schemas
+            .iter()
+            .position(|schema| schema.id() == schema_id)?;
+        let schema = self.schemas.remove(index);
+        self.bump_revision();
+        Some(schema)
+    }
+
+    pub fn schema_ref_usages(&self, schema_id: &str) -> Vec<String> {
+        let mut usages = Vec::new();
+        if self.run_output_schema_ref.as_deref() == Some(schema_id) {
+            usages.push("workflow.run_output_schema_ref".to_string());
+        }
+        for node in &self.nodes {
+            if node.intermediate_output_schema_ref() == Some(schema_id) {
+                usages.push(format!("node.{}.intermediate_output_schema_ref", node.id()));
+            }
+        }
+        for edge in &self.edges {
+            if edge.handoff_schema_ref() == Some(schema_id) {
+                usages.push(format!("edge.{}.handoff_schema_ref", edge.id()));
+            }
+        }
+        usages
+    }
+
+    pub fn add_node(&mut self, node: WorkflowNodeDefinition) -> WorkflowNodeDefinition {
+        self.nodes.push(node.clone());
+        self.bump_revision();
+        node
+    }
+
+    pub fn node(&self, node_id: &str) -> Option<&WorkflowNodeDefinition> {
+        self.nodes.iter().find(|node| node.id() == node_id)
+    }
+
+    pub fn node_mut(&mut self, node_id: &str) -> Option<&mut WorkflowNodeDefinition> {
+        self.nodes.iter_mut().find(|node| node.id() == node_id)
+    }
+
+    pub fn remove_node(&mut self, node_id: &str) -> Option<WorkflowNodeDefinition> {
+        let index = self.nodes.iter().position(|node| node.id() == node_id)?;
+        let removed = self.nodes.remove(index);
+        let removed_edge_ids = self
+            .edges
+            .iter()
+            .filter(|edge| edge.from_node_id() == node_id || edge.to_node_id() == node_id)
+            .map(|edge| edge.id().to_string())
+            .collect::<Vec<_>>();
+        let removed_endpoint_ids = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.entry_node_id() == node_id)
+            .map(|endpoint| endpoint.id().to_string())
+            .collect::<Vec<_>>();
+        self.edges
+            .retain(|edge| edge.from_node_id() != node_id && edge.to_node_id() != node_id);
+        self.endpoints
+            .retain(|endpoint| endpoint.entry_node_id() != node_id);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.nodes.remove(node_id);
+            layout.exits.remove(node_id);
+            for edge_id in removed_edge_ids {
+                layout.edges.remove(&edge_id);
+            }
+            for endpoint_id in removed_endpoint_ids {
+                layout.endpoints.remove(&endpoint_id);
+            }
+            layout.bump_revision();
+        }
+        self.bump_revision();
+        Some(removed)
+    }
+
+    pub fn set_node_position(&mut self, node_id: impl Into<String>, point: WorkflowCanvasPoint) {
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        layout.nodes.insert(node_id.into(), point);
+        layout.bump_revision();
+        self.bump_revision();
+    }
+
+    pub fn clear_exit_position(&mut self, node_id: &str) {
+        let Some(layout) = self.canvas_layout.as_mut() else {
+            return;
+        };
+        if layout.exits.remove(node_id).is_none() {
+            return;
+        }
+        layout.bump_revision();
+        self.bump_revision();
+    }
+
+    pub fn add_edge(&mut self, edge: WorkflowEdgeDefinition) -> WorkflowEdgeDefinition {
+        self.edges.push(edge.clone());
+        self.bump_revision();
+        edge
+    }
+
+    pub fn edge(&self, edge_id: &str) -> Option<&WorkflowEdgeDefinition> {
+        self.edges.iter().find(|edge| edge.id() == edge_id)
+    }
+
+    pub fn edge_mut(&mut self, edge_id: &str) -> Option<&mut WorkflowEdgeDefinition> {
+        self.edges.iter_mut().find(|edge| edge.id() == edge_id)
+    }
+
+    pub fn has_edge(&self, from_node_id: &str, to_node_id: &str) -> bool {
+        self.edges
+            .iter()
+            .any(|edge| edge.from_node_id() == from_node_id && edge.to_node_id() == to_node_id)
+    }
+
+    pub fn remove_edge(&mut self, edge_id: &str) -> Option<WorkflowEdgeDefinition> {
+        let index = self.edges.iter().position(|edge| edge.id() == edge_id)?;
+        let edge = self.edges.remove(index);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.edges.remove(edge_id);
+            layout.bump_revision();
+        }
+        self.bump_revision();
+        Some(edge)
+    }
+
+    pub fn add_endpoint(
+        &mut self,
+        endpoint: WorkflowEndpointDefinition,
+    ) -> WorkflowEndpointDefinition {
+        self.endpoints.push(endpoint.clone());
+        self.bump_revision();
+        endpoint
+    }
+
+    pub fn endpoint(&self, endpoint_id: &str) -> Option<&WorkflowEndpointDefinition> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| endpoint.id() == endpoint_id)
+    }
+
+    pub fn endpoint_mut(&mut self, endpoint_id: &str) -> Option<&mut WorkflowEndpointDefinition> {
+        self.endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.id() == endpoint_id)
+    }
+
+    pub fn remove_endpoint(&mut self, endpoint_id: &str) -> Option<WorkflowEndpointDefinition> {
+        let index = self
+            .endpoints
+            .iter()
+            .position(|endpoint| endpoint.id() == endpoint_id)?;
+        let endpoint = self.endpoints.remove(index);
+        if let Some(layout) = self.canvas_layout.as_mut() {
+            layout.endpoints.remove(endpoint_id);
+            layout.bump_revision();
+        }
+        self.bump_revision();
+        Some(endpoint)
+    }
+
+    pub fn set_endpoint_position(
+        &mut self,
+        endpoint_id: impl Into<String>,
+        point: WorkflowCanvasPoint,
+    ) {
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        layout.endpoints.insert(endpoint_id.into(), point);
+        layout.bump_revision();
+        self.bump_revision();
+    }
+
+    pub fn update_canvas_layout(
+        &mut self,
+        patches: Vec<WorkflowCanvasLayoutPatch>,
+    ) -> WorkflowCanvasLayout {
+        let node_ids = self
+            .nodes
+            .iter()
+            .map(|node| node.id().to_string())
+            .collect::<BTreeSet<_>>();
+        let edge_ids = self
+            .edges
+            .iter()
+            .map(|edge| edge.id().to_string())
+            .collect::<BTreeSet<_>>();
+        let endpoint_ids = self
+            .endpoints
+            .iter()
+            .map(|endpoint| endpoint.id().to_string())
+            .collect::<BTreeSet<_>>();
+        let layout = self
+            .canvas_layout
+            .get_or_insert_with(WorkflowCanvasLayout::new);
+        let mut changed = false;
+        for patch in patches {
+            match patch {
+                WorkflowCanvasLayoutPatch::NodePosition { node_id, x, y } => {
+                    if node_ids.contains(&node_id) {
+                        changed |= layout
+                            .nodes
+                            .insert(node_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
+                WorkflowCanvasLayoutPatch::EndpointPosition { endpoint_id, x, y } => {
+                    if endpoint_ids.contains(&endpoint_id) {
+                        changed |= layout
+                            .endpoints
+                            .insert(endpoint_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
+                WorkflowCanvasLayoutPatch::ExitPosition { node_id, x, y } => {
+                    if node_ids.contains(&node_id) {
+                        changed |= layout
+                            .exits
+                            .insert(node_id, WorkflowCanvasPoint { x, y })
+                            .as_ref()
+                            .is_none_or(|existing| existing.x != x || existing.y != y);
+                    }
+                }
+                WorkflowCanvasLayoutPatch::EdgeWaypoints { edge_id, waypoints } => {
+                    if edge_ids.contains(&edge_id) {
+                        let next = WorkflowCanvasEdgeLayout { waypoints };
+                        let previous = layout.edges.insert(edge_id, next.clone());
+                        changed |= previous.as_ref() != Some(&next);
+                    }
+                }
+            }
+        }
+        layout.nodes.retain(|node_id, _| node_ids.contains(node_id));
+        layout.exits.retain(|node_id, _| node_ids.contains(node_id));
+        layout.edges.retain(|edge_id, _| edge_ids.contains(edge_id));
+        layout
+            .endpoints
+            .retain(|endpoint_id, _| endpoint_ids.contains(endpoint_id));
+        if changed {
+            layout.bump_revision();
+        }
+        layout.clone()
+    }
+
+    pub fn redacted_for_user(mut self, user_id: &str) -> Self {
+        self.nodes = self
+            .nodes
+            .into_iter()
+            .map(|node| node.redacted_for_user(user_id))
+            .collect();
+        self
+    }
+}

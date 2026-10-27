@@ -1,0 +1,280 @@
+import { AppError } from './errors.js';
+import { object, token } from './protocol.js';
+import { AppPeer } from './peer.js';
+import { createHttp } from './http.js';
+import { occurrenceId, validateOccurrence, validateOccurrences } from './occurrences.js';
+
+export { AppError } from './errors.js';
+export { occurrenceId } from './occurrences.js';
+
+const lifecycleNames = ['health_check', 'startup', 'suspend', 'resume', 'shutdown', 'prepare_update', 'configuration_change'];
+
+function name(value, label = 'name') {
+  if (!token(value)) throw new AppError('INVALID_ARGUMENT', `Invalid ${label}`);
+  return value;
+}
+
+function record(value, label) {
+  if (!object(value)) throw new AppError('INVALID_ARGUMENT', `Expected ${label}`);
+  return value;
+}
+
+function relativePath(value) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096
+    || value.includes('\\') || value.startsWith('/') || /^[a-z]:/iu.test(value)
+    || /[\x00-\x1f\x7f]/u.test(value) || value.split('/').some((part) => part === '' || part === '.' || part === '..')) {
+    throw new AppError('INVALID_ARGUMENT', 'Expected a private relative file path');
+  }
+  return value;
+}
+
+function bytes(value) {
+  if (typeof value !== 'string' && !(value instanceof Uint8Array)) {
+    throw new AppError('INVALID_ARGUMENT', 'Expected text or bytes');
+  }
+  const data = typeof value === 'string' ? Buffer.from(value) : Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  if (data.length > 512 * 1024) throw new AppError('INVALID_ARGUMENT', 'Inline App data exceeds 512 KiB');
+  return data.toString('base64');
+}
+
+function registry(declared, label) {
+  if (!Array.isArray(declared) || declared.length > 1024) throw new TypeError(`Invalid declared ${label}`);
+  const allowed = new Set(declared.map((item) => name(item, label)));
+  if (allowed.size !== declared.length) throw new TypeError(`Duplicate declared ${label}`);
+  const handlers = new Map();
+  let sealed = false;
+  return {
+    register(key, handler) {
+      if (sealed) throw new AppError('ALREADY_READY', 'App registration has finished');
+      if (!allowed.has(key)) throw new AppError('UNDECLARED_HANDLER', `Undeclared ${label}: ${key}`);
+      if (handlers.has(key)) throw new AppError('DUPLICATE_HANDLER', `Already registered ${label}: ${key}`);
+      if (typeof handler !== 'function') throw new TypeError('Expected an App handler');
+      handlers.set(key, handler);
+    },
+    get(key) {
+      const handler = handlers.get(key);
+      if (!handler) throw new AppError('METHOD_NOT_FOUND', `Unregistered ${label}`);
+      return handler;
+    },
+    names: () => [...handlers.keys()].sort(),
+    complete: () => handlers.size === allowed.size,
+    seal: () => { sealed = true; },
+  };
+}
+
+function wakeRecord(wake) {
+  record(wake, 'wake');
+  const revision = wake.revision ?? '';
+  // The kernel bounds revisions in UTF-8 bytes, like other identities.
+  if (!Number.isSafeInteger(wake.dueAtMs) || wake.dueAtMs < 0 || typeof revision !== 'string'
+    || Buffer.byteLength(revision) > 128) {
+    throw new AppError('INVALID_ARGUMENT', 'Invalid wake');
+  }
+  return { id: name(wake.id, 'wake identity'), dueAtMs: wake.dueAtMs, revision };
+}
+
+function wakeChange(change) {
+  record(change, 'wake change');
+  if (change.op === 'cancel') return { op: 'cancel', id: name(change.id, 'wake identity') };
+  if (change.op === 'set') return { op: 'set', ...wakeRecord(change) };
+  throw new AppError('INVALID_ARGUMENT', 'Invalid wake change');
+}
+
+/** Called by the trusted worker bootstrap after containment, never by a launcher. */
+export function createAppSdk({ transport, generation, paths, declarations = {}, limits }) {
+  for (const path of ['package', 'data', 'temporary']) {
+    if (typeof paths?.[path] !== 'string' || paths[path].length === 0) throw new TypeError(`Missing ${path} root`);
+  }
+  record(declarations, 'trusted declarations');
+  if (Object.keys(declarations).some(key => !['tools', 'incomingEvents'].includes(key))) {
+    throw new TypeError('Invalid trusted declarations');
+  }
+  const tools = registry(declarations.tools ?? [], 'tool');
+  // The trusted bootstrap selects incoming/both from signed declarations.
+  // Outgoing occurrences use kernel-owned automations and need no local handler.
+  const events = registry(declarations.incomingEvents ?? [], 'incoming event');
+  const lifecycle = registry(lifecycleNames, 'lifecycle event');
+  let lifecycleBusy = false;
+  let ready = false;
+  let active = false;
+  let wakeHandler = null;
+  const peer = new AppPeer({
+    transport, generation, limits,
+    // The caller gets INVALID_OUTPUT (or HANDLER_FAILED for a malformed
+    // AppError); the App's own log tells its developer which handler did what.
+    // Before readiness the kernel admits no log.
+    onInvalidOutput(method, params, detail, code) {
+      if (!active) return;
+      const handler = method === 'tools.invoke' ? `Tool ${params.name}`
+        : method === 'events.deliver' ? `Event handler ${params.name}`
+          : method === 'schedule.wake' ? 'The wake handler'
+            : method === 'lifecycle.dispatch' ? `The ${params.event} lifecycle handler` : 'An App handler';
+      const what = code === 'INVALID_OUTPUT' ? 'returned a result that cannot be sent'
+        : 'threw an AppError that cannot be sent';
+      const fields = { code, method };
+      if (method === 'tools.invoke' || method === 'events.deliver') fields.name = params.name;
+      peer.request('log.write', {
+        level: 'error',
+        message: `${handler} ${what}, so that call failed with ${code}: ${detail}`,
+        fields,
+      }).catch(() => { /* the call's own error still reaches its caller */ });
+    },
+    async handleRequest(method, params, context) {
+      record(params, 'App invocation');
+      switch (method) {
+        case 'tools.invoke':
+          name(params.name, 'tool name');
+          if (!Object.hasOwn(params, 'input')) throw new AppError('INVALID_ARGUMENT', 'Missing tool input');
+          return tools.get(params.name)(params.input, context);
+        case 'events.deliver':
+          name(params.name, 'event name');
+          name(params.occurrence_id, 'occurrence identity');
+          if (!Object.hasOwn(params, 'payload')) throw new AppError('INVALID_ARGUMENT', 'Missing event payload');
+          return events.get(params.name)(Object.freeze({ occurrenceId: params.occurrence_id, payload: params.payload }), context);
+        case 'schedule.wake': {
+          if (!wakeHandler) throw new AppError('METHOD_NOT_FOUND', 'No App wake handler is registered');
+          const wake = wakeRecord(params);
+          return wakeHandler(Object.freeze({ ...wake, overdue: params.overdue === true }), context);
+        }
+        case 'lifecycle.dispatch':
+          if (!lifecycleNames.includes(params.event)) throw new AppError('INVALID_ARGUMENT', 'Unknown lifecycle event');
+          if (lifecycleBusy) throw new AppError('BUSY', 'An App lifecycle handler is still running', { retryable: true });
+          lifecycleBusy = true;
+          try {
+            if (!lifecycle.names().includes(params.event)) return null;
+            return await lifecycle.get(params.event)(params.data ?? null, context);
+          } finally { lifecycleBusy = false; }
+        default:
+          throw new AppError('METHOD_NOT_FOUND', 'Unknown App worker operation');
+      }
+    },
+  });
+  const call = (method, params, options) => peer.request(method, params, options);
+  const sdk = {
+    // The only error type whose code and message reach callers; any other
+    // thrown value becomes HANDLER_FAILED so private details never leak.
+    AppError,
+    paths: Object.freeze({ package: paths.package, data: paths.data, temporary: paths.temporary }),
+    tools: Object.freeze({ register: tools.register }),
+    events: Object.freeze({
+      register: events.register,
+      emit(occurrence, options) {
+        return call('events.emit', validateOccurrence(occurrence), options);
+      },
+      status: (receiptId, options) => call('events.status', { receiptId: name(receiptId, 'receipt identity') }, options),
+      occurrenceId,
+      retry: (receiptId, options) => call('events.retry', { receiptId: name(receiptId, 'receipt identity') }, options),
+      automations: (options) => call('events.automations', {}, options),
+    }),
+    lifecycle: Object.freeze({ on: lifecycle.register }),
+    state: Object.freeze({
+      get: (key, options) => call('state.get', { key: name(key, 'state key') }, options),
+      transaction(transaction, options) {
+        record(transaction, 'state transaction');
+        if (transaction.occurrences !== undefined) {
+          validateOccurrences(transaction.occurrences);
+        }
+        if (transaction.wakes !== undefined) {
+          if (!Array.isArray(transaction.wakes) || transaction.wakes.length > 16) {
+            throw new AppError('INVALID_ARGUMENT', 'Invalid wake changes');
+          }
+          transaction = { ...transaction, wakes: transaction.wakes.map(wakeChange) };
+        }
+        return call('state.transaction', transaction, options);
+      },
+    }),
+    schedule: Object.freeze({
+      set: (wake, options) => call('schedule.set', wakeRecord(wake), options),
+      cancel: (id, options) => call('schedule.cancel', { id: name(id, 'wake identity') }, options),
+      list: (options) => call('schedule.list', {}, options),
+      onWake(handler) {
+        if (ready) throw new AppError('ALREADY_READY', 'App registration has finished');
+        if (typeof handler !== 'function') throw new TypeError('Expected an App wake handler');
+        if (wakeHandler) throw new AppError('DUPLICATE_HANDLER', 'A wake handler is already registered');
+        wakeHandler = handler;
+      },
+    }),
+    files: Object.freeze({
+      atomicReplace: (path, contents, options) => call('files.atomic_replace', { path: relativePath(path), contentsBase64: bytes(contents) }, options),
+      snapshot: (request, options) => call('files.snapshot', record(request, 'snapshot request'), options),
+      import: (grantId, destination, options) => call('files.import', { grantId: name(grantId, 'file grant'), destination: relativePath(destination) }, options),
+      export: (path, options) => call('files.export', { path: relativePath(path) }, options),
+    }),
+    http: createHttp(call),
+    // Owner-granted event generator connections (kernel protocol 359). Only
+    // actions the signed manifest declares for that generator are accepted.
+    connections: Object.freeze({
+      list: (options) => call('connections.list', {}, options),
+      action: (request, options) => call('connections.action', record(request, 'connection action'), options),
+    }),
+    log: Object.freeze({
+      write(level, message, fields = {}, options) {
+        if (!['debug', 'info', 'warn', 'error'].includes(level) || typeof message !== 'string') {
+          throw new AppError('INVALID_ARGUMENT', 'Invalid App log record');
+        }
+        // The kernel measures UTF-8 bytes, as here.
+        if (Buffer.byteLength(message) > 4096) throw new AppError('LIMIT_EXCEEDED', 'App log message exceeds 4 KiB');
+        return call('log.write', { level, message, fields: record(fields, 'log fields') }, options);
+      },
+    }),
+    host: Object.freeze({
+      notify: (request, options) => call('host.notify', record(request, 'notification'), options),
+      openLink: (url, options) => call('host.open_link', { url }, options),
+      writeClipboard: (text, options) => call('host.clipboard_write', { text }, options),
+      // The owner answers in a trusted kernel prompt, which can take minutes:
+      // the kernel returns a pending reference and this waits by polling it,
+      // holding no worker request slot meanwhile.
+      pickFile: async (request, options = {}) => {
+        let pick = await call('host.pick_file', record(request, 'file picker request'), options);
+        for (let delay = 250; pick?.state === 'pending'; delay = Math.min(delay * 2, 2000)) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          if (options.signal?.aborted) throw new AppError('CANCELLED', 'File request cancelled');
+          // A busy kernel is not an answer: keep waiting for the owner.
+          pick = await call('host.pick_file_status', { operationId: pick.operationId }, options)
+            .catch(error => { if (error?.retryable) return pick; throw error; });
+        }
+        if (pick?.state === 'granted') return { grantIds: pick.grantIds };
+        if (pick?.state === 'declined') throw new AppError('DECLINED', 'The owner declined to share a file');
+        throw new AppError('EXPIRED', 'The file request expired unanswered');
+      },
+    }),
+    validation: Object.freeze({
+      request: (request, options) => call('validation.request', record(request, 'human validation request'), options),
+      status: (operationId, options) => call('validation.status', { operationId: name(operationId, 'operation identity') }, options),
+    }),
+    async ready(options) {
+      if (ready) throw new AppError('ALREADY_READY', 'App readiness already reported');
+      if (!tools.complete() || !events.complete()) throw new AppError('MISSING_HANDLER', 'Declared App handlers are missing');
+      // Mark before yielding; duplicate concurrent readiness cannot pass.
+      ready = true;
+      tools.seal();
+      events.seal();
+      lifecycle.seal();
+      const acknowledged = await call('worker.ready', { tools: tools.names(), events: events.names(), lifecycle: lifecycle.names() }, options);
+      active = true;
+      return acknowledged;
+    },
+    // Bootstrap-only data migration phase; never part of the App registration API.
+    // The kernel admits only these state calls before readiness and scopes them
+    // to the staged generation at the step's target schema version.
+    migration({ from, to }) {
+      if (!Number.isSafeInteger(from) || from < 0 || to !== from + 1) throw new TypeError('Invalid migration step');
+      return {
+        from, to,
+        state: Object.freeze({
+          get: sdk.state.get,
+          transaction(transaction, options) {
+            record(transaction, 'state transaction');
+            if (transaction.schemaVersion !== undefined && transaction.schemaVersion !== to) {
+              throw new AppError('INVALID_ARGUMENT', 'A migration writes only its target schema version');
+            }
+            return sdk.state.transaction({ ...transaction, schemaVersion: to }, options);
+          },
+        }),
+      };
+    },
+    migrationStep: (to, options) => call('migration.step', { to }, options),
+    close: () => peer.close(),
+  };
+  return Object.freeze(sdk);
+}

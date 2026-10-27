@@ -1,0 +1,890 @@
+use std::collections::BTreeMap;
+use std::thread;
+use std::time::Duration;
+
+use chariox_kernel::agent::CreateAgentRequest;
+use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
+use chariox_kernel::local::{
+    AttachToSessionRequest, EndSessionRequest, GetUserConfigRequest, GetWorkflowRunRequest,
+    LaunchProviderRunRequest, LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse,
+    SubmitPromptRequest, UpdateSessionConfigRequest,
+};
+use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
+use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use chariox_kernel::session::{
+    PromptSubmissionOutcome, SessionAgentDefaults, SessionStatus, WorkflowNodeRunStatus,
+    WorkflowRun, WorkflowRunStatus,
+};
+use chariox_kernel::{DaemonApp, DaemonConfig};
+use tokio::sync::{oneshot, Mutex as TokioMutex};
+
+mod support;
+use support::kernel_websocket::{
+    connect_with_retry, reserved_kernel_listener, response_variant, send_request, unused_tcp_port,
+    ExecutionWorkspace,
+};
+use support::runtime_integration::{
+    collect_terminal_output_until, wait_for_local_provider_run_ready,
+    wait_for_local_terminal_output,
+};
+
+#[test]
+fn session_lifecycle_round_trip_cleans_runtime_state() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let ended = app
+        .end_session(session.id())
+        .expect("session should end cleanly");
+
+    assert_eq!(ended.status(), SessionStatus::Ended);
+    assert!(app.attachments().get_attachment(attachment.id()).is_err());
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("terminated run should remain queryable")
+            .state(),
+        ProviderRunState::Ended
+    );
+    assert!(!app.pty().has_process(run.id()));
+}
+
+#[test]
+fn attachments_can_queue_prompts_and_receive_queue_notifications() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let first = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("first attachment should attach");
+    let second = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-b",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("second attachment should attach");
+
+    let _run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let first_outcome = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        first.id(),
+        "first integration prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    let second_outcome = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        second.id(),
+        "second integration prompt\n",
+        Vec::new(),
+    )
+    .expect("second prompt should queue");
+
+    match first_outcome {
+        PromptSubmissionOutcome::Started { .. } => {}
+        _ => panic!("expected first prompt to start"),
+    }
+    match second_outcome {
+        PromptSubmissionOutcome::Queued { .. } => {}
+        _ => panic!("expected second prompt to queue"),
+    }
+
+    let session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session.queued_prompts().len(), 1);
+    assert_eq!(app.terminal().notice_records().len(), 1);
+    assert!(app.terminal().notice_records()[0]
+        .recipient_attachment_ids
+        .contains(&first.id().to_string()));
+}
+
+#[test]
+fn detaching_attachment_preserves_queued_prompts_and_promotes_via_remaining_attachment() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let first = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("first attachment should attach");
+    let second = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-b",
+            ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("second attachment should attach");
+
+    let _run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        first.id(),
+        "first integration prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        second.id(),
+        "second integration prompt\n",
+        Vec::new(),
+    )
+    .expect("second prompt should queue");
+
+    app.detach(second.id())
+        .expect("queued prompt source should detach cleanly");
+    let completion =
+        chariox_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
+            .expect("active prompt should complete");
+
+    let started_next = completion
+        .started_next
+        .expect("queued prompt should promote through the remaining attachment");
+    assert_eq!(started_next.prompt(), "second integration prompt\n");
+    let session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(
+        session.active_prompt().map(|prompt| prompt.id()),
+        Some(started_next.id())
+    );
+    assert!(session.queued_prompts().is_empty());
+    assert!(
+        app.terminal().input_records().iter().any(|record| {
+            record.source_attachment_id == second.id()
+                && String::from_utf8_lossy(&record.bytes).contains("second integration prompt")
+        }),
+        "promoted queued prompt should retain its detached source attribution"
+    );
+    assert!(
+        app.terminal().output_records().iter().any(|record| {
+            record.kind == chariox_kernel::terminal::TerminalOutputKind::PromptEcho
+                && record.source_attachment_id.as_deref() == Some(second.id())
+                && record
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|recipient| recipient == first.id())
+        }),
+        "the remaining attachment should receive the promoted queued prompt"
+    );
+}
+
+#[test]
+fn completing_a_prompt_without_provider_completion_still_emits_a_terminal_completion_record() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "fallback completion\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let completion =
+        chariox_kernel::transport::TransportService::complete_active_prompt(&mut app, session.id())
+            .expect("active prompt should complete");
+
+    let terminal = app.terminal().clone();
+    let records = terminal.drain_completion_records(session.id(), attachment.id());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].provider_run_id, run.id());
+    assert_eq!(
+        records[0].message_id,
+        format!("prompt-complete:{}", completion.completed.id())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workflow_runs_progress_without_terminal_pumps() {
+    let workspace = ExecutionWorkspace::new();
+    let mut config = DaemonConfig::for_tests();
+    let (kernel_websocket_port, kernel_websocket_listener) = reserved_kernel_listener();
+    config.kernel_websocket_port = kernel_websocket_port;
+    config.runtime_mcp_port = unused_tcp_port();
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let _attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let agent = app
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("node-a")
+                .with_model("workflow-single-turn-node"),
+        )
+        .expect("agent should spawn");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("workflow-pump-test".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), workflow.id(), node.id(), true)
+        .expect("workflow node should be allowed to complete");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+
+    let app = std::sync::Arc::new(TokioMutex::new(app));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server_app = std::sync::Arc::clone(&app);
+    let server = tokio::spawn(async move {
+        run_kernel_websocket_server_on_listener(server_app, kernel_websocket_listener, async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+    });
+
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+
+    let run = {
+        let mut app = app.lock().await;
+        app.invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("kickoff".to_string()),
+        )
+        .expect("workflow run should start")
+        .0
+    };
+
+    let run_id = run.id().to_string();
+    let run = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut attempt = 0_u64;
+        loop {
+            attempt += 1;
+            let response = send_request(
+                &mut socket,
+                &format!("get-workflow-run-{attempt}"),
+                LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: run_id.clone(),
+                }),
+            )
+            .await;
+            let run: WorkflowRun = serde_json::from_value(
+                response_variant(&response, "WorkflowRun")["workflow_run"].clone(),
+            )
+            .expect("workflow run response should decode");
+            if !matches!(
+                run.status(),
+                WorkflowRunStatus::Running | WorkflowRunStatus::Waiting
+            ) {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let run = match run {
+        Ok(run) => run,
+        Err(_) => {
+            let app = app.lock().await;
+            panic!(
+                "workflow run never completed: run={:#?}, pending_terminal_output_records={}",
+                app.sessions()
+                    .resolve_workflow_run_ref(session.id(), &run_id),
+                app.terminal().output_records().len(),
+            )
+        }
+    };
+    assert!(
+        matches!(
+            run.status(),
+            WorkflowRunStatus::Completed | WorkflowRunStatus::Stopped
+        ),
+        "workflow run should complete or stop"
+    );
+    assert!(
+        run.node_runs().iter().all(|node_run| matches!(
+            node_run.status(),
+            WorkflowNodeRunStatus::Completed
+                | WorkflowNodeRunStatus::Failed
+                | WorkflowNodeRunStatus::Stopped
+        )),
+        "workflow node run should settle"
+    );
+
+    app.lock()
+        .await
+        .end_session(session.id())
+        .expect("session should end cleanly");
+    let _ = shutdown_tx.send(());
+    server
+        .await
+        .expect("kernel websocket task should join")
+        .expect("kernel websocket server should shut down cleanly");
+}
+
+#[test]
+fn provider_run_switching_parks_previous_run_and_records_terminal_input() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let source = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let first_run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "terminal-echo-a",
+        ))
+        .expect("first provider run should launch");
+    let second_run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "terminal-echo-b",
+        ))
+        .expect("second provider run should launch");
+
+    let session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should still exist");
+    assert_eq!(session.active_provider_run_id(), Some(second_run.id()));
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should still exist")
+            .state(),
+        ProviderRunState::Parked
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(second_run.id())
+            .expect("second run should still exist")
+            .state(),
+        ProviderRunState::Running
+    );
+
+    app.send_terminal_input(session.id(), source.id(), None, b"switched run\n")
+        .expect("attachment input should reach active provider run");
+    let input_records = app.terminal().input_records();
+    assert_eq!(input_records.len(), 1);
+    assert_eq!(input_records[0].provider_run_id, second_run.id());
+    assert_eq!(input_records[0].source_attachment_id, source.id());
+    assert_eq!(input_records[0].bytes, b"switched run\n");
+}
+
+#[test]
+fn local_request_surface_supports_prompt_queue_and_config_updates() {
+    thread::Builder::new()
+        .name("local-request-surface-supports-prompt-queue-and-config-updates".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(local_request_surface_supports_prompt_queue_and_config_updates_inner)
+        .expect("local request surface large-stack test thread should spawn")
+        .join()
+        .expect("local request surface large-stack test thread should complete");
+}
+
+fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
+    let workspace = ExecutionWorkspace::new();
+    let app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let client = LocalDaemonClient::new(app).expect("local daemon client should start");
+
+    let session = match client
+        .send(LocalDaemonRequest::CreateSession(
+            workspace.session_request(),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+
+    let first = match client
+        .send(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "first".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("first attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let second = match client
+        .send(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "second".to_string(),
+                capability_level: ClientCapabilityLevel::InteractiveStructured,
+            },
+        ))
+        .expect("second attach should succeed")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        _ => panic!("unexpected local response"),
+    };
+
+    let provider_run = match client
+        .send(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: None,
+                adapter_key: "dev-stub".to_string(),
+                provider: "claude-code".to_string(),
+                account_profile: "default".to_string(),
+                model: "sonnet".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ))
+        .expect("provider launch should succeed")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { provider_run }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { provider_run } => provider_run,
+        _ => panic!("unexpected local response"),
+    };
+
+    wait_for_local_provider_run_ready(&client, session.id(), provider_run.id());
+
+    let first_prompt = client
+        .send(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: first.id().to_string(),
+            target_agent_id: None,
+            prompt: "first local prompt\n".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("first prompt should start");
+    let second_prompt = client
+        .send(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id: second.id().to_string(),
+            target_agent_id: None,
+            prompt: "second local prompt\n".to_string(),
+            attachments: Vec::new(),
+        }))
+        .expect("second prompt should queue");
+    let config = client
+        .send(LocalDaemonRequest::UpdateSessionConfig(
+            UpdateSessionConfigRequest {
+                session_id: session.id().to_string(),
+                attachment_id: first.id().to_string(),
+                values: BTreeMap::from([("theme".to_string(), "compact".to_string())]),
+                requires_idle: false,
+            },
+        ))
+        .expect("config update should succeed");
+    let echoed_output = wait_for_local_terminal_output(&client, session.id(), second.id());
+    let ended = client
+        .send(LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("end session should succeed");
+
+    match first_prompt {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            ..
+        } => {}
+        response => panic!("unexpected first prompt response: {response:?}"),
+    }
+    match second_prompt {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Queued { .. },
+            ..
+        } => {}
+        response => panic!("unexpected second prompt response: {response:?}"),
+    }
+    match config {
+        LocalDaemonResponse::SessionConfigUpdated { config, .. } => {
+            assert_eq!(config.version(), 1)
+        }
+        _ => panic!("unexpected config response"),
+    }
+    assert!(echoed_output.contains("first local prompt"));
+    match ended {
+        LocalDaemonResponse::SessionEnded { session } => {
+            assert_eq!(session.status(), SessionStatus::Ended)
+        }
+        _ => panic!("unexpected end response"),
+    }
+}
+
+#[test]
+fn prompt_queue_advances_after_provider_output_goes_idle() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    // Phase 1: the session is created with its default agent, which holds focus;
+    // attaching a client creates no agent.
+    let (session, _default_agent) = app
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    let _run = app
+        .launch_provider(LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "claude-code",
+            "default",
+            "sonnet",
+        ))
+        .expect("provider run should launch");
+
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "first auto prompt\n",
+        Vec::new(),
+    )
+    .expect("first prompt should start");
+    let _ = chariox_kernel::transport::TransportService::schedule_direct_prompt(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        "second auto prompt\n",
+        Vec::new(),
+    )
+    .expect("second prompt should queue");
+
+    let combined = collect_terminal_output_until(
+        &mut app,
+        session.id(),
+        attachment.id(),
+        |output, session| {
+            output.contains("first auto prompt")
+                && output.contains("second auto prompt")
+                && session.active_prompt().is_none()
+                && session.queued_prompts().is_empty()
+        },
+    );
+
+    assert!(combined.contains("first auto prompt"));
+    assert!(combined.contains("second auto prompt"));
+}
+
+#[test]
+fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
+    let workspace = ExecutionWorkspace::new();
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let session = app
+        .sessions_mut()
+        .create_session(workspace.session_request())
+        .expect("session should be created");
+    let _attachment = app
+        .attach(AttachRequest::new(
+            session.id(),
+            "client-a",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+
+    // Create first agent and launch provider run
+    let first_agent = app
+        .spawn_agent(chariox_kernel::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .expect("first agent should spawn");
+    let first_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(first_agent.id()),
+        )
+        .expect("first provider run should launch");
+
+    // Create second agent and launch provider run (this parks the first run)
+    let second_agent = app
+        .spawn_agent(
+            chariox_kernel::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("second"),
+        )
+        .expect("second agent should spawn");
+    let second_run = app
+        .launch_provider(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(second_agent.id()),
+        )
+        .expect("second provider run should launch");
+
+    // Verify the first run is now parked
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should exist")
+            .state(),
+        ProviderRunState::Parked
+    );
+
+    // Verify the second run is active
+    assert_eq!(
+        app.providers()
+            .get_run(second_run.id())
+            .expect("second run should exist")
+            .state(),
+        ProviderRunState::Running
+    );
+
+    // Pump output from the parked run - this should NOT produce unexpected exit notices
+    let recipients = app.attachments().list_session_attachment_ids(session.id());
+    let records = chariox_kernel::transport::TransportService::pump_provider_output(
+        &mut app,
+        session.id(),
+        first_run.id(),
+        recipients,
+    )
+    .expect("pumping from parked run should succeed");
+    assert!(
+        records.is_empty(),
+        "parked runs should not emit transcript output while inactive"
+    );
+
+    // Verify the parked run is still parked (not ended)
+    assert_eq!(
+        app.providers()
+            .get_run(first_run.id())
+            .expect("first run should exist")
+            .state(),
+        ProviderRunState::Parked,
+        "parked run should remain parked after pumping output"
+    );
+
+    // Check that no unexpected exit notices were recorded
+    let notices: Vec<_> = app
+        .terminal()
+        .notice_records()
+        .iter()
+        .filter(|record| record.message.contains("ended unexpectedly"))
+        .cloned()
+        .collect();
+
+    assert!(
+        notices.is_empty(),
+        "parked runs should not produce 'ended unexpectedly' notices, but got: {:?}",
+        notices.iter().map(|n| &n.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-provider-launch-defaults-test-{}.toml",
+        std::process::id()
+    ));
+    // Phase 1 sessions need real absolute workspace and worktree directories.
+    let first_workspace = ExecutionWorkspace::new();
+    let second_workspace = ExecutionWorkspace::new();
+    let mut config = DaemonConfig::for_tests();
+    config.user_config_path = path.clone();
+    let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let client = LocalDaemonClient::new(app).expect("local daemon client should start");
+
+    match client
+        .send(LocalDaemonRequest::GetUserConfig(GetUserConfigRequest))
+        .expect("get user config should succeed")
+    {
+        LocalDaemonResponse::UserConfig { config, .. } => {
+            assert_eq!(
+                config.providers.default, None,
+                "fresh config.toml should have no provider default"
+            );
+            assert_eq!(config.providers.model, None);
+            assert_eq!(config.providers.effort, None);
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    let first_agent = match client
+        .send(LocalDaemonRequest::CreateSession(
+            first_workspace
+                .session_request()
+                .with_agent_defaults(SessionAgentDefaults {
+                    provider: "codex".to_string(),
+                    model: Some("gpt-5.1".to_string()),
+                    effort: Some("high".to_string()),
+                    account_profile: None,
+                    execution_mode: None,
+                    permission_level: None,
+                }),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { agent, .. } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(first_agent.provider(), "codex");
+    assert_eq!(first_agent.model(), Some("gpt-5.1"));
+
+    match client
+        .send(LocalDaemonRequest::GetUserConfig(GetUserConfigRequest))
+        .expect("get user config should succeed")
+    {
+        LocalDaemonResponse::UserConfig { config, .. } => {
+            assert_eq!(config.providers.default.as_deref(), Some("codex"));
+            assert_eq!(config.providers.model.as_deref(), Some("gpt-5.1"));
+            assert_eq!(config.providers.effort.as_deref(), Some("high"));
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    let second_agent = match client
+        .send(LocalDaemonRequest::CreateSession(
+            second_workspace.session_request(),
+        ))
+        .expect("second session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { agent, .. } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(
+        second_agent.provider(), "codex",
+        "a session created without an explicit selection should inherit the persisted config.toml default"
+    );
+    assert_eq!(second_agent.model(), Some("gpt-5.1"));
+
+    let _ = std::fs::remove_file(&path);
+}

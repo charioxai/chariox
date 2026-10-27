@@ -1,0 +1,242 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import { createKernelEventSubscriptionController } from "./kernel-event-subscription-controller.js"
+
+test("sync subscribes to waiting-room inventory once while detached", async () => {
+  let waitingRoomSubscriptions = 0
+  const evaluations: unknown[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {
+      waitingRoomSubscriptions += 1
+    },
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: (state) => {
+      evaluations.push(state)
+    },
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+  await controller.sync()
+
+  assert.equal(waitingRoomSubscriptions, 1)
+  assert.deepEqual(controller.state(), {
+    scope: "waiting-room",
+    sessionId: null,
+    attachmentId: null,
+  })
+  assert.equal(evaluations.length, 2)
+})
+
+test("sync subscribes to session events and skips duplicate bindings", async () => {
+  let currentSessionId = "session-1"
+  let currentAttachment = { id: "attachment-1" }
+  const subscriptions: Array<{ sessionId: string; attachmentId: string }> = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => currentAttachment,
+    getSessionId: () => currentSessionId,
+    subscribeToWaitingRoomInventory: async () => {
+      throw new Error("unexpected waiting-room subscription")
+    },
+    subscribeToKernelEvents: async (sessionId, attachmentId) => {
+      subscriptions.push({ sessionId, attachmentId })
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+  await controller.sync()
+  currentAttachment = { id: "attachment-2" }
+  await controller.sync()
+
+  assert.deepEqual(subscriptions, [
+    { sessionId: "session-1", attachmentId: "attachment-1" },
+    { sessionId: "session-1", attachmentId: "attachment-2" },
+  ])
+  assert.deepEqual(controller.state(), {
+    scope: "session",
+    sessionId: "session-1",
+    attachmentId: "attachment-2",
+  })
+})
+
+test("reset clears the remembered subscription so the same binding resubscribes", async () => {
+  let subscriptions = 0
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => ({ id: "attachment-1" }),
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToKernelEvents: async () => {
+      subscriptions += 1
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+  controller.reset()
+  await controller.sync()
+
+  assert.equal(subscriptions, 2)
+})
+
+test("sync reports subscription failures without updating remembered scope", async () => {
+  let failure: unknown
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => ({ id: "attachment-1" }),
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToKernelEvents: async () => {
+      throw new Error("subscribe failed")
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: (_sessionId, _attachmentId, error) => {
+      failure = error
+    },
+  })
+
+  await controller.sync()
+
+  assert.match(failure instanceof Error ? failure.message : String(failure), /subscribe failed/)
+  assert.deepEqual(controller.state(), {
+    scope: null,
+    sessionId: null,
+    attachmentId: null,
+  })
+})
+
+test("sync is idle when kernel event streams are unavailable", async () => {
+  let evaluated = false
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => false,
+    getAttachment: () => ({ id: "attachment-1" }),
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToKernelEvents: async () => {},
+    onEvaluate: () => {
+      evaluated = true
+    },
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+
+  assert.equal(evaluated, false)
+  assert.deepEqual(controller.state(), {
+    scope: null,
+    sessionId: null,
+    attachmentId: null,
+  })
+})
+
+test("MP-08 overlapping syncs share one waiting-room subscription", async () => {
+  let waitingRoomSubscriptions = 0
+  const releases: (() => void)[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: () => {
+      waitingRoomSubscriptions += 1
+      return new Promise<void>((resolve) => { releases.push(resolve) })
+    },
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: () => {},
+    onWaitingRoomSubscribed: () => {},
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  const first = controller.sync()
+  const second = controller.sync()
+  await new Promise((resolve) => setImmediate(resolve))
+  for (const release of releases) release()
+  await Promise.all([first, second])
+
+  assert.equal(waitingRoomSubscriptions, 1)
+  assert.equal(controller.state().scope, "waiting-room")
+})
+
+test("MP-08 a sync requested as the single-flight loop exits still re-evaluates", async () => {
+  let evaluations = 0
+  let late: Promise<void> | null = null
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => true,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "session-1",
+    subscribeToWaitingRoomInventory: async () => {},
+    subscribeToKernelEvents: async () => {
+      throw new Error("unexpected session subscription")
+    },
+    onEvaluate: () => { evaluations += 1 },
+    // Two microtasks later the loop has made its last check but the first
+    // sync has not settled yet.
+    onWaitingRoomSubscribed: () => {
+      queueMicrotask(() => queueMicrotask(() => { late = controller.sync() }))
+    },
+    onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {},
+    onSessionSubscriptionFailed: () => {},
+  })
+
+  await controller.sync()
+  await new Promise((resolve) => setImmediate(resolve))
+  await late
+  assert.equal(evaluations, 2)
+})
+
+test("MP-08 / MP-10 detached Cloud discovery never opens a kernel subscription before selection", async () => {
+  let connected = false
+  const calls: string[] = []
+  const controller = createKernelEventSubscriptionController({
+    kernelConnected: () => connected,
+    supportsKernelEventStream: () => true,
+    getAttachment: () => null,
+    getSessionId: () => "unused",
+    subscribeToWaitingRoomInventory: async () => { calls.push("inventory") },
+    subscribeToKernelEvents: async () => { calls.push("session") },
+    onEvaluate: () => {}, onWaitingRoomSubscribed: () => {}, onSessionSubscribed: () => {},
+    onWaitingRoomSubscriptionFailed: () => {}, onSessionSubscriptionFailed: () => {},
+  })
+  await controller.sync()
+  assert.deepEqual(calls, [], "disconnected discovery must not touch localhost")
+  connected = true
+  await controller.sync()
+  await controller.sync()
+  assert.deepEqual(calls, ["inventory"], "selected kernel receives the ordinary inventory subscription")
+})

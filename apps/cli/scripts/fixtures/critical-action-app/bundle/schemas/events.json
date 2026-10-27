@@ -1,0 +1,18 @@
+{
+  "events": [
+    {
+      "name": "drill_step",
+      "schemaVersion": 1,
+      "direction": "incoming",
+      "payloadSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step"],
+        "properties": {
+          "step": { "type": "string", "enum": ["request", "spend", "change", "unapproved"] },
+          "message": { "type": "string", "maxLength": 200 }
+        }
+      }
+    }
+  ]
+}

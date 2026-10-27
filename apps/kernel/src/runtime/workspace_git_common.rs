@@ -1,0 +1,471 @@
+use std::path::{Path, PathBuf};
+
+use crate::error::DaemonError;
+
+pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+pub(crate) fn run_workspace_git_command(
+    worktree_path: &str,
+    args: &[&str],
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(worktree_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!(
+                "git {} failed with status {}",
+                args.join(" "),
+                output.status
+            )
+        };
+        return Err(DaemonError::LocalTransport { operation, message });
+    }
+    Ok(())
+}
+
+pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "run git command",
+            message: error.to_string(),
+        })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "run git command",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        })
+    }
+}
+
+pub(crate) fn resolve_repo_root(workspace_path: &str) -> Result<PathBuf, DaemonError> {
+    find_repo_root(workspace_path)?.ok_or_else(|| DaemonError::LocalTransport {
+        operation: "resolve repo root",
+        message: format!("No git repository in workspace {workspace_path}"),
+    })
+}
+
+pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, DaemonError> {
+    match std::fs::metadata(workspace_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "resolve repo root",
+                message: format!("cannot inspect workspace {workspace_path}: {error}"),
+            })
+        }
+        Ok(_) => {}
+    }
+    let output = std::process::Command::new("git")
+        .env("LC_ALL", "C")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(workspace_path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: format!("cannot inspect workspace {workspace_path}: {error}"),
+        })?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if message.contains("not a git repository") {
+            return Ok(None);
+        }
+        return Err(DaemonError::LocalTransport {
+            operation: "resolve repo root",
+            message: format!("cannot inspect workspace {workspace_path}: {message}"),
+        });
+    }
+    Ok(Some(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    )))
+}
+
+pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "check git ref",
+            message: error.to_string(),
+        })?;
+    Ok(output.status.success())
+}
+
+pub(crate) fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--verify", "--quiet", reference])
+        .current_dir(repo_root)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+pub(crate) fn workspace_default_compare_ref(repo_root: &str, branch: Option<&str>) -> String {
+    if git_reference_resolves(repo_root, "origin/main") {
+        return "origin/main".to_string();
+    }
+    if git_reference_resolves(repo_root, "main") {
+        return "main".to_string();
+    }
+    if git_reference_resolves(repo_root, "master") {
+        return "master".to_string();
+    }
+    branch
+        .filter(|value| !value.is_empty() && *value != "HEAD")
+        .unwrap_or("HEAD")
+        .to_string()
+}
+
+/// MP-02 / MP-08 OWNER-13: project Git availability with workspace discovery.
+pub(crate) fn workspace_repository_state(workspace_path: &str) -> String {
+    if git_command_output(workspace_path, &["rev-parse", "--show-toplevel"]).is_none() {
+        "not-repository"
+    } else if git_command_output(workspace_path, &["rev-parse", "--verify", "HEAD"]).is_none() {
+        "unborn"
+    } else {
+        "ready"
+    }
+    .to_string()
+}
+
+pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {
+    git_command_output(workspace_path, &["remote", "get-url", "origin"])
+        .as_deref()
+        .and_then(repo_label_from_remote_url)
+}
+
+pub(crate) fn canonical_workspace_path(
+    workspace_path: &str,
+    worktree_path: &str,
+) -> Option<String> {
+    [workspace_path, worktree_path]
+        .into_iter()
+        .filter(|path| !path.trim().is_empty() && Path::new(path).is_dir())
+        .find_map(|git_path| {
+            let git_dir = PathBuf::from(git_command_output(
+                git_path,
+                &["rev-parse", "--path-format=absolute", "--git-dir"],
+            )?);
+            let common_dir = PathBuf::from(git_command_output(
+                git_path,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )?);
+            if same_fs_path_buf(&git_dir, &common_dir) {
+                return (git_path == workspace_path).then(|| workspace_path.to_string());
+            }
+            let workspace = common_dir.parent()?.to_path_buf();
+            Some(workspace.display().to_string())
+        })
+}
+
+fn same_fs_path_buf(left: &Path, right: &Path) -> bool {
+    left == right
+        || matches!(
+            (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+            (Ok(left), Ok(right)) if left == right
+        )
+}
+
+pub(crate) fn worktree_display_label(
+    path: &str,
+    workspace_path: &str,
+    branch: Option<&str>,
+) -> Option<String> {
+    let branch = branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| *value != "HEAD")
+        .unwrap_or("detached");
+    if same_fs_path(path, workspace_path) {
+        return Some(branch.to_string());
+    }
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|value| !value.is_empty())?;
+    Some(format!("{name} / {branch}"))
+}
+
+pub(crate) fn same_fs_path(left: &str, right: &str) -> bool {
+    same_fs_path_buf(Path::new(left), Path::new(right))
+}
+
+pub(crate) fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(path)
+        .output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation: "detect git branch",
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn repo_label_from_remote_url(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches(".git");
+    let candidate = if let Some(rest) = trimmed.strip_prefix("git@") {
+        rest.split_once(':').map(|(_, path)| path.to_string())
+    } else if let Some((_, path)) = trimmed.split_once("://") {
+        let mut parts = path.split('/').collect::<Vec<_>>();
+        if parts.len() >= 3 {
+            Some(parts.split_off(parts.len() - 2).join("/"))
+        } else {
+            None
+        }
+    } else {
+        None
+    }?;
+    let parts = candidate
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        parts[parts.len() - 2],
+        parts[parts.len() - 1]
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{
+        canonical_workspace_path, repo_label_from_remote_url, same_fs_path,
+        workspace_default_compare_ref, worktree_display_label,
+    };
+
+    #[test]
+    fn repo_labels_parse_common_remote_urls() {
+        assert_eq!(
+            repo_label_from_remote_url("git@github.com:owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            repo_label_from_remote_url("https://github.com/owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(repo_label_from_remote_url("not-a-git-url"), None);
+    }
+
+    #[test]
+    fn canonical_workspace_uses_the_main_checkout_for_a_linked_worktree() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-canonical-workspace-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let worktree = root.with_file_name(format!(
+            "{}-worktree",
+            root.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        std::fs::create_dir_all(&root).expect("temp repo should be created");
+        run_git(&root, &["init"]);
+        run_git(&root, &["config", "user.email", "tests@example.invalid"]);
+        run_git(&root, &["config", "user.name", "Chariox Tests"]);
+        std::fs::write(root.join("README.md"), "workspace\n").expect("fixture should be written");
+        run_git(&root, &["add", "README.md"]);
+        run_git(&root, &["commit", "-m", "initial"]);
+        run_git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature/canonical-workspace",
+                worktree.to_str().unwrap(),
+            ],
+        );
+
+        assert_eq!(
+            canonical_workspace_path(worktree.to_str().unwrap(), worktree.to_str().unwrap()),
+            Some(std::fs::canonicalize(&root).unwrap().display().to_string())
+        );
+        let non_git_workspace = root.with_file_name(format!(
+            "{}-not-git",
+            root.file_name().and_then(|name| name.to_str()).unwrap()
+        ));
+        std::fs::create_dir_all(&non_git_workspace).expect("non-git workspace should be created");
+        assert_eq!(
+            canonical_workspace_path(
+                non_git_workspace.to_str().unwrap(),
+                worktree.to_str().unwrap()
+            ),
+            Some(std::fs::canonicalize(&root).unwrap().display().to_string())
+        );
+
+        let _ = std::fs::remove_dir_all(&non_git_workspace);
+        let _ = std::fs::remove_dir_all(&worktree);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn worktree_labels_prefer_branch_for_main_worktree() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("chariox-worktree-label-{nonce}"));
+        let workspace = root.join("workspace");
+        let feature = root.join("feature");
+        std::fs::create_dir_all(&workspace).expect("workspace test directory should be created");
+        std::fs::create_dir_all(&feature).expect("feature test directory should be created");
+        let workspace = workspace.to_string_lossy();
+        let feature = feature.to_string_lossy();
+
+        assert_eq!(
+            worktree_display_label(&workspace, &workspace, Some("main")).as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            worktree_display_label(&feature, &workspace, Some("feat")).as_deref(),
+            Some("feature / feat")
+        );
+        assert_eq!(
+            worktree_display_label(&feature, &workspace, Some("HEAD")).as_deref(),
+            Some("feature / detached")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn same_fs_path_accepts_literal_matches() {
+        assert!(same_fs_path("/repo/main", "/repo/main"));
+    }
+
+    #[test]
+    fn mp08_mp10_mp11_distinct_absent_worktrees_do_not_match() {
+        let root =
+            std::env::temp_dir().join(format!("chariox-absent-worktree-{}", rand::random::<u64>()));
+        let left = root.join("left");
+        let right = root.join("right");
+        assert!(!left.exists() && !right.exists());
+        assert!(!super::same_fs_path_buf(&left, &right));
+        assert!(!same_fs_path(
+            left.to_str().unwrap(),
+            right.to_str().unwrap()
+        ));
+        assert!(super::same_fs_path_buf(&left, &left));
+    }
+
+    #[test]
+    fn default_compare_ref_falls_back_to_branch_then_head() {
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", Some("feature/test")),
+            "feature/test"
+        );
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", Some("HEAD")),
+            "HEAD"
+        );
+        assert_eq!(
+            workspace_default_compare_ref("/path/that/does/not/exist", None),
+            "HEAD"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owner14_tests {
+    #[test]
+    fn mp02_mp08_owner14_workspace_label_requires_a_git_remote() {
+        struct Scratch(std::path::PathBuf);
+        impl Scratch {
+            fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root =
+            Scratch(std::env::temp_dir().join(format!("wrux-owner14-{}", rand::random::<u64>())));
+        std::fs::create_dir_all(root.path()).unwrap();
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()),
+            None
+        );
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .arg(root.path())
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()),
+            None
+        );
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(root.path())
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/charioxai/chariox.git"
+            ])
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            super::workspace_display_label(root.path().to_str().unwrap()).as_deref(),
+            Some("charioxai/chariox")
+        );
+    }
+}

@@ -1,0 +1,250 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+
+import {
+  exportDebugBundleRequest,
+  getDaemonHealthRequest,
+  getKernelResourceTelemetryRequest,
+  kernelResourceTelemetryMinimumProtocolVersion,
+} from "./ipc-kernel-control-requests.js"
+import type { DaemonHealthProjection, DaemonHealthResponse, KernelResourceTelemetryResponse } from "./kernel-types.js"
+
+test("getDaemonHealthRequest has typed workspace live sync health projection", () => {
+  assert.deepEqual(getDaemonHealthRequest(), { GetDaemonHealth: null })
+
+  const projection = {
+    metadata: { projection_version: 1, last_event_id: 7, generated_at_ms: 100 },
+    session_command_lanes: [{ lane_id: "session-1", queue_limit: 128, queued_commands: 0 }],
+    agent_command_lanes: [],
+    workflow_command_lanes: [],
+    provider_runtime_lanes: [],
+    provider_run_actor: { enqueued_commands: 1, enqueue_rejections: 0 },
+    process: { process_id: 1234, current_resident_set_bytes: 134217728, peak_resident_set_bytes: 268435456 },
+    capability_executor: {
+      max_concurrent_jobs: 64,
+      available_permits: 63,
+      submitted_jobs: 3,
+      running_jobs: 1,
+      completed_jobs: 2,
+      failed_jobs: 0,
+      rejected_jobs: 0,
+      join_errors: 0,
+    },
+    session_projection: {
+      projected_sessions: 1,
+      projected_session_list_entries: 1,
+      active_prompts: 1,
+      queued_prompts: 0,
+    },
+    agent_runtime_projection: { projected_agents: 1, active_prompts: 1, queued_prompts: 0 },
+    provider_catalog: { cached: true, expired: false, age_ms: 12, ttl_ms: 5_000 },
+    provider_runs: {
+      projected_runs: 1,
+      active_runs: 1,
+      chariox_active_runs: 1,
+      native_tui_active_runs: 0,
+      terminal_diagnostics: [],
+      duplicate_chariox_agent_bindings: [],
+      duplicate_native_tui_agent_bindings: [],
+      multi_interface_agent_bindings: [],
+      orphaned_active_runs: [],
+      session_active_run_mismatches: [],
+    },
+    transport: {
+      active_connections: 1,
+      active_subscriptions: 1,
+      retained_event_limit: 256,
+      command_result_cache_limit: 512,
+      inbound_request_limit: 8,
+      incoming_requests: 9,
+      emitted_events: 10,
+      replay_gaps: 0,
+      inbound_overload_rejections: 0,
+      duplicate_command_conflicts: 0,
+      outgoing_queue_overflows: 0,
+      slow_consumer_closes: 0,
+      relay_reconnect_attempts: 0,
+      relay_last_reconnect_reason: null,
+      relay_last_reconnect_delay_ms: null,
+      relay_last_reconnect_url: null,
+      relay_last_connected_url: null,
+    },
+    terminal_stream: {
+      pending_output_records: 1,
+      pending_notice_records: 0,
+      pending_completion_records: 0,
+      pending_output_record_limit_per_attachment: 4096,
+      trimmed_pending_output_recipients: 0,
+    },
+    slice_lifecycle: {
+      total_slices: 2,
+      running_slices: 1,
+      starting_slices: 0,
+      stopping_slices: 0,
+      stopped_slices: 1,
+      unhealthy_slices: 0,
+      attached_agents: 1,
+      failed_operations: 0,
+      in_progress_operations: 0,
+      issues: [],
+      provider_auth_missing_slices: 0,
+      provider_auth_unconfigured_slices: 0,
+      provider_auth_issues: [],
+    },
+    remote_execution: {
+      remote_agents: 2,
+      active_remote_agents: 1,
+      missing_active_worker_runs: 0,
+      malformed_bindings: 0,
+      issues: [],
+    },
+    remote_extension_sync: {
+      remote_agents: 2,
+      home_proxy_agents: 1,
+      home_proxy_grants: 2,
+      manifest_missing_agents: 0,
+      synced_agents: 1,
+      syncing_agents: 0,
+      pending_agents: 0,
+      failed_agents: 0,
+      stale_agents: 0,
+      pending_revoke_agents: 0,
+      issues: [],
+    },
+    workspace_coordination: {
+      active_worktree_claims: [
+        { workspace_id: "workspace-1", worktree_id: "/repo", session_ids: ["session-1"] },
+      ],
+      worktree_collisions: [],
+      active_operation_claims: [
+        {
+          claim_id: "claim-1",
+          workspace_id: "workspace-1",
+          worktree_id: "/repo",
+          session_id: "session-1",
+          attachment_id: "attachment-1",
+          operation: "file_edit",
+          mode: "write",
+        },
+      ],
+    },
+    workspace_live_sync: {
+      active_reservations: 2,
+      active_reservation_artifacts: 1,
+      managed_mode: {
+        write_fence_supported: true,
+        write_fence_backend: "macos-seatbelt",
+        unavailable_reason: null,
+      },
+      workspace_identity: {
+        tracked_provider_runs: 3,
+        identity_changed_provider_runs: 1,
+        invalid_provider_runs: 1,
+        current_generation_total: 2,
+        issues: [],
+      },
+      external_changes: {
+        tracked_artifacts: 4,
+        externally_changed_artifacts: 1,
+        external_change_events: 5,
+        live_watcher_started: true,
+        live_watcher_scans: 6,
+        live_watcher_scan_errors: 0,
+        issues: [],
+      },
+    },
+    projection_invariants: { checked_sessions: 1, checked_agents: 1, mismatches: [] },
+  } satisfies DaemonHealthProjection
+
+  const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse
+  assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
+  assert.equal(response.DaemonHealth.projection.workspace_live_sync.managed_mode.write_fence_supported, true)
+  assert.equal(response.DaemonHealth.projection.provider_runs.chariox_active_runs, 1)
+  assert.equal(response.DaemonHealth.projection.process.current_resident_set_bytes, 134217728)
+  assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
+  assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)
+  assert.equal(response.DaemonHealth.projection.remote_extension_sync.home_proxy_agents, 1)
+  assert.equal(response.DaemonHealth.projection.workspace_coordination.active_operation_claims[0]?.mode, "write")
+})
+
+test("exportDebugBundleRequest is session scoped and label-only", () => {
+  assert.deepEqual(exportDebugBundleRequest("session-1"), {
+    ExportDebugBundle: {
+      session_id: "session-1",
+      bundle_label: null,
+      limit: null,
+    },
+  })
+  assert.deepEqual(exportDebugBundleRequest("session-1", { bundleLabel: "support", limit: 500 }), {
+    ExportDebugBundle: {
+      session_id: "session-1",
+      bundle_label: "support",
+      limit: 500,
+    },
+  })
+})
+
+test("getKernelResourceTelemetryRequest exposes the complete authoritative guard shape", () => {
+  assert.equal(kernelResourceTelemetryMinimumProtocolVersion, 336)
+  assert.deepEqual(getKernelResourceTelemetryRequest({ kernelRef: "kernel-1", machineRef: "machine-1" }), {
+    GetKernelResourceTelemetry: null,
+  })
+
+  const response = {
+    KernelResourceTelemetry: {
+      snapshot: {
+        schema: "chariox.kernel.resource_telemetry.v3",
+        capturedAt: "2026-09-20T00:00:00.000Z",
+        capturedAtMonotonicMs: 42,
+        telemetry: {
+          scope: "managed-target",
+          authoritative: true,
+          targetId: "machine-1",
+          source: "kernel",
+        },
+        release: {
+          status: "verified",
+          runtimeReleaseDigest: `sha256:${"d".repeat(64)}`,
+          sourceCommit: "a".repeat(40),
+          sourceTree: "b".repeat(40),
+          target: "x86_64-unknown-linux-gnu",
+          activeReleasePath: "/usr/lib/chariox/releases/release-1",
+          manifestSignatureVerified: true,
+          manifestDigestVerified: true,
+          kernelArtifactVerified: true,
+          bootstrapReceiptVerified: true,
+        },
+        cpuPercent: 37,
+        cpuSampleWindowMs: 100,
+        memory: { usedBytes: 4000, totalBytes: 8000, availableBytes: 4000 },
+        disk: { usedBytes: 4000, totalBytes: 16000, availableBytes: 12000 },
+        process: { count: 3, rssBytes: 100 },
+        logs: { bytes: 256 },
+      },
+    },
+  } satisfies KernelResourceTelemetryResponse
+  assert.equal(response.KernelResourceTelemetry.snapshot.release.status, "verified")
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuPercent, 37)
+  assert.equal(response.KernelResourceTelemetry.snapshot.cpuSampleWindowMs, 100)
+  assert.equal(response.KernelResourceTelemetry.snapshot.memory.usedBytes, 4000)
+  assert.equal(response.KernelResourceTelemetry.snapshot.disk.availableBytes, 12000)
+  assert.equal(response.KernelResourceTelemetry.snapshot.process.rssBytes, 100)
+  assert.equal(response.KernelResourceTelemetry.snapshot.logs.bytes, 256)
+
+  const unavailable = {
+    KernelResourceTelemetry: {
+      snapshot: {
+        ...response.KernelResourceTelemetry.snapshot,
+        telemetry: {
+          scope: "ordinary-host",
+          authoritative: false,
+          targetId: "host-1",
+          source: "kernel",
+        },
+        release: { status: "unavailable", reason: "managed bootstrap receipt unavailable" },
+      },
+    },
+  } satisfies KernelResourceTelemetryResponse
+  assert.equal(unavailable.KernelResourceTelemetry.snapshot.release.status, "unavailable")
+  assert.equal(unavailable.KernelResourceTelemetry.snapshot.telemetry.authoritative, false)
+})
