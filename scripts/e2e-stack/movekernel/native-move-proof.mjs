@@ -1,5 +1,6 @@
 // MP-08 / MP-09 / MP-10 / MP-11: shared real native-session proof helpers.
 import assert from 'node:assert/strict';
+import {completedTurnPromptId} from './workspace-proof.mjs';
 import { writeFile, readFile, readdir } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { out, record, sha } from './workspace-runtime.mjs';
@@ -94,7 +95,7 @@ async function assertTuiRoute(r, agentId, remoteKernelId, label) {
     assert.equal(observed, remoteKernelId, 'Attached TUI must apply the recovered execution route');
 }
 async function turn(r, text, label, options = {}) {
-    const before = options.before ?? new Set(entries(await r.tui.send('snapshot')).map(row => row.id));
+    const before = options.before ?? entries(await r.tui.send('snapshot'));
     if (!options.submitted) await r.tui.send('submit_prompt', {prompt: text});
     let settled;
     for (let n = 0; n < 720; n++) {
@@ -106,12 +107,11 @@ async function turn(r, text, label, options = {}) {
             const choiceIndex = permission.choices.findIndex(c => c.id === 'allow_once');
             assert.ok(choiceIndex >= 0); await r.tui.send('interaction_submit', {choiceIndex});
         }
-        const terminal = entries(snapshot).some(row => !before.has(row.id) && ['assistant', 'error'].includes(row.role) && row.text?.trim());
-        if (!agent?.isProcessing && agent?.state !== 'Working' && terminal) {
+        const promptId = completedTurnPromptId(entries(snapshot), text, before);
+        if (!agent?.isProcessing && agent?.state !== 'Working' && promptId) {
             settled ??= Date.now();
             if (Date.now() - settled >= 1500) {
                 assert.notEqual(agent.state, 'Error', 'Provider turn failed');
-                const promptId = entries(snapshot).findLast(row => row.role === 'user' && row.text?.trim() === text)?.promptId;
                 if (entries(snapshot).some(row => row.role === 'tool' && row.promptId === promptId && row.blobCollapsed)) await r.tui.type('\x0f');
                 for (let n = 0; n < 80; n++) {
                     snapshot = await r.tui.send('snapshot');

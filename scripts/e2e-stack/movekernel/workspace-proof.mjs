@@ -11,3 +11,13 @@ export function completedWorkspaceTool(rows, promptId, workspace) {
     return output?.split('\n').some(line => line.trim() === workspace) ?? false;
   });
 }
+
+export function completedTurnPromptId(rows, prompt, previousRows) {
+  // Hydrating history can reuse row numbers. Prompt identities remain stable.
+  const previousPrompts = new Set(previousRows.map(row => row.promptId));
+  const promptId = rows.findLast(row => row.role === 'user'
+    && row.text?.trim() === prompt && row.promptId
+    && !previousPrompts.has(row.promptId))?.promptId;
+  return promptId && rows.some(row => row.promptId === promptId
+    && ['assistant', 'error'].includes(row.role) && row.text?.trim()) ? promptId : undefined;
+}
