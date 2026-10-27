@@ -77,3 +77,12 @@ test("MP-07/MP-10/MP-11 the current protocol retains admitted predecessor contra
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: the staging base must remain a reciprocal predecessor.
+test("binary exec keeps staging protocol 629 upgrade and rollback within the policy cap", async () => {
+  const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
+  for (const direction of ["upgradeFrom", "rollbackTo"]) {
+    assert.ok(policy[direction].includes(629), `${direction} must admit staging protocol 629`)
+    assert.ok(policy[direction].length <= 32)
+  }
+})

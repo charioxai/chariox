@@ -4,26 +4,15 @@ import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
+import { runExec } from "./exec-command.js"
+
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
 
-const LOCAL_CONNECTION_LOSS = ["connection_closed", "outcome_unknown", "write_failed"]
-const CONNECT_OPERATION = "connect kernel websocket"
+import { failureOf, lostInFlight, lostConnectionFailure } from "./kernel-command-failure.js"
+export { failureOf, lostConnectionFailure } from "./kernel-command-failure.js"
+
 const DEFAULT_TIMEOUT_SECONDS = 30
-
-function lostInFlight(error: unknown): boolean {
-  return error instanceof LocalIpcError && error.operation !== CONNECT_OPERATION && error.code !== null && LOCAL_CONNECTION_LOSS.includes(error.code)
-}
-
-export function failureOf(error: unknown): CommandFailure {
-  if (error instanceof CommandFailure) return error
-  if (error instanceof LocalIpcError) {
-    const message = error.message.replace(/^kernel transport `[^`]*` failed: /, "")
-    if (error.operation === CONNECT_OPERATION) return new CommandFailure("kernel_unreachable", `${message}; start the kernel or pass --socket PATH`)
-    if (lostInFlight(error)) return new CommandFailure("kernel_connection_lost", message)
-    return new CommandFailure(error.code ?? "cli_error", message)
-  }
-  return new CommandFailure("cli_error", error instanceof Error ? error.message : String(error))
-}
+const CONNECT_OPERATION = "connect kernel websocket"
 
 export function reportFailure(error: unknown, kernel: string | null = null): void {
   const failure = failureOf(error)
@@ -34,13 +23,6 @@ export function reportFailure(error: unknown, kernel: string | null = null): voi
 export async function probeKernel(socket: string | undefined): Promise<unknown> {
   const client = kernelUnixClient(socket)
   try { return await client.send({ ListGatewayKernels: {} }) } finally { await client.close() }
-}
-
-export function lostConnectionFailure(probeError: unknown): CommandFailure {
-  if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
-    return new CommandFailure("kernel_access_ended", "the access grant ended while this request was in flight; the request may or may not have run")
-  }
-  return new CommandFailure("kernel_connection_lost", "the connection to the local kernel was lost before the answer; the request may or may not have run")
 }
 
 export function parseRequestBody(text: string): Record<string, unknown> {
@@ -90,10 +72,12 @@ export async function withKernel<T>(
   if (options.kernel !== undefined) await requireKernelGateway(options.socket, options.timeoutSeconds)
   const client = kernelUnixClient(options.socket, { kernel: options.kernel, commandId: options.commandId })
   try {
-    return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds))
-  } catch (error) {
-    if (!lostInFlight(error)) throw error
-    throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
+    return await use(body => sendWithin(client.send<unknown>(body), options.timeoutSeconds).catch(async error => {
+      // Normalize transport loss before a streaming command attaches its resume
+      // cursors; an outer catch would lose those details or the IPC error type.
+      if (!lostInFlight(error)) throw error
+      throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
+    }))
   } finally { await client.close() }
 }
 
@@ -157,7 +141,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && !terminalVerb) return false
+  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb) return false
   let kernel: string | null = null
   try {
     if (command === "events") {
@@ -173,12 +157,21 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
     if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
     // What follows `--` of `terminal open` is the program to run, not options.
-    const split = terminalVerb === "open" ? rest.indexOf("--") : -1
+    const split = terminalVerb === "open" || command === "exec" ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
     const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command, verb ? options.slice(1) : terminalVerb ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
-    if (command === "guide") {
+    if (command === "exec") {
+      if (positionals.length || program.length === 0 || Boolean(flags.get("--session")) === Boolean(flags.get("--workspace")) || (flags.has("--host-agent") && !flags.has("--session"))) {
+        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
+      }
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
+      process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
+        runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
+          hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
+          { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+    } else if (command === "guide") {
       console.log(guideText())
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }

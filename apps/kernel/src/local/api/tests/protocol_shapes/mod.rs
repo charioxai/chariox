@@ -54,6 +54,7 @@ mod resource_telemetry;
 mod room_controller;
 mod room_environment;
 mod room_environment_placement;
+mod room_exec;
 mod room_terminal;
 mod session_feed_596;
 mod session_view;

@@ -51,7 +51,7 @@ pub(super) fn output_wait(wait: Duration) -> Duration {
 }
 
 /// Kernel-private tokens and configs the user's shell must not inherit.
-const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
+pub(crate) const KERNEL_SECRET_ENVIRONMENT: &[&str] = &[
     "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
     "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
     "CHARIOX_RELAY_TOKEN",

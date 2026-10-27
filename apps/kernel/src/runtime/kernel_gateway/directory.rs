@@ -181,6 +181,11 @@ pub(super) fn incompatibility(
         _ if !is_gateway_ready(kernel) && !super::ledger::is_repeatable(request) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract whose durable receipts make a retry safe"
         )),
+        LocalDaemonRequest::RoomTerminal(request)
+            if request.operation.is_exec() && !advertises(kernel, "room_exec_v1") =>
+        {
+            Some("it does not support binary Room exec; update the target kernel".to_string())
+        }
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
             Some("it predates Room terminals".into())
         }

@@ -126,6 +126,10 @@ impl KernelRuntimeState {
     ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_terminals;
         Ok(match operation {
+            operation if operation.is_exec() => {
+                self.run_room_exec_operation(session_id, &working_directory, operation)
+                    .await?
+            }
             RoomTerminalOperation::Open {
                 cols,
                 rows,
@@ -212,6 +216,7 @@ impl KernelRuntimeState {
                 service.close(session_id, &terminal_id, &actor)?;
                 RoomTerminalResult::Closed
             }
+            _ => unreachable!("exec operations handled above"),
         })
     }
 
@@ -239,7 +244,10 @@ impl KernelRuntimeState {
             RoomTerminalOperation::Wait { timeout_ms, .. } => {
                 (*timeout_ms).min(MAX_WAIT.as_millis() as u64)
             }
-            RoomTerminalOperation::ReadOutput { wait_ms, .. } => *wait_ms,
+            RoomTerminalOperation::ReadOutput { wait_ms, .. }
+            | RoomTerminalOperation::ExecRead { wait_ms, .. } => {
+                (*wait_ms).min(MAX_WAIT.as_millis() as u64)
+            }
             _ => 0,
         };
         let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
@@ -291,6 +299,7 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn end_room_terminals(&self, session_id: &str) {
+        self.owned.room_execs.end_session(session_id);
         self.owned.room_terminals.end_session(session_id);
     }
 
@@ -362,7 +371,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn ensure_room_running(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub(super) fn ensure_room_running(&self, session_id: &str) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         if session.status() == crate::session::SessionStatus::Ended {
             return Err(refused(format!(
