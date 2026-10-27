@@ -189,3 +189,45 @@ for (const [operation, code, expected, exit] of [
   })
 })
 
+for (const code of ["terminal_refused", "kernel_access_ended", "kernel_access_denied", "exec_spawn_failed", "future_open_refusal"]) {
+  test(`exec removes its temporary Room after definite ${code}`, async () => {
+    const calls: string[] = []
+    await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
+      calls.push(Object.keys(body)[0]!)
+      if ("RelayStatus" in body) return capabilities()
+      if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
+      if ("EndSession" in body) return {}
+      throw new LocalIpcError("handle kernel response", "open refused", code)
+    }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => {
+      assert.ok(error instanceof CommandFailure)
+      assert.equal(error.code, code)
+      assert.equal(error.details?.next_step, undefined)
+      return true
+    })
+    assert.equal(calls.at(-1), "EndSession")
+  })
+}
+
+test("exec cleanup failure preserves a command exit and reports the retained Room", async () => {
+  const warnings: Buffer[] = []
+  const code = await runExec({ workspace: "/work", command: ["false"] }, async body => {
+    if ("RelayStatus" in body) return capabilities()
+    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
+    if ("EndSession" in body) throw new Error("cleanup lost")
+    const op = (body.RoomTerminal as { operation: { operation: string } }).operation.operation
+    return result(op === "exec_open" ? { result: "exec_opened", exec_id: "exec-1" }
+      : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 23 } } }
+        : { result: "exec_closed" })
+  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink(warnings) })
+  assert.equal(code, 23)
+  assert.match(Buffer.concat(warnings).toString(), /temp-room/)
+})
+
+test("exec cleanup failure preserves the original open refusal", async () => {
+  await assert.rejects(runExec({ workspace: "/work", command: ["cat"] }, async body => {
+    if ("RelayStatus" in body) return capabilities()
+    if ("CreateSession" in body) return { SessionCreated: { session: { id: "temp-room" } } }
+    if ("EndSession" in body) throw new Error("cleanup lost")
+    throw new LocalIpcError("handle kernel response", "open refused", "terminal_refused")
+  }, { stdin: Readable.from([]), stdout: sink([]), stderr: sink([]) }), (error: unknown) => error instanceof CommandFailure && error.code === "terminal_refused")
+})

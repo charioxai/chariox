@@ -1,7 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises"
 import type { Readable, Writable } from "node:stream"
 import type { ExecOutcome, ExecOutput } from "@chariox/kernel-client/kernel-types"
-import { failureOf } from "./kernel-command-failure.js"
+import { LocalIpcError } from "@chariox/kernel-client/ipc"
+import { failureOf, lostInFlight } from "./kernel-command-failure.js"
 import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
@@ -151,7 +152,10 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     if (interrupted !== undefined) return 128 + interrupted
     return outcome.kind === "exited" ? outcome.code : 128 + outcome.signal
   } catch (error) {
-    if (!execId && ["exec_invalid", "exec_limit", "exec_spawn_failed"].includes(codeOf(error) ?? "")) completed = true
+    const definiteRefusal = error instanceof LocalIpcError
+      ? error.operation === "handle kernel response" && !lostInFlight(error)
+      : /^(exec_|terminal_|kernel_access_)/.test(codeOf(error) ?? "")
+    if (!execId && definiteRefusal) completed = true
     if (execId && codeOf(error) === "exec_interrupted" && interrupted !== undefined) {
       try {
         if (cancellation) await cancellation
@@ -176,6 +180,13 @@ export async function runExec(options: ExecOptions, send: SendRequest, io: ExecI
     stopInput.abort()
     signals?.off("SIGINT", onInt)
     signals?.off("SIGTERM", onTerm)
-    if (!options.session && completed) await send({ EndSession: { session_id: session } })
+    if (!options.session && completed) {
+      try { await send({ EndSession: { session_id: session } }) } catch (error) {
+        // Room cleanup must never replace the command's exit or its real error.
+        const warning = { code: "exec_room_cleanup_failed", session_id: session,
+          message: failureOf(error).message, next_step: "EndSession on this Room to remove it" }
+        await write(io.stderr, Buffer.from(`${JSON.stringify({ warning })}\n`), new AbortController().signal).catch(() => undefined)
+      }
+    }
   }
 }
