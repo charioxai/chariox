@@ -4,18 +4,16 @@ use super::*;
 use std::process::Command;
 
 /// A process the test process did not start (the kernel's own descendants are never
-/// covered): `script` runs in a new session and `file` receives its pid.
+/// covered): the launcher exits at once, so `script` is orphaned, and `file` receives
+/// its pid.
 fn detached(dir: &std::path::Path, name: &str, script: &str) -> u32 {
     let file = dir.join(name);
-    Command::new("setsid")
-        .args([
-            "-f",
-            "sh",
-            "-c",
-            &format!("echo $$ > {}; {script}", file.display()),
-        ])
+    let status = Command::new("sh")
+        .args(["-c", "sh -c \"$0\" >/dev/null 2>&1 &"])
+        .arg(format!("echo $$ > {}; {script}", file.display()))
         .status()
         .unwrap();
+    assert!(status.success());
     let started = Instant::now();
     loop {
         if let Some(pid) = std::fs::read_to_string(&file)
@@ -54,6 +52,17 @@ fn summary(holder: &ProcessIdentity) -> KernelAccessGrant {
     }
 }
 
+fn kernel(root: &crate::test_support::TestWorktree) -> crate::runtime::router::CommandRouter {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    config.user_config_path = root.path().join("config.toml");
+    let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+    crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+}
+
 fn outcomes(state: &KernelRuntimeState) -> Vec<String> {
     state
         .owned
@@ -70,16 +79,6 @@ fn outcomes(state: &KernelRuntimeState) -> Vec<String> {
 #[tokio::test]
 async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
     let root = crate::test_support::TestWorktree::new("cover-restart");
-    let kernel = || {
-        let mut config = crate::config::DaemonConfig::for_tests();
-        config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
-        config.user_config_path = root.path().join("config.toml");
-        let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
-        crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
-            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-            32,
-        )
-    };
     // The holder starts a background process, as an agent's shell tool does.
     let holder_pid = detached(
         root.path(),
@@ -101,7 +100,7 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
         start: None,
     };
     {
-        let router = kernel();
+        let router = kernel(&root);
         let state = router.runtime_state();
         let mut access = state.owned.kernel_access.lock().unwrap();
         state
@@ -122,7 +121,7 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
         assert_eq!(state.list_kernel_access("local")[0].covered, vec![covered]);
         state.end_kernel_access_for_shutdown().unwrap();
     }
-    let router = kernel();
+    let router = kernel(&root);
     let state = router.runtime_state();
     assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
     assert_eq!(
@@ -170,14 +169,7 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
 #[test]
 fn a_cover_never_matches_a_process_that_reuses_the_pid() {
     let root = crate::test_support::TestWorktree::new("cover-reuse");
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
-    config.user_config_path = root.path().join("config.toml");
-    let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
-        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
-        32,
-    );
+    let router = kernel(&root);
     let state = router.runtime_state();
     let holder_pid = detached(root.path(), "holder", "exec sleep 600");
     let other_pid = detached(root.path(), "other", "exec sleep 600");
@@ -208,4 +200,76 @@ fn a_cover_never_matches_a_process_that_reuses_the_pid() {
     assert!(!state.access_grant_live("cover", &other));
     kill_pid(holder_pid);
     kill_pid(other_pid);
+}
+
+// A cover that could not be recorded is not live: the request fails, a retry records it,
+// and the cover is still there after a restart.
+#[tokio::test]
+async fn a_cover_that_fails_to_persist_is_not_live_and_a_retry_records_it() {
+    let root = crate::test_support::TestWorktree::new("cover-persist");
+    let holder_pid = detached(
+        root.path(),
+        "holder",
+        &format!(
+            "sleep 600 & echo $! > {}; exec sleep 600",
+            root.path().join("background").display()
+        ),
+    );
+    let background = std::fs::read_to_string(root.path().join("background"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let holder = process::inspect(holder_pid).unwrap().0;
+    let target = process::inspect(background).unwrap().0;
+    let request = CoverKernelAccessProcessRequest {
+        pid: background,
+        start: None,
+    };
+    {
+        let router = kernel(&root);
+        let state = router.runtime_state();
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(
+                &mut access,
+                "cover".into(),
+                summary(&holder),
+                holder.clone(),
+                None,
+            )
+            .unwrap();
+        drop(access);
+        let database = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_cover BEFORE INSERT ON durable_state_events
+                 WHEN NEW.payload_json LIKE '%\"outcome\":\"covered\"%'
+                 BEGIN SELECT RAISE(FAIL, 'injected cover failure'); END;",
+            )
+            .unwrap();
+        state
+            .cover_kernel_access_process(&holder, None, &request)
+            .unwrap_err();
+        assert!(state.list_kernel_access("local")[0].covered.is_empty());
+
+        database.execute_batch("DROP TRIGGER fail_cover;").unwrap();
+        state
+            .cover_kernel_access_process(&holder, None, &request)
+            .unwrap();
+        assert_eq!(
+            outcomes(&state).iter().filter(|o| *o == "covered").count(),
+            1
+        );
+        state.end_kernel_access_for_shutdown().unwrap();
+    }
+    let router = kernel(&root);
+    let state = router.runtime_state();
+    assert_eq!(state.restore_kernel_access_grants().unwrap(), 1);
+    assert_eq!(
+        state.owned.kernel_access.lock().unwrap().grants["cover"].covered,
+        vec![target]
+    );
+    kill_pid(background);
+    kill_pid(holder_pid);
 }
