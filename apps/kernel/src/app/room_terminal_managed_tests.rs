@@ -240,11 +240,16 @@ async fn a_finished_background_job_stops_counting() {
     let fixture = fixture("terminal-job-finished");
     let shell = fixture.open_settled_shell().await;
     fixture
-        .terminal(input(&shell, "sleep 2 >/dev/null 2>&1 &\n"))
+        // Keep the job alive until the busy observation, even on a loaded host.
+        .terminal(input(
+            &shell,
+            "while [ ! -f .background-job-release ]; do sleep 0.02; done >/dev/null 2>&1 &\n",
+        ))
         .await
         .expect("input");
     tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     assert_eq!(fixture.runtime.managed_running_agent_count(), 1);
+    std::fs::write(fixture._worktree.path().join(".background-job-release"), []).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while fixture.runtime.managed_running_agent_count() != 0 {
         assert!(std::time::Instant::now() < deadline, "job never ended");
