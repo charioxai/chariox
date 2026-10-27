@@ -16,6 +16,8 @@ mod remote_profile_active_run;
 #[path = "tests/automatic_substitutes.rs"]
 mod automatic_substitutes;
 
+#[path = "tests/assessment_sources.rs"]
+mod assessment_sources;
 #[path = "tests/goal_assessment.rs"]
 mod goal_assessment;
 

@@ -209,6 +209,15 @@ impl KernelRuntimeOwnedState {
                 .agent_registrations(&task.task_id)?;
             let registration_total = registrations.len();
             let registrations = registrations.into_iter().take(64).collect::<Vec<_>>();
+            self.trace_assessment_control(&task.room_id, "goal_assessment_input", serde_json::json!({
+                "task_id":task.task_id, "prompt_id":check.prompt_id,
+                "objective_revision":check.objective_revision,
+                "registrations":registrations.iter().map(|r| serde_json::json!({
+                    "id":(r.id.chars().count()<=256).then_some(&r.id),
+                    "id_omitted":r.id.chars().count()>256, "live":r.live,
+                })).collect::<Vec<_>>(),
+                "registration_coverage":{"shown":registrations.len(),"total":registration_total},
+            }));
             let total = task
                 .obligations
                 .iter()

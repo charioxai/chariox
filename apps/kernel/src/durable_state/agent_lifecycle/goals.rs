@@ -120,6 +120,42 @@ pub(crate) enum Assessment {
     },
 }
 
+/// Assessment references never admit sources: resolve only this task's live IDs.
+/// Exact references win; a shortened reference must identify exactly one source.
+pub(crate) fn resolve_live_registration_ids(
+    supplied: &[String],
+    registrations: &[Registration],
+) -> Option<Vec<String>> {
+    if supplied.is_empty() {
+        return None;
+    }
+    let mut resolved = Vec::with_capacity(supplied.len());
+    for id in supplied {
+        if id.is_empty() {
+            return None;
+        }
+        let source = if let Some(exact) = registrations.iter().find(|source| &source.id == id) {
+            if !exact.live {
+                return None;
+            }
+            &exact.id
+        } else {
+            let mut matches = registrations
+                .iter()
+                .filter(|source| source.live && source.id.starts_with(id.as_str()));
+            let source = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            &source.id
+        };
+        resolved.push(source.clone());
+    }
+    resolved.sort();
+    resolved.dedup();
+    Some(resolved)
+}
+
 pub(super) fn start(
     tx: &Transaction<'_>,
     task: String,
@@ -356,10 +392,15 @@ pub(super) fn evaluate(
             }
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
+            let regs = registrations(tx, &t.task_id)?;
+            let registration_ids = if let Some(resolved) = resolve_live_registration_ids(&registration_ids, &regs) {
+                resolved
+            } else {
+                registration_ids
+            };
             let deadline = deadline_ms
                 .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
                 .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
-            let regs = registrations(tx, &t.task_id)?;
             let valid_sources = !registration_ids.is_empty() && deadline > now
                 && registration_ids.iter().all(|id| regs.iter().any(|r| &r.id == id && r.live))
                 && t.obligations.iter().filter(|o| o.requires_resolution())

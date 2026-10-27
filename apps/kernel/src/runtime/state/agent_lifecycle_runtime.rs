@@ -389,6 +389,7 @@ impl KernelRuntimeOwnedState {
                         prompt.id(),
                         answer_run,
                     );
+                    self.trace_assessment_waiting_result(&task, prompt.id(), &result);
                 }
                 // What the owner already saw of the work turn; the receipt must not repeat it.
                 let work_output = ledger::completion::evaluation(&task)

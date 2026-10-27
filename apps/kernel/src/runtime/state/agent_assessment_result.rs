@@ -2,7 +2,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{
     goals::{self, Assessment},
-    ExecutionState,
+    ExecutionState, Registration,
 };
 use zeroize::Zeroize;
 
@@ -114,6 +114,66 @@ impl PrivateAssessmentDispatch {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn trace_assessment_waiting_result(
+        &self,
+        task: &crate::durable_state::agent_lifecycle::AgentTaskExecution,
+        prompt: &str,
+        result: &str,
+    ) {
+        if !crate::debug_trace::terminal_turn_trace_enabled() {
+            return;
+        }
+        let result = result.trim();
+        let result = result
+            .strip_prefix("```json")
+            .or_else(|| result.strip_prefix("```"))
+            .and_then(|s| s.strip_suffix("```"))
+            .unwrap_or(result)
+            .trim();
+        let Ok(Assessment::Waiting {
+            registration_ids,
+            deadline_ms,
+            ..
+        }) = serde_json::from_str::<Assessment>(result)
+        else {
+            return;
+        };
+        let Ok(registrations) = self.durable_state_store.agent_registrations(&task.task_id) else {
+            return;
+        };
+        if registration_ids
+            .iter()
+            .all(|id| registrations.iter().any(|r| r.live && &r.id == id))
+        {
+            return;
+        }
+        self.trace_assessment_control(&task.room_id, "goal_assessment_waiting_reference", serde_json::json!({
+            "task_id": task.task_id, "prompt_id": prompt,
+            "objective_revision": crate::durable_state::agent_lifecycle::completion::objective_revision(task),
+            "deadline_ms": deadline_ms,
+            "references": waiting_reference_diagnostic(&registration_ids, &registrations),
+            "registration_count": registration_ids.len(),
+        }));
+    }
+
+    /// Opt-in control diagnostics share the terminal trace's bounded retention.
+    /// Callers supply only structured references, never assessment prose or bytes.
+    pub(super) fn trace_assessment_control(
+        &self,
+        room: &str,
+        source: &str,
+        payload: serde_json::Value,
+    ) {
+        if !crate::debug_trace::terminal_turn_trace_enabled() {
+            return;
+        }
+        let Ok(mut payload) = self.room_secret_observations.scrub(room, payload) else {
+            return;
+        };
+        crate::secret_redaction::redact_json_secrets(&mut payload);
+        crate::debug_trace::record_terminal_turn(room, source, payload);
+    }
+
     pub(super) fn private_evidence_for_dispatch(
         &self,
         room: &str,
@@ -296,35 +356,32 @@ impl KernelRuntimeOwnedState {
         let Ok(mut value) = serde_json::from_str::<Assessment>(text) else {
             return String::new();
         };
-        if self.room_secret_observations.protects_bytes(room) {
-            let live = if matches!(value, Assessment::Waiting { .. }) {
-                let task = self
-                    .durable_state_store
-                    .agent_tasks(Some(room), Some(agent))
-                    .ok()
-                    .and_then(|tasks| {
-                        tasks.into_iter().find(|task| {
-                            task.state == ExecutionState::Working
-                                && task.provider_run_id.as_deref() == Some(run)
-                                && goals::is_check(task, prompt)
-                        })
-                    });
-                let Some(task) = task else {
-                    return String::new();
-                };
-                let Ok(registrations) = self.durable_state_store.agent_registrations(&task.task_id)
-                else {
-                    return String::new();
-                };
-                registrations
-                    .into_iter()
-                    .filter(|r| r.live)
-                    .map(|r| r.id)
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
+        let registrations = if matches!(value, Assessment::Waiting { .. }) {
+            let task = self
+                .durable_state_store
+                .agent_tasks(Some(room), Some(agent))
+                .ok()
+                .and_then(|tasks| {
+                    tasks.into_iter().find(|task| {
+                        task.state == ExecutionState::Working
+                            && task.provider_run_id.as_deref() == Some(run)
+                            && goals::is_check(task, prompt)
+                    })
+                });
+            let Some(task) = task else {
+                return String::new();
             };
-            if !fence_private_assessment(&mut value, &live) {
+            let Ok(registrations) = self.durable_state_store.agent_registrations(&task.task_id)
+            else {
+                return String::new();
+            };
+            self.trace_assessment_waiting_result(&task, prompt, text);
+            registrations
+        } else {
+            Vec::new()
+        };
+        if self.room_secret_observations.protects_bytes(room) {
+            if !fence_private_assessment(&mut value, &registrations) {
                 return String::new();
             }
         }
@@ -336,9 +393,26 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+// Unknown provider strings may contain private output. Retain only prefixes
+// already present in the kernel's live references, plus comparison metadata.
+fn waiting_reference_diagnostic(
+    supplied: &[String],
+    registrations: &[Registration],
+) -> Vec<serde_json::Value> {
+    supplied.iter().take(64).map(|id| {
+        let matches = registrations.iter().filter(|source| source.live && !id.is_empty() && source.id.starts_with(id.as_str())).collect::<Vec<_>>();
+        let known_exact = registrations.iter().find(|source| &source.id == id);
+        let returned = ((!matches.is_empty() || known_exact.is_some()) && id.chars().count() <= 256).then_some(id);
+        let candidates = matches.iter().take(2).map(|source| {
+            serde_json::json!({"id": (source.id.chars().count() <= 256).then_some(&source.id), "chars":source.id.chars().count()})
+        }).collect::<Vec<_>>();
+        serde_json::json!({"returned_reference":returned,"supplied_chars":id.chars().count(),"exact":known_exact.is_some_and(|r| r.live),"known_inactive_exact":known_exact.is_some_and(|r| !r.live),"live_match_count":matches.len(),"live_candidates":candidates})
+    }).collect()
+}
+
 // The structured disposition is control input. Protected provider prose cannot
 // enter the ledger/audit/public result, including through a malformed receipt.
-fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
+fn fence_private_assessment(value: &mut Assessment, registrations: &[Registration]) -> bool {
     let fence = |text: &mut String| {
         text.zeroize();
         *text = "[protected completion details withheld]".into();
@@ -374,15 +448,16 @@ fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
         } => {
             // Only pre-existing live task references may survive as control.
             // The ledger still revalidates sources, obligations and the deadline.
-            if reason.trim().is_empty()
-                || registration_ids.is_empty()
-                || registration_ids.iter().any(|id| !live.contains(id))
-            {
+            if reason.trim().is_empty() {
                 return false;
             }
+            let Some(resolved) =
+                goals::resolve_live_registration_ids(registration_ids, registrations)
+            else {
+                return false;
+            };
             fence(reason);
-            registration_ids.sort();
-            registration_ids.dedup();
+            *registration_ids = resolved;
         }
     }
     true
@@ -391,6 +466,70 @@ fn fence_private_assessment(value: &mut Assessment, live: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn registration(id: &str, live: bool) -> Registration {
+        Registration {
+            id: id.into(),
+            task_id: "task".into(),
+            source_id: id.into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live,
+        }
+    }
+    #[test]
+    fn waiting_reference_diagnostic_is_bounded_and_withholds_unknown_private_output() {
+        let live = vec![
+            registration("completion-known-a", true),
+            registration("completion-known-b", true),
+        ];
+        let diagnostics = waiting_reference_diagnostic(
+            &[
+                "completion-known-".into(),
+                "PRIVATE_UNMATCHED_OUTPUT".into(),
+            ],
+            &live,
+        );
+        assert_eq!(diagnostics[0]["live_match_count"], 2);
+        assert_eq!(diagnostics[0]["returned_reference"], "completion-known-");
+        assert_eq!(
+            diagnostics[1]["returned_reference"],
+            serde_json::Value::Null
+        );
+        assert!(!serde_json::to_string(&diagnostics)
+            .unwrap()
+            .contains("PRIVATE_"));
+        let oversized = "x".repeat(257);
+        let diagnostics = waiting_reference_diagnostic(
+            &vec![oversized.clone(); 65],
+            &[registration(&oversized, true)],
+        );
+        assert_eq!(diagnostics.len(), 64);
+        assert!(diagnostics
+            .iter()
+            .all(|entry| entry["returned_reference"].is_null()
+                && entry["live_candidates"][0]["id"].is_null()));
+    }
+
+    #[test]
+    fn assessment_source_resolution_keeps_exact_ids_and_rejects_empty_or_unknown_refs() {
+        let live = vec![
+            registration("completion-exact", true),
+            registration("completion-exact-longer", true),
+        ];
+        assert_eq!(
+            goals::resolve_live_registration_ids(&["completion-exact".into()], &live),
+            Some(vec!["completion-exact".into()])
+        );
+        for supplied in [
+            vec![],
+            vec![String::new()],
+            vec!["foreign-source".into()],
+            vec!["completion-ex".into()],
+        ] {
+            assert!(goals::resolve_live_registration_ids(&supplied, &live).is_none());
+        }
+    }
+
     #[test]
     fn mp11_private_assessment_fences_prose_and_rejects_unadmitted_fields() {
         for raw in [
@@ -400,7 +539,10 @@ mod tests {
             r#"{"status":"waiting","reason":"PRIVATE_DERIVED","registration_ids":["known-live"],"deadline_ms":123}"#,
         ] {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
-            assert!(fence_private_assessment(&mut value, &["known-live".into()]));
+            assert!(fence_private_assessment(
+                &mut value,
+                &[registration("known-live", true)]
+            ));
             assert!(!serde_json::to_string(&value).unwrap().contains("PRIVATE_"));
         }
         for raw in [
@@ -411,7 +553,7 @@ mod tests {
             let mut value: Assessment = serde_json::from_str(raw).unwrap();
             assert!(!fence_private_assessment(
                 &mut value,
-                &["known-live".into()]
+                &[registration("known-live", true)]
             ));
         }
         assert!(serde_json::from_str::<Assessment>(
