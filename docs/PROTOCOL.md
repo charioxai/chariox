@@ -5487,3 +5487,14 @@ The relay never parses mirror records, which travel inside `KernelBrowser` resul
 raised for the resize command above. The web offers the new fields only to kernels at local 629 or
 later. The 629/232 union keeps 614 as a reciprocal managed-upgrade predecessor and retires the
 unshipped branch protocol 588 from the 32-entry list.
+
+### OSS landing union protocol 629 / peer 232
+
+The combined landing keeps local protocol 629 and peer 232. It includes the
+viewport resize, viewport-first mirror and visited-link shapes from 629/232,
+and the optional prompt attachment history `size_bytes` from 627/230. Web clients
+using live browser layout or attachment size metadata require local 629; peer
+kernels forwarding these operations require peer 232. The encrypted carrier's
+12 MiB prompt request admission changes bounds without adding a wire shape.
+Older history without `size_bytes` remains readable. The protocol fixtures and
+shape/hash tests cover both changes under this shared pair.
