@@ -1,3 +1,6 @@
+mod sessions;
+use sessions::HttpState;
+pub(super) use sessions::{dispatch, release_run, release_session};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
@@ -5,23 +8,140 @@ use std::time::Duration;
 
 use crate::error::DaemonError;
 
-pub(super) fn forward_streamable_http_mcp_request(
+fn forward_streamable_http_mcp_request(
     url: &str,
     bearer_token_env_var: Option<&str>,
     http_headers: &BTreeMap<String, String>,
     env_http_headers: &BTreeMap<String, String>,
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
+    state: &mut HttpState,
 ) -> Result<serde_json::Value, DaemonError> {
     let request_id = payload.get("id").cloned();
+    let expects_response = |message: &serde_json::Value| {
+        message.get("method").is_some() && message.get("id").is_some()
+    };
+    let acknowledgement_only = match &payload {
+        serde_json::Value::Array(messages) => !messages.iter().any(expects_response),
+        message => !expects_response(message),
+    };
     let body = serde_json::to_vec(&payload).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.serialize",
         message: error.to_string(),
     })?;
     let timeout = Duration::from_secs(timeout_sec.unwrap_or(30).max(1));
+    let initialize =
+        payload.get("method").and_then(serde_json::Value::as_str) == Some("initialize");
+    if initialize {
+        *state = HttpState::default();
+    }
+    let request = http_request(
+        url,
+        "POST",
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        timeout,
+        state,
+    )?;
+
+    let response = match request.send_bytes(&body) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            if status == 404 {
+                *state = HttpState::default();
+            }
+            let body = response
+                .into_string()
+                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.response",
+                message: format!("upstream `{url}` returned HTTP {status}: {body}"),
+            });
+        }
+        Err(error) => {
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.request",
+                message: format!("failed to forward MCP HTTP request to `{url}`: {error}"),
+            });
+        }
+    };
+    // MP-08 / MP-10 / MP-11: HTTP 202 acknowledges notifications and
+    // JSON-RPC responses without a JSON response body (MCP HTTP contract).
+    if acknowledgement_only && response.status() == 202 {
+        return Ok(serde_json::Value::Null);
+    }
+    let content_type = response
+        .header("Content-Type")
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let assigned_session = if initialize {
+        response
+            .header("Mcp-Session-Id")
+            .map(|id| {
+                if id.is_empty()
+                    || id.len() > 4096
+                    || !id.bytes().all(|b| (0x21..=0x7e).contains(&b))
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "mcp.proxy.http.session",
+                        message: "invalid upstream MCP session header".into(),
+                    });
+                }
+                Ok(zeroize::Zeroizing::new(id.to_owned()))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let message = if content_type == "text/event-stream" {
+        read_sse_json_rpc_response(
+            url,
+            BufReader::new(response.into_reader()),
+            request_id.as_ref(),
+        )?
+    } else {
+        let text = response
+            .into_string()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.read",
+                message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
+            })?;
+        serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.parse",
+            message: format!("upstream `{url}` returned invalid JSON: {error}"),
+        })?
+    };
+    if initialize && message.get("error").is_none() && message.get("result").is_some() {
+        state.session_id = assigned_session;
+        state.protocol_version = message
+            .get("result")
+            .and_then(|r| r.get("protocolVersion"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|v| {
+                !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| (0x21..=0x7e).contains(&b))
+            })
+            .map(str::to_owned);
+    }
+    Ok(message)
+}
+
+fn http_request(
+    url: &str,
+    method: &str,
+    bearer_token_env_var: Option<&str>,
+    http_headers: &BTreeMap<String, String>,
+    env_http_headers: &BTreeMap<String, String>,
+    timeout: Duration,
+    state: &HttpState,
+) -> Result<ureq::Request, DaemonError> {
     let agent = streamable_http_agent(url, timeout)?;
     let mut request = agent
-        .post(url)
+        .request(method, url)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json, text/event-stream");
     for (key, value) in http_headers {
@@ -43,49 +163,13 @@ pub(super) fn forward_streamable_http_mcp_request(
         }
     }
 
-    let response = match request.send_bytes(&body) {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, response)) => {
-            let body = response
-                .into_string()
-                .unwrap_or_else(|error| format!("<failed to read response body: {error}>"));
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.proxy.http.response",
-                message: format!("upstream `{url}` returned HTTP {status}: {body}"),
-            });
-        }
-        Err(error) => {
-            return Err(DaemonError::LocalTransport {
-                operation: "mcp.proxy.http.request",
-                message: format!("failed to forward MCP HTTP request to `{url}`: {error}"),
-            });
-        }
-    };
-    let content_type = response
-        .header("Content-Type")
-        .unwrap_or_default()
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if content_type == "text/event-stream" {
-        return read_sse_json_rpc_response(
-            url,
-            BufReader::new(response.into_reader()),
-            request_id.as_ref(),
-        );
+    if let Some(id) = &state.session_id {
+        request = request.set("Mcp-Session-Id", id);
     }
-    let text = response
-        .into_string()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "mcp.proxy.http.read",
-            message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
-        })?;
-    serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
-        operation: "mcp.proxy.http.parse",
-        message: format!("upstream `{url}` returned invalid JSON: {error}"),
-    })
+    if let Some(version) = &state.protocol_version {
+        request = request.set("Mcp-Protocol-Version", version);
+    }
+    Ok(request)
 }
 
 fn read_sse_json_rpc_response(
@@ -142,7 +226,35 @@ fn read_sse_json_rpc_response(
 }
 
 fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
-    let mut builder = crate::outbound_dial::agent_builder().timeout(timeout);
+    // ureq's synchronous default DNS is outside its transport timeout. Own
+    // each lookup (including proxies/redirects) under this dispatch deadline.
+    let deadline = std::time::Instant::now() + timeout;
+    let mut builder = crate::outbound_dial::agent_builder_with_resolver(move |address: &str| {
+        let (host, port) = address.rsplit_once(':').ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid MCP DNS address")
+        })?;
+        let port: u16 = port.parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid MCP DNS port")
+        })?;
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "MCP DNS deadline exceeded",
+            ));
+        }
+        crate::local::provider_requests::resolve_bounded_host(host, remaining, &[])
+            .map(|addresses| {
+                addresses
+                    .into_iter()
+                    .map(|ip| std::net::SocketAddr::new(ip, port))
+                    .collect()
+            })
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "MCP DNS unavailable"))
+    })
+    .timeout(timeout)
+    .try_proxy_from_env(false);
     if let Some(proxy) = configured_proxy_for_url(url)? {
         builder = builder.proxy(proxy);
     }
@@ -255,6 +367,12 @@ fn split_no_proxy_entry(entry: &str) -> (&str, Option<u16>) {
 fn reserved_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "host" | "content-length" | "connection" | "content-type" | "accept"
+        "host"
+            | "content-length"
+            | "connection"
+            | "content-type"
+            | "accept"
+            | "mcp-session-id"
+            | "mcp-protocol-version"
     )
 }

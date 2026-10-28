@@ -69,12 +69,19 @@ impl KernelRuntimeState {
         let attached = store.snapshot_live_bindings_locked(&project)?;
         review_new_proposal_folders(&mut current, &mut request, &attached.folders)?;
         let user = user.to_owned();
-        let (environment, diff) = tokio::task::spawn_blocking(move || {
+        let response_store = store.clone();
+        let (mut environment, diff) = tokio::task::spawn_blocking(move || {
             let _lock = _lock;
             store.save_revision_locked(&current, &request, &user)
         })
         .await
         .map_err(|_| environment_error("Environment Save task failed"))??;
+        let config = self.owned.config_projection.snapshot();
+        response_store.attach_checks(
+            &mut environment,
+            &crate::project_environment::current_check_target(&config),
+            crate::session::unix_epoch_ms(),
+        )?;
         Ok(LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff })
     }
 }

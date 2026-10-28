@@ -330,6 +330,25 @@ fn review954_detached_unchanged_files_remain_reviewable() {
     );
 }
 
+// MP-08 / MP-10: P04 uses the preallocated Check contract without an agent.
+#[test]
+fn envp04_independent_check_is_delivered_for_unsaved_legacy() {
+    let root = crate::test_support::TestWorktree::new("envp04-check-delivery");
+    let project = RuntimeProject::new(
+        "p04",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Check",
+        RuntimeProjectKind::Named,
+    );
+    let env = ProjectEnvironmentStore::new(root.path())
+        .snapshot(&project)
+        .unwrap();
+    assert!(env
+        .delivered_capabilities
+        .enabled_environment_operations
+        .contains(&EnvironmentCapability::Check));
+}
 #[path = "review0212_excluded_tests.rs"]
 mod review0212_excluded;
 #[path = "review0212_metadata_tests.rs"]

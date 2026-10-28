@@ -4,6 +4,20 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod check;
+mod check_admission;
+mod check_assets;
+mod check_executable;
+mod check_gui_identity;
+mod check_health;
+mod check_inventory;
+mod check_journal;
+mod check_package_inventory;
+mod check_platform;
+mod check_runner;
+mod check_start;
+mod check_store;
+mod check_tools;
 mod detect;
 mod detect_importers;
 mod detect_index;
@@ -31,6 +45,9 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub(crate) use check::*;
+pub(crate) use check_start::*;
+pub(crate) use check_store::*;
 pub use detect::*;
 pub use detect_metadata::project_environment_detect_prompt;
 pub use detect_store::*;
@@ -60,4 +77,15 @@ mod aggregate_tests;
 mod detect_tests;
 
 #[cfg(test)]
+mod check_tests;
+
+#[cfg(test)]
 mod review1118_metadata_tests;
+
+#[cfg(test)]
+mod review1301_inventory_tests;
+#[cfg(test)]
+mod review1301_metadata_tests;
+
+#[cfg(test)]
+mod check_journal_tests;

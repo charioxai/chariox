@@ -184,3 +184,55 @@ test("R4 Environment section navigation uses wrapped heading rows and folder ide
   controller.handleKey({ name: "left" })
   assert.equal(controller.visibleLines()[0], "Project-wide")
 })
+
+// MP-08 / MP-10 / MP-11: unsupported Check is explicit and has no mutation.
+test("P04 old kernel explains unavailable Check and pressing c sends no operation", async () => {
+  const requests: unknown[] = []
+  const environment: any = {schema_version:1,local_project_id:"project",revision:0,content_digest:"base",folders:[],project_requirements:[],proposals:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get","save"],supported_schema:1}}
+  const controller = createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectEnvironment:{environment}}},render(){},pageSize:()=>100, textWidth: () => 72})
+  await controller.open("project")
+  controller.handleKey({name:"c"})
+  await new Promise(resolve=>setTimeout(resolve,0))
+  assert.equal(requests.length,1,"no unsupported Check request or identity lookup")
+  assert(controller.visibleLines().includes("Check is unavailable on this kernel"))
+})
+
+// MP-08 / MP-10 / MP-11: a quiet terminal cannot retain expired readiness.
+test("P04 idle TUI expires Ready without another kernel snapshot",async()=>{
+ const environment:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{project_id:"p",environment_id:"env"},delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1},project_requirements:[{requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],required:true}],folders:[],proposals:[],operations:[],observations:[{environment_id:"env",requirement_id:"node",revision_digest:"digest",status:"ready",checked_at_ms:Date.now()-300000+150,stale:false,safe_summary:"Named probe passed",target:{machine_id:"machine",target_instance_generation:"boot",slice_ref:null},measured_facts:{}}]}
+ let requests=0,renders=0
+ const controller=createProjectEnvironmentReadController({send:async()=>{requests++;return {ProjectEnvironment:{environment}}},render(){renders++},pageSize:()=>100, textWidth: () => 72})
+ try {await controller.open("project");assert(controller.visibleLines().some(l=>l.includes("Ready")));const settled=renders;await new Promise(resolve=>setTimeout(resolve,250));assert(controller.visibleLines().some(l=>l.includes("Last check stale")));assert(renders>settled);assert.equal(requests,1)} finally{controller.close()}
+})
+
+// MP-08 / MP-10 / MP-11: a later client's operation cannot hold this TUI's Check lock.
+test("review0212 TUI polls its acknowledged Check when a later operation replaces the aggregate",async()=>{
+ const requests:any[]=[]
+ let acknowledged=""
+ const environment:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{project_id:"p",environment_id:"env"},delivered_capabilities:{enabled_environment_operations:["get","check"],supported_schema:1},project_requirements:[],folders:[],proposals:[],operations:[],observations:[]}
+ const controller=createProjectEnvironmentReadController({send:async request=>{
+  requests.push(request)
+  const r=request as any
+  if(r.RelayStatus!==undefined)return {RelayStatus:{status:{machine_id:"machine",daemon_id:"kernel"}}}
+  if(r.CheckProjectEnvironment){acknowledged=r.CheckProjectEnvironment.operationId;return {EnvironmentOperation:{operation:{operation_id:acknowledged,phase:"requested"}}}}
+  if(r.GetEnvironmentOperation)return {EnvironmentOperation:{operation:{operation_id:acknowledged,phase:"ready"}}}
+  return {ProjectEnvironment:{environment:{...environment,operations:acknowledged?[{operation_id:"later-client",kind:"check",phase:"running"}]:[]}}}
+ },render(){},pageSize:()=>100, textWidth: () => 72})
+ let pending:Promise<void>|undefined
+ try {
+  await controller.open("project");pending=controller.check()
+  await new Promise(resolve=>setTimeout(resolve,50))
+  assert(requests.some(r=>r.GetEnvironmentOperation?.operationId===acknowledged),"retained acknowledged operation must be queried")
+  await pending
+ } finally {controller.close();await pending}
+})
+
+// MP-08 / MP-10 / MP-11: local dependency expiry needs no network refresh.
+test("review1301 idle TUI expires dependent Ready without another kernel snapshot",async()=>{
+ const environment:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{project_id:"p",environment_id:"env"},delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1},project_requirements:[{requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],required:true}],folders:[],proposals:[],operations:[],observations:[{environment_id:"env",requirement_id:"node",revision_digest:"digest",status:"ready",checked_at_ms:Date.now()-300000+150,stale:false,safe_summary:"Named probe passed",target:{machine_id:"machine",target_instance_generation:"boot",slice_ref:null},measured_facts:{}}]}
+ environment.project_requirements.push({...environment.project_requirements[0],requirement_id:"dependent",title:"Dependent",depends_on:["node"]});
+ environment.observations.push({...environment.observations[0],requirement_id:"dependent",checked_at_ms:Date.now()});
+ let requests=0,renders=0
+ const controller=createProjectEnvironmentReadController({send:async()=>{requests++;return {ProjectEnvironment:{environment}}},render(){renders++},pageSize:()=>100, textWidth: () => 72})
+ try {await controller.open("project");assert(controller.visibleLines().some(l=>l.includes("Ready")));const settled=renders;await new Promise(resolve=>setTimeout(resolve,250));assert(controller.visibleLines().some(l=>l.includes("Dependent · Last check stale")));assert(renders>settled);assert.equal(requests,1)} finally{controller.close()}
+})

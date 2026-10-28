@@ -18,12 +18,20 @@ impl KernelRuntimeState {
         let store = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         );
-        // MP-08 / MP-10 / MP-11: revision journals use blocking filesystem I/O.
-        let environment = tokio::task::spawn_blocking(move || store.snapshot(&project))
-            .await
-            .map_err(|_| {
-                crate::project_environment::environment_error("Environment read task failed")
-            })??;
+        // MP-08 / MP-10 / MP-11: journals and projection use blocking filesystem I/O.
+        let environment = tokio::task::spawn_blocking(move || {
+            let mut environment = store.snapshot(&project)?;
+            store.attach_checks(
+                &mut environment,
+                &crate::project_environment::current_check_target(&config),
+                crate::session::unix_epoch_ms(),
+            )?;
+            Ok::<_, DaemonError>(environment)
+        })
+        .await
+        .map_err(|_| {
+            crate::project_environment::environment_error("Environment read task failed")
+        })??;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 
