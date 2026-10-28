@@ -49,14 +49,24 @@ fn panicking_pty_does_not_disable_future_spawns() {
 
 #[test]
 fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
+    check_inherited_oom_policy(-1000);
+}
+
+#[test]
+fn spawned_trees_preserve_a_positive_oom_policy() {
+    check_inherited_oom_policy(350);
+}
+
+fn check_inherited_oom_policy(inherited: i32) {
     use std::os::unix::process::CommandExt;
     const ENV: &str = "CHARIOX_OOM_PROTECTION_REGRESSION_CHILD";
+    let expected = inherited.max(0).to_string();
     if std::env::var_os(ENV).is_some() {
         assert_eq!(
             std::fs::read_to_string("/proc/self/oom_score_adj")
                 .unwrap()
                 .trim(),
-            "-1000"
+            inherited.to_string()
         );
         let mut command = Command::new("/bin/sh");
         command.args([
@@ -68,14 +78,15 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
         assert!(output.status.success());
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
-            "0\n0\n",
+            format!("{expected}\n{expected}\n"),
             "owned trees must not inherit the kernel's OOM immunity"
         );
         let output = super::command("/bin/cat")
             .arg("/proc/self/oom_score_adj")
             .output()
             .unwrap();
-        assert_eq!(output.stdout, b"0\n");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, format!("{expected}\n").as_bytes());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -88,7 +99,8 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
                     .await
             })
             .unwrap();
-        assert_eq!(output.stdout, b"0\n");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, format!("{expected}\n").as_bytes());
         let pair = portable_pty::native_pty_system()
             .openpty(portable_pty::PtySize {
                 rows: 24,
@@ -98,6 +110,8 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
             })
             .unwrap();
         let mut cmd = CommandBuilder::new("/bin/sh");
+        // The positive-policy child has dropped uid; inherited HOME may be /root.
+        cmd.cwd("/");
         cmd.args([
             "-c",
             "cat /proc/self/oom_score_adj; /bin/sh -c 'cat /proc/self/oom_score_adj'",
@@ -107,28 +121,43 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
         for _ in 0..2 {
             let mut line = String::new();
             std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
-            assert_eq!(line.trim(), "0");
+            assert_eq!(line.trim(), expected);
         }
         assert!(child.wait().unwrap().success());
         assert_eq!(
             std::fs::read_to_string("/proc/self/oom_score_adj")
                 .unwrap()
                 .trim(),
-            "-1000",
-            "the kernel retains its own protection"
+            inherited.to_string(),
+            "the kernel retains its own policy"
         );
+        // Exercise the provider/native shell entry itself, without a command
+        // constructor clearing protection before the shell gets to inspect it.
+        let domain = crate::runtime::process_resources::PreparedDomain::new().unwrap();
+        let (program, args) =
+            domain.command("/bin/cat".into(), vec!["/proc/self/oom_score_adj".into()]);
+        let output = Command::new(program).args(args).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, format!("{expected}\n").as_bytes());
         return;
     }
-    let mut probe = Command::new(std::env::current_exe().unwrap());
+    // /proc/self/exe remains executable after dropping uid even when this
+    // worktree/build directory is inside a root-only home.
+    let mut probe = Command::new("/proc/self/exe");
     probe
         .args([
-            "spawned_trees_are_killable_when_the_kernel_is_oom_protected",
+            if inherited < 0 {
+                "spawned_trees_are_killable_when_the_kernel_is_oom_protected"
+            } else {
+                "spawned_trees_preserve_a_positive_oom_policy"
+            },
             "--nocapture",
             "--test-threads=1",
         ])
         .env(ENV, "1");
+    let adjustment = format!("{inherited}\n");
     unsafe {
-        probe.pre_exec(|| {
+        probe.pre_exec(move || {
             let fd = libc::open(
                 c"/proc/self/oom_score_adj".as_ptr(),
                 libc::O_WRONLY | libc::O_CLOEXEC,
@@ -136,11 +165,21 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
             if fd < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            let written = libc::write(fd, b"-1000".as_ptr().cast(), 5);
+            let written = libc::write(fd, adjustment.as_ptr().cast(), adjustment.len());
             let error = std::io::Error::last_os_error();
             libc::close(fd);
-            if written != 5 {
+            if written != adjustment.len() as isize {
                 return Err(error);
+            }
+            // A privileged launcher establishes oom_score_adj_min. Drop all
+            // uid/gid privilege so lowering a positive policy really is denied.
+            if inherited >= 0
+                && libc::geteuid() == 0
+                && (libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(65534) != 0
+                    || libc::setuid(65534) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
@@ -153,6 +192,6 @@ fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
     }
     assert!(
         status.is_some_and(|s| s.success()),
-        "protected kernel must launch killable trees"
+        "kernel must launch killable trees without lowering its policy"
     );
 }

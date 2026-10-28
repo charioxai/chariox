@@ -103,9 +103,12 @@ provider leg; it does not certify that provider's authentication or CLI behavior
 The kernel can retain its service's `oom_score_adj=-1000`. Every command it
 launches uses the shared killable command constructor, including watched agent
 commands, Room exec, browser controllers, connectors, scripts, probes and helper
-commands. The owned standard-process and PTY spawn boundaries also enforce zero.
-The native App domain entry clears inherited protection before joining its domain
-or executing bubblewrap. Failure to clear it refuses the launch. Bootstrap kernel
+commands. The owned standard-process and PTY spawn boundaries also raise negative
+adjustments to zero. Every entry preserves a nonnegative inherited adjustment:
+a positive service/container policy can be the minimum an unprivileged child
+is allowed to keep. The native App domain entry applies the same rule before
+joining its domain or executing bubblewrap. Failure to read or raise a negative
+adjustment refuses the launch. Bootstrap kernel
 replacement launches retain service policy; they are kernels, not workloads.
 
 Provider and terminal domains throttle at the configured limit using
@@ -118,10 +121,17 @@ The watchdog remains the enforcement path when cgroups are unavailable.
 Regressions:
 - `spawned_trees_are_killable_when_the_kernel_is_oom_protected` runs an isolated
   kernel test process at -1000 and checks standard, async, owned and PTY children,
-  including their children, at zero while the parent remains protected.
+  including their children and the resource-domain shell, at zero while the
+  parent remains protected.
+- `spawned_trees_preserve_a_positive_oom_policy` checks the same boundaries at
+  +350. A root launcher establishes the positive minimum, then drops to nobody
+  before the child runs; ordinary users also exercise preservation without
+  requiring privilege.
 - `linux_controller_ends_a_runaway_before_the_oom_killer` requires the configured
   typed limit, actual controller termination, zero `oom`/`oom_kill` events and
   complete cgroup cleanup. Run with `--ignored` on a delegated Linux host.
 - `apps/app-worker/tests/oom-protection.test.mjs` executes the real native App
   admission entry under inherited protection and verifies it clears that policy
-  even when admission subsequently refuses invalid descriptors.
+  even when admission subsequently refuses invalid descriptors. Its positive
+  policy case drops privilege and verifies admission is reached without lowering
+  the inherited adjustment.

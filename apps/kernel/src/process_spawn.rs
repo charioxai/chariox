@@ -7,8 +7,7 @@ use std::process::{Child, Command};
 #[path = "process_spawn_tests.rs"]
 mod tests;
 
-/// Every kernel-owned command starts with its own OOM policy. In particular,
-/// a workload must not inherit the service's -1000 protection.
+/// Kernel workloads must be killable without lowering a positive service policy.
 pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(program);
     make_killable(&mut command);
@@ -29,25 +28,53 @@ fn make_killable(command: &mut Command) {
             command.pre_exec(|| {
                 let fd = libc::open(
                     c"/proc/self/oom_score_adj".as_ptr(),
-                    libc::O_WRONLY | libc::O_CLOEXEC,
+                    libc::O_RDWR | libc::O_CLOEXEC,
                 );
                 if fd < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                let written = loop {
-                    let result = libc::write(fd, b"0\n".as_ptr().cast(), 2);
+                let mut adjustment = [0_u8; 16];
+                let count = loop {
+                    let result = libc::read(fd, adjustment.as_mut_ptr().cast(), adjustment.len());
                     if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
                     {
                         continue;
                     }
                     break result;
                 };
-                let error = io::Error::last_os_error();
-                let closed = libc::close(fd);
-                if written != 2 {
+                if count <= 0 {
+                    let error = if count == 0 {
+                        io::Error::from(io::ErrorKind::UnexpectedEof)
+                    } else {
+                        io::Error::last_os_error()
+                    };
+                    libc::close(fd);
                     return Err(error);
                 }
-                if closed != 0 {
+                // A privileged launcher can set a positive minimum which this
+                // unprivileged child is not allowed to lower. It is killable
+                // already, so only inherited negative adjustments need a write.
+                if adjustment[0] == b'-' {
+                    let written = loop {
+                        let result = libc::write(fd, b"0\n".as_ptr().cast(), 2);
+                        if result < 0
+                            && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        break result;
+                    };
+                    if written != 2 {
+                        let error = if written < 0 {
+                            io::Error::last_os_error()
+                        } else {
+                            io::Error::from(io::ErrorKind::WriteZero)
+                        };
+                        libc::close(fd);
+                        return Err(error);
+                    }
+                }
+                if libc::close(fd) != 0 {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -69,6 +96,13 @@ pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
     )
 }
 
+// Keep shell/native entry policies aligned with the standard pre-exec hook.
+#[cfg(target_os = "linux")]
+pub(crate) const KILLABLE_SHELL_PREFIX: &str = concat!(
+    "IFS= read -r chariox_oom_score_adj < /proc/self/oom_score_adj || exit 125; ",
+    "case \"$chariox_oom_score_adj\" in -*) printf '0\\n' > /proc/self/oom_score_adj || exit 125;; esac;"
+);
+
 pub(crate) fn spawn_pty(
     slave: Box<dyn SlavePty + Send>,
     mut command: CommandBuilder,
@@ -76,16 +110,12 @@ pub(crate) fn spawn_pty(
     #[cfg(target_os = "linux")]
     {
         let argv = std::mem::take(command.get_argv_mut());
-        *command.get_argv_mut() = [
-            "/bin/sh",
-            "-c",
-            "printf '0\\n' > /proc/self/oom_score_adj || exit 125; exec \"$@\"",
-            "chariox-owned-process",
-        ]
-        .into_iter()
-        .map(std::ffi::OsString::from)
-        .chain(argv)
-        .collect();
+        let entry = format!("{KILLABLE_SHELL_PREFIX} exec \"$@\"");
+        *command.get_argv_mut() = ["/bin/sh", "-c", &entry, "chariox-owned-process"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain(argv)
+            .collect();
     }
     on_owner(
         move || slave.spawn_command(command).map_err(io::Error::other),

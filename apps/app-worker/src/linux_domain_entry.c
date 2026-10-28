@@ -96,10 +96,17 @@ static int failure(void) { close(7); return DOMAIN_FAILURE; }
 
 int main(int argc, char** argv) {
   /* The kernel may be protected; a constrained App must remain killable. */
-  int score = open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+  int score = open("/proc/self/oom_score_adj", O_RDWR | O_CLOEXEC);
   if (score < 0) return failure();
-  ssize_t reset;
-  do { reset = write(score, "0\n", 2); } while (reset < 0 && errno == EINTR);
+  char adjustment[16];
+  ssize_t count;
+  do { count = read(score, adjustment, sizeof(adjustment)); } while (count < 0 && errno == EINTR);
+  if (count <= 0) { close(score); return failure(); }
+  /* A positive launcher policy may be the unprivileged minimum: preserve it. */
+  ssize_t reset = 2;
+  if (adjustment[0] == '-') {
+    do { reset = write(score, "0\n", 2); } while (reset < 0 && errno == EINTR);
+  }
   int closed = close(score);
   if (reset != 2 || closed || prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) return failure();
   struct stat cgroup, binary;

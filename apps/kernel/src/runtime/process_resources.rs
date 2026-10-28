@@ -71,14 +71,18 @@ impl PreparedDomain {
         {
             // Kernel services may be OOM-protected. Workloads must be killable
             // by their own controller; inheriting -1000 makes memory.max loop.
-            let script = if self.cgroup.is_some() {
-                "printf '0\\n' > /proc/self/oom_score_adj || exit 125; printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
+            let admission = if self.cgroup.is_some() {
+                "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
             } else {
-                "printf '0\\n' > /proc/self/oom_score_adj || exit 125; shift; exec \"$@\""
+                "shift; exec \"$@\""
             };
+            let script = format!(
+                "{} {admission}",
+                crate::process_spawn::KILLABLE_SHELL_PREFIX
+            );
             let mut wrapped = vec![
                 "-c".into(),
-                script.into(),
+                script,
                 "chariox-resource-domain".into(),
                 self.cgroup
                     .as_ref()
