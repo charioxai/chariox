@@ -78,33 +78,11 @@ export function createViewActions(request, inputs) {
     if (element.getAttribute('data-chariox-action') !== null) describe(describeForm(element));
     if (formHandlers.has(element)) throw new Error('chariox.form: this form is already registered');
     formHandlers.set(element, handler);
-    // Native submit events do not retain their click/keyboard timestamp. Carry
-    // the exact source caller through requestSubmit's synchronous validation
-    // and submit dispatch, then drop it before any asynchronous handler resumes.
-    let submitting;
-    const submitFromInput = event => {
-      const token = inputs?.token(event);
-      if (token === undefined || event.defaultPrevented) return;
-      let submitter;
-      if (event.type === 'click') {
-        submitter = event.target.closest?.('button,input');
-        if (submitter?.form !== element || submitter.type !== 'submit') return;
-      } else {
-        if (event.key !== 'Enter' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
-          || event.target.tagName !== 'INPUT' || event.target.form !== element) return;
-        submitter = [...element.elements].find(control => /^(?:BUTTON|INPUT)$/.test(control.tagName) && control.type === 'submit');
-        if (submitter?.disabled) return;
-      }
-      event.preventDefault();
-      submitting = token;
-      try { HTMLFormElement.prototype.requestSubmit.call(element, submitter); }
-      finally { submitting = undefined; }
-    };
-    element.addEventListener('click', submitFromInput);
-    element.addEventListener('keydown', submitFromInput);
+    // The browser performs validation/submission after the source event has
+    // propagated. Input callers tag that native submit without intercepting it.
     element.addEventListener('submit', event => {
       event.preventDefault();
-      return fromInput(handler, readForm(element), event, submitting ?? inputs?.token(event));
+      return fromInput(handler, readForm(element), event);
     });
   }
 

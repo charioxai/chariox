@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
-for (const key of [false, true]) for (const behavior of ['shadow-name', 'shadow-id']) {
+for (const key of [false, true]) for (const behavior of ['shadow-name', 'shadow-id', 'cancel', 'update']) {
   test(`registered form ${key ? 'Enter' : 'click'} preserves ${behavior}`, async () => {
     assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'explicit disposable root required');
     const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'form-input-'));
