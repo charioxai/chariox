@@ -2667,23 +2667,28 @@ async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
 }
 
 #[tokio::test]
-async fn legacy_goal_offered_for_adoption_keeps_draining_without_provider_prompts() {
-    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered).await;
+async fn legacy_goal_offered_for_adoption_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered, false).await;
 }
 
 #[tokio::test]
-async fn adopted_legacy_goal_keeps_draining_before_node_task_admission() {
-    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Adopted).await;
+async fn adopted_legacy_goal_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Adopted, false).await;
 }
 
 #[tokio::test]
 async fn unrelated_workflow_without_provider_prompts_is_still_reconciled() {
-    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Unrelated).await;
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Unrelated, false).await;
 }
 
 #[tokio::test]
-async fn legacy_goal_keeps_draining_before_adoption_offer_is_persisted() {
-    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::BeforeOffer).await;
+async fn legacy_goal_without_adoption_offer_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::BeforeOffer, false).await;
+}
+
+#[tokio::test]
+async fn legacy_goal_with_live_provider_prompt_keeps_draining() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered, true).await;
 }
 
 #[derive(Clone, Copy)]
@@ -2694,7 +2699,7 @@ enum LegacyGoalRecovery {
     Unrelated,
 }
 
-async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery) {
+async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery, keep_prompt: bool) {
     let adopted = matches!(recovery, LegacyGoalRecovery::Adopted);
     let offered = matches!(
         recovery,
@@ -2713,32 +2718,57 @@ async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery) {
         .session_store
         .get_session(&fixture.session_id)
         .unwrap();
-    owned
-        .prompt_state_owner
-        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
-    owned
-        .reserve_local_workflow_prompt_completion_if_matches(
-            session.id(),
-            &fixture.target_agent_id,
-            "interrupt-active",
-        )
-        .unwrap()
-        .expect("legacy provider prompt");
-    for agent in owned.agent_store.get_session_agents(session.id()) {
-        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+    if !keep_prompt {
         owned
-            .session_store
-            .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
-            .unwrap();
+            .prompt_state_owner
+            .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+        owned
+            .reserve_local_workflow_prompt_completion_if_matches(
+                session.id(),
+                &fixture.target_agent_id,
+                "interrupt-active",
+            )
+            .unwrap()
+            .expect("legacy provider prompt");
+        for agent in owned.agent_store.get_session_agents(session.id()) {
+            let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+            owned
+                .session_store
+                .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+                .unwrap();
+        }
     }
-    // Recovery can leave a running predecessor between provider admissions.
-    // Restore its old timestamps so the real sweep must decide supervision.
+    // Losing a prompt must not let an adoption offer hold the endpoint forever.
+    // Old timestamps put the run beyond the live reconciliation grace period.
     let session = owned.session_store.get_session(session.id()).unwrap();
     let mut snapshot = serde_json::to_value(&session).unwrap();
     if offered {
         snapshot["workflows"][0]["alias"] = serde_json::json!("planner-worker-reviewer");
     }
+    // Production admission binds the run to the endpoint instance it holds.
+    snapshot["workflows"][0]["endpoints"][0]["max_instances"] = serde_json::json!(1);
+    let definition = &session.workflows()[0];
+    let node_agents = definition
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let mut instance = crate::session::WorkflowEndpointRuntimeInstance::new(
+        "orphan-runtime-instance",
+        definition.id(),
+        definition.endpoints()[0].id(),
+        definition.revision(),
+        1,
+        true,
+        node_agents.clone(),
+        session.worktree_id(),
+    );
+    assert!(instance.claim(fixture.workflow_run_id.as_str()));
+    snapshot["workflow_runtime_instances"] = serde_json::json!([instance]);
     for run in snapshot["workflow_runs"].as_array_mut().unwrap() {
+        run["workflow_revision"] = serde_json::json!(definition.revision());
+        run["runtime_instance_id"] = serde_json::json!("orphan-runtime-instance");
+        run["runtime_agent_ids_by_node"] = serde_json::json!(node_agents);
         for node in run["node_runs"].as_array_mut().unwrap() {
             node["created_at_ms"] = serde_json::json!(1);
             node["started_at_ms"] = serde_json::json!(1);
@@ -2816,17 +2846,61 @@ async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery) {
         .workflow_pending_entry(session.id())
         .unwrap()
         .is_none());
-    owned.workflow_maybe_start_next_queued_prompt(session.id());
+    let workflow = &session.workflows()[0];
+    let queued = owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt_by_agent(
+            session.id(),
+            workflow.id(),
+            workflow.endpoints()[0].id(),
+            Some("Complete the next invocation".into()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    owned
+        .persist_workflow_runtime_session(session.id(), "queued_after_lost_prompt")
+        .unwrap();
+    let dispatches = owned.workflow_maybe_start_next_queued_prompt(session.id());
     let run = owned
         .agent_workflow_source(&session, &fixture.workflow_run_id)
         .unwrap()
         .expect("reconciled run remains addressable");
     assert_eq!(
         run.status(),
-        if offered || adopted {
+        if keep_prompt {
             crate::session::WorkflowRunStatus::Running
         } else {
             crate::session::WorkflowRunStatus::Stopped
         }
     );
+    let current = owned.session_store.get_session(session.id()).unwrap();
+    let next = current
+        .workflow_runs()
+        .iter()
+        .find(|run| run.queue_item_id() == Some(queued.id()));
+    if keep_prompt {
+        assert!(next.is_none(), "a live invocation keeps the endpoint");
+        assert!(dispatches.is_empty());
+        assert!(current
+            .workflow_queued_prompts()
+            .iter()
+            .any(|item| item.id() == queued.id()));
+    } else {
+        assert!(dispatches.admitted_workflow_prompt);
+        let next_run = next.expect("the queued successor must be admitted after orphan cleanup");
+        assert_eq!(
+            next_run.status(),
+            crate::session::WorkflowRunStatus::Created
+        );
+        assert_ne!(next_run.id(), fixture.workflow_run_id);
+        assert_eq!(
+            next_run.runtime_instance_id(),
+            Some("orphan-runtime-instance")
+        );
+    }
 }

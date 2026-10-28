@@ -119,49 +119,12 @@ impl KernelRuntimeOwnedState {
         room: &str,
     ) -> Result<BTreeSet<(String, String)>, DaemonError> {
         let mut targets = BTreeSet::new();
-        let mut adopted_runs = BTreeSet::new();
         for task in self.durable_state_store.agent_tasks(Some(room), None)? {
             if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
                 if let Some(binding) = self.agent_workflow_task_context(&task)? {
                     targets.insert(binding);
                 }
-                if let Some(run) = task
-                    .goal
-                    .as_ref()
-                    .and_then(|goal| goal.legacy_run_id.as_ref())
-                {
-                    adopted_runs.insert(run.clone());
-                }
             }
-        }
-        let session = self.session_store.get_session(room)?;
-        for run in session
-            .workflow_runs()
-            .iter()
-            .filter(|run| !run.status().is_terminal())
-        {
-            let legacy = session.workflows().iter().any(|workflow| {
-                workflow.id() == run.workflow_id()
-                    && super::agent_goal_migration::is_legacy_goal_template(workflow)
-            });
-            if !legacy && !adopted_runs.contains(run.id()) {
-                continue;
-            }
-            // Queue admission can precede the adoption offer or node-task
-            // recovery. The existing dispatcher still owns this predecessor.
-            targets.extend(
-                run.node_runs()
-                    .iter()
-                    .filter(|node| {
-                        !matches!(
-                            node.status(),
-                            crate::session::WorkflowNodeRunStatus::Completed
-                                | crate::session::WorkflowNodeRunStatus::Failed
-                                | crate::session::WorkflowNodeRunStatus::Stopped
-                        )
-                    })
-                    .map(|node| (run.id().to_string(), node.id().to_string())),
-            );
         }
         Ok(targets)
     }
