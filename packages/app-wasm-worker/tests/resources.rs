@@ -9,6 +9,65 @@ use std::time::Duration;
 use tokio::{net::UnixStream, time::Instant};
 
 #[tokio::test]
+async fn cancelled_queued_requests_never_reach_the_broker() {
+    use std::os::fd::AsRawFd;
+    for drop_import in [false, true] {
+        let (worker, supervisor) = UnixStream::pair().unwrap();
+        let buffer: libc::c_int = 4096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    worker.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&buffer as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&buffer) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let transport = Ipc::start(worker, "1".into()).unwrap();
+        transport
+            .ipc
+            .respond("blocked".into(), Ok(json!("x".repeat(256 * 1024))))
+            .await
+            .unwrap();
+        // Some bytes arrived, but this frame cannot fit in the socket buffer.
+        supervisor.readable().await.unwrap();
+        let scope = Scope::new("queued".into(), Instant::now() + Duration::from_secs(5));
+        let ipc = transport.ipc.clone();
+        let calling = scope.clone();
+        let task = tokio::spawn(async move {
+            ipc.call(&calling, "state.transaction", json!({"writes":[]}))
+                .await
+        });
+        while transport.ipc.pending_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        if drop_import {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            scope.cancel("CANCELLED");
+            assert_eq!(task.await.unwrap().unwrap_err().code, "CANCELLED");
+        }
+        assert_eq!(transport.ipc.pending_count(), 0);
+        transport
+            .ipc
+            .respond("after".into(), Ok(json!(null)))
+            .await
+            .unwrap();
+        let mut channel = Channel::new(supervisor, "1".into(), Sender::Worker).unwrap();
+        assert!(
+            matches!(channel.receive(Duration::from_secs(1)).await.unwrap(), Message::Response { id, .. } if id == "blocked")
+        );
+        assert!(
+            matches!(channel.receive(Duration::from_secs(1)).await.unwrap(), Message::Response { id, .. } if id == "after")
+        );
+    }
+}
+
+#[tokio::test]
 async fn cancellation_releases_pending_broker_request_and_sends_cancel() {
     let (worker, supervisor) = UnixStream::pair().unwrap();
     let transport = Ipc::start(worker, "1".into()).unwrap();
