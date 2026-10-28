@@ -288,18 +288,8 @@ fn walk(
             continue;
         }
         if metadata.is_dir() {
-            if [
-                ".git",
-                "node_modules",
-                "target",
-                ".next",
-                ".cache",
-                ".ssh",
-                ".codex",
-                ".claude",
-                ".chariox",
-            ]
-            .contains(&name.as_str())
+            if super::index::excluded_project_directory(&name)
+                || [".cache", ".ssh", ".codex", ".claude"].contains(&name.as_str())
             {
                 index
                     .skips

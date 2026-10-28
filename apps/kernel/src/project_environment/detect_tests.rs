@@ -461,3 +461,36 @@ fn r4_detect_prompt_retains_plain_folder_inventory() {
     assert!(prompt.len() < 34 * 1024);
 }
 
+#[test]
+fn r4_detect_excludes_generated_dependency_references() {
+    let root = TestWorktree::new("r4-detect-generated");
+    write(&root, "package.json", "{}");
+    write(&root, "src/main.ts", "process.env.APP_SETTING;");
+    for directory in [
+        ".venv",
+        "vendor",
+        "dist",
+        "build",
+        "__pycache__",
+        "node_modules",
+        "target",
+    ] {
+        write(
+            &root,
+            &format!("{directory}/dependency.ts"),
+            "process.env.DEPENDENCY_INTERNAL;",
+        );
+    }
+    let detection = detect_environment(&[folder(&root)], "environment").unwrap();
+    assert!(detection
+        .proposals
+        .iter()
+        .any(|p| p.requirement.title == "APP_SETTING"));
+    assert!(!detection
+        .proposals
+        .iter()
+        .any(|p| p.requirement.title == "DEPENDENCY_INTERNAL"));
+    assert!(detection.proposals.iter().flat_map(|p| &p.requirement.origins).all(|o| {
+        !matches!(o, RequirementOrigin::Detected { relative_path, .. } if relative_path.ends_with("dependency.ts"))
+    }));
+}

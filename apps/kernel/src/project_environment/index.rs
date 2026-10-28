@@ -226,20 +226,7 @@ fn walk(root: &Path, directory: &Path, files: &mut Vec<String>) -> Result<(), Da
             }
             continue;
         }
-        if [
-            ".git",
-            ".chariox",
-            "node_modules",
-            "target",
-            "dist",
-            "build",
-            ".venv",
-            "vendor",
-            ".next",
-            "__pycache__",
-        ]
-        .contains(&name)
-        {
+        if excluded_project_directory(name) {
             continue;
         }
         let kind = item
@@ -451,4 +438,21 @@ pub(crate) fn retain_imported_private_candidates(
             .or_default()
             .insert(file.path.clone(), bytes);
     }
+}
+
+// Shared by export indexing and Detect so dependency trees cannot consume evidence budgets.
+pub(super) fn excluded_project_directory(name: &str) -> bool {
+    [
+        ".git",
+        ".chariox",
+        "node_modules",
+        "target",
+        "dist",
+        "build",
+        ".venv",
+        "vendor",
+        ".next",
+        "__pycache__",
+    ]
+    .contains(&name)
 }
