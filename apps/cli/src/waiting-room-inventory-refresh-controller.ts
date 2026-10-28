@@ -200,6 +200,9 @@ export function createWaitingRoomInventoryRefreshController(
         continue
       }
       options.setInventoryStatus("ready")
+      if (snapshot.providerAccountCopyUnavailable) {
+        options.warn?.("login copy discovery unavailable", { kernel_id: snapshot.kernelId })
+      }
       const present = new Set([snapshot.kernelId, ...snapshot.remoteKernels.map(row => row.kernel_id), ...(options.getLocalKernelPresences?.() ?? []).map(row => row.kernelId)])
       let pruned = false
       for (const id of inventoriesByKernel.keys()) {
