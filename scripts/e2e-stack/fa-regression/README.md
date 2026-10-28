@@ -12,7 +12,7 @@ loopback only, base port `FA_PORT_BASE` (default 18100):
 | +4 | stripe-mock (a Stripe API mock, **not** Stripe test mode) |
 
 The host needs only `docker` (Compose v2) and `node`. `./up.sh` (dex's bcrypt hashes come from
-the stack's own Postgres, `pgcrypto`), `./verify.mjs <receipt.json>` (needs the secrets file), `./status.sh`,
+the stack's own Postgres, `pgcrypto`), `node verify.mjs <receipt.json>` (needs the secrets file), `./status.sh`,
 `./down.sh` (removes only this project and its generated state). Passwords and the OIDC client
 secret are generated into `$FA_STATE_DIR/secrets.env` (mode 0600, default
 `~/.chariox/dev/amunblock/fa`).
