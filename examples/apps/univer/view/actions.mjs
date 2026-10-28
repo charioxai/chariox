@@ -73,7 +73,9 @@ export async function attachWorkbook(api, bridge) {
     };
   }
 
-  const handlers = {
+  const handlersFor = caller => {
+    const transfer = fileTransfer(caller);
+    return {
     workbook_summary: summary,
     async read_range(input) {
       await calculated(); const selected = range(input);
@@ -132,7 +134,7 @@ export async function attachWorkbook(api, bridge) {
       await calculated(); const data = validateWorkbook(book().save()), savingRevision = revision;
       const name = saveName;
       await transfer.write({ name, text: workbookFile(data), offer: false });
-      const saved = await bridge.call('save_workbook', { name, version });
+      const saved = await caller.call('save_workbook', { name, version });
       version = saved.version; dirty = revision !== savingRevision;
       changed({ saved: version, dirty }); return { version, dirty };
     },
@@ -147,7 +149,8 @@ export async function attachWorkbook(api, bridge) {
       if (!input.name?.endsWith('.univer.json')) throw new Error('Use a .univer.json filename');
       await calculated(); return transfer.write( { name: input.name, text: workbookFile(book().save()), offer: input.offer ?? false });
     },
-    pick_file: input => bridge.call('pick_file', input),
+    pick_file: input => caller.call('pick_file', input),
+    };
   };
 
   const loaded = await transfer.load();
@@ -158,8 +161,8 @@ export async function attachWorkbook(api, bridge) {
   // Human menu callbacks and agent calls share the same workbook operations.
   let pending = Promise.resolve();
   const actions = Object.fromEntries(declarations.uiActions.map(declaration => [
-    declaration.name, bridge.action(declaration, input => {
-      const result = pending.then(() => handlers[declaration.name](input));
+    declaration.name, bridge.action(declaration, (input, caller) => {
+      const result = pending.then(() => handlersFor(caller)[declaration.name](input));
       pending = result.catch(() => {});
       return result;
     }),

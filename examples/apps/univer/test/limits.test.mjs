@@ -29,7 +29,7 @@ function editor() {
     getFormula: () => ({ onCalculationResultApplied: async () => {} }),
   };
   const bridge = {
-    view: { state() {}, changed() {} }, action: (_, handler) => handler,
+    view: { state() {}, changed() {} }, action: (_, handler) => input => handler(input, bridge),
     async call(name) {
       if (name === 'load_workbook') return { text: null, version: null };
       if (name === 'read_file') return { text: source, done: true };

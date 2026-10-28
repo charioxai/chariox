@@ -5,7 +5,9 @@ import { emptyWorkbook } from '../view/workbook.mjs';
 import { createViewActions } from '../../../../apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs';
 
 async function workbook() {
-  const view = createViewActions();
+  const calls = [];
+  const request = async (method, input, token) => { calls.push({method,input,token}); return method === 'save_workbook' ? {version:'one'} : {}; };
+  const view = createViewActions(request);
   let values = Array.from({ length: 100 }, (_, row) => Array.from({ length: 10 }, () => `${99 - row}`.padStart(300, 'x')));
   const selected = {
     getRange: () => ({ startRow: 0, endRow: 99, startColumn: 0, endColumn: 9 }),
@@ -19,7 +21,7 @@ async function workbook() {
   await attachWorkbook(api, { action: view.action, view: view.view, async call(name) {
     assert.equal(name, 'load_workbook'); return { text: null, version: null };
   } });
-  return { agent: view.agent, selected };
+  return { agent: view.agent, selected, calls };
 }
 
 test('large successful mutations return acknowledgements through the View result budget', async () => {
@@ -48,4 +50,13 @@ test('large range reads can be reassembled from bounded View results', async () 
   } while (offset !== undefined);
   assert.ok(pages > 1);
   assert.deepEqual(JSON.parse(text), { values: selected.getValues(), formulas: selected.getFormulas() });
+});
+
+
+test('workbook save keeps its invocation caller for transfer and commit', async () => {
+  const { agent, calls } = await workbook();
+  const result = await agent.invoke('save_workbook', {}, 'agent-token');
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.deepEqual(calls.map(call=>call.method),['write_file','save_workbook']);
+  assert(calls.every(call=>call.token==='agent-token'));
 });

@@ -111,6 +111,9 @@ try {
   assert.equal(exported.workbook.sheets.sheet1.cellData[1][3].f, data.formulas[0][3]);
   const changes = await agent('changes', { since: 0 }); assert.ok(changes.ok && changes.value.latest > 0);
   const state = await agent('state'); assert.equal(state.ok, true);
+  assert.deepEqual(calls.find(call=>call.method==='load_workbook').actor,null);
+  assert(calls.filter(call=>call.method!=='load_workbook').length>0);
+  for (const call of calls.filter(call=>call.method!=='load_workbook')) assert.deepEqual(call.actor,{kind:'agent',id:'univer-regression-agent'});
   log.push({ state: state.value, data, changes: changes.value.latest, calls });
   for (const dpr of [1, 2]) {
     await cdp('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: dpr, mobile: false });
@@ -137,6 +140,7 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...saveButton, button: 'left', clickCount: 1 });
     for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='save_workbook').length===saves; attempt++) await delay(50);
     assert.equal(calls.filter(call=>call.method==='save_workbook').length, saves+1, 'human Files > Save reaches the backend');
+    assert.equal(calls.filter(call=>call.method==='save_workbook').at(-1).actor,null);
     // Leave the pointer over the old top-centre toast position: it must not
     // pause a status message over the tabs and toolbar.
     await cdp('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 720, y: 40 });
@@ -149,6 +153,7 @@ try {
     for (const type of ['mousePressed', 'mouseReleased']) await cdp('Input.dispatchMouseEvent', { type, ...openButton, button: 'left', clickCount: 1 });
     for (let attempt=0; attempt<100 && calls.filter(call=>call.method==='pick_file').length===picks; attempt++) await delay(50);
     assert.equal(calls.filter(call=>call.method==='pick_file').length, picks+1, 'human Open CSV reaches picker');
+    assert.equal(calls.filter(call=>call.method==='pick_file').at(-1).actor,null);
     await delay(250);
     const cancelled = await cdp('Page.captureScreenshot', { format: 'png' });
     await writeFile(path.join(evidence, `cancelled-picker-dpr${dpr}.png`), Buffer.from(cancelled.data, 'base64'));
