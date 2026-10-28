@@ -3170,8 +3170,10 @@ done
             fs::read_to_string(format!("/proc/{pid}/stat"))
                 .ok()
                 .is_some_and(|s| {
+                    // A killed process goes Z (zombie), then X (dead) when its
+                    // parent reaps it; both are gone, so liveness cannot flicker.
                     s.rsplit_once(')')
-                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with(['Z', 'X']))
                 })
         }
         for crash in [true, false] {
@@ -3213,8 +3215,7 @@ done
                 child.wait().unwrap();
             }
             backend.stop().unwrap(); // No health()/take_exited_process() before Stop.
-                                     // The group kill is synchronous; only the survivor's exit is not.
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
             while alive(survivor) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
