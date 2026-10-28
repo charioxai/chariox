@@ -136,7 +136,7 @@ fn workspace_metadata_stall_settles_check_and_releases_admission() {
     let began = std::time::Instant::now();
     let result = store.run_check_until(
         ctx,
-        environment,
+        *environment,
         operation,
         || Ok(project.clone()),
         began + std::time::Duration::from_millis(300),

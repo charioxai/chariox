@@ -74,7 +74,7 @@ fn run_expect(
     let began = Instant::now();
     let result = store.run_check_until(
         ctx,
-        environment,
+        *environment,
         operation,
         || Ok(project.clone()),
         began + budget,
