@@ -725,7 +725,7 @@ impl KernelRuntimeState {
             .agent_deadline(session_id, local_agent.id())?
             .is_some()
         {
-            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
+            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a agent deadline must stay on its executing kernel; start a new agent on the worker".into() });
         }
         let slice_admission = self
             .guard_slice_execution(
