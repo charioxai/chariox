@@ -1535,6 +1535,7 @@ impl DaemonApp {
                 self.agents.remove_session_agents(session.id());
                 self.sessions.remove_restored_session(session.id());
                 self.session_state_projection_store().remove(session.id());
+                self.agent_runtime_projection.remove_session(session.id());
             }
             "session.deleted" => {
                 if durable_payload_entity_belongs_to_other_owner(

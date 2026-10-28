@@ -6,7 +6,9 @@ Before restoring live state, the kernel backfills retired Rooms from persisted
 checkpoints and lifecycle events in sequence, including later restores and
 deletes. The owner-scoped index and its one-time receipt commit atomically;
 subsequent boots use the maintained index. Ended checkpoint Rooms and their
-agents stay outside live projections. Reattachment resolves through canonical
+agents stay outside live projections. Replaying an end also removes that Room's
+agent runtime projections, so restart does not retain one entry per ended agent.
+Reattachment resolves through canonical
 indexed state rather than treating absence from a live projection as deletion.
 Default Project cleanup retains a project backed by a visible retired Room and
 propagates index errors before removing any project. Both placements use this

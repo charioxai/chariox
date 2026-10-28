@@ -95,6 +95,14 @@ fn check_old_retirement_database(checkpoint: bool) {
         }
     }
     let harness = LocalRouterTestHarness::with_config(config.clone());
+    harness.with_app(|app| {
+        assert!(
+            app.agent_runtime_projection_store()
+                .list_for_session(ended[0].id())
+                .is_empty(),
+            "replaying an end must remove the Room's agent runtime projections"
+        );
+    });
     let loaded = harness
         .dispatch(LocalDaemonRequest::GetSessionState(
             GetSessionStateRequest {
