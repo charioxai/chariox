@@ -45,10 +45,14 @@ struct ClaudeSetupTokenSecrets {
     new_vault_passphrase: Option<Zeroizing<String>>,
     hidden_inputs: Vec<Zeroizing<String>>,
     reader_finished: bool,
+    retry_authorization_url: Option<String>,
 }
 
 impl ClaudeSetupTokenSecrets {
     fn projection(&self) -> Vec<u8> {
+        if self.retry_authorization_url.is_some() {
+            return Vec::new();
+        }
         format!("{}{}", self.screen_text, self.notes).into_bytes()
     }
 }
@@ -56,9 +60,6 @@ impl ClaudeSetupTokenSecrets {
 #[derive(Clone)]
 pub(in crate::runtime) struct ClaudeSetupTokenLogin {
     secrets: Arc<Mutex<ClaudeSetupTokenSecrets>>,
-    /// Serializes PTY draining, rendering, input, cancel, and completion so
-    /// concurrent status polls cannot interleave output or race the store.
-    serial: Arc<tokio::sync::Mutex<()>>,
     pub vault_prompt: Option<ClaudeSetupTokenVaultPrompt>,
     pub overwrite: bool,
 }
@@ -70,7 +71,6 @@ impl Default for ClaudeSetupTokenLogin {
                 screen: Some(ClaudeSetupTokenScreen::default()),
                 ..ClaudeSetupTokenSecrets::default()
             })),
-            serial: Arc::new(tokio::sync::Mutex::new(())),
             vault_prompt: None,
             overwrite: true,
         }
@@ -78,10 +78,6 @@ impl Default for ClaudeSetupTokenLogin {
 }
 
 impl ClaudeSetupTokenLogin {
-    pub async fn serialize(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.serial).lock_owned().await
-    }
-
     fn secrets(&self) -> std::sync::MutexGuard<'_, ClaudeSetupTokenSecrets> {
         self.secrets.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -98,7 +94,63 @@ impl ClaudeSetupTokenLogin {
             screen.process(bytes);
             *screen_text = screen.redacted_text_with_inputs(hidden_inputs);
         }
+        if let Some(previous) = secrets.retry_authorization_url.as_deref() {
+            let current = secrets
+                .screen
+                .as_ref()
+                .and_then(ClaudeSetupTokenScreen::authorization_url);
+            if current
+                .as_deref()
+                .is_some_and(|current| current != previous)
+            {
+                secrets.retry_authorization_url = None;
+            }
+        }
         secrets.projection()
+    }
+
+    pub fn authorization_url(&self) -> Option<String> {
+        let secrets = self.secrets();
+        if secrets.retry_authorization_url.is_some() {
+            return None;
+        }
+        secrets
+            .screen
+            .as_ref()
+            .and_then(ClaudeSetupTokenScreen::authorization_url)
+    }
+
+    pub fn expects_authorization_code(&self) -> bool {
+        let secrets = self.secrets();
+        secrets.retry_authorization_url.is_none()
+            && secrets
+                .screen_text
+                .split_whitespace()
+                .collect::<String>()
+                .contains("Pastecode")
+            && !setup_token_retry_prompt(&secrets.screen_text)
+    }
+
+    pub fn expects_retry(&self) -> bool {
+        let secrets = self.secrets();
+        secrets.retry_authorization_url.is_none() && setup_token_retry_prompt(&secrets.screen_text)
+    }
+
+    pub fn awaiting_new_challenge(&self) -> bool {
+        self.secrets().retry_authorization_url.is_some()
+    }
+
+    fn prepare_retry(&self) -> Result<(), DaemonError> {
+        let mut secrets = self.secrets();
+        let previous = secrets
+            .screen
+            .as_ref()
+            .and_then(ClaudeSetupTokenScreen::authorization_url)
+            .ok_or_else(|| {
+                login_error("Claude did not provide a sign-in link. Cancel and try again.")
+            })?;
+        secrets.retry_authorization_url = Some(previous);
+        Ok(())
     }
 
     /// The shared vt100 screen receives bytes before PTY queues/diagnostics.
@@ -169,6 +221,14 @@ impl ClaudeSetupTokenLogin {
     }
 }
 
+fn setup_token_retry_prompt(text: &str) -> bool {
+    let text: String = text
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .collect();
+    text.contains("OAutherror:Requestfailedwithstatuscode400") && text.contains("PressEntertoretry")
+}
+
 #[derive(Clone)]
 pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub owner_user_id: String,
@@ -182,6 +242,9 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub backend: ProviderLoginProcessBackend,
     pub operation: ProviderAuthProcessOperation,
     pub setup_token: Option<ClaudeSetupTokenLogin>,
+    pub serial: Arc<tokio::sync::Mutex<()>>,
+    pub code_submitted: bool,
+    pub message: Option<String>,
     pub output: Vec<u8>,
     pub started_at_ms: u64,
     pub updated_at_ms: u64,
@@ -221,6 +284,7 @@ impl ProviderLoginProcessRecord {
             account_profile: self.account_profile.clone(),
             login_id: self.login_id.clone(),
             state: self.state,
+            message: self.message.clone(),
             interaction: self.interaction(),
             terminal_output_base64: base64::engine::general_purpose::STANDARD.encode(&self.output),
             started_at_ms: self.started_at_ms,
@@ -243,13 +307,10 @@ impl ProviderLoginProcessRecord {
             ProviderAuthProcessOperation::Login => "Authenticate provider account",
             ProviderAuthProcessOperation::Logout => "Log out provider account",
         };
-        let authorization_url = self.setup_token.as_ref().and_then(|login| {
-            login
-                .secrets()
-                .screen
-                .as_ref()
-                .and_then(ClaudeSetupTokenScreen::authorization_url)
-        });
+        let authorization_url = self
+            .setup_token
+            .as_ref()
+            .and_then(ClaudeSetupTokenLogin::authorization_url);
         let message = if self.setup_token.is_some() {
             "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below."
         } else if self.backend == ProviderLoginProcessBackend::Terminal {
@@ -266,7 +327,7 @@ impl ProviderLoginProcessRecord {
             crate::session::RuntimeInteractionKind::Choice,
             crate::session::RuntimeInteractionLevel::Warning,
             Some(title.to_string()),
-            message,
+            self.message.as_deref().unwrap_or(message),
             vec![crate::session::RuntimeInteractionChoice::new(
                 "cancel",
                 "Cancel",
@@ -364,6 +425,7 @@ impl ProviderLoginProcessRecord {
 #[derive(Clone, Default)]
 pub(in crate::runtime) struct ProviderLoginProcessStore {
     inner: Arc<Mutex<BTreeMap<String, ProviderLoginProcessRecord>>>,
+    start_serial: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for ProviderLoginProcessStore {
@@ -381,6 +443,76 @@ impl std::fmt::Debug for ProviderLoginProcessStore {
 }
 
 impl ProviderLoginProcessStore {
+    pub async fn serialize_start(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.start_serial).lock_owned().await
+    }
+
+    pub fn input_sent(
+        &self,
+        owner: &str,
+        login_id: &str,
+        authorization_code: bool,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        record.code_submitted = authorization_code;
+        record.message = None;
+        record.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    pub fn set_message(
+        &self,
+        owner: &str,
+        login_id: &str,
+        message: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        record.message = Some(message.into());
+        record.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    pub fn prepare_setup_code_retry(
+        &self,
+        owner: &str,
+        login_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        setup_token_login(record)?.prepare_retry()?;
+        record.output.clear();
+        record.code_submitted = false;
+        record.message = Some(
+            "That code was not accepted. Open the new sign-in link and copy a new code.".into(),
+        );
+        record.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    pub fn prepare_code_retry(
+        &self,
+        owner: &str,
+        login_id: &str,
+        now_ms: u64,
+    ) -> Result<ProviderLoginProcessRecord, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        record.output.clear();
+        record.start.auth_url = None;
+        record.start.verification_url = None;
+        record.code_submitted = false;
+        record.message = Some(
+            "That code was not accepted. Open the new sign-in link and copy a new code.".into(),
+        );
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
     pub fn insert(&self, record: ProviderLoginProcessRecord) -> Result<(), DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let now_ms = crate::session::unix_epoch_ms();
@@ -679,10 +811,87 @@ mod tests {
             backend: ProviderLoginProcessBackend::Terminal,
             operation: ProviderAuthProcessOperation::Login,
             setup_token: None,
+            serial: Arc::new(tokio::sync::Mutex::new(())),
+            code_submitted: false,
+            message: None,
             output: Vec::new(),
             started_at_ms: now_ms,
             updated_at_ms: now_ms,
         }
+    }
+
+    #[test]
+    fn callback_retry_keeps_deadline_and_serialization_but_discards_the_old_link() {
+        let store = ProviderLoginProcessStore::default();
+        let mut initial = record("owner-a", "retry");
+        initial.output = b"https://claude.com/cai/oauth/authorize?state=old".to_vec();
+        let serial = Arc::clone(&initial.serial);
+        let started = initial.started_at_ms;
+        store.insert(initial).unwrap();
+        store
+            .input_sent("owner-a", "retry", true, started + 1)
+            .unwrap();
+        let retry = store
+            .prepare_code_retry("owner-a", "retry", started + 2)
+            .unwrap();
+        assert!(Arc::ptr_eq(&serial, &retry.serial));
+        assert_eq!(retry.started_at_ms, started);
+        assert!(retry.output.is_empty());
+        assert!(!retry.code_submitted);
+        assert!(retry.message.is_some());
+        store
+            .input_sent("owner-a", "retry", true, started + 3)
+            .unwrap();
+        assert!(store
+            .record_for_owner("owner-a", "retry")
+            .unwrap()
+            .message
+            .is_none());
+    }
+
+    #[test]
+    fn setup_token_retry_preserves_renderer_and_hides_the_old_challenge() {
+        let login = ClaudeSetupTokenLogin::default();
+        login.read_private_output(b"Choose theme: ");
+        assert!(!login.expects_authorization_code());
+        login.read_private_output(b"\r\nhttps://claude.com/cai/oauth/authorize?state=old\r\nPaste code here if prompted > ");
+        assert!(login.expects_authorization_code());
+        login.hide_input(b"abc123#def456\r").unwrap();
+        login.read_private_output(
+            b"\r\nOAuth error: Request failed with status code 400\r\nPress Enter to retry.",
+        );
+        assert!(login.expects_retry());
+        assert!(!login.expects_authorization_code());
+        let store = ProviderLoginProcessStore::default();
+        let mut initial = record("owner-a", "setup-retry");
+        initial.setup_token = Some(login.clone());
+        let started = initial.started_at_ms;
+        store.insert(initial).unwrap();
+        store
+            .input_sent("owner-a", "setup-retry", true, started + 1)
+            .unwrap();
+        store
+            .prepare_setup_code_retry("owner-a", "setup-retry", started + 2)
+            .unwrap();
+        assert!(login.awaiting_new_challenge());
+        assert!(login.authorization_url().is_none());
+        let pending = store
+            .append_output("owner-a", "setup-retry", [], started + 3)
+            .unwrap();
+        assert!(pending.terminal_output_base64.is_empty());
+        login.read_private_output(b"\x1b[2J\x1b[Hhttps://claude.com/cai/oauth/authorize?state=new\r\nPaste code here if prompted > abc123#def456");
+        assert!(!login.awaiting_new_challenge());
+        assert!(login.expects_authorization_code());
+        assert!(login.authorization_url().unwrap().contains("state=new"));
+        let status = store
+            .append_output("owner-a", "setup-retry", [], started + 4)
+            .unwrap();
+        let output = base64::engine::general_purpose::STANDARD
+            .decode(status.terminal_output_base64)
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&output).contains("abc123#def456"));
+        assert_eq!(status.started_at_ms, started);
+        assert!(status.message.is_some());
     }
 
     // MP-08/MP-10/MP-11: OAuth links belong to the kernel interaction.

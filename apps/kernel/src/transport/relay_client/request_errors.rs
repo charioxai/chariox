@@ -21,7 +21,10 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
-        DaemonError::ProviderProfileRefused { .. }
+        DaemonError::ProviderAccountNameTaken { .. }
+        | DaemonError::ProviderLoginCodeIncomplete
+        | DaemonError::ProviderLoginCodeInvalid
+        | DaemonError::ProviderProfileRefused { .. }
         | DaemonError::ExternalRequestFailed { .. }
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }

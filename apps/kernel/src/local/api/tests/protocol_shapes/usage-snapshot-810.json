@@ -1,6 +1,6 @@
 {
-  "local_protocol": 589,
-  "peer_protocol": 195,
+  "local_protocol": 810,
+  "peer_protocol": 360,
   "requests": [
     {
       "GetProviderUsageSnapshot": {}
@@ -25,7 +25,8 @@
               "provider": "claude",
               "availability": "unavailable",
               "source": "claude.native_usage"
-            }
+            },
+            "identity_summary": "work@example.test"
           }
         ]
       }

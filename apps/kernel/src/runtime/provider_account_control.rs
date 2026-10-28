@@ -37,6 +37,7 @@ pub(crate) async fn execute_provider_account_request(
                     provider: profile.provider,
                     profile_id: profile.profile_id,
                     label: profile.label,
+                    identity_summary: profile.identity_summary,
                     usage: profile.usage,
                 })
                 .collect();
@@ -191,6 +192,13 @@ pub(crate) async fn execute_provider_account_request(
             .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
             .await;
         runtime_state.record_waiting_room_change();
+    }
+    if let Err(error) = &response {
+        crate::logging::warn_with_fields(
+            "daemon.account_profile",
+            "Provider account request failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
     }
     response
 }

@@ -103,6 +103,7 @@ fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted
         account_profile: "work".to_string(),
         login_id: "provider-login-1".to_string(),
         state: ProviderLoginProcessState::Running,
+        message: None,
         interaction: None,
         terminal_output_base64: "c2VjcmV0LW91dHB1dA==".to_string(),
         started_at_ms: 1_000,
