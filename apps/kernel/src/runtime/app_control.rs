@@ -190,7 +190,7 @@ impl AppControlService {
         &self.event_pump
     }
 
-    /// Shared across runtime clones: only one deadline delivery lane may run.
+    /// Shared across runtime clones: only one wake scheduler may run.
     pub(crate) fn reserve_wake_scheduler(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         self.wake_scheduler.clone().try_acquire_owned().ok()
     }

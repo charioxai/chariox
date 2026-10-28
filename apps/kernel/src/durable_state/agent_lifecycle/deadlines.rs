@@ -43,7 +43,7 @@ pub(super) fn set(
         if deadline > old.deadline_ms {
             return Err(DaemonError::MachineRequest {
                 code: "agent_deadline_extension_refused".into(),
-                message: "a lane deadline cannot be extended; start a new lane agent".into(),
+                message: "an agent deadline cannot be extended; start a new agent".into(),
             });
         }
         old.deadline_ms = deadline;
@@ -63,7 +63,7 @@ pub(super) fn set(
 }
 
 pub(super) fn reached(
-    db: &Connection,
+    db: &Transaction<'_>,
     room: String,
     agent: String,
     now: u64,
@@ -81,7 +81,11 @@ pub(super) fn reached(
     if stopped {
         value.stopped_at_ms.get_or_insert(now);
     }
-    save(db, &value)
+    let outcome = save(db, &value)?;
+    if stopped {
+        outside::publish_deadline(db, &value)?;
+    }
+    Ok(outcome)
 }
 
 impl DurableKernelStateStore {

@@ -25,7 +25,7 @@ mod model;
 pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState};
 mod producers;
 use producers::identity;
-pub(super) use producers::publish_task;
+pub(super) use producers::{publish_deadline, publish_task};
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     inbox_limit()?;

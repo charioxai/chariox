@@ -707,14 +707,16 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
-### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
+### Agent deadlines (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
 deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
 `AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
 A deadline can shorten, never extend. The kernel rejects new work after it is
 reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
-admission fencing from completed cleanup. A kernel restart enforces overdue
+admission fencing from completed cleanup. The first stopped receipt and the
+outside agent event with `reason:"deadline_reached"` commit together; cleanup
+retries do not repeat the event. A kernel restart enforces overdue
 work on startup. This does not add a relay shape; peer **181** is inherited.
 Leased executors require their own deadline enforcement and are refused here.
 
