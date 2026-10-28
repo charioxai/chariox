@@ -267,9 +267,8 @@ async fn prompt_complete_uses_agent_runtime_projection_when_session_projection_i
 
     let mut spawned_agent_lane_created = false;
     for _ in 0..50 {
-        let projection = router.daemon_health_projection(0).await;
-        if projection
-            .agent_command_lanes
+        let agent_lanes = router.agent_runtime.queue_snapshots().await;
+        if agent_lanes
             .iter()
             .any(|lane| lane.lane_id == spawned_agent_id)
         {
@@ -480,9 +479,8 @@ async fn prompt_cancel_uses_agent_runtime_projection_when_session_projection_is_
 
     let mut spawned_agent_lane_created = false;
     for _ in 0..50 {
-        let projection = router.daemon_health_projection(0).await;
-        if projection
-            .agent_command_lanes
+        let agent_lanes = router.agent_runtime.queue_snapshots().await;
+        if agent_lanes
             .iter()
             .any(|lane| lane.lane_id == spawned_agent_id)
         {
