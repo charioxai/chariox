@@ -471,6 +471,24 @@ test('MP-08/MP-10/MP-11 a Tab display source follows a main-frame commit instead
  plain.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});assert.equal(plain.closed,true);
  await source.close();await plain.close();
 });
+// Chrome's lifecycle firstPaint reaches CDP 40-60 ms after the new document's pixels are on screen.
+test('MP-08/MP-10 the new document\'s first painted readback ends the paint hold before CDP reports the paint',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('unexpected '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true,followsDocument:true});
+ source.valid=()=>!source.closed;source.attested=true;source.child={stdin:{destroyed:false,write:()=>{}}};
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const page=fill=>{const pixels=Buffer.alloc(64*32*4,255);pixels.fill(fill,0,64*4*8);return pixels};
+ const readback=(serial,signature,pixels)=>({width:64,height:32,length:pixels.length,pixels,serial,signature,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()});
+ source.pending=readback(1,'old',page(10));await source.publish();assert.equal(source.sample().document_id,'d1');
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});
+ await source.regions.refresh();await new Promise(resolve=>setTimeout(resolve,2));
+ source.pending=readback(2,'old',page(10));await source.publish();assert.equal(source.sample(),null,'the old picture read back after the commit is not the new document');
+ source.pending=readback(3,'white',Buffer.alloc(64*32*4,255));await source.publish();assert.equal(source.sample(),null,'Chrome\'s white frame is not the new document');
+ source.pending=readback(4,'new',page(90));await source.publish();
+ assert.equal(source.paintHold,null,'the first painted readback ends the hold');assert.equal(source.sample()?.document_id,'d2');assert.equal(source.sample().serial,4);
+ await source.close();
+});
 test('MP-08/MP-10 parking a Tab display source pauses its worker readback and unparking resumes it',()=>{
  return import('./kernel-browser-native.mjs').then(({LinuxCapture})=>{
   const controls=[],source=new LinuxCapture({tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
