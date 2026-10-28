@@ -1410,7 +1410,10 @@ fn provider_catalog_summary_protocol_660_snapshot() {
         ),
         "c64e8d89d6dc13fa96e7e6b6ce3716f56d2da620415669a68527cc213bd097f1"
     );
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, crate::test_support::expected_local_protocol_version());
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
     let wire = serde_json::json!({"GetProviderCatalog":{"summary_only":true,"execution_location":{"kind":"local"}}});
     let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
