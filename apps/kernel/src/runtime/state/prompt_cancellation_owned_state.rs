@@ -406,9 +406,10 @@ impl KernelRuntimeOwnedState {
             .mode
             == crate::config::HistoryArchiveMode::External;
         let (status, failure) = match ending {
-            PromptEnding::Cancelled => {
-                (crate::git_observer::CompletedTurnSettlementStatus::Cancelled, None)
-            }
+            PromptEnding::Cancelled => (
+                crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
+                None,
+            ),
             PromptEnding::InterruptedByRestart(_) => (
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
                 Some(ending.outcome()),

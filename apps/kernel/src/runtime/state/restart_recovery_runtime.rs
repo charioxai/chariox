@@ -272,7 +272,9 @@ impl KernelRuntimeState {
                         None,
                         Some(&agent_id),
                         recipients,
-                        &PromptEnding::InterruptedByRestart(reason).outcome().notice(),
+                        &PromptEnding::InterruptedByRestart(reason)
+                            .outcome()
+                            .notice(),
                     );
                 }
                 Ok(false) => {}
@@ -848,15 +850,13 @@ impl KernelRuntimeState {
                 .map(|run| run.id().to_string())
         };
         self.owned.workflow_cancel_prompt(session_id, prompt)?;
-        let cancellation = self
-            .owned
-            .finalize_local_prompt_ending(
-                session_id,
-                agent_id,
-                prompt.id(),
-                provider_run_id.as_deref(),
-                ending,
-            )?;
+        let cancellation = self.owned.finalize_local_prompt_ending(
+            session_id,
+            agent_id,
+            prompt.id(),
+            provider_run_id.as_deref(),
+            ending,
+        )?;
         if cancellation.released_claim {
             self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         }
@@ -2017,7 +2017,10 @@ mod tests {
             .collect();
         let ended = events.last().expect("the follower hears the turn end");
         assert_eq!(ended["run_state"], "error", "{ended}");
-        assert_eq!(ended["outcome"]["kind"], "interrupted_by_restart", "{ended}");
+        assert_eq!(
+            ended["outcome"]["kind"], "interrupted_by_restart",
+            "{ended}"
+        );
         assert_eq!(ended["outcome"]["retryable"], true, "{ended}");
         assert!(
             ended["outcome"]["reason"]

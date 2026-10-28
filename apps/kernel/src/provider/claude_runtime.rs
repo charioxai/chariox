@@ -1409,10 +1409,7 @@ done
             "last_assistant_message": "Invalid API key · Please run /login"
         }))
         .expect("StopFailure frame");
-        assert_eq!(
-            TurnOutcome::classify("claude", &auth).kind,
-            SignInRequired
-        );
+        assert_eq!(TurnOutcome::classify("claude", &auth).kind, SignInRequired);
     }
 
     #[test]

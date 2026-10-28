@@ -115,8 +115,7 @@ impl KernelRuntimeState {
         message: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
     {
-        let failure =
-            crate::provider::TurnOutcome::classify(started.run.adapter_key(), message);
+        let failure = crate::provider::TurnOutcome::classify(started.run.adapter_key(), message);
         self.start_provider_auth_recovery(
             &started.run,
             message,
