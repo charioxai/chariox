@@ -234,3 +234,5 @@ fn connected_socket_must_match_the_checked_numeric_endpoint() {
         ));
     }
 }
+
+mod wasi;

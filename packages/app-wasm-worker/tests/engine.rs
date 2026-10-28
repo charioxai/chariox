@@ -200,3 +200,44 @@ fn r1_full_allowlist_and_migration_vectors_compile_in_the_pinned_engine() {
     let migration=support::vector("package fixture:migration; world probe { include chariox:app/app-migrations-admission@1.0.0; }",true);
     check(&migration, chariox_app_wit::MIGRATION_WORLD).unwrap();
 }
+
+#[test]
+fn exact_r1_app_admission_surface_links_without_trapping_placeholders() {
+    use chariox_app_wasm_worker::{
+        limits::Limits,
+        worker::{AppWorker, RetryPolicy, WorkerEngine},
+    };
+    let bytes = support::vector(
+        "package fixture:all; world probe { include chariox:app/app-admission@1.0.0; }",
+        true,
+    );
+    chariox_app_wit::check_component(&bytes, APP_WORLD).unwrap();
+    let engine = WorkerEngine::new().unwrap();
+    let component = engine.compile(&bytes, APP_WORLD).unwrap();
+    AppWorker::new(engine, component, Limits::default(), RetryPolicy::default()).unwrap();
+}
+
+#[test]
+fn production_linker_never_exposes_socket_process_environment_or_incoming_http_interfaces() {
+    use chariox_app_wasm_worker::worker::{AppWorker, WorkerEngine};
+    for interface in [
+        "wasi:sockets/tcp@0.2.0",
+        "wasi:sockets/types@0.3.0",
+        "wasi:cli/environment@0.2.0",
+        "wasi:cli/environment@0.3.0",
+        "wasi:cli/exit@0.2.0",
+        "wasi:http/incoming-handler@0.2.0",
+        "wasi:http/handler@0.3.0",
+    ] {
+        let bytes=support::vector(&format!("package fixture:forbidden; world probe {{ import {interface}; export chariox:app/handlers@1.0.0; }}"),true);
+        assert!(chariox_app_wit::check_component(&bytes, APP_WORLD).is_err());
+        let engine = WorkerEngine::new().unwrap();
+        // Bypass R1 intentionally to verify the linker is an independent boundary.
+        let component = wasmtime::component::Component::new(engine.engine(), &bytes).unwrap();
+        let linker = AppWorker::linker(engine.engine()).unwrap();
+        assert!(
+            linker.instantiate_pre(&component).is_err(),
+            "unexpected authority for {interface}"
+        );
+    }
+}

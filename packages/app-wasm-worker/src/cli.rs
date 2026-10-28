@@ -23,6 +23,7 @@ struct Launch {
     installation_id: String,
     release_digest: String,
     manifest: chariox_app_package::v2::ManifestV2,
+    installation_root: Option<String>,
     #[serde(default)]
     limits: Limits,
 }
@@ -128,7 +129,10 @@ fn run() -> wasmtime::Result<()> {
             ready(&launch)?;
             let engine=WorkerEngine::new()?;
             let component=engine.compile(&bounded_read(&launch.component,chariox_app_wit::MAX_COMPONENT_BYTES)?,&launch.manifest.world)?;
-            let worker=AppWorker::new(engine,component,launch.limits,RetryPolicy::from_manifest(&launch.manifest))?;
+            let mut worker=AppWorker::new(engine,component,launch.limits,RetryPolicy::from_manifest(&launch.manifest))?;
+            if let Some(root)=&launch.installation_root {
+                worker=worker.with_directories(crate::wasi::InstallationDirectories::open(Path::new(root))?);
+            }
             let stream=inherited_stream(3)?;
             stream.set_nonblocking(true)?;
             let runtime=tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;

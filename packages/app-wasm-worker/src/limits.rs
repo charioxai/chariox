@@ -125,3 +125,34 @@ impl std::fmt::Display for Stop {
     }
 }
 impl std::error::Error for Stop {}
+
+/// Epochs charge only time in the current guest task, excluding broker waits.
+pub(crate) fn invocation_limits(store: &mut wasmtime::Store<crate::host::Host>, limits: Limits) {
+    use std::time::Duration;
+    use wasmtime::UpdateDeadline;
+    let slice = Duration::from_millis(limits.slice_ms);
+    store.epoch_deadline_callback(move |store| {
+        let attribution = &store.data().attribution;
+        if let Some(scope) = attribution.current() {
+            if scope.reason().is_none() && tokio::time::Instant::now() >= scope.deadline() {
+                scope.cancel("DEADLINE_EXCEEDED");
+            }
+            // A resumed guest may first need to process cancellation and free
+            // frames. Epoch ticks elapsed during a broker wait do not revoke
+            // that grace; the first cancellation owns its fixed start time.
+            if let Some(reason) =
+                scope.expired_cancellation(Duration::from_millis(limits.cancel_grace_ms))
+            {
+                return Err(Stop(reason).into());
+            }
+        }
+        if attribution
+            .slice_started()
+            .is_some_and(|started| started.elapsed() >= slice)
+        {
+            return Err(Stop("APP_CPU_SLICE").into());
+        }
+        Ok(UpdateDeadline::Yield(1))
+    });
+    store.set_epoch_deadline(1);
+}
