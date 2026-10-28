@@ -9,23 +9,17 @@ pub(super) struct WorkspacePreflight {
     pub accessible_folders: BTreeSet<String>,
 }
 
+#[derive(Default)]
 pub(crate) struct CheckWorkspace {
-    pub(super) deadline: Instant,
     measured: Option<Result<WorkspacePreflight, ()>>,
 }
 impl CheckWorkspace {
-    pub(super) fn new(deadline: Instant) -> Self {
-        Self {
-            deadline,
-            measured: None,
-        }
-    }
-
     pub(super) fn for_requirement(
         &mut self,
         config: &crate::config::DaemonConfig,
         env: &ProjectEnvironment,
         r: &Requirement,
+        deadline: Instant,
     ) -> Result<(Vec<PathBuf>, bool), ()> {
         // Files already perform descriptor-pinned metadata and content reads in
         // their own worker. Project bindings/accounts do not consume any roots.
@@ -46,7 +40,6 @@ impl CheckWorkspace {
         if !needs_roots && matches!(r.scope, RequirementScope::Project) {
             return Ok((vec![], true));
         }
-        let deadline = self.deadline;
         let measured = self.measured.get_or_insert_with(|| {
             super::check_files::workspace(config, env, deadline).map_err(|_| ())
         });

@@ -64,9 +64,12 @@ pub(crate) fn check_requirement(
         target,
         operation,
         baseline,
-        &mut super::check_workspace::CheckWorkspace::new(deadline),
+        deadline,
+        &mut super::check_workspace::CheckWorkspace::default(),
     )
 }
+// Keep the operation identity, deadline and mutable probe state explicit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_requirement_in_workspace(
     ctx: &EnvironmentCheckContext,
     env: &ProjectEnvironment,
@@ -74,9 +77,9 @@ pub(crate) fn check_requirement_in_workspace(
     target: &EnvironmentTargetBinding,
     operation: &str,
     baseline: &mut BTreeMap<String, String>,
+    deadline: Instant,
     workspace: &mut super::check_workspace::CheckWorkspace,
 ) -> MachineObservation {
-    let deadline = workspace.deadline;
     let mut facts = inventory::facts();
     let budget = || {
         outcome(
@@ -103,7 +106,7 @@ pub(crate) fn check_requirement_in_workspace(
                 "This requirement is unavailable on this platform",
             );
         }
-        let (roots, folder_accessible) = match workspace.for_requirement(&ctx.config, env, r) {
+        let (roots, folder_accessible) = match workspace.for_requirement(&ctx.config, env, r, deadline) {
             Ok(measured) => measured,
             Err(()) => return outcome(NeedsYourInput, "workspace_preflight_unavailable", "Workspace metadata could not be checked within the probe budget; retry when the folder is available"),
         };
