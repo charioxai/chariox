@@ -332,7 +332,7 @@ fn queued_mutations_recheck_revoked_authorization_before_stdio() {
                     "tab-a",
                     "doc-tab-a",
                     "backend:1",
-                    &BrowserLocatorAction::Click,
+                    &BrowserLocatorAction::Click, None,
                     100,
                 )
             } else {

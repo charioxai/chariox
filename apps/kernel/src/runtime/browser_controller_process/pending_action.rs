@@ -24,6 +24,7 @@ impl StdioOwnership {
         document_id: &str,
         node_ref: &str,
         action: &BrowserLocatorAction,
+        agent_id: Option<&str>,
         timeout_ms: u64,
         signal: &cancellation::CancellationSignal,
     ) -> Result<PendingAction, String> {
@@ -72,7 +73,7 @@ impl StdioOwnership {
                 method: "browser.action",
                 params: &serde_json::json!({
                     "target_id":target_id,"document_id":document_id,"node_ref":node_ref,
-                    "action":action.controller_value(),"timeout_ms":timeout_ms,
+                    "action":action.controller_value(),"agent_id":agent_id,"timeout_ms":timeout_ms,
                 }),
             },
         )
