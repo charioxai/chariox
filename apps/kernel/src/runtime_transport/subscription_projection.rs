@@ -99,7 +99,7 @@ mod tests {
             active_worker_provider_run_id: None,
             relay_url: None,
             relay_token: None,
-            relay_peer_protocol_version: Some(214),
+            relay_peer_protocol_version: Some(240),
         }));
         before.session.set_agents(vec![agent.clone()]);
         let mut after = before.clone();

@@ -204,7 +204,7 @@ await mkdir(root, {recursive: false, mode: 0o700});
 await mkdir(out, {recursive: true, mode: 0o700});
 let failed;
 try {
-    assert.equal(Number(execFileSync(kernel, ['--print-local-daemon-protocol-version'], {encoding: 'utf8'}).trim()), Number(process.env.CHARIOX_WORKSPACE_PROTOCOL ?? 625));
+    assert.equal(Number(execFileSync(kernel, ['--print-local-daemon-protocol-version'], {encoding: 'utf8'}).trim()), Number(process.env.CHARIOX_WORKSPACE_PROTOCOL ?? 638));
     await record('identity', {head: process.env.CHARIOX_WORKSPACE_KERNEL_HEAD, kernelSha256: sha(await readFile(kernel)), tuiSha256: sha(await readFile(binary)), driverSha256: sha(await readFile(new URL(import.meta.url))), runtimeDriverSha256: sha(await readFile(new URL('./workspace-runtime.mjs', import.meta.url))), provider: 'codex', model: 'gpt-6-luna', effort: 'low'});
     await launchBrowser();
     const source = await runtime('source'), target = await runtime('target');

@@ -1,6 +1,6 @@
 {
-  "local_protocol": 625,
-  "peer_protocol": 229,
+  "local_protocol": 638,
+  "peer_protocol": 240,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -147,7 +147,7 @@
     },
     {
       "result": "lease_created",
-      "relay_peer_protocol_version": 229,
+      "relay_peer_protocol_version": 240,
       "lease": {
         "id": "lease",
         "home_kernel_id": "home",

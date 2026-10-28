@@ -5654,7 +5654,7 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
-### Durable agent Move peer carrier (608/214)
+### Durable agent Move peer carrier (638/240)
 
 MP-08 / MP-09 / MP-10 / MP-11: `AgentMove` peer messages identify the home,
 source, target, owner, operation generation, and pinned kernel keys. They

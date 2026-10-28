@@ -123,7 +123,7 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         active_worker_provider_run_id: None,
         relay_url: None,
         relay_token: None,
-        relay_peer_protocol_version: Some(214),
+        relay_peer_protocol_version: Some(240),
     };
     agent.set_remote_execution(Some(remote.clone()));
     app.agents().restore_agent(agent.clone());

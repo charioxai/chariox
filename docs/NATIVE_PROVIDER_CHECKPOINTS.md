@@ -59,7 +59,7 @@ and resume failure neither clears that state nor substitutes another provider.
 A successful official resume and accepted turn retire the constraint, preserving
 ordinary recovery behavior for subsequent work. Existing calls without a binding
 retain their previous behavior. Durable Move carries protected artifacts through
-the authenticated 608/214 peer contract described below; generic client launch
+the authenticated 638/240 peer contract described below; generic client launch
 requests continue to carry metadata only.
 
 The ignored `live_codex_native_checkpoint_driver` test exports/imports private
@@ -79,7 +79,7 @@ remain separate acceptance cells.
 
 ## Durable Move and Return
 
-MP-08 / MP-09 / MP-10 / MP-11: protocol 608/214 composes this adapter with
+MP-08 / MP-09 / MP-10 / MP-11: protocol 638/240 composes this adapter with
 Project transfer. The home kernel journals one generation per agent. It fences
 prompt and provider admission, confirms source teardown, and captures the native
 checkpoint together with the current Project. Encrypted peer requests carry

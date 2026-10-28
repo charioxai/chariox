@@ -376,4 +376,6 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 637;
+/// Allocated 638/240 adds durable agent Move and Return: the `AgentMove` peer carrier, `MoveAgentToLocal` and its
+/// `abort_pending` cancellation, and Project materialization on the target.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 638;

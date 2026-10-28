@@ -139,11 +139,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn mk03_preflight_and_abort_625_229_shape_and_hash() {
-        let bytes = include_bytes!("protocol-625-229.json");
+    fn mk03_preflight_and_abort_638_240_shape_and_hash() {
+        let bytes = include_bytes!("protocol-638-240.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "e24cc33fd81e9b636111c3e9976290851bfe7d889ae2454d76328ccefb620d0d"
+            "b9ee93ca2d30beccce8e7611a4ae131258bb930529c039d5788ec7e8041e9ef1"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
