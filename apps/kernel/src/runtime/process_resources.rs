@@ -353,10 +353,22 @@ fn memory_budget() -> Option<(u64, u64, Option<u64>)> {
                         .ok()
                         .and_then(|value| value.trim().parse::<u64>().ok())
                     {
+                        // Inactive file cache is reclaimable by this cgroup;
+                        // charging it as unavailable would kill healthy trees
+                        // after a build even with ample working-set headroom.
+                        let reclaimable = std::fs::read_to_string(ancestor.join("memory.stat"))
+                            .ok()
+                            .and_then(|text| {
+                                text.lines().find_map(|line| {
+                                    line.strip_prefix("inactive_file ")
+                                        .and_then(|value| value.parse::<u64>().ok())
+                                })
+                            })
+                            .unwrap_or(0);
                         available = Some(
                             available
                                 .unwrap_or(u64::MAX)
-                                .min(limit.saturating_sub(used)),
+                                .min(limit.saturating_sub(used.saturating_sub(reclaimable))),
                         );
                     }
                 }
