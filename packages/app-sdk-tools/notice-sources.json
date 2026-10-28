@@ -1,0 +1,84 @@
+[
+  {
+    "name": "bytecodealliance-wasm-tools-LICENSE-MIT",
+    "url": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e22db44da4eaf17a0e46ec55b911c7539589a3cc/LICENSE-MIT",
+    "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "packages": [
+      "wit-dylib-ffi"
+    ]
+  },
+  {
+    "name": "bytecodealliance-wasmtime-LICENSE",
+    "url": "https://raw.githubusercontent.com/bytecodealliance/wasmtime/2c2970205fe05d6bbf15b9bff6f1e67874b2db5c/LICENSE",
+    "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5",
+    "packages": [
+      "wasi-preview1-component-adapter-provider"
+    ]
+  },
+  {
+    "name": "WebAssembly-wasi-libc-LICENSE",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE",
+    "sha256": "2711a8b5a5cdfef0e639f96c1aca12ae23d7d64a02d0507f1bdf14d2b27bbc3a"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-LICENSE-MIT",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-MIT",
+    "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-LICENSE-APACHE",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-APACHE",
+    "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-LICENSE-APACHE-LLVM",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/LICENSE-APACHE-LLVM",
+    "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-libc-top-half-musl-COPYRIGHT",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/libc-top-half/musl/COPYRIGHT",
+    "sha256": "f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af"
+  },
+  {
+    "name": "llvm-llvm-project-LICENSE.TXT",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/LICENSE.TXT",
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
+  },
+  {
+    "name": "llvm-llvm-project-compiler-rt-LICENSE.TXT",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/compiler-rt/LICENSE.TXT",
+    "sha256": "1a8f1058753f1ba890de984e48f0242a3a5c29a6a8f2ed9fd813f36985387e8d"
+  },
+  {
+    "name": "llvm-llvm-project-libcxx-LICENSE.TXT",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libcxx/LICENSE.TXT",
+    "sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+  },
+  {
+    "name": "llvm-llvm-project-libcxxabi-LICENSE.TXT",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libcxxabi/LICENSE.TXT",
+    "sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+  },
+  {
+    "name": "llvm-llvm-project-libunwind-LICENSE.TXT",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/4434dabb69916856b824f68a64b029c67175e532/libunwind/LICENSE.TXT",
+    "sha256": "b5efebcaca80879234098e52d1725e6d9eb8fb96a19fce625d39184b705f7b6d"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-libc-bottom-half-cloudlibc-LICENSE",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/libc-bottom-half/cloudlibc/LICENSE",
+    "sha256": "c8b789cf5a746611e6300a0cc7750dbf92b61912a709d04e639245f7290656d0"
+  },
+  {
+    "name": "WebAssembly-wasi-libc-fts-musl-fts-COPYING",
+    "url": "https://raw.githubusercontent.com/WebAssembly/wasi-libc/161b3195fc2558d2b1ba3eb9ffae3b2b47407623/fts/musl-fts/COPYING",
+    "sha256": "55af87e4017668f54467a3380e7ebbac5e672d8c763bfe95e6fc882a6fdc4046"
+  },
+  {
+    "name": "wasi-libc-source-notices.txt",
+    "archive": true,
+    "url": "https://codeload.github.com/WebAssembly/wasi-libc/tar.gz/161b3195fc2558d2b1ba3eb9ffae3b2b47407623",
+    "sha256": "3bc20d349e6f9fbc4602fb29c80706a25b2875569c3320b11f7f4cf291903f9c"
+  }
+]
