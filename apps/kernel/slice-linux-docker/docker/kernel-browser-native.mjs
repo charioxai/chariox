@@ -115,7 +115,7 @@ export class LinuxCapture {
  followDocument(documentId){
   this.tab={...this.tab,document_id:documentId};
   clearTimeout(this.paintHold?.timer);
-  const hold={document:documentId,at:performance.timeOrigin+performance.now(),before:this.seenSignature};hold.timer=setTimeout(()=>this.endPaintHold(hold),PAINT_HOLD_MS);hold.timer.unref?.();this.paintHold=hold;
+  const hold={document:documentId,at:performance.timeOrigin+performance.now()};hold.timer=setTimeout(()=>this.endPaintHold(hold),PAINT_HOLD_MS);hold.timer.unref?.();this.paintHold=hold;
   this.retireFrames();
   this.timing('native_followed frame_navigated',performance.timeOrigin+performance.now());
   for(const fn of this.followers)fn(documentId);
@@ -126,11 +126,13 @@ export class LinuxCapture {
   clearTimeout(hold.timer);this.paintHold=null;this.paintedAt=performance.timeOrigin+performance.now();
   this.timing('native_paint_hold_end',this.paintedAt);this.wake(true);
  }
- // The lifecycle paint reaches CDP 40-60 ms after Chrome shows it. A readback captured after the commit that is neither
- // the picture before it (Chrome's paint holding) nor one colour (Chrome's white) is the new document's paint.
+ // The lifecycle paint reaches CDP 40-60 ms after Chrome shows it. The commit's own readback is what Chrome shows until
+ // the new document paints (the old page, or white); a later readback that differs from it and is not one colour is
+ // that paint. (The last readback before the commit is no baseline: an omnibox closing or a link's focus ring changes it.)
  painted(hold,raw){
-  if(raw.captured_ms<hold.at||raw.signature===hold.before){hold.before=raw.signature;return false;}
-  if(oneColour(raw.pixels))return false;
+  if(raw.captured_ms<hold.at)return false;
+  if(hold.before===undefined){hold.before=raw.signature;return false;}
+  if(raw.signature===hold.before||oneColour(raw.pixels))return false;
   clearTimeout(hold.timer);this.paintHold=null;this.paintedAt=raw.captured_ms;
   this.timing('native_paint_hold_end pixels',performance.timeOrigin+performance.now());
   this.browser?.documentPainted?.(this.tab.target_id,hold.document);
@@ -215,7 +217,6 @@ export class LinuxCapture {
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
    if(this.paintHold?!this.painted(this.paintHold,raw):raw.captured_ms<this.paintedAt){raw.release?.();this.publishingRaw=null;continue;}
-   if(!this.paintHold)this.seenSignature=raw.signature;
    // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
    // last frame, never Chrome's pixels; its popup stream shows them over the page. Checked live
    // after the capture: a readback holding the list's pixels always sees it open.
