@@ -340,16 +340,19 @@ const addTodo = chariox.action({
   params: { text: { type: "string", minLength: 1 }, due: { type: "string", format: "date", optional: true } },
   effect: "write",            // "read" | "write" | "approval"
   returns: { id: "string" },
-}, async ({ text, due }) => {
-  const todo = await chariox.call("todos.add", { text, due });  // same path as the button
+}, async ({ text, due }, caller) => {
+  const todo = await caller.call("todos.add", { text, due });
   renderList();
   return { id: todo.id };
 });
 button.onclick = () => addTodo({ text: input.value });  // the user path uses the wrapped function
 
-// 2. Markup for the simple cases: Chariox derives name, params and effect
-//    from the form, and runs it by submitting the form.
-<form data-chariox-action="rename_list" data-chariox-effect="write"> … </form>
+// 2. Markup supplies the schema; an explicit handler supplies completion.
+// <form id="rename" data-chariox-action="rename_list" data-chariox-effect="write"> … </form>
+chariox.form(document.querySelector('#rename'), async (input, caller) => {
+  await caller.call('rename_list', input);
+  await caller.call('refresh');
+});
 
 // What the agent reads: a compact state the view publishes.
 chariox.view.state(() => ({ list: current.name, todos: current.todos.map(t => ({ id: t.id, text: t.text, done: t.done })) }));
@@ -369,10 +372,15 @@ exists in both directions already: the page calls the kernel through the
 `app_view` commands (`{op: "reload", …}`, protocol 356) which the controller
 applies to the Tab with `Runtime.evaluate`
 (`browser-controller-apps.mjs:26,130`; `docs/PROTOCOL.md:2880-2888`). An
-`{op: "action", name, params, actor}` command is the addition. The handler then calls
-`window.chariox.call(tool)` exactly as a click does, with
-`Actor::Agent` attached (`app_view_runtime.rs:900-930` already does this
-for driven views). So:
+agent invocation creates an opaque controller-owned token bound to its actor,
+view and document. The handler receives `(input, caller)` and uses
+`caller.call(tool, input)`; the token travels in the existing call-id string.
+It remains valid until the returned promise settles, including after a deadline.
+An unknown or retired token fails definitively. Ambient `chariox.call` always
+acts as the human, including while an agent action waits. Registered async forms
+await the same handler on human submit and agent invoke; unregistered annotated
+forms are refused. Another agent action on that Tab gets `view_busy` until the
+handler settles. So:
 
 - the backend never learns a new concept; it sees tool calls with an actor;
 - the user sees the change live in the same Tab, because the view that
@@ -701,7 +709,7 @@ runtime (R) and the agent-side UI work (A) do not depend on each other.
 | L2 | **C SDK** (task helpers, await macros, JSON, request builders) + template; C++ header after | M (+S) | R1 |
 | D1 | Dev channel: `channel` on installations, dev identity, `/app register`, kernel reload of dev views, measured save→serve times | M | — |
 | D2 | `AppDevPush` kernel operation + agent tool; `/app dev` on top | M | D1 |
-| A1 | View SDK: `chariox.action`, `data-chariox-action`, `view.state`, `view.changed`; action manifest in the package | M | — |
+| A1 | View SDK: `chariox.action`, `chariox.form`, `data-chariox-action`, `view.state`, `view.changed`; action manifest in the package | M | — |
 | A2 | Kernel action bridge: run actions in the Tab via the CDP binding with `Actor::Agent`; per-view queue; `app_<local>_<action>`, `_state`, `_batch` on the runtime MCP; protocol bump | L | A1 |
 | A3 | Headless Tab mode in the kernel browser + cost measurement + idle rules | M | A2 |
 | A4 | Dev-mode discovery: `/app actions`, "as the agent sees it" panel, undeclared-control warnings | S | A1, D1 |
