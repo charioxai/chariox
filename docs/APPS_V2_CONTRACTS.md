@@ -204,7 +204,11 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 
 An action handler receives `(input, caller)`. Use `await caller.call(method, input)`
 for backend calls belonging to that invocation. The function returned by
-`chariox.action` runs the same handler with a human caller when the UI calls it.
+`chariox.action` runs the same handler with the caller of the originating UI
+input. An agent's claimed browser click or registered form submission retains
+that agent through awaited backend calls; a person's concurrent input gets its
+own human caller. Browser input acknowledges dispatch while the view keeps its
+agent handler single flight until the returned promise settles.
 Ambient `chariox.call` always acts as the human, including while an agent handler
 waits. Page code never supplies an actor identity. An invocation token travels
 inside the existing call id; unknown or retired tokens fail with
