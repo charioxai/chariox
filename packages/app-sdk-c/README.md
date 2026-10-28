@@ -157,3 +157,13 @@ R6 (broker-backed WASI, HTTP and data/tmp scopes). Repeat S1-01 and S1-06 on
 ordinary/managed Linux and macOS with the real clients, relay and provider.
 Source builds, admission and sanitizer results do not close those acceptance
 rows or the MP-08 / MP-09 / MP-10 / MP-11 behavioural matrix.
+
+
+## Browser UI handlers
+
+This SDK dispatches backend WIT handlers. Browser UI actions receive
+`(input, caller)` and use `await caller.call(method, input)` for backend work
+belonging to that invocation. Ambient `chariox.call` always acts as the human.
+Register async forms with `chariox.form(element, async (input, caller) => {...})`;
+annotated forms without registration are refused. See the
+[view caller and form contract](../app-wit/README.md#view-callers-and-forms).
