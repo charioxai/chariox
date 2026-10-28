@@ -39,8 +39,9 @@ int cx_openh264_available(void) {pthread_once(&once,load);return ready;}
  * macroblocks and a bits-per-activity model learned from encoded frames.
  * An IDR (a new document or geometry) may spend CX_IDR_FRAMES of the rate: at
  * 1.5 frames a page IDR sits at QP 51 and cannot be read; the frames after it
- * repay the VBV before they refine. */
-struct Encoder {ISVCEncoder *e;SEncParamExt p;uint8_t *previous;double fill,*model;int qp,max_qp;};
+ * repay the VBV before they refine. A key taken before the new document painted (Chrome shows
+ * white or old tiles until then) leaves the budget to the first changed frame after it: a cap, not a spend. */
+struct Encoder {ISVCEncoder *e;SEncParamExt p;uint8_t *previous;double fill,*model;int qp,max_qp,fresh;};
 void cx_openh264_close(void *encoder) {
     struct Encoder *h=encoder;
     if (h) {(*h->e)->Uninitialize(h->e);destroy_encoder(h->e);free(h->previous);free(h);}
@@ -132,6 +133,8 @@ void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,d
     h->fill=1.5*frame_bits(h);
     return h;
 }
+/* MP-08/MP-10 (P2): the picture is still coarse; an unchanged readback would refine it. */
+int cx_openh264_refining(void *encoder) {return ((struct Encoder *)encoder)->qp>CX_QP_MIN;}
 /* The largest IDR this encoder means to send: its budget plus the model's error. */
 int cx_openh264_key_bytes(void *encoder) {return (int)(1.25*CX_IDR_FRAMES*frame_bits(encoder)/8);}
 int cx_openh264_rate(void *encoder,int bitrate) {
@@ -157,6 +160,8 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     int intra=!sequence||changed*5>=blocks*4;
     double rate=h->model[!intra];
     h->fill=sequence?fmin(1.5*frame_bits(h),h->fill+frame_bits(h)):CX_IDR_FRAMES*frame_bits(h);
+    if (!sequence) h->fresh=1;
+    else if (changed&&h->fresh&&sequence<=30) {h->fresh=0;h->fill=fmax(h->fill,CX_IDR_FRAMES*frame_bits(h));}
     int qp;
     if (!changed) {
         /* Refinement of an unchanged picture: its cost is the coarse reference, not its activity, so it

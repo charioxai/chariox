@@ -245,7 +245,8 @@ export class LinuxCapture {
    // Only a raster from the current protection can satisfy delivery/startup.
    if(!this.valid()||revision!==this.regionRevision||raw.captured_ms<this.regions.beforeAt){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;this.wake(true);continue;}
    this.previousRegions=regions;
-   this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();
+   // An unchanged readback (the worker refining a coarse picture) is no change: it neither extends motion nor the repair's quiet window.
+   if(raw.identical!==true){this.motionStreak=performance.now()-this.changedAt<90?this.motionStreak+1:1;this.changedAt=performance.now();}
    this.timing('native_xshm_capture',raw.captured_ms); // includes bounded pipe delivery and source fence.
    this.latest?.raw.release?.();
    this.latest={raw,revision,signature:raw.signature,data_base64:raw.signature,width:raw.width,height:raw.height,serial:raw.serial,captured_ms:raw.captured_ms,published_ms:performance.timeOrigin+performance.now(),motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id};

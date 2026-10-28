@@ -409,6 +409,7 @@ const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
 // audit (pixelflux pace.rs). Independently implemented here; no upstream
 // code copied. Input wakes retain their immediate readback admission.
 const READBACK_MIN: Duration = Duration::from_millis(3);
+const REFINE_INTERVAL: Duration = Duration::from_micros(16_667);
 pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
     dirty && (wake || elapsed >= READBACK_MIN)
 }
@@ -631,7 +632,9 @@ pub(super) fn run() -> Result<(), String> {
     let mut damage_at = epoch();
     // MP-08/MP-10: video encoding runs on its own thread so readback continues
     // during x264; capture damage queues while that thread holds the sessions.
-    let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root.clone())));
+    let sessions = Sessions::new(w, h, root.clone());
+    let refine = sessions.refine.clone();
+    let sessions = std::sync::Arc::new(std::sync::Mutex::new(sessions));
     let mut pending_rows = 0u8;
     let (codec_tx, codec_rx) =
         std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64, Route)>(4);
@@ -733,6 +736,13 @@ pub(super) fn run() -> Result<(), String> {
             }
             dirty = true;
             damaged = Instant::now();
+        }
+        // MP-08/MP-10 (P2): one unchanged readback per frame interval while the encoded picture is coarse.
+        if !dirty
+            && last.elapsed() >= REFINE_INTERVAL
+            && refine.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            (dirty, refresh) = (true, true);
         }
         // L3: a leased readback waits for the kernel's credit (delivered).
         let held = {

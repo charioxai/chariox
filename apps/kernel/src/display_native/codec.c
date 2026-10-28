@@ -52,6 +52,7 @@ int cx_openh264_available(void);
 void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,double *model);
 int cx_openh264_rate(void *encoder,int bitrate);
 int cx_openh264_key_bytes(void *encoder);
+int cx_openh264_refining(void *encoder);
 int cx_openh264_restart(void *encoder);
 int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[3],int width,int height,uint64_t sequence,uint8_t **packet,size_t *capacity,int *key);
 void cx_openh264_close(void *encoder);
@@ -212,6 +213,8 @@ uint64_t cx_codec_guard_decodes(struct Codec *c) {return c->guard_decodes;}
 int cx_codec_reduced(struct Codec *c) {return c->row_count==1&&c->enc_width!=c->width;}
 int cx_codec_backend(struct Codec *c) {return c->hardware_requested?(c->device&&!c->fallback?1:2):0;}
 int cx_codec_openh264(struct Codec *c) {return c->openh264;}
+/* MP-08/MP-10 (P2): a whole-frame OpenH264 picture above the QP floor refines on unchanged readbacks. */
+int cx_codec_refining(struct Codec *c) {return c->row_count==1&&c->rows[0].openh264&&cx_openh264_refining(c->rows[0].openh264);}
 static int hardware_open(struct Codec *c,struct Row *row,int h,int rate) {
     if(!c->device||c->fallback)return -1;
     const AVCodec *encoder=avcodec_find_encoder_by_name("h264_vaapi");

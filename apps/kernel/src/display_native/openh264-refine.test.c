@@ -41,7 +41,16 @@ int main(void) {
     assert(refined_at>0&&refined_at<=12);
     /* ...and the whole run stays within the IDR budget plus the rate, with one frame of slack. */
     assert(total<=(CX_IDR_FRAMES+frames+1)*frame_bytes);
-    cx_openh264_close(h);free(packet);free(y);free(u);free(v);
+    cx_openh264_close(h);
+    /* A key of the old (blank) window followed by the new document's paint: the paint gets the budget instead. */
+    uint8_t *blank=malloc((size_t)width*height);assert(blank);memset(blank,235,(size_t)width*height);
+    uint8_t *blank_planes[3]={blank,u,v};
+    h=cx_openh264_open(width,height,bitrate,1,0,model);assert(h);
+    assert(cx_openh264_encode(h,blank_planes,strides,width,height,0,&packet,&capacity,&key)>0&&key);
+    int painted=cx_openh264_encode(h,planes,strides,width,height,1,&packet,&capacity,&key);
+    printf("MP-08/MP-10 first paint after a blank key qp=%d bytes=%d\n",h->qp,painted);fflush(stdout);
+    assert(painted>0&&!key&&h->qp<CX_QP_MAX);
+    cx_openh264_close(h);free(packet);free(blank);free(y);free(u);free(v);
     puts("MP-08/MP-10 OpenH264 page IDR budget and refinement PASS");
     return 0;
 }
