@@ -200,7 +200,7 @@ async fn a_view_that_reloaded_onto_a_newer_generation_stops_the_call_before_the_
     rig.bind(&rig.session.clone(), GENERATION + 1);
     let refused = rig
         .runtime
-        .invoke_declared(&rig.run, &rig.agent, &context, "add_todo", json!({}))
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "add_todo", json!({}))
         .await
         .unwrap_err();
     assert_eq!(refused.code, "APP_VIEW_STALE");
@@ -237,7 +237,7 @@ async fn an_undeclared_action_or_bad_input_is_refused_before_the_page() {
         let context = &context;
         async move {
             runtime
-                .invoke_declared(run, agent, context, name, input)
+                .invoke_declared(run.id(), agent, context, name, input)
                 .await
                 .unwrap_err()
         }
@@ -278,7 +278,7 @@ async fn an_approval_action_asks_the_user_and_a_denial_never_reaches_the_page() 
     let context = rig.context(declared());
     let invoke = rig
         .runtime
-        .invoke_declared(&rig.run, &rig.agent, &context, "wipe", json!({}));
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
     let (outcome, ()) = tokio::join!(invoke, async {
         let asked = pending_approval(&rig).await.expect("the user is asked");
         assert!(
@@ -301,7 +301,7 @@ async fn an_approved_action_goes_on_to_the_page() {
     let context = rig.context(declared());
     let invoke = rig
         .runtime
-        .invoke_declared(&rig.run, &rig.agent, &context, "wipe", json!({}));
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
     let (outcome, ()) = tokio::join!(invoke, async {
         let asked = pending_approval(&rig).await.expect("the user is asked");
         rig.runtime
@@ -323,7 +323,7 @@ async fn a_revoked_grant_stops_the_call_before_the_page() {
         .unwrap();
     let refused = rig
         .runtime
-        .invoke_declared(&rig.run, &rig.agent, &context, "add_todo", json!({}))
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "add_todo", json!({}))
         .await
         .unwrap_err();
     assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED");
@@ -372,9 +372,9 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
     let context = rig.context(declared());
     let action = action("wipe", UiActionEffect::Approval);
     let input = json!({});
-    let approve = rig
-        .runtime
-        .approve_view_action(&rig.run, &rig.agent, &context, &action, &input);
+    let approve =
+        rig.runtime
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input);
     let (outcome, lasting) = tokio::join!(approve, async {
         let asked = pending_approval(&rig)
             .await
@@ -399,7 +399,7 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
     let repeated = tokio::time::timeout(
         std::time::Duration::from_millis(200),
         rig.runtime
-            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input),
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input),
     )
     .await;
     assert!(
@@ -417,7 +417,7 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
     assert!(tokio::time::timeout(
         std::time::Duration::from_millis(200),
         rig.runtime
-            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input)
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
     )
     .await
     .unwrap()
@@ -430,16 +430,16 @@ async fn an_existing_session_action_approval_skips_the_next_prompt_and_revocatio
     rig.grant().await;
     assert_eq!(
         rig.runtime
-            .approve_view_action(&rig.run, &rig.agent, &context, &action, &input)
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input)
             .await
             .unwrap_err()
             .code,
         "AGENT_APP_NOT_GRANTED"
     );
     let context = rig.context(declared());
-    let approve = rig
-        .runtime
-        .approve_view_action(&rig.run, &rig.agent, &context, &action, &input);
+    let approve =
+        rig.runtime
+            .approve_view_action(rig.run.id(), &rig.agent, &context, &action, &input);
     let (outcome, ()) = tokio::join!(approve, async {
         let asked = pending_approval(&rig)
             .await
@@ -459,9 +459,9 @@ async fn decide_action_approval(
     choice: &str,
 ) -> Result<(), ViewError> {
     let input = json!({});
-    let approve = rig
-        .runtime
-        .approve_view_action(&rig.run, &rig.agent, context, action, &input);
+    let approve =
+        rig.runtime
+            .approve_view_action(rig.run.id(), &rig.agent, context, action, &input);
     let (outcome, ()) = tokio::join!(approve, async {
         let asked = pending_approval(rig)
             .await
