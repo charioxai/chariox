@@ -508,6 +508,15 @@ pub(super) fn publish(
     Ok(())
 }
 
+pub(crate) struct TerminalCompletion {
+    pub session: String,
+    pub agent: Option<String>,
+    pub terminal: String,
+    pub command: Option<u64>,
+    pub offset: u64,
+    pub exit_code: Option<u32>,
+}
+
 impl DurableKernelStateStore {
     pub(crate) fn outside_mutate(&self, mutation: Mutation) -> Result<(), DaemonError> {
         self.agent_lifecycle(Operation::Outside(mutation))?;

@@ -18,6 +18,7 @@ fn scratch(name: &str) -> Scratch {
 }
 fn request(index: usize) -> DurableWriteRequest {
     DurableWriteRequest {
+        observation: None,
         operation: DurableWriteOperation::Event {
             event_id: format!("event-{index}"),
             kind: "test".into(),
@@ -60,7 +61,7 @@ fn a_durable_batch_collects_only_ready_writes_and_keeps_its_bound() {
     assert_eq!(index, DURABLE_WRITE_BATCH_LIMIT - 1);
 }
 
-fn worker_progress_while_commit_is_held(force_blocked_worker: bool) -> bool {
+fn worker_progress_while_commit_is_held(force_blocked_worker: bool, typed: bool) -> bool {
     let scratch = scratch("worker");
     let mut store = DurableKernelStateStore::open(scratch.0.join("kernel.db")).unwrap();
     let (sender, receiver) = mpsc::sync_channel(16);
@@ -71,12 +72,22 @@ fn worker_progress_while_commit_is_held(force_blocked_worker: bool) -> bool {
     let path = store.path.clone();
     let worker = std::thread::spawn(move || {
         let mut connection = Connection::open(path).unwrap();
-        let DurableWriterRequest::Ordinary(first) = receiver.recv().unwrap() else {
-            panic!("ordinary write expected")
-        };
+        let first = receiver.recv().unwrap();
         entered.send(()).unwrap();
         stalled.recv().unwrap();
-        commit_durable_write_batch(&mut connection, vec![first], &observed);
+        match first {
+            DurableWriterRequest::Ordinary(first) => {
+                commit_durable_write_batch(&mut connection, vec![first], &observed)
+            }
+            DurableWriterRequest::AgentLifecycle(request) => {
+                agent_lifecycle::execute(
+                    &mut connection,
+                    *request,
+                    &agent_lifecycle::faults::AgentFaults::default(),
+                );
+            }
+            _ => panic!("test request expected"),
+        }
         run_durable_writer(connection, receiver, observed);
     });
     store.writer = Arc::new(DurableStateWriter {
@@ -96,11 +107,17 @@ fn worker_progress_while_commit_is_held(force_blocked_worker: bool) -> bool {
         .unwrap();
     let regression = force_blocked_worker.then(|| blocking_context.handle().clone());
     let writer = runtime.spawn(async move {
-        if let Some(handle) = regression {
-            let _entered = handle.enter();
-            store.append_event("slow", None, serde_json::json!({}))
+        let _entered = regression.as_ref().map(|handle| handle.enter());
+        if typed {
+            store
+                .agent_lifecycle(agent_lifecycle::Operation::Outside(
+                    agent_lifecycle::outside::Mutation::RunStates { states: Vec::new() },
+                ))
+                .map(|_| ())
         } else {
-            store.append_event("slow", None, serde_json::json!({}))
+            store
+                .append_event("slow", None, serde_json::json!({}))
+                .map(|_| ())
         }
     });
     // This thread is outside Tokio: its deadline keeps advancing even when
@@ -124,7 +141,7 @@ fn worker_progress_while_commit_is_held(force_blocked_worker: bool) -> bool {
 #[test]
 fn a_slow_durable_commit_does_not_hold_its_runtime_worker() {
     assert!(
-        worker_progress_while_commit_is_held(false),
+        worker_progress_while_commit_is_held(false, false),
         "other tasks must run while the commit is still held"
     );
 }
@@ -132,7 +149,19 @@ fn a_slow_durable_commit_does_not_hold_its_runtime_worker() {
 #[test]
 fn the_independent_watchdog_detects_a_blocked_runtime_worker() {
     assert!(
-        !worker_progress_while_commit_is_held(true),
+        !worker_progress_while_commit_is_held(true, false),
         "control must detect a blocked executor before releasing the commit"
+    );
+}
+
+#[test]
+fn a_typed_durable_commit_does_not_hold_its_runtime_worker() {
+    assert!(
+        worker_progress_while_commit_is_held(false, true),
+        "typed writer waits must yield the async worker"
+    );
+    assert!(
+        !worker_progress_while_commit_is_held(true, true),
+        "negative control must detect the old typed recv path"
     );
 }

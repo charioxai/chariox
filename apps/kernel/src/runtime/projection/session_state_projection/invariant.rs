@@ -37,7 +37,7 @@ pub(super) fn snapshot(
         .collect::<BTreeMap<_, _>>();
     let mut projected_session_agents = BTreeMap::new();
     let mut checked_agents = 0;
-    let mut mismatches = Vec::new();
+    let mut mismatches = MismatchSample::default();
 
     for session in &sessions {
         if let Some(focused_agent_id) = session.focused_agent_id() {
@@ -387,7 +387,9 @@ pub(super) fn snapshot(
     ProjectionInvariantHealthSnapshot {
         checked_sessions: sessions.len(),
         checked_agents,
-        mismatches,
+        mismatch_count: mismatches.count,
+        mismatch_counts_by_kind: mismatches.counts_by_kind,
+        mismatches: mismatches.sample,
     }
 }
 
@@ -399,7 +401,7 @@ fn describe_projected_prompt(prompt: &Option<PromptQueueItem>) -> String {
 }
 
 fn check_prompt_targets_prompt_state_agent(
-    mismatches: &mut Vec<ProjectionInvariantMismatch>,
+    mismatches: &mut MismatchSample,
     session_id: &str,
     prompt_state_agent_id: &str,
     prompt_slot: &str,
@@ -468,3 +470,22 @@ fn describe_external_observed_id(
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Default)]
+struct MismatchSample {
+    count: usize,
+    counts_by_kind: BTreeMap<String, usize>,
+    sample: Vec<ProjectionInvariantMismatch>,
+}
+impl MismatchSample {
+    fn push(&mut self, mismatch: ProjectionInvariantMismatch) {
+        self.count += 1;
+        *self
+            .counts_by_kind
+            .entry(mismatch.kind.clone())
+            .or_default() += 1;
+        if self.sample.len() < 16 {
+            self.sample.push(mismatch);
+        }
+    }
+}

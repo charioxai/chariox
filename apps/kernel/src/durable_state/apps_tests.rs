@@ -359,6 +359,7 @@ fn enqueue_event(
     let (response, receiver) = mpsc::channel();
     sender
         .send(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            observation: None,
             operation: DurableWriteOperation::Event {
                 event_id: id.into(),
                 kind: "app.test".into(),

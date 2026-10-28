@@ -1,3 +1,7 @@
+mod bounds;
+mod cache;
+pub(crate) use cache::DaemonHealthCache;
+
 use crate::error::DaemonError;
 use crate::local::provider_requests::PROVIDER_CATALOG_CACHE_TTL;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
@@ -15,25 +19,27 @@ use crate::runtime::workflow_actor::WorkflowRuntime;
 use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
 
-pub(crate) struct DaemonHealthProjectionInput<'a> {
+#[derive(Clone)]
+pub(crate) struct DaemonHealthProjectionInput {
     pub(crate) last_event_id: u64,
-    pub(crate) session_runtime: &'a SessionRuntime,
-    pub(crate) agent_runtime: &'a AgentRuntime,
-    pub(crate) workflow_runtime: &'a WorkflowRuntime,
-    pub(crate) provider_runtime_lanes: &'a ProviderRunOperationLanes,
-    pub(crate) capability_health: &'a CapabilityExecutorHealthStore,
-    pub(crate) session_projection: &'a SessionStateProjectionStore,
-    pub(crate) agent_runtime_projection: &'a AgentRuntimeProjectionStore,
-    pub(crate) provider_catalog_projection: &'a ProviderCatalogProjectionStore,
-    pub(crate) provider_run_projection: &'a ProviderRunProjectionStore,
-    pub(crate) transport_health: &'a TransportHealthStore,
-    pub(crate) terminal_health: &'a TerminalStreamHealthStore,
-    pub(crate) workspace_coordinator: &'a WorkspaceCoordinator,
-    pub(crate) runtime_state: &'a KernelRuntimeState,
+    pub(crate) request_metrics: crate::runtime::request_metrics::RequestMetrics,
+    pub(crate) session_runtime: SessionRuntime,
+    pub(crate) agent_runtime: AgentRuntime,
+    pub(crate) workflow_runtime: WorkflowRuntime,
+    pub(crate) provider_runtime_lanes: ProviderRunOperationLanes,
+    pub(crate) capability_health: CapabilityExecutorHealthStore,
+    pub(crate) session_projection: SessionStateProjectionStore,
+    pub(crate) agent_runtime_projection: AgentRuntimeProjectionStore,
+    pub(crate) provider_catalog_projection: ProviderCatalogProjectionStore,
+    pub(crate) provider_run_projection: ProviderRunProjectionStore,
+    pub(crate) transport_health: TransportHealthStore,
+    pub(crate) terminal_health: TerminalStreamHealthStore,
+    pub(crate) workspace_coordinator: WorkspaceCoordinator,
+    pub(crate) runtime_state: KernelRuntimeState,
 }
 
 pub(crate) async fn build_daemon_health_projection(
-    input: DaemonHealthProjectionInput<'_>,
+    input: DaemonHealthProjectionInput,
 ) -> DaemonHealthProjection {
     let agents = input.runtime_state.list_agents();
     let active_turns = input.runtime_state.active_turn_snapshot();
@@ -82,23 +88,25 @@ pub(crate) async fn build_daemon_health_projection(
             .workspace_live_sync_health_snapshot()
             .await,
         input.session_projection.invariant_snapshot(
-            input.agent_runtime_projection,
+            &input.agent_runtime_projection,
             &agents,
             &active_turns,
             &provider_runs,
         ),
     );
     projection.app_lock = crate::runtime::app_lock::app_lock_health_snapshot();
-    projection
+    projection.request_timings = input.request_metrics.snapshot();
+    bounds::bound(projection)
 }
 
 pub(crate) async fn execute_daemon_health_request(
-    input: DaemonHealthProjectionInput<'_>,
+    cache: &DaemonHealthCache,
+    input: DaemonHealthProjectionInput,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
         LocalDaemonRequest::GetDaemonHealth(_) => Ok(LocalDaemonResponse::DaemonHealth {
-            projection: build_daemon_health_projection(input).await,
+            projection: cache.snapshot(input).await,
         }),
         _ => Err(DaemonError::LocalTransport {
             operation: "daemon health request",

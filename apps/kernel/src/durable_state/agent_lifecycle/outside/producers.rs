@@ -110,37 +110,42 @@ impl DurableKernelStateStore {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn outside_publish_job(
+    pub(crate) fn enqueue_outside_publish_job(
         &self,
-        session: &str,
-        agent: Option<&str>,
-        terminal: &str,
-        command: Option<u64>,
-        offset: u64,
-        exit_code: Option<u32>,
-    ) -> Result<(), DaemonError> {
+        job: TerminalCompletion,
+    ) -> Result<Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome>, DaemonError>
+    {
+        let TerminalCompletion {
+            session,
+            agent,
+            terminal,
+            command,
+            offset,
+            exit_code,
+        } = job;
         let Some((kernel, machine)) =
             publish_identity(&*self.lock_connection("outside.identity")?)?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let event = OutsideEvent {
             cursor: 0,
             kernel,
             machine,
-            session_id: session.into(),
-            agent_id: agent.map(Into::into),
+            session_id: session,
+            agent_id: agent,
             value: OutsideEventValue::Terminal { exit_code },
             summary: format!("exited ({exit_code:?})"),
             at_ms: outside_now_ms()?,
             refs: crate::local::EventRefs {
-                terminal_id: Some(terminal.into()),
+                terminal_id: Some(terminal.clone()),
                 ..Default::default()
             },
         };
-        self.outside_mutate(Mutation::Publish {
+        self.enqueue_agent_lifecycle(Operation::Outside(Mutation::Publish {
             occurrence: format!("terminal-{terminal}-{command:?}-{offset}"),
             event: Box::new(event),
-        })
+        }))
+        .map(Some)
     }
 }

@@ -229,7 +229,7 @@ impl DurableKernelStateStore {
                 ValidationRequest { command, response },
             )))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
-        receiver.recv().map_err(|_| "STORAGE_UNAVAILABLE")?
+        crate::durable_state::await_writer_response(receiver).map_err(|_| "STORAGE_UNAVAILABLE")?
     }
 
     /// Owner- and installation-scoped read for `validation.status`.

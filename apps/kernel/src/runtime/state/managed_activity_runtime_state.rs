@@ -53,7 +53,9 @@ impl KernelRuntimeState {
         self.owned
             .managed_activity_transitions
             .enable_before_activity(kernel_id, sequence)?;
-        self.owned.record_managed_activity_transition_unlocked();
+        let pending = self.owned.record_managed_activity_transition_unlocked();
+        drop(_mutation);
+        settle_outside_activity(pending);
         Ok(())
     }
 
@@ -211,7 +213,9 @@ impl KernelRuntimeOwnedState {
             .managed_activity_mutation_lock
             .lock()
             .expect("managed activity mutation mutex poisoned");
-        self.record_managed_activity_transition_unlocked();
+        let pending = self.record_managed_activity_transition_unlocked();
+        drop(_mutation);
+        settle_outside_activity(pending);
     }
 
     pub(super) fn begin_managed_activity_mutation(&self) -> ManagedActivityMutation<'_> {
@@ -254,23 +258,32 @@ impl KernelRuntimeOwnedState {
             .transpose()
     }
 
-    fn record_managed_activity_transition_unlocked(&self) {
-        self.record_managed_activity_transition_at_unlocked(None);
+    fn record_managed_activity_transition_unlocked(
+        &self,
+    ) -> Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome> {
+        self.record_managed_activity_transition_at_unlocked(None)
     }
 
-    fn record_managed_activity_transition_at_unlocked(&self, observed_at_ms: Option<u64>) {
-        if let Err(error) = self.publish_outside_runtime_activity() {
-            crate::logging::error_with_fields(
-                "outside.events",
-                "agent run-state transition could not be persisted",
-                serde_json::json!({"error":error.to_string()}),
-            );
-        }
+    fn record_managed_activity_transition_at_unlocked(
+        &self,
+        observed_at_ms: Option<u64>,
+    ) -> Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome> {
+        let pending = match self.enqueue_outside_runtime_activity() {
+            Ok(pending) => pending,
+            Err(error) => {
+                crate::logging::error_with_fields(
+                    "outside.events",
+                    "agent run-state transition could not be persisted",
+                    serde_json::json!({"error":error.to_string()}),
+                );
+                None
+            }
+        };
         #[cfg(test)]
         self.managed_activity_record_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !self.managed_activity_transitions.is_enabled() {
-            return;
+            return pending;
         }
         #[cfg(test)]
         let pause = self
@@ -309,6 +322,21 @@ impl KernelRuntimeOwnedState {
                 }),
             );
         }
+        pending
+    }
+}
+
+fn settle_outside_activity(
+    pending: Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome>,
+) {
+    if let Some(pending) = pending {
+        if let Err(error) = pending.wait() {
+            crate::logging::error_with_fields(
+                "outside.events",
+                "agent run-state transition could not be persisted",
+                serde_json::json!({"error": error.to_string()}),
+            );
+        }
     }
 }
 
@@ -321,7 +349,9 @@ impl ManagedActivityMutation<'_> {
     // Persist the state sampled under the same boundary as its authoritative local mutation.
     // Consuming the guard prevents a later mutation from overtaking this capture.
     pub(super) fn record(self) {
-        self.state.record_managed_activity_transition_unlocked();
+        let pending = self.state.record_managed_activity_transition_unlocked();
+        drop(self._guard);
+        settle_outside_activity(pending);
     }
 
     pub(super) fn record_prompt_finish_at(self, observed_at_ms: Option<u64>) {
@@ -332,8 +362,11 @@ impl ManagedActivityMutation<'_> {
             .state
             .managed_activity_transitions
             .record_prompt_finish(observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms));
-        self.state
+        let pending = self
+            .state
             .record_managed_activity_transition_at_unlocked(Some(aggregate_finished_at_ms));
+        drop(self._guard);
+        settle_outside_activity(pending);
     }
 }
 

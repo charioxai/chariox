@@ -111,6 +111,13 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
+        self.enqueue_agent_lifecycle(operation)?.wait()
+    }
+
+    pub(crate) fn enqueue_agent_lifecycle(
+        &self,
+        operation: Operation,
+    ) -> Result<PendingLifecycleOutcome, DaemonError> {
         let (response, receive) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AgentLifecycle(Box::new(Request {
@@ -118,9 +125,7 @@ impl DurableKernelStateStore {
                 operation,
                 response,
             })))?;
-        receive
-            .recv()
-            .map_err(|_| error("writer response lost; intent uncertain"))?
+        Ok(PendingLifecycleOutcome(receive))
     }
     pub(crate) fn agent_tasks(
         &self,
@@ -869,5 +874,23 @@ pub(crate) fn finish_provider_event_submit(
             notice: Some(receipt_notice(&settled)),
         })),
         _ => Err(error("receipt outcome mismatch")),
+    }
+}
+
+pub(crate) struct PendingLifecycleOutcome(mpsc::Receiver<Result<Outcome, DaemonError>>);
+impl PendingLifecycleOutcome {
+    pub(crate) fn try_result(&self) -> Option<Result<(), DaemonError>> {
+        match self.0.try_recv() {
+            Ok(result) => Some(result.map(|_| ())),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(error("writer response lost; intent uncertain")))
+            }
+        }
+    }
+
+    pub(crate) fn wait(self) -> Result<Outcome, DaemonError> {
+        crate::durable_state::await_writer_response(self.0)
+            .map_err(|_| error("writer response lost; intent uncertain"))?
     }
 }

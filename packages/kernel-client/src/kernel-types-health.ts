@@ -297,6 +297,8 @@ export type ProjectionInvariantMismatch = {
 export type ProjectionInvariantHealthSnapshot = {
   checked_sessions: number
   checked_agents: number
+  mismatch_count: number
+  mismatch_counts_by_kind: Record<string, number>
   mismatches: ProjectionInvariantMismatch[]
 }
 
@@ -325,10 +327,24 @@ export type DaemonHealthProjection = {
   workspace_coordination: WorkspaceCoordinationHealthSnapshot
   workspace_live_sync: WorkspaceLiveSyncHealthSnapshot
   projection_invariants: ProjectionInvariantHealthSnapshot
+  request_timings: RequestKindTiming[]
+  sample_counts: Record<string, number>
 }
 
 export type DaemonHealthResponse = {
   DaemonHealth: {
     projection: DaemonHealthProjection
   }
+}
+
+export type TimingDistribution = { p50: number; p95: number; max: number }
+export type RequestKindTiming = {
+  kind: string
+  samples: number
+  queue_us: TimingDistribution
+  handler_us: TimingDistribution
+  durable_wait_us: TimingDistribution
+  durable_commit_us: TimingDistribution
+  fsync_us: TimingDistribution
+  response_bytes: TimingDistribution
 }

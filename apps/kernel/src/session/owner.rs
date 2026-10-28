@@ -53,6 +53,10 @@ impl SessionStateStore {
         self.read().reserve_prompt_id()
     }
 
+    pub(crate) fn retire_ended_session(&self, session_id: &str) {
+        self.write().retire_ended_session(session_id);
+    }
+
     pub(crate) fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.read().get_session(session_id)
     }
@@ -105,7 +109,10 @@ impl SessionStateStore {
         self.read().get_project(project_id)
     }
 
-    pub(crate) fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
+    pub(crate) fn sessions_in_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RuntimeSession>, DaemonError> {
         self.read().sessions_in_project(project_id)
     }
 

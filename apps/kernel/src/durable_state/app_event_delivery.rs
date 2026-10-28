@@ -128,8 +128,7 @@ impl DurableKernelStateStore {
             )))?;
         // A disappeared writer cannot attest fsync merely from a visible read.
         // Normal SQLite commit errors are reconciled by execute before replying.
-        receiver
-            .recv()
+        crate::durable_state::await_writer_response(receiver)
             .map_err(|_| AppEventDeliveryError::CommitUnknown)?
     }
 }

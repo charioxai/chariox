@@ -130,6 +130,7 @@ fn publisher_conflict_preserves_adjacent_ordinary_writer_events() {
     let (after_tx, after_rx) = mpsc::channel();
     let event = |id: &str, response| {
         super::super::DurableWriterRequest::Ordinary(super::super::DurableWriteRequest {
+            observation: None,
             operation: super::super::DurableWriteOperation::Event {
                 event_id: id.into(),
                 kind: "app.publisher.test".into(),

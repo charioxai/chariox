@@ -415,7 +415,7 @@ impl KernelRuntimeState {
         project: &crate::session::RuntimeProject,
         repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
     ) -> Result<(String, String, Option<EnvironmentUtilityCleanup>), DaemonError> {
-        for session in self.owned.session_store.sessions_in_project(project.id()) {
+        for session in self.owned.session_store.sessions_in_project(project.id())? {
             if let Some(agent) = self
                 .owned
                 .agent_store

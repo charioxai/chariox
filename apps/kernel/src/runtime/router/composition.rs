@@ -388,5 +388,7 @@ pub(super) fn compose_command_router(
         workspace_coordinator,
         provider_launch_pending,
         kernel_gateway,
+        request_metrics: Default::default(),
+        daemon_health_cache: Default::default(),
     }
 }

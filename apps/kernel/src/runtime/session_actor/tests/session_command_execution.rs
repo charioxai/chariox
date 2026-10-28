@@ -1458,8 +1458,8 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         LocalDaemonResponse::SessionEnded { .. }
     ));
     assert!(
-        session_projection.get(&end_session_id).is_some(),
-        "ended session should remain projected"
+        session_projection.get(&end_session_id).is_none(),
+        "ended session should leave the runtime projection"
     );
     let end_page = _locked_app.external_provider_session_index_store().list(
         &ListExternalProviderSessionsRequest {

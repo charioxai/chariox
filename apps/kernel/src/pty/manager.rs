@@ -879,6 +879,34 @@ impl PtyManager {
         Some((size.cols, size.rows))
     }
 
+    /// One bounded turn for an interactive consumer. A producer refilling the
+    /// queue cannot extend this turn; EOF is reported only after every byte.
+    pub(crate) fn drain_output_batch(
+        &mut self,
+        provider_run_id: &str,
+    ) -> Result<(Vec<PtyOutputChunk>, bool), DaemonError> {
+        const CHUNKS_PER_TURN: usize = 16;
+        let key = self.resolve_process_key(provider_run_id)?;
+        let process =
+            self.processes
+                .get_mut(&key)
+                .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                    provider_run_id: provider_run_id.into(),
+                })?;
+        let mut chunks = Vec::new();
+        for _ in 0..CHUNKS_PER_TURN {
+            match process.output_rx.try_recv() {
+                Ok(bytes) => chunks.push(PtyOutputChunk {
+                    provider_run_id: provider_run_id.into(),
+                    bytes,
+                }),
+                Err(mpsc::TryRecvError::Empty) => return Ok((chunks, false)),
+                Err(mpsc::TryRecvError::Disconnected) => return Ok((chunks, true)),
+            }
+        }
+        Ok((chunks, false))
+    }
+
     pub fn drain_output(
         &mut self,
         provider_run_id: &str,

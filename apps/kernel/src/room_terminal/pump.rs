@@ -27,7 +27,7 @@ impl Terminal {
             fired: Fired::new(),
         };
         if let Some(run_id) = self.run_id.clone() {
-            pumped.output_changed = self.drain(pty, &run_id, now, &mut pumped.fired);
+            pumped.output_changed = self.drain(pty, &run_id, now, &mut pumped.fired).0;
         }
         pumped
     }
@@ -40,11 +40,12 @@ impl Terminal {
         let Some(run_id) = self.run_id.clone() else {
             return pumped;
         };
-        if self.drain(pty, &run_id, now, &mut pumped.fired) {
-            pumped.output_changed = true;
-        }
+        let (produced, output_closed) = self.drain(pty, &run_id, now, &mut pumped.fired);
+        pumped.output_changed |= produced;
         if let Ok(PtyProcessState::Exited { exit_code, signal }) = pty.poll_process_state(&run_id) {
-            self.drain(pty, &run_id, now, &mut pumped.fired);
+            if !output_closed {
+                return pumped;
+            }
             if let Some(sweep) = &self.session_sweep {
                 sweep.stop();
             }
@@ -136,12 +137,13 @@ impl Terminal {
         run_id: &str,
         now: Instant,
         fired: &mut Fired,
-    ) -> bool {
+    ) -> (bool, bool) {
         let mut produced = false;
-        for chunk in pty.drain_output(run_id).unwrap_or_default() {
+        let (chunks, closed) = pty.drain_output_batch(run_id).unwrap_or_default();
+        for chunk in chunks {
             fired.extend(self.apply_output(&chunk.bytes, now));
             produced = true;
         }
-        produced
+        (produced, closed)
     }
 }

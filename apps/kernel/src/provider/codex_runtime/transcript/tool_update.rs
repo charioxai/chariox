@@ -260,8 +260,8 @@ fn command_execution_raw(item: &Value) -> Option<String> {
 fn prefer_output(primary: Option<&str>, streamed_output: &str) -> Option<String> {
     primary
         .and_then(non_empty)
-        .map(str::to_string)
-        .or_else(|| non_empty(streamed_output).map(str::to_string))
+        .map(super::output_window::bounded)
+        .or_else(|| non_empty(streamed_output).map(super::output_window::bounded))
 }
 
 fn render_json_value(value: &Value) -> String {

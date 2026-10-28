@@ -53,8 +53,10 @@ pub(crate) mod apps;
 mod apps_tests;
 pub(crate) mod browser_import;
 mod owner;
+mod retired_sessions;
 pub(crate) mod room_environment;
 pub(crate) mod storage_full;
+mod sync_timing;
 pub(crate) mod worker_prompt_receipts;
 pub(crate) mod worker_steer_receipts;
 pub(crate) mod workflow_invocation_provenance;
@@ -176,6 +178,7 @@ pub(crate) struct DurableIncrementalReclaimOutcome {
 
 #[derive(Debug)]
 struct DurableWriteRequest {
+    observation: Option<crate::runtime::request_metrics::RequestObservation>,
     operation: DurableWriteOperation,
     response: mpsc::Sender<Result<u64, String>>,
 }
@@ -186,6 +189,10 @@ struct DurableWriteRequest {
     reason = "Preserve the existing DurableWriterRequest typed actor payload layout"
 )]
 enum DurableWriterRequest {
+    Observed {
+        request: Box<DurableWriterRequest>,
+        observation: crate::runtime::request_metrics::RequestObservation,
+    },
     Ordinary(DurableWriteRequest),
     App(Box<apps::AppRegistryRequest>),
     #[allow(
@@ -409,6 +416,10 @@ impl DurableKernelStateStore {
         app_automations::initialize(&mut connection)?;
         workflow_notifications::initialize(&mut connection)?;
         agent_lifecycle::initialize(&mut connection)?;
+        retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.retired_sessions",
+            message: error.to_string(),
+        })?;
         app_inbox::initialize(&connection)?;
         app_worker_lifecycle::initialize(&connection)?;
         app_validations::initialize(&connection).map_err(|_| DaemonError::LocalTransport {
@@ -1386,7 +1397,7 @@ impl DurableStateWriter {
         }
     }
     fn start(path: &Path) -> Result<Self, DaemonError> {
-        let connection = Connection::open(path).map_err(|error| DaemonError::LocalTransport {
+        let connection = sync_timing::open(path).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.open_writer",
             message: error.to_string(),
         })?;
@@ -1420,20 +1431,15 @@ impl DurableStateWriter {
 
     fn execute(&self, operation: DurableWriteOperation) -> Result<u64, DaemonError> {
         let (response_tx, response_rx) = mpsc::channel();
+        let observation = crate::runtime::request_metrics::RequestObservation::current();
         self.enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+            observation: observation.clone(),
             operation,
             response: response_tx,
         }))?;
         // The commit includes an fsync. Hand this Tokio worker's queue to another
         // thread while waiting so a slow disk cannot stall unrelated tasks.
-        let await_commit = || response_rx.recv();
-        let reply = if tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
-        }) {
-            tokio::task::block_in_place(await_commit)
-        } else {
-            await_commit()
-        };
+        let reply = await_writer_response(response_rx);
         reply
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.await_write",
@@ -1447,6 +1453,16 @@ impl DurableStateWriter {
 
     fn enqueue(&self, request: DurableWriterRequest) -> Result<(), DaemonError> {
         self.require_healthy()?;
+        let request = match (
+            request,
+            crate::runtime::request_metrics::RequestObservation::current(),
+        ) {
+            (request @ DurableWriterRequest::Ordinary(_), _) | (request, None) => request,
+            (request, Some(observation)) => DurableWriterRequest::Observed {
+                request: Box::new(request),
+                observation,
+            },
+        };
         let sender = self
             .sender
             .lock()
@@ -1461,7 +1477,7 @@ impl DurableStateWriter {
                 message: "durable writer is shutting down".to_string(),
             })?;
         sender
-            .send(request)
+            .try_send(request)
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.enqueue_write",
                 message: error.to_string(),
@@ -1545,7 +1561,17 @@ fn run_durable_writer_with(
         if health.fatal.load(Ordering::Acquire) {
             break;
         }
+        let (first, _timing) = match first {
+            DurableWriterRequest::Observed {
+                request,
+                observation,
+            } => (*request, Some(DurableRequestTiming::new(observation))),
+            request => (request, None),
+        };
         let first = match first {
+            DurableWriterRequest::Observed { .. } => {
+                unreachable!("writer observation is attached once")
+            }
             DurableWriterRequest::Ordinary(request) => request,
             DurableWriterRequest::App(request) => {
                 apps::execute(&mut connection, *request);
@@ -1749,6 +1775,7 @@ fn commit_durable_write_batch(
         send_durable_batch_error(batch, "durable writer requires recovery".into());
         return;
     }
+    let sync_started = sync_timing::sync_us();
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => {
@@ -1792,6 +1819,7 @@ fn commit_durable_write_batch(
                 )
                 .and_then(|_| {
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
+                    retired_sessions::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_dispatch_intents::record_prompt_state_in(
                             &transaction,
@@ -1931,6 +1959,7 @@ fn commit_durable_write_batch(
         send_durable_batch_error(batch, message);
         return;
     }
+    let commit_started = Instant::now();
     if let Err(error) = transaction.commit() {
         storage_full::observe(&error);
         send_durable_batch_error(batch, error.to_string());
@@ -1945,6 +1974,10 @@ fn commit_durable_write_batch(
         .max_batch_records
         .fetch_max(batch_len, Ordering::AcqRel);
     for (request, sequence) in batch.into_iter().zip(results) {
+        if let Some(observation) = &request.observation {
+            observation.record_durable_commit(commit_started.elapsed());
+            observation.record_fsync(sync_timing::sync_us().saturating_sub(sync_started));
+        }
         let _ = request.response.send(Ok(sequence));
     }
 }
@@ -3109,5 +3142,47 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+}
+
+/// Synchronous storage APIs can be called by an actor on Tokio. Yield its worker
+/// for the whole durable wait rather than occupying the async executor.
+pub(crate) fn await_writer_response<T>(receiver: Receiver<T>) -> Result<T, mpsc::RecvError> {
+    let observation = crate::runtime::request_metrics::RequestObservation::current();
+    let started = Instant::now();
+    let receive = || receiver.recv();
+    let result = if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(receive)
+    } else {
+        receive()
+    };
+    if let Some(observation) = observation {
+        observation.record_durable_wait(started.elapsed());
+    }
+    result
+}
+
+struct DurableRequestTiming {
+    observation: crate::runtime::request_metrics::RequestObservation,
+    started: Instant,
+    sync_started: u64,
+}
+impl DurableRequestTiming {
+    fn new(observation: crate::runtime::request_metrics::RequestObservation) -> Self {
+        Self {
+            observation,
+            started: Instant::now(),
+            sync_started: sync_timing::sync_us(),
+        }
+    }
+}
+impl Drop for DurableRequestTiming {
+    fn drop(&mut self) {
+        self.observation
+            .record_durable_commit(self.started.elapsed());
+        self.observation
+            .record_fsync(sync_timing::sync_us().saturating_sub(self.sync_started));
     }
 }

@@ -48,7 +48,7 @@ impl KernelRuntimeState {
         if !self
             .owned
             .session_store
-            .sessions_in_project(existing.id())
+            .sessions_in_project(existing.id())?
             .is_empty()
         {
             return Err(managed_context_project_error(format!(
@@ -163,7 +163,7 @@ impl KernelRuntimeState {
         if project.status() == crate::session::RuntimeProjectStatus::Archived {
             return Ok((
                 project,
-                self.owned.session_store.sessions_in_project(project_id),
+                self.owned.session_store.sessions_in_project(project_id)?,
             ));
         }
         let sessions = self
@@ -251,7 +251,7 @@ impl KernelRuntimeState {
         let ended_session_ids = self
             .owned
             .session_store
-            .sessions_in_project(project_id)
+            .sessions_in_project(project_id)?
             .into_iter()
             .filter(|session| session.status() == crate::session::SessionStatus::Ended)
             .map(|session| session.id().to_string())
@@ -288,7 +288,7 @@ impl KernelRuntimeState {
         let session_ids = self
             .owned
             .session_store
-            .sessions_in_project(project_id)
+            .sessions_in_project(project_id)?
             .into_iter()
             .map(|session| session.id().to_string())
             .collect::<Vec<_>>();

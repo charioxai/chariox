@@ -16,7 +16,7 @@ impl SessionService {
         Self {
             store: SessionStore::new(),
             room_environments: RoomEnvironmentRegistry::new(),
-            room_environment_durable_state: None,
+            durable_state: None,
             projects: BTreeMap::new(),
             ephemeral_session_ids: BTreeSet::new(),
             host_machine_id: config.host_machine_id.clone(),
@@ -492,12 +492,24 @@ impl SessionService {
         })
     }
 
-    pub fn sessions_in_project(&self, project_id: &str) -> Vec<RuntimeSession> {
-        self.store
-            .list()
-            .into_iter()
+    pub fn sessions_in_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RuntimeSession>, DaemonError> {
+        let mut sessions = BTreeMap::new();
+        if let Some(state) = &self.durable_state {
+            for session in state.retired_project_sessions(&self.host_daemon_id, project_id)? {
+                sessions.insert(session.id().to_owned(), session);
+            }
+        }
+        for session in self
+            .store
+            .iter()
             .filter(|session| session.project_id() == project_id)
-            .collect()
+        {
+            sessions.insert(session.id().to_owned(), session.clone());
+        }
+        Ok(sessions.into_values().collect())
     }
 
     pub fn set_project_pinned(
@@ -914,11 +926,12 @@ impl SessionService {
     }
 
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
-        self.store
-            .get(session_id)
-            .cloned()
+        if let Some(session) = self.store.get(session_id) {
+            return Ok(session.clone());
+        }
+        self.retired_session(session_id)?
             .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
+                session_id: session_id.into(),
             })
     }
 

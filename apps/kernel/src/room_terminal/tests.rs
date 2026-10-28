@@ -64,7 +64,7 @@ fn service(root: &Path) -> RoomTerminalService {
 }
 
 fn service_with_events(root: &Path, events: Arc<FakeEvents>) -> RoomTerminalService {
-    let service = RoomTerminalService::new(root.join("terminals"));
+    let service = RoomTerminalService::new(root.join("terminals")).unwrap();
     let weak = Arc::downgrade(&events);
     service.bind_events(weak);
     service
@@ -1889,5 +1889,135 @@ async fn agent_archive_stops_only_owned_terminals_and_keeps_their_history() {
         2,
         "ended transcript remains addressable"
     );
+    service.end_session("room-1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_output_flood_preserves_its_tail_and_leaves_other_terminals_responsive() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let open = |command| OpenRoomTerminal {
+        session_id: "room-1".into(),
+        working_directory: root.path().to_path_buf(),
+        cols: 80,
+        rows: 24,
+        title: None,
+        opened_by: TerminalActor::User,
+        command: Some(command),
+    };
+    let flood = service
+        .open(open(vec![
+            "python3".into(),
+            "-c".into(),
+            "import sys; sys.stdout.buffer.write(b'x'*8_000_000+b'FLOOD_END'); sys.stdout.flush()"
+                .into(),
+        ]))
+        .unwrap()
+        .terminal_id;
+    let other = service
+        .open(open(vec!["/bin/cat".into()]))
+        .unwrap()
+        .terminal_id;
+    let reply = service
+        .input("room-1", &other, &TerminalActor::User, b"OTHER_OK\n")
+        .await
+        .unwrap();
+    assert!(reply.accepted);
+    until("other terminal echo", || async {
+        screen_has(&service, &other, "OTHER_OK").await
+    })
+    .await;
+    until("flood tail before exit", || async {
+        screen_has(&service, &flood, "FLOOD_END").await
+    })
+    .await;
+    until("flood exits after output EOF", || async {
+        service.list("room-1").iter().any(|terminal| {
+            terminal.terminal_id == flood
+                && matches!(
+                    terminal.status,
+                    super::types::RoomTerminalStatus::Ended { .. }
+                )
+        })
+    })
+    .await;
+    service.end_session("room-1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let existing = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".into(),
+            working_directory: root.path().into(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/cat".into()]),
+        })
+        .unwrap()
+        .terminal_id;
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    struct Release(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let release = Release(Some(release));
+    let barrier = service.pause_writer_for_test(entered, released);
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let opener = service.clone();
+    let directory = root.path().to_path_buf();
+    let (done, completion) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let result = opener.open(OpenRoomTerminal {
+            session_id: "room-1".into(),
+            working_directory: directory,
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/cat".into()]),
+        });
+        let _ = done.send(result);
+    });
+    until("new terminal admitted while commit waits", || async {
+        service.list("room-1").len() == 2
+    })
+    .await;
+    assert!(
+        matches!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ),
+        "open acknowledged before its commit"
+    );
+    service
+        .input(
+            "room-1",
+            &existing,
+            &TerminalActor::User,
+            b"DURING_COMMIT\n",
+        )
+        .await
+        .unwrap();
+    until("unrelated echo during commit", || async {
+        screen_has(&service, &existing, "DURING_COMMIT").await
+    })
+    .await;
+    drop(release);
+    barrier.wait().unwrap();
+    completion
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
     service.end_session("room-1");
 }

@@ -805,7 +805,9 @@ impl DaemonApp {
         }
         self.sessions.restore_projects(snapshot.projects);
         for mut session in snapshot.sessions {
-            if !restored_session_ids.contains(session.id()) {
+            if !restored_session_ids.contains(session.id())
+                || session.status() == crate::session::SessionStatus::Ended
+            {
                 continue;
             }
             if let Some(states) = prompt_private_states_by_session.get(session.id()) {
@@ -1512,7 +1514,7 @@ impl DaemonApp {
                 ) {
                     return Ok(());
                 }
-                let mut session: RuntimeSession = decode_durable_payload_field(
+                let session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
                     "durable_state.restore_ended_session",
@@ -1526,9 +1528,8 @@ impl DaemonApp {
                 self.prompt_state_owner.remove_session(session.id());
                 self.forget_room_computer_session_access(session.id());
                 self.agents.remove_session_agents(session.id());
-                session.set_agents(Vec::new());
-                let session = self.restore_session_with_project_migration(session);
-                self.update_session_projection(session);
+                self.sessions.remove_restored_session(session.id());
+                self.session_state_projection_store().remove(session.id());
             }
             "session.deleted" => {
                 if durable_payload_entity_belongs_to_other_owner(

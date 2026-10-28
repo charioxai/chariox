@@ -283,7 +283,7 @@ pub struct AgentPromptScheduleCollection {
 pub struct SessionService {
     store: SessionStore,
     room_environments: RoomEnvironmentRegistry,
-    room_environment_durable_state: Option<crate::durable_state::DurableKernelStateStore>,
+    durable_state: Option<crate::durable_state::DurableKernelStateStore>,
     projects: BTreeMap<String, RuntimeProject>,
     ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
@@ -309,6 +309,7 @@ pub struct SessionService {
 
 mod core;
 mod durable_queue;
+mod retired_sessions;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod helpers;
 mod launches;

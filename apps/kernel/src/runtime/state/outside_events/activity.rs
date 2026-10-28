@@ -75,6 +75,16 @@ impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn publish_outside_runtime_activity(
         &self,
     ) -> Result<(), DaemonError> {
+        if let Some(pending) = self.enqueue_outside_runtime_activity()? {
+            pending.wait()?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::runtime::state) fn enqueue_outside_runtime_activity(
+        &self,
+    ) -> Result<Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome>, DaemonError>
+    {
         let targets: Vec<_> = self
             .durable_state_store
             .outside_parts()?
@@ -83,17 +93,20 @@ impl KernelRuntimeOwnedState {
             .flat_map(|part| part.targets)
             .collect();
         if targets.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // Some callers still hold a store's mutation guard. Their normal projection
         // publication retries this capture after those guards have been released.
         let Some(states) = self.outside_run_state_snapshot(&targets) else {
-            return Ok(());
+            return Ok(None);
         };
         if states.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         self.durable_state_store
-            .outside_mutate(Mutation::RunStates { states })
+            .enqueue_agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Outside(
+                Mutation::RunStates { states },
+            ))
+            .map(Some)
     }
 }

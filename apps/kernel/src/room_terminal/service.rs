@@ -102,24 +102,15 @@ pub(super) struct State {
 impl RoomTerminalService {
     /// Terminals that ran when the kernel last stopped come back as ended by
     /// the restart, scrollback kept.
-    pub fn new(store_root: PathBuf) -> Self {
+    pub fn new(store_root: PathBuf) -> Result<Self, DaemonError> {
         let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
-        let store = TerminalStore::new(store_root);
-        let terminals = match store.recover() {
-            Ok(records) => records
-                .into_iter()
-                .map(|record| (record.terminal_id.clone(), Terminal::recovered(record)))
-                .collect(),
-            Err(error) => {
-                crate::logging::error_with_fields(
-                    "room_terminal.recover",
-                    "room terminals could not be restored",
-                    serde_json::json!({ "error": error.to_string() }),
-                );
-                BTreeMap::new()
-            }
-        };
-        Self {
+        let store = TerminalStore::new(store_root)?;
+        let terminals = store
+            .recover()?
+            .into_iter()
+            .map(|record| (record.terminal_id.clone(), Terminal::recovered(record)))
+            .collect();
+        Ok(Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
                     pty: PtyManager::new(),
@@ -137,7 +128,7 @@ impl RoomTerminalService {
                 pump_wake: Notify::new(),
                 pump_active_until: Mutex::new(Instant::now()),
             }),
-        }
+        })
     }
 
     /// Where fired watches go. Bound by the event core, which owns them: the service holds the
@@ -244,14 +235,22 @@ impl RoomTerminalService {
             scrollback_text: String::new(),
             screen_text: String::new(),
         };
-        if let Err(error) = self.inner.store.save(&record) {
-            let _ = state.pty.remove_process(&run_id);
-            return Err(error);
-        }
+        let pending = match self.inner.store.enqueue_save(&record) {
+            Ok(pending) => pending,
+            Err(error) => {
+                let _ = state.pty.remove_process(&run_id);
+                return Err(error);
+            }
+        };
         let terminal = Terminal::running(record, run_id, shell_pid, reports_first_prompt);
         let summary = terminal.summary(RoomTerminalDriver::Free);
-        state.terminals.insert(terminal_id, terminal);
+        state.terminals.insert(terminal_id.clone(), terminal);
         drop(state);
+        if let Err(error) = pending.wait() {
+            let mut state = self.lock();
+            self.remove(&mut state, &terminal_id);
+            return Err(error);
+        }
         self.report_work();
         self.start_pump();
         Ok(summary)
@@ -444,8 +443,12 @@ impl RoomTerminalService {
                 "terminal `{terminal_id}` has been used by the user, so only the user can close it"
             )));
         }
-        self.remove(&mut state, terminal_id);
+        let removed = self.remove(&mut state, terminal_id);
         drop(state);
+        if let Some(mut terminal) = removed {
+            self.settle_outside_jobs(&mut terminal)?;
+        }
+        self.inner.store.remove(terminal_id)?;
         self.report_work();
         Ok(())
     }
@@ -464,6 +467,7 @@ impl RoomTerminalService {
             })
             .map(|terminal| terminal.record.terminal_id.clone())
             .collect::<Vec<_>>();
+        let mut pending = Vec::new();
         for id in ids {
             let run = state
                 .terminals
@@ -485,9 +489,17 @@ impl RoomTerminalService {
                     signal: None,
                 });
             }
-            self.inner.store.save(&terminal.persisted_record())?;
+            pending.push(
+                self.inner
+                    .store
+                    .enqueue_save(&terminal.persisted_record())?,
+            );
+            terminal.unsaved_since = None;
         }
         drop(state);
+        for write in pending {
+            write.wait()?;
+        }
         self.report_work();
         Ok(())
     }
@@ -501,10 +513,29 @@ impl RoomTerminalService {
             .filter(|terminal| terminal.record.session_id == session_id)
             .map(|terminal| terminal.record.terminal_id.clone())
             .collect();
-        for id in ids {
-            self.remove(&mut state, &id);
-        }
+        let removed = ids
+            .iter()
+            .filter_map(|id| self.remove(&mut state, id))
+            .collect::<Vec<_>>();
         drop(state);
+        for mut terminal in removed {
+            if let Err(error) = self.settle_outside_jobs(&mut terminal) {
+                crate::logging::error_with_fields(
+                    "room_terminal.events",
+                    "ended terminal completion could not be committed",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+        }
+        for id in ids {
+            if let Err(error) = self.inner.store.remove(&id) {
+                crate::logging::error_with_fields(
+                    "room_terminal.remove",
+                    "ended terminal record could not be removed",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+        }
         self.report_work();
     }
 
@@ -674,19 +705,16 @@ impl RoomTerminalService {
         self.inner.managed.report(|| self.has_running_work());
     }
 
-    fn remove(&self, state: &mut State, terminal_id: &str) {
+    fn remove(&self, state: &mut State, terminal_id: &str) -> Option<Terminal> {
         state
             .waiters
             .retain(|_, (waiting_on, _)| waiting_on != terminal_id);
-        if let Some((run_id, sweep)) = state.terminals.remove(terminal_id).and_then(|terminal| {
-            terminal
-                .run_id
-                .map(|run_id| (run_id, terminal.session_sweep))
-        }) {
-            if let Some(sweep) = sweep {
+        let terminal = state.terminals.remove(terminal_id)?;
+        if let Some(run_id) = &terminal.run_id {
+            if let Some(sweep) = &terminal.session_sweep {
                 sweep.stop();
             }
-            if let Err(error) = state.pty.remove_process(&run_id) {
+            if let Err(error) = state.pty.remove_process(run_id) {
                 crate::logging::error_with_fields(
                     "room_terminal.close",
                     "terminal process could not be removed",
@@ -694,7 +722,7 @@ impl RoomTerminalService {
                 );
             }
         }
-        self.inner.store.remove(terminal_id);
+        Some(terminal)
     }
 
     fn start_pump(&self) {
@@ -815,6 +843,7 @@ impl RoomTerminalService {
             waiters,
             ..
         } = &mut *state;
+        let mut records = Vec::new();
         for terminal in terminals.values_mut() {
             if let Some(run_id) = &terminal.run_id {
                 if let Some(sweep) = &terminal.session_sweep {
@@ -829,31 +858,67 @@ impl RoomTerminalService {
                 }
                 terminal.end(RoomTerminalOutcome::KernelRestarted);
             }
-            self.persist(terminal);
+            records.push(terminal.persisted_record());
+            terminal.unsaved_since = None;
         }
         waiters.clear();
         drop(state);
+        for record in records {
+            if let Err(error) = self.inner.store.save(&record) {
+                crate::logging::error_with_fields(
+                    "room_terminal.persist",
+                    "terminal scrollback could not be saved",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+        }
         self.report_work();
     }
 
     fn persist_if_due(&self, terminal: &mut Terminal, now: Instant) {
+        if let Some(result) = terminal
+            .pending_save
+            .as_ref()
+            .and_then(|pending| pending.try_result())
+        {
+            terminal.pending_save = None;
+            if let Err(error) = result {
+                terminal.unsaved_since.get_or_insert(now);
+                crate::logging::error_with_fields(
+                    "room_terminal.persist",
+                    "terminal scrollback save failed; it will be retried",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+            }
+        }
+        if terminal.pending_save.is_some() {
+            return;
+        }
         let due = terminal.unsaved_since.is_some_and(|since| {
             !terminal.is_running() || now.duration_since(since) >= PERSIST_INTERVAL
         });
         if due {
-            self.persist(terminal);
+            match self.inner.store.enqueue_save(&terminal.persisted_record()) {
+                Ok(pending) => {
+                    terminal.pending_save = Some(pending);
+                    terminal.unsaved_since = None;
+                }
+                Err(error) => crate::logging::error_with_fields(
+                    "room_terminal.persist",
+                    "terminal scrollback save could not be queued; it will be retried",
+                    serde_json::json!({"error": error.to_string()}),
+                ),
+            }
         }
     }
 
-    fn persist(&self, terminal: &mut Terminal) {
-        terminal.unsaved_since = None;
-        if let Err(error) = self.inner.store.save(&terminal.persisted_record()) {
-            crate::logging::error_with_fields(
-                "room_terminal.persist",
-                "terminal scrollback could not be saved",
-                serde_json::json!({ "error": error.to_string() }),
-            );
-        }
+    #[cfg(test)]
+    pub(super) fn pause_writer_for_test(
+        &self,
+        entered: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    ) -> super::store::PendingWrite {
+        self.inner.store.pause_writer(entered, release)
     }
 
     pub(super) fn lock(&self) -> MutexGuard<'_, State> {
