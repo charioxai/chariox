@@ -6,18 +6,17 @@
 use super::REFUSED_CODE;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use rand::RngCore;
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::oneshot;
 
 use super::driver::Admission;
 use super::events::{BoundEvents, CompletionEvents, WatchOwner};
 use super::managed_work::ManagedWork;
-use super::session_sweep::SessionSweep;
+use super::owner::{TerminalOwner, TerminalState};
 use super::shell::login_shell;
 use super::shell_marks::ShellIntegration;
 use super::store::{TerminalRecord, TerminalStore};
@@ -33,6 +32,7 @@ use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
 mod outside_events;
+mod pump_task;
 
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -77,26 +77,19 @@ pub struct RoomTerminalService {
 
 struct Inner {
     state: Mutex<State>,
+    /// Serialize terminal creation with Room end and kernel shutdown.
+    lifecycle: Mutex<()>,
     store: TerminalStore,
     events: BoundEvents,
     outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
     managed: ManagedWork,
-    output_changed: Notify,
-    pump_started: AtomicBool,
-    /// Wakes the pump now; input and a resize have an answer coming.
-    pump_wake: Notify,
-    /// The pump runs at `ACTIVE_PUMP_INTERVAL` until then.
-    pump_active_until: Mutex<Instant>,
+    pump_runtime: OnceLock<tokio::runtime::Handle>,
 }
 
 pub(super) struct State {
-    pty: PtyManager,
-    pub(super) terminals: BTreeMap<String, Terminal>,
-    /// Blocking waits by wake id with their terminal; their events do not go
-    /// to `events`.
-    waiters: BTreeMap<String, (String, oneshot::Sender<RoomTerminalEvent>)>,
-    next_wait: u64,
+    pub(super) terminals: BTreeMap<String, Arc<TerminalOwner>>,
+    pub(super) shutdown: bool,
 }
 
 impl RoomTerminalService {
@@ -108,25 +101,29 @@ impl RoomTerminalService {
         let terminals = store
             .recover()?
             .into_iter()
-            .map(|record| (record.terminal_id.clone(), Terminal::recovered(record)))
+            .map(|record| {
+                (
+                    record.terminal_id.clone(),
+                    Arc::new(TerminalOwner::new(
+                        Terminal::recovered(record),
+                        PtyManager::new(),
+                    )),
+                )
+            })
             .collect();
         Ok(Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
-                    pty: PtyManager::new(),
                     terminals,
-                    waiters: BTreeMap::new(),
-                    next_wait: 0,
+                    shutdown: false,
                 }),
+                lifecycle: Mutex::new(()),
                 store,
                 events: BoundEvents::default(),
                 outside_events: std::sync::RwLock::new(None),
                 shell_integration,
                 managed: ManagedWork::default(),
-                output_changed: Notify::new(),
-                pump_started: AtomicBool::new(false),
-                pump_wake: Notify::new(),
-                pump_active_until: Mutex::new(Instant::now()),
+                pump_runtime: OnceLock::new(),
             }),
         })
     }
@@ -174,24 +171,36 @@ impl RoomTerminalService {
                 .map_err(|error| refuse_fenced(&error))?,
             None => None,
         };
+        let creation = self
+            .inner
+            .lifecycle
+            .lock()
+            .expect("terminal lifecycle poisoned");
+        let title = {
+            let state = self.lock();
+            if state.shutdown {
+                return Err(refused(
+                    "this kernel is stopping, so it opens no terminals".to_string(),
+                ));
+            }
+            let in_room: Vec<_> = state
+                .terminals
+                .values()
+                .filter(|owner| owner.session_id == spec.session_id)
+                .collect();
+            if in_room.len() >= MAX_TERMINALS_PER_ROOM {
+                return Err(refused(format!(
+                    "this Room already has {MAX_TERMINALS_PER_ROOM} terminals; close one first"
+                )));
+            }
+            spec.title
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| next_title(&in_room))
+        };
         let user_interacted = spec.opened_by == TerminalActor::User;
         let terminal_id = random_terminal_id();
         let run_id = format!("room-terminal:{terminal_id}");
-        let mut state = self.lock();
-        let in_room: Vec<&Terminal> = state
-            .terminals
-            .values()
-            .filter(|terminal| terminal.record.session_id == spec.session_id)
-            .collect();
-        if in_room.len() >= MAX_TERMINALS_PER_ROOM {
-            return Err(refused(format!(
-                "this Room already has {MAX_TERMINALS_PER_ROOM} terminals; close one first"
-            )));
-        }
-        let title = spec
-            .title
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| next_title(&in_room));
+        let mut pty = PtyManager::new();
         let mut env = BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]);
         let mut reports_first_prompt = false;
         if spec.command.is_none() {
@@ -199,7 +208,7 @@ impl RoomTerminalService {
             reports_first_prompt = !marks.is_empty();
             env.extend(marks);
         }
-        state.pty.spawn_interactive(PtySpawnRequest {
+        pty.spawn_interactive(PtySpawnRequest {
             process_key: run_id.clone(),
             provider_run_id: run_id.clone(),
             program: program.clone(),
@@ -213,8 +222,7 @@ impl RoomTerminalService {
             cols: spec.cols,
             rows: spec.rows,
         })?;
-        let shell_pid = state
-            .pty
+        let shell_pid = pty
             .process_id(&run_id)
             .ok()
             .flatten()
@@ -235,38 +243,47 @@ impl RoomTerminalService {
             scrollback_text: String::new(),
             screen_text: String::new(),
         };
-        let pending = match self.inner.store.enqueue_save(&record) {
-            Ok(pending) => pending,
-            Err(error) => {
-                let _ = state.pty.remove_process(&run_id);
-                return Err(error);
-            }
-        };
-        let terminal = Terminal::running(record, run_id, shell_pid, reports_first_prompt);
-        let summary = terminal.summary(RoomTerminalDriver::Free);
-        state.terminals.insert(terminal_id.clone(), terminal);
-        drop(state);
-        if let Err(error) = pending.wait() {
+        let terminal = Terminal::running(record, run_id.clone(), shell_pid, reports_first_prompt);
+        let (owner, pending, summary) = {
             let mut state = self.lock();
-            self.remove(&mut state, &terminal_id);
+            let pending = match self.inner.store.enqueue_save(&terminal.record) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    drop(state);
+                    if let Some(sweep) = &terminal.session_sweep {
+                        sweep.stop();
+                    }
+                    pty.remove_process(&run_id)?;
+                    return Err(error);
+                }
+            };
+            let summary = terminal.summary(RoomTerminalDriver::Free);
+            let owner = Arc::new(TerminalOwner::new(terminal, pty));
+            state.terminals.insert(terminal_id.clone(), owner.clone());
+            (owner, pending, summary)
+        };
+        drop(creation);
+        if let Err(error) = pending.wait() {
+            self.lock().terminals.remove(&terminal_id);
+            let _ = self.stop_owner(&owner, true);
             return Err(error);
         }
         self.report_work();
-        self.start_pump();
+        self.start_pump(&owner);
         Ok(summary)
     }
 
     pub fn list(&self, session_id: &str) -> Vec<RoomTerminalSummary> {
-        let mut state = self.lock();
-        let State { pty, terminals, .. } = &mut *state;
-        let mut summaries: Vec<_> = terminals
-            .values_mut()
-            .filter(|terminal| terminal.record.session_id == session_id)
-            .map(|terminal| {
-                let driver = terminal.current_driver(pty);
-                terminal.summary(driver)
-            })
-            .collect();
+        let owners = self.owners_for_session(session_id);
+        let mut summaries = Vec::new();
+        for owner in owners {
+            let Ok(mut state) = owner.lock_open() else {
+                continue;
+            };
+            let TerminalState { pty, terminal, .. } = &mut *state;
+            let driver = terminal.current_driver(pty);
+            summaries.push(terminal.summary(driver));
+        }
         summaries.sort_by_key(|summary| summary.created_at_ms);
         summaries
     }
@@ -276,9 +293,9 @@ impl RoomTerminalService {
         session_id: &str,
         terminal_id: &str,
     ) -> Result<RoomTerminalSnapshot, DaemonError> {
-        let mut state = self.lock();
-        let State { pty, terminals, .. } = &mut *state;
-        let terminal = find(terminals, session_id, terminal_id)?;
+        let owner = self.find(session_id, terminal_id)?;
+        let mut state = owner.lock_open()?;
+        let TerminalState { pty, terminal, .. } = &mut *state;
         let driver = terminal.current_driver(pty);
         Ok(terminal.snapshot(driver))
     }
@@ -297,19 +314,19 @@ impl RoomTerminalService {
                 "terminal input must be 1 to {MAX_INPUT_BYTES} bytes"
             )));
         }
+        let owner = self.find(session_id, terminal_id)?;
         let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
         loop {
             // Decide from what the shell has already reported, not from the
             // state of the last tick: a command that just ended still looks
             // like it drives the terminal until its report is read.
-            self.pump_pass(false);
+            self.pump_terminal(&owner, false);
             {
                 // Held until the input is written and the kernel knows about
                 // the command it starts.
                 let admission = submits.then(|| self.inner.managed.admission());
-                let mut state = self.lock();
-                let State { pty, terminals, .. } = &mut *state;
-                let terminal = find(terminals, session_id, terminal_id)?;
+                let mut state = owner.lock_open()?;
+                let TerminalState { pty, terminal, .. } = &mut *state;
                 let Some(run_id) = terminal.run_id.clone() else {
                     return Err(ended_error(terminal));
                 };
@@ -322,8 +339,8 @@ impl RoomTerminalService {
                             return Err(refuse_fenced(error));
                         }
                         // Queue it: waiting for the child to read would hold
-                        // this lock, and with it every Room terminal, for as
-                        // long as a program ignores its input.
+                        // this terminal's lock for as long as a program
+                        // ignores its input.
                         // A lone interrupt key must still stop the program
                         // when the paste before it is stuck in the queue.
                         let interrupted = match input {
@@ -342,7 +359,7 @@ impl RoomTerminalService {
                             .record_write(actor, shell_foreground, input, now);
                         let driver = terminal.driver.observe(shell_foreground);
                         drop(state);
-                        self.pump_soon();
+                        self.pump_soon(&owner);
                         self.report_work();
                         return Ok(RoomTerminalInputResult {
                             accepted: true,
@@ -379,9 +396,9 @@ impl RoomTerminalService {
         rows: u16,
     ) -> Result<RoomTerminalSummary, DaemonError> {
         validate_size(cols, rows)?;
-        let mut state = self.lock();
-        let State { pty, terminals, .. } = &mut *state;
-        let terminal = find(terminals, session_id, terminal_id)?;
+        let owner = self.find(session_id, terminal_id)?;
+        let mut state = owner.lock_open()?;
+        let TerminalState { pty, terminal, .. } = &mut *state;
         let Some(run_id) = terminal.run_id.clone() else {
             return Err(ended_error(terminal));
         };
@@ -391,8 +408,10 @@ impl RoomTerminalService {
             terminal.mark_user_interacted();
         }
         let driver = terminal.current_driver(pty);
-        self.pump_soon();
-        Ok(terminal.summary(driver))
+        let summary = terminal.summary(driver);
+        drop(state);
+        self.pump_soon(&owner);
+        Ok(summary)
     }
 
     /// Output after `after_offset`, waiting up to `wait` (at most `MAX_WAIT`, so the
@@ -404,15 +423,15 @@ impl RoomTerminalService {
         after_offset: u64,
         wait: Duration,
     ) -> Result<RoomTerminalOutput, DaemonError> {
+        let owner = self.find(session_id, terminal_id)?;
         let deadline = Instant::now() + output_wait(wait);
         loop {
-            let changed = self.inner.output_changed.notified();
+            let changed = owner.output_changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
-                let mut state = self.lock();
-                let State { pty, terminals, .. } = &mut *state;
-                let terminal = find(terminals, session_id, terminal_id)?;
+                let mut state = owner.lock_open()?;
+                let TerminalState { pty, terminal, .. } = &mut *state;
                 let page = terminal.log.read(after_offset, MAX_OUTPUT_PAGE_BYTES);
                 let finished = !terminal.is_running() || Instant::now() >= deadline;
                 if !page.bytes.is_empty() || page.gap || finished {
@@ -436,98 +455,86 @@ impl RoomTerminalService {
         terminal_id: &str,
         actor: &TerminalActor,
     ) -> Result<(), DaemonError> {
-        let mut state = self.lock();
-        let terminal = find(&mut state.terminals, session_id, terminal_id)?;
-        if *actor != TerminalActor::User && terminal.record.user_interacted {
-            return Err(refused(format!(
-                "terminal `{terminal_id}` has been used by the user, so only the user can close it"
-            )));
+        let owner = self.find(session_id, terminal_id)?;
+        {
+            let mut state = owner.lock_open()?;
+            if *actor != TerminalActor::User && state.terminal.record.user_interacted {
+                return Err(refused(format!(
+                    "terminal `{terminal_id}` has been used by the user, so only the user can close it"
+                )));
+            }
+            // Reserve removal while ownership and the user-interaction bit
+            // are stable; no registry operation waits on a terminal lock.
+            state.removed = true;
+            self.lock().terminals.remove(terminal_id);
         }
-        let removed = self.remove(&mut state, terminal_id);
-        drop(state);
-        if let Some(mut terminal) = removed {
-            self.settle_outside_jobs(&mut terminal)?;
-        }
+        let _ = self.stop_owner(&owner, true);
+        self.settle_outside_jobs(&mut owner.lock().terminal)?;
         self.inner.store.remove(terminal_id)?;
         self.report_work();
         Ok(())
     }
 
-    /// Release only terminals opened by this agent; retain their screen and
-    /// scrollback as ended records. The owner already authorized the archive.
     pub(crate) fn stop_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> {
-        self.pump_once();
-        let mut state = self.lock();
-        let ids = state
-            .terminals
-            .values()
-            .filter(|terminal| {
-                terminal.record.session_id == session_id
-                    && terminal.record.opened_by == TerminalActor::Agent(agent_id.to_owned())
-            })
-            .map(|terminal| terminal.record.terminal_id.clone())
-            .collect::<Vec<_>>();
-        let mut pending = Vec::new();
-        for id in ids {
-            let run = state
-                .terminals
-                .get(&id)
-                .and_then(|terminal| terminal.run_id.clone());
-            if let Some(run) = run {
-                state.pty.remove_process(&run)?;
-            }
-            let terminal = state
-                .terminals
-                .get_mut(&id)
-                .expect("selected terminal exists");
-            if let Some(sweep) = terminal.session_sweep.take() {
-                sweep.stop();
-            }
-            if terminal.record.ended.is_none() {
-                terminal.end(RoomTerminalOutcome::ProgramExited {
-                    exit_code: None,
-                    signal: None,
-                });
-            }
-            pending.push(
-                self.inner
+        for owner in self
+            .owners_for_session(session_id)
+            .into_iter()
+            .filter(|owner| owner.opened_by == TerminalActor::Agent(agent_id.to_owned()))
+        {
+            self.pump_terminal(&owner, true);
+            self.stop_owner(&owner, false)?;
+            let pending = {
+                let mut state = owner.lock();
+                if state.removed {
+                    continue;
+                }
+                let pending = self
+                    .inner
                     .store
-                    .enqueue_save(&terminal.persisted_record())?,
-            );
-            terminal.unsaved_since = None;
-        }
-        drop(state);
-        for write in pending {
-            write.wait()?;
+                    .enqueue_save(&state.terminal.persisted_record())?;
+                state.terminal.unsaved_since = None;
+                pending
+            };
+            pending.wait()?;
         }
         self.report_work();
         Ok(())
     }
 
-    /// The Room ended: its terminals end with it.
+    /// The Room ended: detach its registry entries before stopping their work.
     pub fn end_session(&self, session_id: &str) {
-        let mut state = self.lock();
-        let ids: Vec<String> = state
-            .terminals
-            .values()
-            .filter(|terminal| terminal.record.session_id == session_id)
-            .map(|terminal| terminal.record.terminal_id.clone())
-            .collect();
-        let removed = ids
-            .iter()
-            .filter_map(|id| self.remove(&mut state, id))
-            .collect::<Vec<_>>();
-        drop(state);
-        for mut terminal in removed {
-            if let Err(error) = self.settle_outside_jobs(&mut terminal) {
+        let removed = {
+            let _creation = self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("terminal lifecycle poisoned");
+            let mut state = self.lock();
+            let ids: Vec<_> = state
+                .terminals
+                .iter()
+                .filter(|(_, owner)| owner.session_id == session_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .map(|id| {
+                    let owner = state
+                        .terminals
+                        .remove(&id)
+                        .expect("selected terminal exists");
+                    (id, owner)
+                })
+                .collect::<Vec<_>>()
+        };
+        for (id, owner) in removed {
+            let _ = self.stop_owner(&owner, true);
+            if let Err(error) = self.settle_outside_jobs(&mut owner.lock().terminal) {
                 crate::logging::error_with_fields(
                     "room_terminal.events",
                     "ended terminal completion could not be committed",
                     serde_json::json!({"error": error.to_string()}),
                 );
             }
-        }
-        for id in ids {
             if let Err(error) = self.inner.store.remove(&id) {
                 crate::logging::error_with_fields(
                     "room_terminal.remove",
@@ -547,7 +554,7 @@ impl RoomTerminalService {
         &self,
         session_id: &str,
         terminal_id: &str,
-        owner: WatchOwner,
+        watch_owner: WatchOwner,
         watches: Vec<RoomTerminalWatch>,
         after_offset: Option<u64>,
     ) -> Result<(), DaemonError> {
@@ -557,9 +564,9 @@ impl RoomTerminalService {
             ));
         }
         let immediate = {
-            let mut state = self.lock();
-            let State { pty, terminals, .. } = &mut *state;
-            let terminal = find(terminals, session_id, terminal_id)?;
+            let owner = self.find(session_id, terminal_id)?;
+            let mut state = owner.lock_open()?;
+            let TerminalState { pty, terminal, .. } = &mut *state;
             if !terminal.is_running() {
                 return Err(ended_error(terminal));
             }
@@ -567,13 +574,17 @@ impl RoomTerminalService {
             let program_running = !terminal.at_prompt(pty, now);
             let mut immediate = None;
             for watch in watches {
-                if let Some(kind) =
-                    terminal.arm_watch(owner.clone(), watch, after_offset, now, program_running)
-                {
-                    terminal.watches.disarm(&owner.wake_id);
+                if let Some(kind) = terminal.arm_watch(
+                    watch_owner.clone(),
+                    watch,
+                    after_offset,
+                    now,
+                    program_running,
+                ) {
+                    terminal.watches.disarm(&watch_owner.wake_id);
                     immediate = Some(event(
                         terminal,
-                        owner.clone(),
+                        watch_owner.clone(),
                         kind,
                         terminal.screen.visible_text(),
                     ));
@@ -590,9 +601,8 @@ impl RoomTerminalService {
 
     /// The wake was cancelled: forget its watches.
     pub fn cancel_watch(&self, session_id: &str, terminal_id: &str, wake_id: &str) {
-        let mut state = self.lock();
-        if let Ok(terminal) = find(&mut state.terminals, session_id, terminal_id) {
-            terminal.watches.disarm(wake_id);
+        if let Ok(owner) = self.find(session_id, terminal_id) {
+            owner.lock().terminal.watches.disarm(wake_id);
         }
     }
 
@@ -611,21 +621,22 @@ impl RoomTerminalService {
         if watches.is_empty() {
             return Err(refused("wait needs at least one condition".to_string()));
         }
+        let owner = self.find(session_id, terminal_id)?;
         let (wake_id, receiver) = {
-            let mut state = self.lock();
-            let State {
+            let mut state = owner.lock_open()?;
+            let TerminalState {
                 pty,
-                terminals,
+                terminal,
                 waiters,
                 next_wait,
+                ..
             } = &mut *state;
-            let terminal = find(terminals, session_id, terminal_id)?;
             if !terminal.is_running() {
                 return Ok(ended_wait_result(terminal, pty));
             }
             *next_wait += 1;
             let owner = WatchOwner {
-                wake_id: format!("wait:{next_wait}"),
+                wake_id: format!("wait:{terminal_id}:{next_wait}"),
                 agent_id: agent_id.to_string(),
             };
             let now = Instant::now();
@@ -639,14 +650,14 @@ impl RoomTerminalService {
                 }
             }
             let (sender, receiver) = oneshot::channel();
-            waiters.insert(owner.wake_id.clone(), (terminal_id.to_string(), sender));
+            waiters.insert(owner.wake_id.clone(), sender);
             (owner.wake_id, receiver)
         };
         let fired = tokio::time::timeout(timeout.min(MAX_WAIT), receiver).await;
-        let mut state = self.lock();
-        let State {
+        let mut state = owner.lock_open()?;
+        let TerminalState {
             pty,
-            terminals,
+            terminal,
             waiters,
             ..
         } = &mut *state;
@@ -656,7 +667,6 @@ impl RoomTerminalService {
                 "terminal `{terminal_id}` was closed while waiting"
             )));
         }
-        let terminal = find(terminals, session_id, terminal_id)?;
         match fired {
             Ok(Ok(event)) => Ok(wait_result(terminal, pty, Some(event.kind))),
             Ok(Err(_)) => unreachable!("closed waits return above"),
@@ -681,21 +691,8 @@ impl RoomTerminalService {
     /// shell reports a command in flight, a line was just submitted, or a
     /// background job still runs in the shell's session.
     pub fn has_running_work(&self) -> bool {
-        let sweeps = {
-            let mut state = self.lock();
-            let State { pty, terminals, .. } = &mut *state;
-            let now = Instant::now();
-            let mut sweeps = Vec::new();
-            for terminal in terminals.values().filter(|terminal| terminal.is_running()) {
-                if terminal.is_busy(pty) || terminal.driver.launching(now) {
-                    return true;
-                }
-                sweeps.extend(terminal.session_sweep);
-            }
-            sweeps
-        };
-        // Looking through the process table needs no terminal lock.
-        sweeps.iter().any(SessionSweep::has_jobs)
+        let owners = self.owners();
+        owners.iter().any(|owner| owner.has_running_work())
     }
 
     /// Report the answer now instead of at the next pump tick: a background
@@ -705,211 +702,31 @@ impl RoomTerminalService {
         self.inner.managed.report(|| self.has_running_work());
     }
 
-    fn remove(&self, state: &mut State, terminal_id: &str) -> Option<Terminal> {
-        state
-            .waiters
-            .retain(|_, (waiting_on, _)| waiting_on != terminal_id);
-        let terminal = state.terminals.remove(terminal_id)?;
-        if let Some(run_id) = &terminal.run_id {
-            if let Some(sweep) = &terminal.session_sweep {
-                sweep.stop();
-            }
-            if let Err(error) = state.pty.remove_process(run_id) {
-                crate::logging::error_with_fields(
-                    "room_terminal.close",
-                    "terminal process could not be removed",
-                    serde_json::json!({ "terminal_id": terminal_id, "error": error.to_string() }),
-                );
-            }
-        }
-        Some(terminal)
+    fn find(&self, session_id: &str, terminal_id: &str) -> Result<Arc<TerminalOwner>, DaemonError> {
+        self.lock()
+            .terminals
+            .get(terminal_id)
+            .filter(|owner| owner.session_id == session_id)
+            .cloned()
+            .ok_or_else(|| refused(format!("this Room has no terminal `{terminal_id}`")))
     }
 
-    fn start_pump(&self) {
-        if self.inner.pump_started.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let service = self.clone();
-        tokio::spawn(async move {
-            let mut last_full = Instant::now();
-            loop {
-                let full = last_full.elapsed() >= PUMP_INTERVAL;
-                if full {
-                    last_full = Instant::now();
-                }
-                service.pump_pass(full);
-                let interval = if service.pump_is_active() {
-                    ACTIVE_PUMP_INTERVAL
-                } else {
-                    PUMP_INTERVAL
-                };
-                tokio::select! {
-                    () = tokio::time::sleep(interval) => {}
-                    () = service.inner.pump_wake.notified() => {}
-                }
-            }
-        });
+    fn owners(&self) -> Vec<Arc<TerminalOwner>> {
+        self.lock().terminals.values().cloned().collect()
     }
 
-    /// Something was just typed or resized: pump now and keep pumping fast
-    /// while the answer arrives.
-    fn pump_soon(&self) {
-        self.extend_active_pump();
-        self.inner.pump_wake.notify_one();
+    fn owners_for_session(&self, session_id: &str) -> Vec<Arc<TerminalOwner>> {
+        self.lock()
+            .terminals
+            .values()
+            .filter(|owner| owner.session_id == session_id)
+            .cloned()
+            .collect()
     }
 
-    fn extend_active_pump(&self) {
-        *self
-            .inner
-            .pump_active_until
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Instant::now() + ACTIVE_PUMP_WINDOW;
-    }
-
-    fn pump_is_active(&self) -> bool {
-        Instant::now()
-            < *self
-                .inner
-                .pump_active_until
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Move PTY output into screens, end terminals whose shell exited, track
-    /// the driver, fire watches and persist what changed.
-    pub(super) fn pump_once(&self) {
-        self.pump_pass(true);
-    }
-
-    /// `full` also looks at the foreground program and the process table;
-    /// the quick passes between full ones only move output.
-    fn pump_pass(&self, full: bool) {
-        let mut output_changed = false;
-        let mut notifications: Vec<RoomTerminalEvent> = Vec::new();
-        let mut wakes: Vec<(oneshot::Sender<RoomTerminalEvent>, RoomTerminalEvent)> = Vec::new();
-        {
-            let mut state = self.lock();
-            let State {
-                pty,
-                terminals,
-                waiters,
-                ..
-            } = &mut *state;
-            let now = Instant::now();
-            for terminal in terminals.values_mut() {
-                let pumped = if full {
-                    terminal.pump(pty, now)
-                } else {
-                    terminal.pump_output(pty, now)
-                };
-                output_changed |= pumped.output_changed;
-                if !pumped.fired.is_empty() {
-                    let screen_text = terminal.screen.visible_text();
-                    for (owner, kind) in pumped.fired {
-                        let fired = event(terminal, owner.clone(), kind, screen_text.clone());
-                        match waiters.remove(&owner.wake_id) {
-                            Some((_, waiter)) => wakes.push((waiter, fired)),
-                            None => notifications.push(fired),
-                        }
-                    }
-                }
-                self.publish_outside_jobs(terminal);
-                self.persist_if_due(terminal, now);
-            }
-        }
-        if full {
-            self.report_work();
-        }
-        if output_changed {
-            self.extend_active_pump();
-            self.inner.output_changed.notify_waiters();
-        }
-        for (waiter, fired) in wakes {
-            let _ = waiter.send(fired);
-        }
-        for fired in notifications {
-            self.inner.events.deliver(fired);
-        }
-    }
-
-    /// Stop the terminal sessions, keeping their screens and records so the
-    /// next start reports them as ended by the restart.
-    pub fn shutdown(&self) {
-        self.pump_once();
-        let mut state = self.lock();
-        let State {
-            pty,
-            terminals,
-            waiters,
-            ..
-        } = &mut *state;
-        let mut records = Vec::new();
-        for terminal in terminals.values_mut() {
-            if let Some(run_id) = &terminal.run_id {
-                if let Some(sweep) = &terminal.session_sweep {
-                    sweep.stop();
-                }
-                if let Err(error) = pty.remove_process(run_id) {
-                    crate::logging::error_with_fields(
-                        "room_terminal.shutdown",
-                        "terminal process could not be removed",
-                        serde_json::json!({ "terminal_id": terminal.record.terminal_id, "error": error.to_string() }),
-                    );
-                }
-                terminal.end(RoomTerminalOutcome::KernelRestarted);
-            }
-            records.push(terminal.persisted_record());
-            terminal.unsaved_since = None;
-        }
-        waiters.clear();
-        drop(state);
-        for record in records {
-            if let Err(error) = self.inner.store.save(&record) {
-                crate::logging::error_with_fields(
-                    "room_terminal.persist",
-                    "terminal scrollback could not be saved",
-                    serde_json::json!({"error": error.to_string()}),
-                );
-            }
-        }
-        self.report_work();
-    }
-
-    fn persist_if_due(&self, terminal: &mut Terminal, now: Instant) {
-        if let Some(result) = terminal
-            .pending_save
-            .as_ref()
-            .and_then(|pending| pending.try_result())
-        {
-            terminal.pending_save = None;
-            if let Err(error) = result {
-                terminal.unsaved_since.get_or_insert(now);
-                crate::logging::error_with_fields(
-                    "room_terminal.persist",
-                    "terminal scrollback save failed; it will be retried",
-                    serde_json::json!({"error": error.to_string()}),
-                );
-            }
-        }
-        if terminal.pending_save.is_some() {
-            return;
-        }
-        let due = terminal.unsaved_since.is_some_and(|since| {
-            !terminal.is_running() || now.duration_since(since) >= PERSIST_INTERVAL
-        });
-        if due {
-            match self.inner.store.enqueue_save(&terminal.persisted_record()) {
-                Ok(pending) => {
-                    terminal.pending_save = Some(pending);
-                    terminal.unsaved_since = None;
-                }
-                Err(error) => crate::logging::error_with_fields(
-                    "room_terminal.persist",
-                    "terminal scrollback save could not be queued; it will be retried",
-                    serde_json::json!({"error": error.to_string()}),
-                ),
-            }
-        }
+    #[cfg(test)]
+    pub(super) fn terminal_for_test(&self, id: &str) -> Arc<TerminalOwner> {
+        self.lock().terminals[id].clone()
     }
 
     #[cfg(test)]
@@ -974,17 +791,6 @@ fn ended_wait_result(terminal: &mut Terminal, pty: &PtyManager) -> RoomTerminalW
     )
 }
 
-fn find<'a>(
-    terminals: &'a mut BTreeMap<String, Terminal>,
-    session_id: &str,
-    terminal_id: &str,
-) -> Result<&'a mut Terminal, DaemonError> {
-    terminals
-        .get_mut(terminal_id)
-        .filter(|terminal| terminal.record.session_id == session_id)
-        .ok_or_else(|| refused(format!("this Room has no terminal `{terminal_id}`")))
-}
-
 fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {
     if (1..=500).contains(&cols) && (1..=200).contains(&rows) {
         Ok(())
@@ -995,14 +801,10 @@ fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {
     }
 }
 
-fn next_title(in_room: &[&Terminal]) -> String {
+fn next_title(in_room: &[&Arc<TerminalOwner>]) -> String {
     (1..)
         .map(|number| format!("Terminal {number}"))
-        .find(|title| {
-            in_room
-                .iter()
-                .all(|terminal| terminal.record.title != *title)
-        })
+        .find(|title| in_room.iter().all(|terminal| terminal.title != *title))
         .expect("an unused title exists")
 }
 

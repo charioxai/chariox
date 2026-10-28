@@ -1,5 +1,27 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 independent Room terminal parsing (2026-10-28)
+
+`room_terminal/owner.rs` gives each Room terminal its own PTY, parser, screen,
+output log, watches and waiting readers. `service/pump_task.rs` schedules each
+terminal independently and runs parsing and scrollback rendering outside Tokio's
+transport workers. The service registry only looks up or detaches owners; input
+on one terminal no longer pumps or renders every other terminal.
+
+Ordinary and managed kernels use the same owners and scheduling. Managed command
+admission still holds the quiescence guard through the input write or command
+open commit. A managed work check treats an owner whose lock is busy as working,
+so parsing cannot block the check or permit a premature stop. Creation is ordered
+with Room end and kernel shutdown; final saves are queued under the owner's lock
+before a later close can delete the record. Removed owners reject outstanding
+requests and stop their pumps. There is no protocol shape, provider, relay or
+Cloud shutdown-policy change.
+
+The focused terminal regressions pause one parser or renderer and require another
+terminal's resize, snapshot and input echo to finish before that work resumes.
+The live responsiveness drill is `scripts/drills/kernel-responsiveness.mjs`;
+source regressions alone do not close the MP parity matrix.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
 
 `RoomTerminal` binary exec operations enter the same owner/Room-agent checks in

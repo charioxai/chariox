@@ -595,7 +595,7 @@ async fn notifications_fire_for_text_waiting_and_finish() {
     let id = open(&service, root.path()).terminal_id;
     until("the initial shell prompt", || async {
         service.pump_once();
-        service.lock().terminals[&id].mark_tracking
+        service.terminal_for_test(&id).lock().terminal.mark_tracking
     })
     .await;
 
@@ -936,7 +936,12 @@ async fn a_graceful_shutdown_stops_disowned_jobs_and_preserves_the_terminal() {
         job_running(&background) && screen_has(&first, &id, "SHUTDOWN-SCREEN").await
     })
     .await;
-    let shell_pid = first.lock().terminals[&id].shell_pid.unwrap();
+    let shell_pid = first
+        .terminal_for_test(&id)
+        .lock()
+        .terminal
+        .shell_pid
+        .unwrap();
     let shell = root.path().join("shell.pid");
     std::fs::write(&shell, shell_pid.to_string()).unwrap();
     first.shutdown();
@@ -1144,8 +1149,9 @@ async fn a_finished_wait_belongs_to_the_command_that_was_submitted() {
     // The agent may only type once the user's command is over; on a slow
     // machine it can still be running when the next line is typed.
     until("the user's command to end", || async {
-        let state = service.lock();
-        let terminal = &state.terminals[&id];
+        let terminal_owner = service.terminal_for_test(&id);
+        let state = terminal_owner.lock();
+        let terminal = &state.terminal;
         terminal.commands_started == 1 && !terminal.command_in_flight
     })
     .await;
@@ -1183,7 +1189,7 @@ async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
     until("the first prompt", || async {
-        service.lock().terminals[&id].mark_tracking
+        service.terminal_for_test(&id).lock().terminal.mark_tracking
     })
     .await;
     let release = root.path().join("release");
@@ -1199,7 +1205,11 @@ async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
             .accepted
     );
     until("the user's command to run", || async {
-        service.lock().terminals[&id].command_in_flight
+        service
+            .terminal_for_test(&id)
+            .lock()
+            .terminal
+            .command_in_flight
     })
     .await;
     // This test runs on one thread and does not yield from here on, so the
@@ -1209,7 +1219,11 @@ async fn an_agent_is_admitted_after_a_finish_the_shell_already_reported() {
     // The shell reports the end right after the command exits.
     std::thread::sleep(Duration::from_millis(500));
     assert!(
-        service.lock().terminals[&id].command_in_flight,
+        service
+            .terminal_for_test(&id)
+            .lock()
+            .terminal
+            .command_in_flight,
         "the pump has not read the finish report yet"
     );
     assert!(
@@ -1276,7 +1290,11 @@ async fn a_second_send_by_the_same_agent_waits_for_its_own_command() {
             .accepted
     );
     until("the first command to run", || async {
-        service.lock().terminals[&id].command_in_flight
+        service
+            .terminal_for_test(&id)
+            .lock()
+            .terminal
+            .command_in_flight
     })
     .await;
     // The second line waits in the terminal's input until the first command
@@ -1337,7 +1355,11 @@ async fn input_a_running_command_reads_does_not_hide_its_finish() {
         .accepted
     );
     until("the command to run", || async {
-        service.lock().terminals[&id].command_in_flight
+        service
+            .terminal_for_test(&id)
+            .lock()
+            .terminal
+            .command_in_flight
     })
     .await;
     let offset = service.snapshot("room-1", &id).unwrap().output_offset;
@@ -1371,8 +1393,9 @@ async fn a_shell_started_inside_the_terminal_does_not_repeat_the_marks() {
     // before the marks are on). Wait for the first prompt.
     until("the shell's first prompt", || async {
         service.pump_once();
-        let state = service.lock();
-        state.terminals[&id].mark_tracking && !state.terminals[&id].command_in_flight
+        let terminal_owner = service.terminal_for_test(&id);
+        let state = terminal_owner.lock();
+        state.terminal.mark_tracking && !state.terminal.command_in_flight
     })
     .await;
     // The nested shell prints no marks of its own, so the outer command is
@@ -1404,7 +1427,11 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         );
         until("the shell command start", || async {
             service.pump_once();
-            service.lock().terminals[&id].command_in_flight
+            service
+                .terminal_for_test(&id)
+                .lock()
+                .terminal
+                .command_in_flight
         })
         .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -1434,7 +1461,11 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         );
         until("read to finish", || async {
             service.pump_once();
-            !service.lock().terminals[&id].command_in_flight
+            !service
+                .terminal_for_test(&id)
+                .lock()
+                .terminal
+                .command_in_flight
         })
         .await;
         if refused.accepted {
@@ -1454,7 +1485,11 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         );
         until("another read to start", || async {
             service.pump_once();
-            service.lock().terminals[&id].command_in_flight
+            service
+                .terminal_for_test(&id)
+                .lock()
+                .terminal
+                .command_in_flight
         })
         .await;
         assert!(
@@ -1464,7 +1499,11 @@ async fn builtin_read_keeps_its_driver_until_the_command_finishes() {
         );
         until("the driver's read to finish", || async {
             service.pump_once();
-            !service.lock().terminals[&id].command_in_flight
+            !service
+                .terminal_for_test(&id)
+                .lock()
+                .terminal
+                .command_in_flight
         })
         .await;
     }
@@ -1477,8 +1516,9 @@ async fn an_output_marker_survives_a_large_burst_in_one_pump_batch() {
     let service = service(root.path());
     // Apply bytes directly so the test is independent of PTY reader chunking.
     let id = open(&service, root.path()).terminal_id;
-    let mut state = service.lock();
-    let terminal = state.terminals.get_mut(&id).unwrap();
+    let terminal_owner = service.terminal_for_test(&id);
+    let mut state = terminal_owner.lock();
+    let terminal = &mut state.terminal;
     terminal.watches.arm(
         owner("burst", "a"),
         RoomTerminalWatch::OutputContains {
@@ -1537,7 +1577,13 @@ async fn a_late_output_wait_matches_a_marker_before_a_large_burst() {
     .await;
     until("all output before registering the wait", || async {
         service.pump_once();
-        service.lock().terminals[&id].log.end_offset() > offset + 32768
+        service
+            .terminal_for_test(&id)
+            .lock()
+            .terminal
+            .log
+            .end_offset()
+            > offset + 32768
     })
     .await;
     let waited = service
@@ -1567,8 +1613,9 @@ async fn a_start_mark_alone_keeps_foreground_completion_available() {
     let root = TempDir::new();
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
-    let mut state = service.lock();
-    let terminal = state.terminals.get_mut(&id).unwrap();
+    let terminal_owner = service.terminal_for_test(&id);
+    let mut state = terminal_owner.lock();
+    let terminal = &mut state.terminal;
     terminal.mark_tracking = false;
     terminal.apply_output(b"\x1b]133;C\x07", Instant::now());
     let tracking = terminal.mark_tracking;
@@ -1763,8 +1810,9 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
         })
         .unwrap()
         .terminal_id;
-    let mut state = service.lock();
-    let terminal = state.terminals.get_mut(&id).unwrap();
+    let terminal_owner = service.terminal_for_test(&id);
+    let mut state = terminal_owner.lock();
+    let terminal = &mut state.terminal;
     let now = Instant::now();
     let offset = terminal.log.end_offset();
     terminal.apply_output(b"ready-", now);
@@ -2032,4 +2080,93 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
         .unwrap();
     thread.join().unwrap();
     service.end_session("room-1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paused_parser_does_not_delay_another_terminals_echo() {
+    unrelated_echo_while_screen_paused(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paused_renderer_does_not_delay_another_terminals_echo() {
+    unrelated_echo_while_screen_paused(true).await;
+}
+
+async fn unrelated_echo_while_screen_paused(rendering: bool) {
+    use base64::Engine as _;
+    let root = TempDir::new();
+    let service = service(root.path());
+    let cat = || {
+        service
+            .open(OpenRoomTerminal {
+                session_id: "room-1".into(),
+                working_directory: root.path().into(),
+                cols: 80,
+                rows: 24,
+                title: None,
+                opened_by: TerminalActor::User,
+                command: Some(vec!["/bin/cat".into()]),
+            })
+            .unwrap()
+            .terminal_id
+    };
+    let busy = cat();
+    let other = cat();
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    {
+        let terminal_owner = service.terminal_for_test(&busy);
+        let mut state = terminal_owner.lock();
+        let hook = Some((entered, released));
+        if rendering {
+            state.terminal.screen.pause_text = hook;
+        } else {
+            state.terminal.screen.pause_feed = hook;
+        }
+    }
+    let busy_writer = service.clone();
+    let busy_runtime = tokio::runtime::Handle::current();
+    let busy_thread = std::thread::spawn(move || {
+        if rendering {
+            busy_writer.snapshot("room-1", &busy).unwrap();
+        } else {
+            busy_runtime
+                .block_on(busy_writer.input("room-1", &busy, &TerminalActor::User, b"BUSY\n"))
+                .unwrap();
+        }
+    });
+    started.recv_timeout(Duration::from_secs(5)).unwrap();
+    let writer = service.clone();
+    let reader = service.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let (done, completion) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let result = runtime.block_on(async {
+            writer
+                .resize("room-1", &other, &TerminalActor::User, 90, 30)
+                .unwrap();
+            writer.snapshot("room-1", &other).unwrap();
+            writer
+                .input("room-1", &other, &TerminalActor::User, b"INDEPENDENT\n")
+                .await
+                .unwrap();
+            let output = reader
+                .read_output("room-1", &other, 0, Duration::from_millis(500))
+                .await
+                .unwrap();
+            base64::engine::general_purpose::STANDARD
+                .decode(output.data_base64)
+                .unwrap()
+        });
+        let _ = done.send(result);
+    });
+    let echoed = completion.recv_timeout(Duration::from_millis(750));
+    release.send(()).unwrap();
+    busy_thread.join().unwrap();
+    thread.join().unwrap();
+    service.end_session("room-1");
+    assert!(
+        echoed.is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains("INDEPENDENT")),
+        "another terminal's echo waited for paused screen work"
+    );
 }
