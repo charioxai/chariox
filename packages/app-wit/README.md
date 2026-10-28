@@ -125,3 +125,34 @@ configuration setter, so these fixture bytes are not evidence of a working
 Wasmtime 50 worker. The exact production worker/toolchain combination must pass
 its own compile/link/run drill. Do not equate this syntax/type check with engine
 availability.
+
+
+## View callers and forms
+
+The browser bridge supplies a caller to each UI action handler:
+
+```js
+chariox.action(declaration, async (input, caller) => {
+  return caller.call('save', input);
+});
+chariox.form(document.querySelector('form[data-chariox-action]'), async (input, caller) => {
+  await caller.call('save', input);
+  await caller.call('refresh');
+});
+```
+
+A caller belongs to one handler invocation and expires when its returned promise
+settles. The controller binds its opaque call-id token to the invoking agent and
+view; the page supplies no actor identity. Retired or unknown tokens fail with
+`APP_INVOCATION_EXPIRED`. Ambient `chariox.call` always acts as the human.
+A human submission and an agent invocation both run the registered form handler.
+An annotated form without `chariox.form` registration fails with
+`form_unregistered`; native async submit listeners cannot signal completion.
+Another agent action on the same Tab gets `view_busy` until the handler settles,
+including after a deadline. Human input remains available.
+
+The WIT `handlers` exports are backend entry points, distinct from browser UI
+handlers. JS/TS, Rust guest, C and C++ backend handlers retain their existing
+kernel-supplied context and signatures. Signed declarations and transport shapes
+are unchanged. Use the browser caller for backend calls made by a view handler;
+do not replace backend WIT parameters with a browser caller.
