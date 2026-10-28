@@ -26,6 +26,7 @@ const requiredOverlayDestinations = [
     "browser-controller-actions.mjs",
     "browser-app-restore.mjs",
     "browser-app-drafts.mjs",
+    "browser-app-view-actions.mjs",
     "browser-controller-cdp.mjs",
     "browser-controller-resources.mjs",
     "browser-controller-cookie-fence.mjs",

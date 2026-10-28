@@ -1,4 +1,5 @@
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -63,8 +64,8 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = documentNonce + ":" + ++next;
+  const request = (method, params, token) => new Promise((resolve, reject) => {
+    const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
@@ -74,8 +75,13 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
+  const viewActions = (${createViewActions.toString()})(request);
+  Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    action: viewActions.action,
+    form: viewActions.form,
+    view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
