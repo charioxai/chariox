@@ -664,53 +664,37 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
-// own record of the input it dispatched there, never from the page.
 const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
   params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
 const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
-const agentOf = (id) => ({ kind: "agent", id });
 
-test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
+test("ambient calls stay human while a scoped invocation waits and after it settles", async () => {
   const { tabs, connection } = await opened();
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [null]);
-  tabs.noteAgent("t1", "agent-7");
-  // Timers, browser-generated events and the person's own clicks look alike to
-  // the controller: after the agent, none of them is the person's.
-  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-  tabs.noteAgent("unknown", "agent-7");
-});
-
-test("the page cannot name who a call runs as", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
-  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
-});
-
-test("a new document of the Tab keeps the agents that drove it", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  await navigated(connection, "doc-2");
-  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-});
-
-test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
-  const { tabs, connection } = await opened();
-  const answers = [];
   const send = connection.send.bind(connection);
-  connection.send = async (method, params, id) => {
-    if (method === "Runtime.evaluate") answers.push(params.expression);
-    return send(method, params, id);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  connection.send = async (method, params, session) => {
+    if (method === 'Runtime.evaluate' && params.awaitPromise) {
+      entered(); return new Promise(resolve => { release = () => resolve({ result: { value: { ok: true, value: null } } }); });
+    }
+    return send(method, params, session);
   };
-  tabs.noteAgent("t1", "agent-7");
-  tabs.noteAgent("t1", "agent-8");
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), []);
-  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
+  const running = tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'invoke', name: 'save' });
+  await started;
+  await bindingCall(tabs, connection, { id: 'human:1', method: 'save', actor: { kind: 'agent', id: 'agent-8' } });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  const token = tabs.apps.get('s1').invocation.token;
+  await bindingCall(tabs, connection, { id: `invocation:${token}:document:1`, method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [{ kind: 'agent', id: 'agent-7' }]);
+  assert.equal((await tabs.agent({ target_id: 't1', agent: 'agent-8', call: 'invoke', name: 'save' })).code, 'view_busy');
+  release(); await running;
+  for (const value of [token, 'unknown']) {
+    const id = `invocation:${value}:document:2`;
+    await bindingCall(tabs, connection, { id, method: 'save' });
+    assert.match(connection.sent.at(-1).params.expression, /APP_INVOCATION_EXPIRED/);
+  }
+  await bindingCall(tabs, connection, { id: 'human:2', method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [null]);
 });
 
 // MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
@@ -904,18 +888,21 @@ test("MP-09/MP-10 A3: a live Room viewer retains adopted Tabs, detached viewers 
   assert.equal(tabs.apps.size, 0);
 });
 
-test("MP-11 A3: startup calls use the opening agent, and adoption preserves an in-flight actor", async () => {
-  const { browser } = fakeBrowser();
-  const tabs = new AppTabs(browser);
+test("background startup calls stay human before and after adoption", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
   const params = { origin_label: "startup", installation_id: "todo", assets: [asset("index.html", "state")] };
   await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
   const app = [...tabs.apps.values()][0];
-  assert.deepEqual(tabs.callActor(app), { kind: "agent", id: "agent-1" });
-  app.agentActor = { kind: "agent", id: "agent-2" };
+  await bindingCall(tabs, connection, { id:'startup', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  now = 100;
+  tabs.noteActivity(app.targetId);
+  assert.equal(app.lastActivity, 100);
   await tabs.open(params);
-  assert.deepEqual(tabs.callActor(app), { kind: "agent", id: "agent-2" });
-  app.agentActor = undefined;
-  assert.equal(tabs.callActor(app), undefined);
+  await bindingCall(tabs, connection, { id:'adopted', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
 });
 
 test("MP-09/MP-10 A3: a concurrent open waits for retirement and failed closes retry", async () => {
@@ -976,4 +963,32 @@ test("MP-09/MP-11 A3: a failed idle close cannot starve another App's admitted b
   assert.equal(warnings.mock.callCount(), 1);
   await tabs.retireIdle();
   assert.equal(warnings.mock.callCount(), 1, "a repeated close failure does not flood diagnostics");
+});
+
+test('a token that retires while document lookup waits cannot admit a backend call', async () => {
+  const {tabs,connection} = await opened();
+  const send = connection.send.bind(connection);
+  let finishAction, finishDocument, enteredAction, enteredDocument;
+  const actionStarted = new Promise(resolve=>{enteredAction=resolve;});
+  const documentStarted = new Promise(resolve=>{enteredDocument=resolve;});
+  connection.send = async (method,params,session) => {
+    if(method==='Runtime.evaluate'&&params.awaitPromise) {
+      enteredAction(); return new Promise(resolve=>{finishAction=()=>resolve({result:{value:{ok:true,value:null}}});});
+    }
+    if(method==='Page.getFrameTree') {
+      enteredDocument(); return new Promise(resolve=>{finishDocument=()=>resolve({frameTree:{frame:{loaderId:'document-found'}}});});
+    }
+    return send(method,params,session);
+  };
+  // The first binding can arrive before the initial loader event.
+  tabs.apps.get('s1').document=null;
+  const running=tabs.agent({target_id:'t1',agent:'agent-one',call:'invoke',name:'save'});
+  await actionStarted;
+  const token=tabs.apps.get('s1').invocation.token;
+  const sending=bindingCall(tabs,connection,{id:`invocation:${token}:document:1`,method:'save'});
+  await documentStarted;
+  finishAction(); await running;
+  finishDocument(); await sending;
+  assert.deepEqual(tabs.calls,[]);
+  assert.match(connection.sent.at(-1).params.expression,/APP_INVOCATION_EXPIRED/);
 });

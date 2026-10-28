@@ -48,10 +48,10 @@ const connection = {
         __charioxAppCall(payload) { listener?.({ method: 'Runtime.bindingCalled', sessionId, params: { name: '__charioxAppCall', payload } }); },
       });
       vm.runInContext(bridge, context);
-      vm.runInContext(`chariox.view.state(() => ({ready:true})); chariox.action({name:'roundtrip',description:'Backend round trip',effect:'write',inputSchema:{type:'object'}}, async ({method}) => {
-        await chariox.call(method, {text:'before revoke'});
+      vm.runInContext(`chariox.view.state(() => ({ready:true})); chariox.action({name:'roundtrip',description:'Backend round trip',effect:'write',inputSchema:{type:'object'}}, async ({method}, caller) => {
+        await caller.call(method, {text:'before revoke'});
         await resume();
-        return chariox.call(method, {text:'after revoke'});
+        return caller.call(method, {text:'after revoke'});
       });`, context);
       listener?.({ method: 'Page.frameNavigated', sessionId, params: { frame: { id: 'actor-frame', loaderId: 'actor-document' } } });
     }

@@ -27,7 +27,7 @@ const script = `
   const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
   chariox.action({ name: 'add_todo', description: 'Add a todo', effect: 'write',
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } },
-    async ({ text }) => { await chariox.call('todo.add', { text }); todos.push(text); chariox.view.changed({ added: text }); return { count: todos.length }; });
+    async ({ text }, caller) => { await caller.call('todo.add', { text }); todos.push(text); chariox.view.changed({ added: text }); return { count: todos.length }; });
   chariox.action({ name: 'slow', description: 'Takes a while', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
     async () => { await settle(700); return { done: true }; });
   chariox.action({ name: 'long', description: 'Exceeds the CDP round trip', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } },
