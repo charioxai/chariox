@@ -3,6 +3,14 @@ use super::*;
 const REMOTE_NAME: &str = "chariox.app_views";
 
 impl KernelRuntimeState {
+    pub(in crate::runtime::state::tool_dispatch) fn is_remote_app_view_tool(
+        tool: &RemoteExtensionTool,
+    ) -> bool {
+        tool.kind == ExtensionKind::App
+            && tool.name == REMOTE_NAME
+            && TOOLS.contains(&tool.tool_name.as_str())
+    }
+
     pub(crate) fn remote_app_view_tools(
         agent: &crate::agent::AgentInstance,
     ) -> Vec<RemoteExtensionTool> {
@@ -26,7 +34,7 @@ impl KernelRuntimeState {
                 definition_origin: crate::extension::ExtensionDefinitionOrigin::Home,
                 execution_location: crate::extension::ExtensionExecutionLocation::Home,
                 safety: None,
-                timeout_sec: Some(APPROVAL_TIMEOUT_SEC + 30),
+                timeout_sec: None,
                 version_hash: Some("1".into()),
             })
             .collect()
