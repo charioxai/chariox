@@ -60,6 +60,9 @@ COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
+COPY packages/app-wit packages/app-wit
+COPY packages/app-sdk-rust packages/app-sdk-rust
+COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
 COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
