@@ -1119,6 +1119,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             retryable,
             ..
         } => kernel_error(code, error, *retryable),
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if code == "provider_capacity_reached" => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         // A terminal on another kernel refuses in the terminal service's own words; they
         // are passed on as they came, so the caller that sent the id reads them.
         DaemonError::RelayTransport {

@@ -11,6 +11,7 @@ pub(crate) use claude_runtime::usage::{
 };
 mod account_handoff;
 mod codex;
+pub(crate) use codex::configured_session_capacity as configured_codex_session_capacity;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
