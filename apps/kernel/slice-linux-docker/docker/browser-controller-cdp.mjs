@@ -892,37 +892,44 @@ export class BrowserCdpClient {
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
     try {
-      const result = await withBrowserActionFrame({
-        connection,
-        sessionId,
-        targetId,
-        documentId,
-        nodeRef: rawRequest?.node_ref,
-        action: rawRequest?.action,
-        timeoutMs: rawRequest?.timeout_ms,
-        signal,
-        withInput: operation => this.inputCapture.run(connection, sessionId, operation),
-      }, async options => {
-        if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
-          this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          // MP-11: a new protected target ends every display lease before the value is typed.
-          retireNativeStates();
-          // MP-11: bind the completed value before releasing in-flight coverage.
-          // A failed action still fingerprints whatever it inserted; an
-          // unprovable completion keeps the fill pending (covered).
-          let result;
-          try { result = await performBrowserAction(options); }
-          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
-          await finishBrowserFill(connection, target);
-          return result;
-        }
-        return performBrowserAction(options);
-      });
-      return {
-        browser_generation: this.browserGeneration,
-        ...result,
+      const dispatch = async (inputTimestamp, inputToken) => {
+        const result = await withBrowserActionFrame({
+          inputTimestamp, inputToken,
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          nodeRef: rawRequest?.node_ref,
+          action: rawRequest?.action,
+          timeoutMs: rawRequest?.timeout_ms,
+          signal,
+          withInput: operation => this.inputCapture.run(connection, sessionId, operation),
+        }, async options => {
+          if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
+            const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+            this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+            // MP-11: a new protected target ends every display lease before the value is typed.
+            retireNativeStates();
+            // MP-11: bind the completed value before releasing in-flight coverage.
+            // A failed action still fingerprints whatever it inserted; an
+            // unprovable completion keeps the fill pending (covered).
+            let result;
+            try { result = await performBrowserAction(options); }
+            catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+            await finishBrowserFill(connection, target);
+            return result;
+          }
+          return performBrowserAction(options);
+        });
+        return {
+          browser_generation: this.browserGeneration,
+          ...result,
+        };
       };
+      const app = this.appTabs && [...this.appTabs.apps.values()].find(app => app.targetId === targetId);
+      return app && rawRequest.agent_id
+        ? await this.appTabs.input(app, rawRequest.agent_id, dispatch)
+        : await dispatch();
     } catch (error) {
       throw normalizeControllerError(error);
     }

@@ -335,6 +335,7 @@ fn room_controller_protocol_shapes_are_versioned() {
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
+                agent_id: Some("agent-1".into()),
                 execution_id: "11111111111111111111111111111111".into(),
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
@@ -347,12 +348,13 @@ fn room_controller_protocol_shapes_are_versioned() {
                 },
                 timeout_ms: 500,
             },
-            serde_json::json!({"kind":"action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
+            serde_json::json!({"kind":"action","agent_id":"agent-1","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false,"expected_document_url":"https://example.test/login"},"timeout_ms":500}),
         ),
         (
             RoomBrowserControllerCommand::RecoverAction {
+                agent_id: Some("agent-1".into()),
                 execution_id: "11111111111111111111111111111111".into(),
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
@@ -365,7 +367,7 @@ fn room_controller_protocol_shapes_are_versioned() {
                 },
                 timeout_ms: 500,
             },
-            serde_json::json!({"kind":"recover_action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
+            serde_json::json!({"kind":"recover_action","agent_id":"agent-1","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false},"timeout_ms":500}),
         ),
