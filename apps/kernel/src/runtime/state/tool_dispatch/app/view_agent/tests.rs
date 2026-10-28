@@ -909,3 +909,28 @@ async fn check_live_binding(check: LiveBindingCheck) {
         std::panic::resume_unwind(error);
     }
 }
+
+#[tokio::test]
+async fn remote_view_batches_keep_the_local_result_and_deadline_contract() {
+    let mut rig = rig();
+    rig.grant().await;
+    let tool = KernelRuntimeState::remote_app_view_tools(&rig.agent)
+        .into_iter()
+        .find(|tool| tool.tool_name == BATCH)
+        .unwrap();
+    assert!(
+        tool.timeout_sec.is_none(),
+        "each action owns its deadline; a batch has no extra proxy deadline"
+    );
+    let result = RuntimeToolResult {
+        ok: true,
+        payload: json!({"completed": (0..8).map(|_| json!({"action":"read", "value":"x".repeat(256 * 1024 - 100)})).collect::<Vec<_>>(), "stopped":null}),
+    };
+    let expected = result.payload.clone();
+    let checked = super::super::super::home_extension_execution_policy::enforce_home_app_runtime_result_limit(&tool, result.clone()).unwrap();
+    assert_eq!(checked.payload, expected);
+    let mut backend = tool;
+    backend.name = APP.into();
+    backend.tool_name = "app_installed_read".into();
+    assert!(super::super::super::home_extension_execution_policy::enforce_home_app_runtime_result_limit(&backend, result).is_err(), "backend App tools keep their existing result limit");
+}
