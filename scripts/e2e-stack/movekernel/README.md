@@ -18,7 +18,7 @@ The origin must have normal validation device approval and support the current k
 
 The divergence check observes only archive filenames in its own configured transfer store, then occupies the generated destination before import. It never calls private import helpers or constructs admission tickets. The target must refuse publication and preserve the existing inode, Git state and file tree. Runtime processes and disposable state are cleaned up; value-free JSON results and real TUI review captures remain in the evidence directory.
 
-`durable-move.mjs` uses the same environment with a protocol634/237 kernel and
+`durable-move.mjs` uses the same environment with a protocol639/241 kernel and
 its real built TUI. It runs three short official Codex gpt-6-luna/low turns,
 Moves forward, Returns, and restarts the home kernel after each source capture.
 The same Room recalls the original marker and the intervening target turn;

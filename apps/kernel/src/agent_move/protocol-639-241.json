@@ -1,6 +1,6 @@
 {
   "local_protocol": 639,
-  "peer_protocol": 237,
+  "peer_protocol": 241,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -213,7 +213,7 @@
         "cli_version": "codex-cli 0.159.3",
         "account_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       },
-      "relay_peer_protocol_version": 237
+      "relay_peer_protocol_version": 241
     },
     {
       "result": "source_captured"

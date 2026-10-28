@@ -148,11 +148,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn mk04_resource_readiness_639_237_shape_and_hash() {
-        let bytes = include_bytes!("protocol-639-237.json");
+    fn mk04_resource_readiness_639_241_shape_and_hash() {
+        let bytes = include_bytes!("protocol-639-241.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "862cd663d90e51b59c85105adef1fc5bbc7e4e7f0fdf2d09fb76c3374e21509a"
+            "5af2528bd9c7cab12d46067a7dcf237c7cdd70db8cde31bc74ebf0310ca967a1"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

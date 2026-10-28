@@ -5667,7 +5667,7 @@ The home owns commitment and retries. Publishing files or probing native state
 does not authorize a prompt. Native bytes stay in protected artifacts and peer
 transport; the public client protocol gains no native-history projection.
 
-### MP-08 / MP-09 / MP-10 / MP-11: composed Move resource receipts (634/237)
+### MP-08 / MP-09 / MP-10 / MP-11: composed Move resource receipts (639/241)
 
 Move binds its selected account configuration, granted extension manifest,
 skill hashes and Project setup definition before source capture. Home checks
