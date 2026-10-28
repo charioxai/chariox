@@ -4,7 +4,7 @@ use super::automatic_substitutes::{failing_turn, failing_turn_on, FailingTurn};
 use crate::local::{
     EventRunState, EventTarget, LocalDaemonRequest, OutsideEventValue, SubscribeEventsRequest,
 };
-use crate::provider::{ProviderFailure, ProviderFailureCause};
+use crate::provider::{TurnOutcome, TurnOutcomeKind};
 
 const OVERLOADED: &str = "Provider prompt dispatch failed: Codex error [server_overloaded]: \
      Selected model is at capacity. Please try a different model.";
@@ -32,7 +32,7 @@ fn follow(turn: FailingTurn) -> FailingTurn {
     turn
 }
 
-fn followed_error_failure(turn: &FailingTurn) -> Option<ProviderFailure> {
+fn followed_error_failure(turn: &FailingTurn) -> Option<TurnOutcome> {
     turn.runtime
         .owned
         .publish_outside_runtime_activity()
@@ -47,15 +47,15 @@ fn followed_error_failure(turn: &FailingTurn) -> Option<ProviderFailure> {
         .find_map(|event| match event.value {
             OutsideEventValue::Agent {
                 run_state: Some(EventRunState::Error),
-                failure,
+                outcome,
                 ..
-            } => Some(failure),
+            } => Some(outcome),
             _ => None,
         })
         .expect("the follower receives the error run state")
 }
 
-fn settled_history_failure(turn: &FailingTurn) -> Option<ProviderFailure> {
+fn settled_history_failure(turn: &FailingTurn) -> Option<TurnOutcome> {
     let settlement = turn
         .runtime
         .owned
@@ -65,7 +65,7 @@ fn settled_history_failure(turn: &FailingTurn) -> Option<ProviderFailure> {
         .expect("the failed turn has durable settlement history");
     settlement
         .metadata
-        .get(crate::history::PROMPT_FAILURE_METADATA_KEY)
+        .get(crate::history::TURN_OUTCOME_METADATA_KEY)
         .map(|failure| serde_json::from_value(failure.clone()).unwrap())
 }
 
@@ -87,10 +87,10 @@ async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause(
     turn.fail_run(&turn.failed_run_id, OVERLOADED).await;
 
     turn.assert_turn_failed();
-    let expected = ProviderFailure {
-        cause: ProviderFailureCause::Overloaded,
+    let expected = TurnOutcome {
+        kind: TurnOutcomeKind::Overloaded,
         retryable: true,
-        message: "Selected model is at capacity. Please try a different model.".to_string(),
+        reason: "Selected model is at capacity. Please try a different model.".to_string(),
     };
     assert_eq!(followed_error_failure(&turn), Some(expected.clone()));
     assert_eq!(settled_history_failure(&turn), Some(expected));
@@ -108,10 +108,10 @@ async fn a_claude_session_limit_reaches_the_follower_as_a_usage_limit_that_will_
     .await;
 
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.cause, ProviderFailureCause::UsageLimit);
+    assert_eq!(failure.kind, TurnOutcomeKind::UsageLimit);
     assert!(!failure.retryable);
     assert_eq!(
-        failure.message,
+        failure.reason,
         "You've hit your session limit · resets 8:30am"
     );
     assert_eq!(settled_history_failure(&turn), Some(failure));
@@ -120,7 +120,7 @@ async fn a_claude_session_limit_reaches_the_follower_as_a_usage_limit_that_will_
 #[tokio::test]
 async fn a_declined_login_recovery_preserves_the_native_error_in_events_and_history() {
     let turn = subscribed_failing_turn().await;
-    let native = ProviderFailure::classify(
+    let native = TurnOutcome::classify(
         "codex",
         "Codex error [unauthorized]: unexpected status 401 Unauthorized",
     );
@@ -180,7 +180,7 @@ async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_tra
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.message, native);
+    assert_eq!(failure.reason, native);
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
@@ -247,8 +247,8 @@ async fn a_long_auth_error_declined_at_login_recovery_stays_whole_in_events_hist
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.cause, ProviderFailureCause::SignInRequired);
-    assert_eq!(failure.message, native);
+    assert_eq!(failure.kind, TurnOutcomeKind::SignInRequired);
+    assert_eq!(failure.reason, native);
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
@@ -283,7 +283,7 @@ async fn a_cancelled_turn_does_not_retain_a_late_failure() {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
             None,
-            Some(ProviderFailure::classify("codex", OVERLOADED)),
+            Some(TurnOutcome::classify("codex", OVERLOADED)),
         );
     let settled = turn
         .runtime
@@ -291,5 +291,5 @@ async fn a_cancelled_turn_does_not_retain_a_late_failure() {
         .completed_git_turn_snapshots
         .latest_projection_for_agent(&turn.session_id, &turn.agent_id)
         .unwrap();
-    assert_eq!(settled.failure, None);
+    assert_eq!(settled.outcome, Some(TurnOutcome::cancelled()));
 }

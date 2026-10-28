@@ -1197,7 +1197,7 @@ mod tests {
     /// was recorded by the r39 drill.
     #[test]
     fn codex_errors_are_typed_from_their_error_info() {
-        use crate::provider::{ProviderFailure, ProviderFailureCause::*};
+        use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
         let error_text = |error: serde_json::Value| {
             let notification = parse_notification(JsonRpcMessage {
                 id: None,
@@ -1299,13 +1299,13 @@ mod tests {
                 "stream closed",
             ),
         ];
-        for (error, cause, retryable, message) in cases {
+        for (error, kind, retryable, message) in cases {
             assert_eq!(
-                ProviderFailure::classify("codex", &error_text(error.clone())),
-                ProviderFailure {
-                    cause,
+                TurnOutcome::classify("codex", &error_text(error.clone())),
+                TurnOutcome {
+                    kind,
                     retryable,
-                    message: message.to_string()
+                    reason: message.to_string()
                 },
                 "{error}"
             );

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::failure::{ProviderFailure, ProviderFailureCause};
+use super::turn_outcome::{TurnOutcome, TurnOutcomeKind};
 
 const MAX_PROVIDER_TERMINATION_REASON_CHARS: usize = 256;
 const MAX_PROVIDER_TERMINATION_SIGNAL_CHARS: usize = 64;
@@ -24,7 +24,7 @@ pub struct ProviderRunTermination {
     pub timestamp_ms: u64,
     /// Why the turn failed, typed once from the harness's own error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<ProviderFailure>,
+    pub failure: Option<TurnOutcome>,
 }
 
 impl ProviderRunTermination {
@@ -53,7 +53,7 @@ impl ProviderRunTermination {
             reason,
             "provider reported an explicit error",
             timestamp_ms,
-            ProviderFailure::classify(adapter_key, reason),
+            TurnOutcome::classify(adapter_key, reason),
         )
     }
 
@@ -71,7 +71,16 @@ impl ProviderRunTermination {
             reason,
             "provider runtime failed",
             timestamp_ms,
-            ProviderFailure::new(ProviderFailureCause::Other, false, reason),
+            TurnOutcome::new(TurnOutcomeKind::Other, false, reason),
+        )
+    }
+
+    /// The provider process was gone when the kernel next looked and no exit was seen.
+    pub fn exit_unobserved(timestamp_ms: u64) -> Self {
+        Self::crashed(
+            ProviderRunTerminationCategory::RuntimeFailure,
+            "the provider process was no longer running and its exit was not observed".to_string(),
+            timestamp_ms,
         )
     }
 
@@ -81,7 +90,7 @@ impl ProviderRunTermination {
             reason,
             "provider transport failed",
             timestamp_ms,
-            ProviderFailure::new(ProviderFailureCause::Network, true, reason),
+            TurnOutcome::new(TurnOutcomeKind::Network, true, reason),
         )
     }
 
@@ -90,7 +99,7 @@ impl ProviderRunTermination {
         reason: String,
         timestamp_ms: u64,
     ) -> Self {
-        let failure = ProviderFailure::new(ProviderFailureCause::ProviderCrashed, true, &reason);
+        let failure = TurnOutcome::new(TurnOutcomeKind::ProviderCrashed, true, &reason);
         Self {
             category,
             reason,
@@ -104,7 +113,7 @@ impl ProviderRunTermination {
         reason: &str,
         fallback: &str,
         timestamp_ms: u64,
-        failure: ProviderFailure,
+        failure: TurnOutcome,
     ) -> Self {
         let sanitized = sanitize_provider_diagnostic(reason);
         let sanitized = sanitized

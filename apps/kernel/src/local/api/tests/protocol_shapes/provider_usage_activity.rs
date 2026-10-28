@@ -1189,10 +1189,10 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
         provider_termination: Some(crate::provider::ProviderRunTermination::process_exit(
             17, 1_234,
         )),
-        failure: Some(crate::provider::ProviderFailure {
-            cause: crate::provider::ProviderFailureCause::ProviderCrashed,
+        outcome: Some(crate::provider::TurnOutcome {
+            kind: crate::provider::TurnOutcomeKind::ProviderCrashed,
             retryable: true,
-            message: "provider process exited with status 17".to_string(),
+            reason: "provider process exited with status 17".to_string(),
         }),
         duration_ms: Some(234),
         changed_paths: vec!["src/lib.rs".to_string()],
@@ -1238,11 +1238,11 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
         Some(&serde_json::json!(1_234))
     );
     assert_eq!(
-        snapshot.pointer("/failure"),
+        snapshot.pointer("/outcome"),
         Some(&serde_json::json!({
-            "cause": "provider_crashed",
+            "kind": "provider_crashed",
             "retryable": true,
-            "message": "provider process exited with status 17",
+            "reason": "provider process exited with status 17",
         }))
     );
 
@@ -1251,7 +1251,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "d2f75df26bed8e8223f192eba346ce61430ba35754108dd4b35c1d8ca26fd6ad"
+        "c84cd51e43bebffa138948ccfe835ed674a171f49dfd908f6b510538dd97dfd6"
     );
 }
 
@@ -1289,9 +1289,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "provider process exited with status 17",
                 "timestamp_ms": 1_234,
                 "failure": {
-                    "cause": "provider_crashed",
+                    "kind": "provider_crashed",
                     "retryable": true,
-                    "message": "provider process exited with status 17",
+                    "reason": "provider process exited with status 17",
                 },
             },
             {
@@ -1299,9 +1299,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "provider process terminated by signal SIGTERM",
                 "timestamp_ms": 1_235,
                 "failure": {
-                    "cause": "provider_crashed",
+                    "kind": "provider_crashed",
                     "retryable": true,
-                    "message": "provider process terminated by signal SIGTERM",
+                    "reason": "provider process terminated by signal SIGTERM",
                 },
             },
             {
@@ -1309,9 +1309,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "provider rejected request",
                 "timestamp_ms": 1_236,
                 "failure": {
-                    "cause": "other",
+                    "kind": "other",
                     "retryable": false,
-                    "message": "provider rejected request",
+                    "reason": "provider rejected request",
                 },
             },
             {
@@ -1319,9 +1319,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "runtime unavailable",
                 "timestamp_ms": 1_237,
                 "failure": {
-                    "cause": "other",
+                    "kind": "other",
                     "retryable": false,
-                    "message": "runtime unavailable",
+                    "reason": "runtime unavailable",
                 },
             },
             {
@@ -1329,9 +1329,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "relay closed",
                 "timestamp_ms": 1_238,
                 "failure": {
-                    "cause": "network",
+                    "kind": "network",
                     "retryable": true,
-                    "message": "relay closed",
+                    "reason": "relay closed",
                 },
             },
             {
@@ -1339,9 +1339,9 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "reason": "provider process exited without an available status",
                 "timestamp_ms": 1_239,
                 "failure": {
-                    "cause": "provider_crashed",
+                    "kind": "provider_crashed",
                     "retryable": true,
-                    "message": "provider process exited without an available status",
+                    "reason": "provider process exited without an available status",
                 },
             },
         ])
@@ -1355,7 +1355,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f61bde216dca4954cd13c2b33daa3ba14f714ed09e8ada9cffa3088a98bf52c8"
+        "1ed25493c88d333dbd4ef83a314681b83ba9f35c0c88fd7b4e6b7806dcdb6b00"
     );
 }
 

@@ -139,8 +139,15 @@ pub(crate) struct RunState {
     pub session_id: String,
     pub agent_id: String,
     pub state: crate::local::EventRunState,
-    /// Why the agent's last turn failed, while it is in the error state.
-    pub failure: Option<crate::provider::ProviderFailure>,
+    /// The agent's last settled turn and how it ended, while it is not working.
+    pub turn: Option<SettledTurn>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SettledTurn {
+    pub prompt_id: String,
+    pub turn_id: String,
+    pub outcome: crate::provider::TurnOutcome,
 }
 
 /// A decision that was open before a holder followed its target.

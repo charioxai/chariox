@@ -623,7 +623,7 @@ impl KernelRuntimeState {
             .map(|message| provider_error_message(message).unwrap_or_else(|| message.to_string()));
         let failure = native_error
             .as_deref()
-            .map(|message| crate::provider::ProviderFailure::classify(&adapter_key, message));
+            .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message));
         // Only adapter-protocol error frames set this provenance bit. PTY or
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
@@ -642,7 +642,7 @@ impl KernelRuntimeState {
         // words and what to do next.
         let failure_notice = failure
             .as_ref()
-            .map(crate::provider::ProviderFailure::notice);
+            .map(crate::provider::TurnOutcome::notice);
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         recorded_notice_messages.extend(terminal_failure.iter().cloned());

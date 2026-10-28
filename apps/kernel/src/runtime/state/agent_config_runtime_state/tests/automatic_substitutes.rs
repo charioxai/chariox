@@ -463,7 +463,7 @@ async fn without_substitutes_the_turn_fails_as_before() {
         &crate::agent::failed_request_reason("dev-stub", SERVER_OVERLOADED),
     );
     let failure_notice =
-        crate::provider::ProviderFailure::classify("dev-stub", SERVER_OVERLOADED).notice();
+        crate::provider::TurnOutcome::classify("dev-stub", SERVER_OVERLOADED).notice();
     assert_eq!(errors, vec![failure_notice, not_carried_out]);
 }
 
