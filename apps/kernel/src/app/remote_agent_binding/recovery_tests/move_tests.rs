@@ -1965,6 +1965,7 @@ async fn mk03_cancelled_partial_upload_releases_transfer_archives_after_restart(
     }
     dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap();
     assert_no_workspace_archives(&fixture).await;
+    let mut native_paths = Vec::new();
     for app in [&fixture.home, &fixture.workers[0]] {
         let app = app.lock().await;
         std::fs::write(
@@ -1975,9 +1976,21 @@ async fn mk03_cancelled_partial_upload_releases_transfer_archives_after_restart(
             b"crash before unlink",
         )
         .unwrap();
+        let native = app.agent_moves.artifact_path(
+            &operation.identity.operation_id,
+            AgentMoveArtifactKind::Native,
+        );
+        std::fs::write(&native, b"preserve native checkpoint").unwrap();
+        native_paths.push(native);
         app.save_durable_state_snapshot().unwrap();
     }
     reboot_app(&fixture.home).await;
     reboot_worker(&mut fixture).await;
     assert_no_workspace_archives(&fixture).await;
+    for native in native_paths {
+        assert_eq!(
+            std::fs::read(native).unwrap(),
+            b"preserve native checkpoint"
+        );
+    }
 }

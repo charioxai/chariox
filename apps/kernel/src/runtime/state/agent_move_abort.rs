@@ -28,6 +28,7 @@ impl KernelRuntimeState {
             .for_agent(session_id, agent.id())
             .ok_or_else(|| move_error("This agent has no Move to abort"))?;
         if matches!(operation.phase, HomeMovePhase::RolledBack { .. }) {
+            self.cleanup_agent_move_staging(&operation).await;
             self.spawn_agent_move_queue_promotion(session_id, agent.id())?;
             return self.owned.agent_store.get_agent(agent.id());
         }

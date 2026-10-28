@@ -140,6 +140,15 @@ impl AgentMoveStore {
             .collect()
     }
 
+    pub(crate) fn cancelled(&self) -> Vec<HomeMoveOperation> {
+        self.lock()
+            .homes
+            .values()
+            .filter(|operation| matches!(operation.phase, HomeMovePhase::RolledBack { .. }))
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn settled(&self) -> Vec<HomeMoveOperation> {
         let records = self.lock();
         let mut latest: BTreeMap<(&str, &str), &HomeMoveOperation> = BTreeMap::new();
