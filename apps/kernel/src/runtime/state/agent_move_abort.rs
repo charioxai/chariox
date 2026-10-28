@@ -60,6 +60,10 @@ impl KernelRuntimeState {
             ));
         }
         if operation.target_ref.is_some()
+            && matches!(operation.phase, HomeMovePhase::Captured { .. })
+        {
+            self.cleanup_agent_move_staging(&operation).await;
+        } else if operation.target_ref.is_some()
             && matches!(operation.phase, HomeMovePhase::Materialized { .. })
         {
             let response = self
@@ -125,6 +129,34 @@ impl KernelRuntimeState {
             .to_string();
         self.spawn_agent_move_queue_promotion(&session_id, &agent_id)?;
         self.owned.agent_store.get_agent(&agent_id)
+    }
+
+    pub(super) async fn cleanup_agent_move_staging(
+        &self,
+        operation: &crate::agent_move::HomeMoveOperation,
+    ) {
+        if operation.target_ref.is_none() {
+            return;
+        }
+        // No target lease was created before Captured. Keep source release independent
+        // of an offline upload destination; its durable cancellation is retried on recovery.
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            self.move_peer_target(
+                operation,
+                Request::AbortTarget {
+                    identity: operation.identity.clone(),
+                },
+            ),
+        )
+        .await;
+        if !matches!(result, Ok(Ok(Response::TargetAborted))) {
+            crate::logging::warn_with_fields(
+                "agent_move.abort",
+                "Cancelled Move staging awaits target reconnection and recovery",
+                serde_json::json!({"operation_id":operation.identity.operation_id}),
+            );
+        }
     }
 
     pub(super) async fn abort_agent_move_target(

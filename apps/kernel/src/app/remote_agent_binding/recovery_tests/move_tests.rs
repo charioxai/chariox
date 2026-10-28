@@ -1928,3 +1928,56 @@ async fn mk03_abort_unactivated_return_restores_home_configuration() {
         .agent_moves
         .dispatch_fenced(&backing.backing_session_id, &backing.backing_agent_id));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_cancelled_partial_upload_releases_transfer_archives_after_restart() {
+    use crate::agent_move::{AgentMoveArtifactKind, HomeMovePhase};
+    let (mut fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let HomeMovePhase::Captured { capture } = &operation.phase else {
+        panic!("capture required")
+    };
+    {
+        let worker = fixture.workers[0].lock().await;
+        worker
+            .agent_moves
+            .begin_target(
+                capture.clone(),
+                &fixture.workspace_root.join("partial-target"),
+            )
+            .unwrap();
+        worker
+            .agent_moves
+            .write_chunk(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+                0,
+                b"partial upload",
+            )
+            .unwrap();
+    }
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap();
+    assert_no_workspace_archives(&fixture).await;
+    for app in [&fixture.home, &fixture.workers[0]] {
+        let app = app.lock().await;
+        std::fs::write(
+            app.agent_moves.artifact_path(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+            ),
+            b"crash before unlink",
+        )
+        .unwrap();
+        app.save_durable_state_snapshot().unwrap();
+    }
+    reboot_app(&fixture.home).await;
+    reboot_worker(&mut fixture).await;
+    assert_no_workspace_archives(&fixture).await;
+}

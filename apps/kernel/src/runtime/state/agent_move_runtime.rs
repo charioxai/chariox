@@ -29,6 +29,9 @@ impl KernelRuntimeState {
             }
         }
         for operation in self.owned.agent_moves.settled() {
+            if matches!(operation.phase, HomeMovePhase::RolledBack { .. }) {
+                self.cleanup_agent_move_staging(&operation).await;
+            }
             if matches!(operation.phase, HomeMovePhase::Complete { .. }) {
                 if let Err(error) = self.finish_agent_move_slice_membership(&operation).await {
                     crate::logging::warn_with_fields(
