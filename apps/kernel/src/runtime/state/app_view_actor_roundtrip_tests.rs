@@ -243,7 +243,7 @@ async fn room_browser_input_backend_keeps_agent_turn_and_human_actor() {
         let assets = [("index.html","text/html",html),("app.js","text/javascript",script.as_str())].into_iter().map(|(path,content_type,body)|BrowserAppViewAsset{
             path:path.into(),content_type:content_type.into(),body_base64:base64::engine::general_purpose::STANDARD.encode(body),
         }).collect();
-        let opened = controller(&store,&session,BrowserAppViewRequest::Open{origin_label:"input-actor".into(),installation_id:"installed".into(),instance_id:None,entry:"index.html".into(),assets,page:None}).await;
+        let opened = controller(&store,&session,BrowserAppViewRequest::Open{projection: None, origin_label:"input-actor".into(),installation_id:"installed".into(),instance_id:None,entry:"index.html".into(),assets,page:None}).await;
         let target = opened["target_id"].as_str().unwrap();
         state.app_control().views().register(&session,target,binding);
         for mode in ["browser_click","browser_submit"] {
