@@ -284,6 +284,7 @@ async fn leased_catalog_refresh_preserves_prepared_project_environment() {
         .relay_submit_leased_prompt(
             &lease.id,
             profile,
+            None,
             "use the prepared Project with its refreshed catalog",
             "",
             Vec::new(),
