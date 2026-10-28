@@ -182,12 +182,12 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   (`browser.app.agent`) adds a deadline (20 s; the transport waits that long on
   top of its round trip) and refuses `view_busy` while a handler that missed its
   deadline still runs.
-- **Actor attribution (answers A1 question 2).** Each serialized `invoke` or
-  `state` call carries its agent through the handler's backend calls, including
-  after the deadline until the handler settles. Catalog discovery leaves no
-  lasting actor on the shared Tab: two agents can discover and invoke actions,
-  and the person's later input retains its own actor. Ordinary browser input
-  continues to use the browser controller's input attribution.
+- **Actor attribution (answers A1 question 2).** Each `invoke` receives a
+  caller bound to the agent, view and document until its handler settles,
+  including after a deadline. Only `caller.call` carries that scope. Ambient
+  `chariox.call` always acts as the human, including calls caused by ordinary
+  browser input while an agent handler waits. State reads and catalog discovery
+  establish no ambient actor.
 - **Redaction (answers A1 question 3).** State, results, changes and App error
   messages go through the Room's secret observation scrub
   (`room_secret_observations.scrub`) before reaching the model; the protection
