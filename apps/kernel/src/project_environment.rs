@@ -78,6 +78,7 @@ pub use discovery::*;
 pub(crate) use import::*;
 pub use index::*;
 pub(crate) use launch::*;
+#[cfg(test)]
 pub(crate) use manual_files::verify_manual_files;
 pub use materialize::*;
 pub use model::*;

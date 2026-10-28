@@ -130,6 +130,7 @@ pub(super) fn remaining(deadline: Instant, cap: Duration) -> Result<Duration, &'
         Ok(left)
     }
 }
+#[cfg(test)]
 pub(super) fn version(name: &str, roots: &[PathBuf]) -> Result<Option<String>, &'static str> {
     version_until(name, roots, Instant::now() + Duration::from_secs(3))
 }
@@ -352,10 +353,13 @@ pub(super) fn constraints_overlap(
     }
     Some(false)
 }
-pub(super) use super::check_health::{health, health_until};
+pub(super) use super::check_health::health_until;
+#[cfg(test)]
+pub(super) use super::check_health::health;
 
 /// MP-08 / MP-10 / MP-11: package and font inventory reads installed facts,
 /// never lockfiles as proof, package scripts or package-manager mutations.
+#[cfg(test)]
 pub(super) fn software_version(
     name: &str,
     source: Option<&str>,

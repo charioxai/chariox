@@ -20,7 +20,7 @@ pub(super) fn outcome(
 ) -> (EnvironmentObservationStatus, String, String) {
     (status, reason.into(), summary.into())
 }
-use EnvironmentObservationStatus::{Conflict, Missing, NeedsYourInput, Outdated, Ready};
+use EnvironmentObservationStatus::{Missing, NeedsYourInput, Ready};
 pub(super) fn vault_available(config: &DaemonConfig, refs: &[EnvironmentVaultReference]) -> bool {
     let Ok(vault) = crate::secret::project_environment_vault(config) else {
         return false;
