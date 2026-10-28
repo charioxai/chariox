@@ -790,7 +790,7 @@ impl KernelRuntimeState {
             Ok(result) => result,
             Err(error) => {
                 project_environment_setup_failure::record_provider_readiness_failure(
-                    &store, &execution, attempt, &error,
+                    store, &execution, attempt, &error,
                 );
                 return;
             }
