@@ -1385,3 +1385,45 @@ fn absent_spawn_profile_is_actionable_through_the_public_dispatcher() {
     assert!(mapped.message.contains("Provider Accounts"));
     assert!(mapped.message.contains("absent-profile-canary"));
 }
+
+#[test]
+fn retirement_keeps_default_project_after_last_room_ends_and_kernel_restarts() {
+    let config = DaemonConfig::for_tests();
+    let worktree = crate::test_support::TestWorktree::new("retirement-default-project");
+    let session = {
+        let harness = LocalRouterTestHarness::with_config(config.clone());
+        let session = match harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                worktree.session_request(),
+            ))
+            .unwrap()
+        {
+            LocalDaemonResponse::SessionCreated { session, .. } => session,
+            other => panic!("unexpected create: {other:?}"),
+        };
+        harness
+            .dispatch(LocalDaemonRequest::EndSession(EndSessionRequest {
+                session_id: session.id().to_string(),
+            }))
+            .unwrap();
+        session
+    };
+    let harness = LocalRouterTestHarness::with_config(config);
+    match harness
+        .dispatch(LocalDaemonRequest::RestoreProject(RestoreProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("a Default project with retired Rooms must survive restart")
+    {
+        LocalDaemonResponse::ProjectRestored { project, sessions } => {
+            assert_eq!(
+                project.status(),
+                crate::session::RuntimeProjectStatus::Active
+            );
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].id(), session.id());
+            assert_eq!(sessions[0].status(), crate::session::SessionStatus::Parked);
+        }
+        other => panic!("unexpected restore: {other:?}"),
+    }
+}

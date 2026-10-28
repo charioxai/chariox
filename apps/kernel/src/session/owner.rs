@@ -124,7 +124,9 @@ impl SessionStateStore {
         self.write().restore_projects(projects)
     }
 
-    pub(crate) fn remove_projects_without_visible_sessions(&self) -> Vec<RuntimeProject> {
+    pub(crate) fn remove_projects_without_visible_sessions(
+        &self,
+    ) -> Result<Vec<RuntimeProject>, DaemonError> {
         self.write().remove_projects_without_visible_sessions()
     }
 

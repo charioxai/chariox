@@ -1,5 +1,17 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 retired Room upgrades (2026-10-28)
+
+Before restoring live state, the kernel backfills retired Rooms from persisted
+checkpoints and lifecycle events in sequence, including later restores and
+deletes. The owner-scoped index and its one-time receipt commit atomically;
+subsequent boots use the maintained index. Ended checkpoint Rooms and their
+agents stay outside live projections. Reattachment resolves through canonical
+indexed state rather than treating absence from a live projection as deletion.
+Default Project cleanup retains a project backed by a visible retired Room and
+propagates index errors before removing any project. Both placements use this
+same path; no protocol shape or managed stop-policy change is introduced.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 independent Room terminal parsing (2026-10-28)
 
 `room_terminal/owner.rs` gives each Room terminal its own PTY, parser, screen,

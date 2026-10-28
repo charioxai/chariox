@@ -313,7 +313,9 @@ impl SessionService {
             .collect()
     }
 
-    pub(crate) fn remove_projects_without_visible_sessions(&mut self) -> Vec<RuntimeProject> {
+    pub(crate) fn remove_projects_without_visible_sessions(
+        &mut self,
+    ) -> Result<Vec<RuntimeProject>, DaemonError> {
         let visible_project_ids = self
             .store
             .list()
@@ -324,17 +326,29 @@ impl SessionService {
         // MP-08/MP-10: Named Projects are explicit durable resources. Copy
         // publishes one before the target's first session; keep it across restart.
         // Empty Default Projects are session-derived and still need legacy cleanup.
-        let empty_project_ids = self
+        let mut empty_project_ids = Vec::new();
+        for project in self
             .projects
             .values()
             .filter(|project| project.kind() == RuntimeProjectKind::Default)
             .filter(|project| !visible_project_ids.contains(project.id()))
-            .map(|project| project.id().to_string())
-            .collect::<Vec<_>>();
-        empty_project_ids
+        {
+            let has_retired = self
+                .durable_state
+                .as_ref()
+                .map(|state| {
+                    state.retired_project_has_visible_session(&self.host_daemon_id, project.id())
+                })
+                .transpose()?
+                .unwrap_or(false);
+            if !has_retired {
+                empty_project_ids.push(project.id().to_string());
+            }
+        }
+        Ok(empty_project_ids
             .into_iter()
             .filter_map(|project_id| self.projects.remove(&project_id))
-            .collect()
+            .collect())
     }
 
     pub(crate) fn reconcile_duplicate_project_names(&mut self) -> Vec<RuntimeProject> {

@@ -90,3 +90,19 @@ impl DurableKernelStateStore {
         rows.map(|row| decode(row.map_err(read_error)?)).collect()
     }
 }
+
+impl DurableKernelStateStore {
+    pub(crate) fn retired_project_has_visible_session(
+        &self,
+        owner: &str,
+        project: &str,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("durable_state.read_retired_project_membership")?
+            .query_row("SELECT EXISTS(SELECT 1 FROM retired_sessions
+                WHERE owner_id=?1 AND project_id=?2 AND COALESCE(json_extract(payload,'$.hidden'),0)=0)",
+                params![owner,project], |row| row.get(0))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.read_retired_project_membership", message: error.to_string(),
+            })
+    }
+}

@@ -690,7 +690,7 @@ impl DaemonApp {
     }
 
     fn remove_restored_projects_without_visible_sessions(&self) -> Result<(), DaemonError> {
-        for project in self.sessions.remove_projects_without_visible_sessions() {
+        for project in self.sessions.remove_projects_without_visible_sessions()? {
             self.durable_state.append_event(
                 "project.deleted",
                 Some(project.id().to_string()),
