@@ -1,0 +1,33 @@
+{
+  "local_protocol": 646,
+  "peer_protocol": 245,
+  "requests": [
+    {
+      "InspectAppView": {
+        "session_id": "room"
+      }
+    },
+    {
+      "InspectAppView": {
+        "session_id": "room",
+        "target_id": "tab-2"
+      }
+    }
+  ],
+  "response": {
+    "AppViewInspected": {
+      "installation_id": "dev",
+      "target_id": "tab-2",
+      "generation": "9007199254740993",
+      "development": true,
+      "catalog_json": "{\"actions\":[],\"registrations\":[],\"state\":{\"ok\":true,\"value\":{\"count\":1}},\"warnings\":[{\"code\":\"undeclared_control\",\"message\":\"Visible control 'button#missing' has no matching declared action\"}]}"
+    }
+  },
+  "peer_command": {
+    "kind": "app_view",
+    "request": {
+      "op": "inspect",
+      "target_id": "controller-target"
+    }
+  }
+}

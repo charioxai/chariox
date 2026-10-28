@@ -1,4 +1,5 @@
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -63,8 +64,8 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = documentNonce + ":" + ++next;
+  const request = (method, params, token) => new Promise((resolve, reject) => {
+    const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
@@ -74,8 +75,13 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
+  const viewActions = (${createViewActions.toString()})(request);
+  Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    action: viewActions.action,
+    form: viewActions.form,
+    view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
@@ -148,6 +154,25 @@ export class AppTabs {
     this.nextFullscreenCheck = 0;
     this.restoreGraceMs = restoreGraceMs;
     this.orphanRestores = new Map();
+  }
+
+  async inspect(params) {
+    const entry = [...this.apps].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry || !entry[1].ready || !entry[1].document) throw new BrowserControllerError('app_view_not_ready', 'Reload the App view before inspecting it');
+    const [sessionId, app] = entry;
+    const document = app.document;
+    const reply = await this.connection.send('Runtime.evaluate', {
+      expression: '(async () => { try { return {ok:true,value:await globalThis.__charioxViewAgent.inspect()} } catch (error) { return {ok:false,code:error?.code} } })()', awaitPromise: true, returnByValue: true,
+    }, sessionId);
+    if (this.apps.get(sessionId) !== app || app.document !== document || !app.ready) throw new BrowserControllerError('app_view_changed', 'The App view changed during inspection; retry');
+    if (reply.exceptionDetails || !reply.result?.value) throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    const result = reply.result.value;
+    if (result.ok !== true) {
+      if (result.code === 'coverage_too_large') throw new BrowserControllerError('app_view_coverage_too_large', 'The App has more than 512 visible controls; ask its developer to reduce the inspected view');
+      if (result.code === 'inspection_too_large') throw new BrowserControllerError('app_view_inspection_too_large', 'The App inspection exceeds 256 KiB; ask its developer to reduce the declarations or state');
+      throw new BrowserControllerError('app_view_inspection_failed', 'The App view could not be inspected; reload it and retry');
+    }
+    return result.value;
   }
 
   async open(params) {

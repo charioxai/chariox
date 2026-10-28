@@ -8,6 +8,7 @@ import { handleAppSlashCommand } from "./app-command-handler.js"
 // One invocation of every command both surfaces share.
 const shared: Record<string, string[][]> = {
   list: [["list", "--limit", "10"]],
+  actions: [["actions", "--session", "session-1"], ["actions", "--session", "session-1", "--tab", "app-tab", "--json"]],
   set: [["set"]],
   status: [["status", "install-1"]],
   journal: [["journal", "install-1"]],
@@ -112,6 +113,7 @@ test("App command parity snapshot", () => {
     "operation: cli=- | tui=operation [REQUEST-ID]",
     "cancel: cli=- | tui=cancel [REQUEST-ID]",
     "list: cli=list [--after ID] [--limit 1..100] | tui=list [--after ID] [--limit 1..100]",
+    "actions: cli=actions [--tab TARGET] [--session SESSION] [--json] | tui=actions [--tab TARGET] [--json] | actions toggle",
     "set: cli=set | tui=set",
     "status: cli=status INSTALLATION | tui=status INSTALLATION",
     "journal: cli=journal INSTALLATION | tui=journal INSTALLATION",
@@ -127,7 +129,7 @@ test("App command parity snapshot", () => {
     "connection: cli=connection list|grant|revoke INSTALLATION … | tui=connection list|grant|revoke INSTALLATION …",
     'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
   ])
-  assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|set\|/)
+  assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|actions\|set\|/)
   assert.equal(tuiAppHelp().length, appCommandCatalog.filter((entry) => entry.tui).length)
 })
 

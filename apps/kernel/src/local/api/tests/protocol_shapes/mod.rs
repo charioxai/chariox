@@ -14,6 +14,7 @@ mod app_events;
 mod app_fetch;
 mod app_install;
 mod app_publisher;
+mod app_view_inspection;
 mod apps;
 mod browser_artifact;
 mod browser_import;

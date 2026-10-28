@@ -126,3 +126,99 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 - Migration steps are `.wasm` components in `chariox:app/migration@1.0.0`.
 - Reuses: `managed_state` snapshots/journal and the private-volume snapshot;
   event identities and receipts stay outside rollbackable data.
+
+## 8. View actions and the signed declarations (A1)
+
+- The view registers what the signed `schemas/ui-actions.json` declares, through
+  `chariox.action(declaration, handler)` or `chariox.form(formElement, handler)`
+  on `<form data-chariox-action>` markup
+  (`browser-app-view-actions.mjs`, injected by the App bridge). A registration
+  has the `UiActionDeclaration` shape; there is no second format. The page
+  grants nothing: the kernel compares and decides.
+- `check_registration(declared, registered)` (A2: at registration and before each
+  invocation) refuses an undeclared action or one whose effect, approval reason,
+  input/output schema or description differs. `check_agreement(declared,
+  registered)` (A4: `/app actions`) also refuses duplicates and declared actions
+  the view never registered. Both return a typed `UiActionMismatch` naming the
+  action and the differing part. Schemas compare in RFC 8785 form, so key order
+  and number spelling are not differences. Vectors: `ui-action-agreement.json`.
+- A2 reads the page only through `__charioxViewAgent` (non-writable global):
+  `registrations()`, `invoke(name, params)`, `state()`, `changes(since, waitMs)`.
+  Answers are `{ok, value}` or `{ok:false, code, message}`; bounds are 64 KiB
+  state, 256 KiB result, 16 KiB per change, 256 buffered changes.
+- Form markup derives its schema from simple controls (text-like, number,
+  checkbox, radio, select, textarea, password, and fields the product masks);
+  hidden, file and multi-select controls are not agent input. An agent may
+  enter a value it knows into a password or masked field; the product keeps
+  masking what a Vault fill put there in model-bound observations. Anything
+  richer uses `chariox.action`, whose schema the developer writes.
+
+## A4 inspection (MP-08 / MP-10 / MP-11)
+
+`InspectAppView` (local 646; peer 245) reads an **existing** Room App Tab.
+The kernel selects the focused Tab unless the caller supplies `target_id`
+(the logical Room Tab ID, also used by `--tab`). It resolves that ID to the
+current controller target on every read and returns the logical ID in
+`AppViewInspected.target_id`, so DEV refresh survives controller rebinding.
+It checks Room membership, the kernel's App binding, DEV Room scope, current
+publisher trust and generation before and after the read. It uses the existing
+`AppView` home/worker command with `op: inspect`; it cannot invoke an action,
+open a headless Tab or grant a capability. A2's runtime MCP surface is separate.
+
+The controller reads `__charioxViewAgent.inspect()` from the bound App document
+and refuses a document change. The SDK returns its registrations, state and
+visible control mapping. State is bounded at 64 KiB with a two-second provider
+wait; the observation is bounded at 256 KiB, 256 registrations and 512 controls.
+Errors and missing state providers remain explicit results. No DOM field value
+is read for coverage. Supported form fields reuse A1's `controlsOf`; submit
+controls inherit their form's action. For JS actions annotate the visible
+control with `data-chariox-action="name"`, including custom elements; event-listener closures are opaque. Unannotated ARIA controls (including tabs, menu items and options) remain visible in coverage diagnostics.
+Unsupported form controls and unannotated buttons remain uncovered. Coverage traverses light DOM and open shadow roots; closed roots cannot be enumerated by the page SDK and are outside this diagnostic scan. Use explicit JS registrations for controls in shadow roots; A1's simple form registrations still use document markup.
+
+`chariox_app_runtime::view_catalog::ViewCatalog::from_observation` compares
+runtime registrations with A1's signed action declarations and reports
+`declaration_mismatch` for signed agreement and `undeclared_control` for a missing or ambiguous page-action mapping. These diagnostics are independent, so v1 still distinguishes a covered control from a deliberately undeclared button. `actions` is signed authority;
+`registrations` is diagnostic only. The current D1 active-release service reads
+v1 packages, which cannot declare signed `uiActions`: it therefore supplies an
+empty signed action list and reports registrations as mismatches. This does
+not extend v1's manifest or admit its registrations as agent actions. Wiring
+`VerifiedPackageV2::ui_actions()` into the read requires R4's v2 activation.
+
+`/app actions [--tab TARGET] [--json]` and `chariox app actions --session ROOM`
+share the same read. `--json` emits `catalog_json`, serialized once by the kernel; the client never reserializes it (number formatting and numeric object keys must survive). `/app actions
+toggle` opens the DEV-only TUI inspector using that same JSON; A/Esc closes it,
+R refreshes the bound Tab, F8 reaches the shared approval handler, and a Room/kernel change closes it. Inspection command failures keep their full recovery message in the TUI transcript so a clipped or expired footer cannot hide it. Human-readable labels escape terminal controls; `catalog_json` remains the unchanged machine-readable payload. This shared
+serialization proves inspector/read equivalence; equivalence with A2's agent
+catalog needs its integration drill. The web inspector remains a proposal until
+Miguel approves a prototype-copy mock; no web behavior ships in A4.
+
+### Caller-scoped view handlers
+
+An action handler receives `(input, caller)`. Use `await caller.call(method, input)`
+for backend calls belonging to that invocation. The function returned by
+`chariox.action` runs the same handler with a human caller when the UI calls it.
+Ambient `chariox.call` always acts as the human, including while an agent handler
+waits. Page code never supplies an actor identity. An invocation token travels
+inside the existing call id; unknown or retired tokens fail with
+`APP_INVOCATION_EXPIRED`, without falling back to a human call.
+
+Register asynchronous forms explicitly:
+
+```js
+chariox.form(document.querySelector('form[data-chariox-action]'), async (input, caller) => {
+  await caller.call('save', input);
+  await caller.call('refresh');
+});
+```
+
+Human submit and agent invoke enter this handler with their own caller. The agent
+path applies controls, waits for component updates, checks validity, then awaits
+the handler. A successful form returns `{submitted: true}` after completion;
+handler errors are returned as action errors. An unregistered annotated form
+fails with `form_unregistered`. Native submit listeners cannot provide this
+completion contract. One agent action runs per Tab: another action or state read
+gets `view_busy` until the running handler settles, even after its deadline.
+Human input and registration/change-log reads remain available during the wait.
+
+Forms used only by humans can register without action markup. They do not appear
+in the agent catalog and need no signed action declaration.

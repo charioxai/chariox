@@ -71,6 +71,6 @@ fn app_dev_register_protocol_644_snapshot_and_legacy_requests() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "bea055a6b01732e149feb5b0629889c307bb674e507d1d9537575c20a1ded5b9"
+        "32196c22d0532fdeb0e239e892eecf1f1ec0caab624d9653a7f6dbf4022f7ef9"
     );
 }

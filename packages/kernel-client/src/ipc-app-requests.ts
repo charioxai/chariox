@@ -251,3 +251,8 @@ export function answerUserDomainInteractionRequest(options: {
     passkey: options.passkey ?? null, passkey_remember_minutes: options.passkeyRememberMinutes ?? null,
   } }
 }
+
+export const appViewInspectionMinimumProtocolVersion = 646
+export function inspectAppViewRequest(sessionId: string, targetId?: string) {
+  return { InspectAppView: { session_id: sessionId, ...(targetId ? { target_id: targetId } : {}) } }
+}

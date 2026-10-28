@@ -22,7 +22,10 @@ pub use package::{
     pack, verify, PackageDigests, PolicyV2, ReviewEntry, UnverifiedReview, VerifiedPackageV2,
     MAX_REVIEWS, MAX_REVIEW_BYTES, REVIEW_DIR, REVIEW_SCHEMA,
 };
-pub use ui_actions::{UiActionDeclaration, UiActionEffect};
+pub use ui_actions::{
+    check_agreement, check_registration, UiActionDeclaration, UiActionEffect, UiActionField,
+    UiActionMismatch,
+};
 pub use world::{check_world, SupportedWorld, WorldId, WorldRefusal, APP_WORLD, MIGRATION_WORLD};
 
 pub const APP_SCHEMA_V2: &str = "chariox.app.v2";

@@ -276,3 +276,40 @@ test("TUI App slash command makes an expired receipt clear without retrying", as
   assert.equal(sends, 1)
   assert.deepEqual(flashes, [["App receipt expired. This request was not re-executed; check the App state before issuing a new command.", "error"]])
 })
+
+test("/app actions toggle reaches the DEV inspector without invoking a backend tool", async () => {
+  const calls:string[][]=[]
+  await handleAppSlashCommand({
+    appActions:{handle:async args => {calls.push(args);return true}},
+    sendAppRequest:async () => assert.fail("inspector owns this command"),
+    appendNotice:() => assert.fail("no backend output"),flashFooter:message => assert.fail(message),
+  },{kind:"app",raw:"/app actions toggle",args:["actions","toggle"]})
+  assert.deepEqual(calls,[["actions","toggle"]])
+})
+
+test("App inspection failures keep the full recovery message in the transcript", async () => {
+  const message = "kernel transport `handle kernel response` failed: App view unavailable: The Room environment is unavailable; start it before /app actions"
+  for (const toggle of [false, true]) {
+    const notices: string[] = [], flashes: string[] = []
+    await handleAppSlashCommand({
+      currentAppSessionId: () => "room",
+      ...(toggle ? { appActions: { handle: async () => { throw new Error(message) } } } : {}),
+      sendAppRequest: async () => { throw new Error(message) },
+      appendNotice: text => { notices.push(text) },
+      flashFooter: text => { flashes.push(text) },
+    }, { kind: "app", raw: `/app actions${toggle ? " toggle" : ""}`, args: toggle ? ["actions", "toggle"] : ["actions"] })
+    assert.deepEqual(notices, [message])
+    assert.deepEqual(flashes, ["App view inspection failed; see transcript"])
+  }
+})
+
+test("App inspection denials remain readable after the footer expires", async () => {
+  const notices: string[] = []
+  await handleAppSlashCommand({
+    currentAppSessionId: () => "room",
+    sendAppRequest: async () => ({ AppRequestFailed: { code: "unauthorized" } }),
+    appendNotice: text => { notices.push(text) },
+    flashFooter: () => {},
+  }, { kind: "app", raw: "/app actions", args: ["actions"] })
+  assert.deepEqual(notices, ["This connection is not authorized to access Apps."])
+})

@@ -29,6 +29,7 @@ pub mod release_store;
 pub mod runtime_enrollment;
 #[cfg(all(test, target_os = "linux"))]
 mod storage_drill_fixture;
+pub mod view_catalog;
 pub mod wire;
 mod wire_json;
 pub mod worker_peer;

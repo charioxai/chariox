@@ -5,9 +5,9 @@ import {
   type AppInboxConnection,
   removeAppInboxRouteRequest, testAppInboxRouteRequest,
   grantAppConnectionRequest, revokeAppConnectionRequest, listAppConnectionsRequest, getAppSetRequest,
-  revokeAppFileGrantsRequest,
+  revokeAppFileGrantsRequest, inspectAppViewRequest,
 } from "./ipc-app-requests.js"
-import type { AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
+import type { AppViewCatalog, AppViewInspection, AppAutomationSummary, AppConnectionSummary, AppInboxRouteSummary, AppInstallationSummary, AppUpdateSummary, AppWorkerSummary } from "./kernel-types-apps.js"
 import { LocalIpcError } from "./local-ipc-error.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
@@ -16,6 +16,7 @@ const usage = [
   "usage: app list [--after <installation-id>] [--limit <1..100>] | status <installation-id> | journal <installation-id> | set",
   "       app logs <installation-id> [--after <sequence>]",
   "       app worker <installation-id> | start <installation-id> | stop <installation-id> | restart <installation-id>",
+  "       app actions [--tab <target-id>] [--session <session-id>] [--json]",
   "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>] [--delete-data]",
   "       app automation list <installation-id>",
   "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--delivery queue|inject] [--revision <n>]",
@@ -41,7 +42,23 @@ export async function executeAppCommand(
 ): Promise<ShellCommandResult> {
   const [action = "list", ...rest] = args
   let request: Record<string, unknown>
-  if (action === "list") {
+  let catalogJson = false
+  if (action === "actions") {
+    let session = defaults.sessionId, target: string | undefined
+    const seen = new Set<string>()
+    for (let i = 0; i < rest.length; i++) {
+      const flag = rest[i]!
+      if (seen.has(flag)) return { ok: false, message: usage }
+      seen.add(flag)
+      if (flag === "--json") catalogJson = true
+      else if ((flag === "--session" || flag === "--tab") && rest[i+1] && !rest[i+1]!.startsWith("--")) {
+        if (flag === "--session") session = rest[++i]!
+        else target = rest[++i]!
+      } else return { ok: false, message: usage }
+    }
+    if (!session) return { ok: false, message: "Attach to a Room or pass --session before /app actions." }
+    request = inspectAppViewRequest(session, target)
+  } else if (action === "list") {
     const options: { after?: string; limit?: number } = {}
     for (let index = 0; index < rest.length; index += 2) {
       const flag = rest[index]
@@ -136,6 +153,10 @@ export async function executeAppCommand(
   if (action === "status") {
     const data = expect<{ installation: AppInstallationSummary }>(response, "AppInstallation")
     return { ok: true, message: formatInstallation(data.installation), data }
+  }
+  if (response.AppViewInspected) {
+    const data = expect<AppViewInspection>(response, "AppViewInspected")
+    return { ok: true, message: catalogJson ? appViewCatalogJson(data) : formatAppViewInspection(data), data }
   }
   if (response.AppViewOpened) {
     const data = expect<{ installation_id: string; target_id: string; origin: string; bound_agent_id?: string | null }>(response, "AppViewOpened")
@@ -342,4 +363,22 @@ function formatLogEntry(entry: AppLogEntry): string {
   const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`)
   const fields = Object.keys(entry.fields ?? {}).length ? ` ${safe(JSON.stringify(entry.fields))}` : ""
   return `${new Date(entry.at_ms).toISOString()} ${entry.level.toUpperCase().padEnd(5)} ${safe(entry.message)}${fields}`
+}
+
+/** Kept compact so the DEV panel can show the exact catalog JSON bytes. */
+export function appViewCatalogJson(view: AppViewInspection): string {
+  if (typeof view.catalog_json !== "string") throw new Error("The kernel returned an invalid App catalog")
+  return view.catalog_json
+}
+export function formatAppViewInspection(view: AppViewInspection): string {
+  const catalog = JSON.parse(appViewCatalogJson(view)) as AppViewCatalog
+  const text = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu,
+    char => "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0"))
+  const lines = [`${view.development ? "DEV " : ""}App ${text(view.installation_id)} · generation ${text(view.generation)} · Tab ${text(view.target_id)}`, "Signed actions:"]
+  for (const action of catalog.actions) lines.push(`${text(action.name)} · ${action.effect} · ${text(action.description)}\n  input: ${text(JSON.stringify(action.inputSchema))}${action.outputSchema ? `\n  output: ${text(JSON.stringify(action.outputSchema))}` : ""}${action.approvalReason ? `\n  approval: ${text(action.approvalReason)}` : ""}`)
+  if (!catalog.actions.length) lines.push("No signed UI actions in this release.")
+  lines.push("View registrations:", ...catalog.registrations.map(action => text(JSON.stringify(action))))
+  lines.push(`State: ${text(JSON.stringify(catalog.state))}`, "Coverage warnings:", ...catalog.warnings.map(warning => `${text(warning.code)}: ${text(warning.message)}`))
+  if (!catalog.warnings.length) lines.push("None.")
+  return lines.join("\n")
 }

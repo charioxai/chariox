@@ -1077,6 +1077,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "tint2rc",
         "browser-app-restore.mjs",
         "browser-app-drafts.mjs",
+        "browser-app-view-actions.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",

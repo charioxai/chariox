@@ -77,6 +77,8 @@ mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_host;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_inspection;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;

@@ -154,3 +154,9 @@ test("App dev and register reject old kernels before sending their source field"
     assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 567))
   }
 })
+
+test("App inspection requires allocated protocol 646 before sending the request", () => {
+  const request = {InspectAppView:{session_id:"room"}}
+  for (const protocol of [567,644,619]) assert.throws(() => requireKernelFeatureProtocol(request, protocol), /App view inspection.*646/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request,646))
+})

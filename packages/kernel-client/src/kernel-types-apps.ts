@@ -174,3 +174,19 @@ export type AppFrontendBundle = {
   content_security_policy: string
   iframe_sandbox: string
 }
+
+/** Read-only catalog; runtime registrations never grant signed authority. */
+export type AppViewCatalog = {
+  actions: AppViewAction[]
+  registrations: unknown[]
+  state: { ok: true; value: unknown } | { ok: false; code: string; message: string }
+  warnings: { code: string; message: string }[]
+}
+export type AppViewAction = {
+  name: string; description: string; inputSchema: unknown; outputSchema?: unknown
+  effect: "read" | "write" | "approval"; approvalReason?: string
+}
+/** target_id is the logical Room Tab ID, also accepted by InspectAppView. */
+export type AppViewInspection = {
+  installation_id: string; target_id: string; generation: string; development: boolean; catalog_json: string
+}
