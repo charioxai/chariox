@@ -6,13 +6,15 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
 const asset = (name, type, body) => ({ path: name, content_type: type, body_base64: Buffer.from(body).toString('base64') });
-const html = `<!doctype html><button id="human">Human call</button>
+const html = `<!doctype html><button id="human">Human call</button><button id="agent">Action</button>
 <form id="save" data-chariox-action="save_form" data-chariox-effect="write"><input name="title" value="Draft"><button>Save</button></form>
 <form data-chariox-action="unregistered" data-chariox-effect="write"></form><script src="app.js"></script>`;
 const script = `
   let retained;
   const spec = name => ({name, description:name, effect:'write', inputSchema:{type:'object'}});
   chariox.action(spec('hold'), async (input, caller) => { retained = caller; await caller.call('agent_hold', input); return {done:true}; });
+  const clicked = chariox.action(spec('clicked'), async (input, caller) => { await caller.call('clicked'); await caller.call('after_click'); });
+  document.querySelector('#agent').onclick = () => clicked({});
   chariox.action(spec('compete'), async (input, caller) => { await caller.call('compete'); return {done:true}; });
   chariox.action(spec('throws'), async (input, caller) => { retained = caller; await caller.call('before_throw'); throw new Error('handler refused'); });
   chariox.action(spec('late'), async () => retained.call('late'));
@@ -54,6 +56,34 @@ test('caller attribution and registered form completion through Chromium', async
     async function click(selector) {
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:r.x+r.width/2,y:r.y+r.height/2}})()`);
       for(const type of ['mousePressed','mouseReleased']) await connection.send('Input.dispatchMouseEvent',{type,...pos,button:'left',clickCount:1},sessionId);
+    }
+    async function browserInput(input, id) {
+      const tab = [...host.tabs.values()].find(tab => tab.target_id === target);
+      const reply = await handle('host.browser', {op:'input', tab_id:tab.tab_id, generation:host.generation,
+        document_id:tab.document_id, input, ...(id ? {_agent_input:true, observed_by:'agent:'+id, _app_view_tab:tab.tab_id} : {})});
+      assert.equal(reply.ok, true, JSON.stringify(reply));
+    }
+    async function browserClick(selector, id) {
+      const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
+      await browserInput({kind:'click',...pos},id);
+    }
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh']]) {
+      if (input === 'click') await browserClick('#agent','agent-one');
+      else {
+        await browserClick('#save input');
+        await browserInput({kind:'key',key:'Enter'},'agent-one');
+      }
+      const firstInput = await nextCall();
+      assert.equal(firstInput.method, firstMethod);
+      assert.deepEqual(firstInput.actor,{kind:'agent',id:'agent-one'}, 'ordinary browser input must carry the invoking agent');
+      await browserClick('#human');
+      const humanInput = await nextCall(); assert.equal(humanInput.method,'human'); assert.equal(humanInput.actor,undefined);
+      await respond(humanInput); await respond(firstInput);
+      const afterInput = await nextCall(); assert.equal(afterInput.method,secondMethod);
+      assert.deepEqual(afterInput.actor,{kind:'agent',id:'agent-one'}, 'the input caller survives an awaited backend reply');
+      await respond(afterInput);
+      for (let i=0;i<100 && [...host.browser.appTabs.apps.values()].some(app=>app.agentRunning);i++) await delay(10);
+      observations[input+'Input'] = {agent:firstInput.actor,human:humanInput.actor??null,after:afterInput.actor};
     }
     const holding = agent('hold');
     const first = await nextCall(); assert.equal(first.method,'agent_hold');

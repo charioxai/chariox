@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createInputCallers } from "./browser-app-input-callers.mjs";
 import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
@@ -81,7 +82,9 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
-  const viewActions = (${createViewActions.toString()})(request);
+  const inputCallers = (${createInputCallers.toString()})();
+  Object.defineProperty(globalThis, "__charioxViewInput", { value: inputCallers });
+  const viewActions = (${createViewActions.toString()})(request, inputCallers);
   Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
@@ -239,6 +242,38 @@ export class AppTabs {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // Browser input returns at its CDP acknowledgement. Any registered handler
+  // it started owns the caller until settlement, just like a typed invocation.
+  async input(app, agent, dispatch) {
+    if (typeof agent !== 'string' || !AGENT_ID.test(agent)) throw invalid("invalid input agent");
+    if (app.agentRunning) throw new BrowserControllerError("view_busy", "An earlier action in this view is still running; retry when it has finished");
+    const sessionId = [...this.apps].find(([, open]) => open === app)?.[0];
+    if (!sessionId) throw invalid("unknown App tab");
+    const token = randomUUID();
+    const timestamp = Math.max(Math.ceil(Date.now() / 1000) + 86400, (this.inputTimestamp ?? 0) + 1);
+    this.inputTimestamp = timestamp;
+    const invocation = { token, actor: { kind: "agent", id: agent }, document: app.document };
+    app.invocation = invocation;
+    let finish;
+    const dispatched = new Promise(resolve => { finish = resolve; });
+    const connection = this.connection;
+    const running = dispatched.then(() => connection.send("Runtime.evaluate", {
+      expression: `globalThis.__charioxViewInput?.end(${JSON.stringify(token)})`, awaitPromise: true, returnByValue: true,
+    }, sessionId, { timeoutMs: null })).finally(() => {
+      if (app.invocation === invocation) app.invocation = null;
+      if (app.agentRunning === running) app.agentRunning = null;
+    });
+    running.catch(() => {}); // Navigation retires the old document's input.
+    app.agentRunning = running;
+    try {
+      const reply = await connection.send("Runtime.evaluate", {
+        expression: `globalThis.__charioxViewInput.begin(${JSON.stringify(token)},${timestamp})`, returnByValue: true,
+      }, sessionId);
+      if (reply.exceptionDetails) throw invalid("App input caller unavailable; reopen the App");
+      return await dispatch(timestamp);
+    } finally { finish(); }
   }
 
   async open(params) {
