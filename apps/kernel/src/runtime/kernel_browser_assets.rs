@@ -3,6 +3,10 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 const ASSETS: &[(&str, &[u8])] = &[
     (
+        "browser-app-input-callers.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-app-input-callers.mjs"),
+    ),
+    (
         "browser-app-drafts.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-app-drafts.mjs"),
     ),

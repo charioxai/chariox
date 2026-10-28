@@ -162,7 +162,7 @@ test("bridge call ids differ between documents, so a late answer cannot match a 
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const firstIds = () => {
     const sent = [];
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
     vm.runInContext(bridge, context);
     vm.runInContext("chariox.call('list_todos')", context);
     return sent[0];
@@ -240,7 +240,7 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -571,7 +571,7 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const sent = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+  const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
     navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
     open() { assert.fail("App view must not open directly"); } });
   vm.runInContext(bridge, context);
