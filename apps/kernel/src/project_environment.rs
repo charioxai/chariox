@@ -4,6 +4,12 @@
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
+mod detect;
+mod detect_importers;
+mod detect_index;
+mod detect_metadata;
+mod detect_model;
+mod detect_store;
 mod discovery;
 mod import;
 mod index;
@@ -20,6 +26,8 @@ mod transfer;
 
 pub use aggregate::*;
 pub use aggregate_projection::*;
+pub use detect::*;
+pub use detect_store::*;
 pub use discovery::*;
 pub(crate) use import::*;
 pub use index::*;
@@ -39,3 +47,6 @@ mod tests;
 
 #[cfg(test)]
 mod aggregate_tests;
+
+#[cfg(test)]
+mod detect_tests;
