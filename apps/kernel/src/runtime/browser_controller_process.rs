@@ -3213,7 +3213,8 @@ done
                 child.wait().unwrap();
             }
             backend.stop().unwrap(); // No health()/take_exited_process() before Stop.
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                                     // The group kill is synchronous; only the survivor's exit is not.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
             while alive(survivor) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
