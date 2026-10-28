@@ -744,9 +744,7 @@ fn outline_turn_from_events_with_lifecycle(
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
-    let outcome = (lifecycle != SessionHistoryOutlineTurnLifecycle::Open)
-        .then(|| outline_turn_outcome(lifecycle_events))
-        .flatten();
+    let outcome = outline_turn_outcome(lifecycle, lifecycle_events);
     let summary_index = events
         .iter()
         .rposition(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event));
@@ -924,8 +922,17 @@ fn outline_turn_lifecycle(
     SessionHistoryOutlineTurnLifecycle::Completed
 }
 
-fn outline_turn_outcome(events: &[HistoryEvent]) -> Option<crate::provider::TurnOutcome> {
-    events.iter().find_map(|event| {
+/// How a closed turn ended. History saved before the turn outcome has none for a completed
+/// or cancelled turn, so the lifecycle says it.
+fn outline_turn_outcome(
+    lifecycle: SessionHistoryOutlineTurnLifecycle,
+    events: &[HistoryEvent],
+) -> Option<crate::provider::TurnOutcome> {
+    use SessionHistoryOutlineTurnLifecycle as Lifecycle;
+    if lifecycle == Lifecycle::Open {
+        return None;
+    }
+    let saved = events.iter().find_map(|event| {
         if let Some(outcome) = event
             .metadata
             .get(crate::history::TURN_OUTCOME_METADATA_KEY)
@@ -950,6 +957,11 @@ fn outline_turn_outcome(events: &[HistoryEvent]) -> Option<crate::provider::Turn
             failure.retryable,
             &failure.message,
         ))
+    });
+    saved.or_else(|| match lifecycle {
+        Lifecycle::Completed => Some(crate::provider::TurnOutcome::completed()),
+        Lifecycle::Cancelled => Some(crate::provider::TurnOutcome::cancelled()),
+        Lifecycle::Open | Lifecycle::Failed => None,
     })
 }
 

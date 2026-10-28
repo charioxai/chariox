@@ -1,10 +1,10 @@
 use super::*;
 
-/// The failed turn as the outline reports it after the store reopens, with the failure
-/// saved under `failure_key`.
-async fn failed_turn_after_store_reopen(
-    failure_key: &str,
-    failure: serde_json::Value,
+/// The turn as the outline reports it after the store reopens, settled as `status` with
+/// `saved` as the only other settlement metadata.
+async fn settled_turn_after_store_reopen(
+    status: &str,
+    saved: Option<(&str, serde_json::Value)>,
 ) -> serde_json::Value {
     let path = std::env::temp_dir().join(format!(
         "chariox-failed-history-{}-{}.db",
@@ -39,10 +39,12 @@ async fn failed_turn_after_store_reopen(
                 ),
                 (
                     crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.into(),
-                    serde_json::json!("failed"),
+                    serde_json::json!(status),
                 ),
-                (failure_key.into(), failure),
-            ]),
+            ])
+            .into_iter()
+            .chain(saved.map(|(key, value)| (key.to_string(), value)))
+            .collect(),
             context,
         );
         store
@@ -75,13 +77,16 @@ async fn failed_turn_after_store_reopen(
 
 #[tokio::test]
 async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
-    let turn = failed_turn_after_store_reopen(
-        crate::history::TURN_OUTCOME_METADATA_KEY,
-        serde_json::json!({
-            "kind": "overloaded",
-            "retryable": true,
-            "reason": "Selected model is at capacity. Please try a different model.",
-        }),
+    let turn = settled_turn_after_store_reopen(
+        "failed",
+        Some((
+            crate::history::TURN_OUTCOME_METADATA_KEY,
+            serde_json::json!({
+                "kind": "overloaded",
+                "retryable": true,
+                "reason": "Selected model is at capacity. Please try a different model.",
+            }),
+        )),
     )
     .await;
     assert_eq!(turn["lifecycle"], "failed");
@@ -100,13 +105,16 @@ async fn failed_turn_history_request_preserves_settlement_after_store_reopen() {
 /// History written before the turn outcome saved a failure as `{ cause, retryable, message }`.
 #[tokio::test]
 async fn failed_turn_saved_before_the_turn_outcome_keeps_its_failure_after_store_reopen() {
-    let turn = failed_turn_after_store_reopen(
-        "prompt_failure",
-        serde_json::json!({
-            "cause": "overloaded",
-            "retryable": true,
-            "message": "Selected model is at capacity. Please try a different model.",
-        }),
+    let turn = settled_turn_after_store_reopen(
+        "failed",
+        Some((
+            "prompt_failure",
+            serde_json::json!({
+                "cause": "overloaded",
+                "retryable": true,
+                "message": "Selected model is at capacity. Please try a different model.",
+            }),
+        )),
     )
     .await;
     assert_eq!(turn["lifecycle"], "failed");
@@ -118,6 +126,21 @@ async fn failed_turn_saved_before_the_turn_outcome_keeps_its_failure_after_store
             "reason": "Selected model is at capacity. Please try a different model.",
         })
     );
+}
+
+/// History written before the turn outcome saved nothing about how a completed or cancelled
+/// turn ended beyond its settlement status.
+#[tokio::test]
+async fn completed_and_cancelled_turns_saved_before_the_turn_outcome_keep_their_outcome() {
+    for (status, kind) in [("completed", "completed"), ("cancelled", "cancelled")] {
+        let turn = settled_turn_after_store_reopen(status, None).await;
+        assert_eq!(turn["lifecycle"], status);
+        assert_eq!(
+            turn["outcome"],
+            serde_json::json!({ "kind": kind, "retryable": false, "reason": "" }),
+            "{status}"
+        );
+    }
 }
 
 #[test]
