@@ -1,5 +1,10 @@
 The workspace drill exercises MP-08 / MP-10 / MP-11 through two disposable kernels, the built `chariox context copy` command, actual source TUI approval, and a hosted WSS relay. It compares linked Git HEAD, index, working files, binary/untracked content, executable state and a supporting directory. It also verifies refusal of an occupied divergent destination and a fresh return snapshot.
 
+Build the shared client once in a fresh checkout with `pnpm build:kernel-client`.
+`node scripts/e2e-stack/movekernel/return-native-conflict.mjs --help` and
+`node scripts/e2e-stack/movekernel/durable-move.mjs --help` validate module loading
+without starting kernels or creating state.
+
 Run on the b3 validation host with these environment variables:
 
 ```sh
