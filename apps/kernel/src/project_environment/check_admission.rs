@@ -101,14 +101,15 @@ pub(super) fn check_admission(
             content_digest,
             required_grants,
         } => {
-            let Ok(page) = ctx.apps.list_app_installations(&ctx.owner, None, 1000) else {
+            let Ok(installations) = super::environment_app_installations(&ctx.apps, &ctx.owner)
+            else {
                 return outcome(
                     NeedsYourInput,
                     "app_registry_unavailable",
                     "App admission registry unavailable",
                 );
             };
-            let Some(a) = page.installations.iter().find(|a| a.app_id == *app_id) else {
+            let Some(a) = installations.iter().find(|a| a.app_id == *app_id) else {
                 return outcome(
                     Missing,
                     "app_absent",

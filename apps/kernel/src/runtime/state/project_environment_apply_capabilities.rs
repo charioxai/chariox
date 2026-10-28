@@ -153,19 +153,17 @@ impl KernelRuntimeState {
                 content_digest: Some(digest),
                 ..
             } => {
-                let installations = self
-                    .owned
-                    .durable_state_store
-                    .list_app_installations(owner, None, 1000)
-                    .map_err(|_| environment_error("App registry unavailable"))?;
-                installations.installations.iter().any(|a| {
+                let installations =
+                    environment_app_installations(&self.owned.durable_state_store, owner)?;
+                installations.iter().any(|a| {
                     a.app_id == *app_id
                         && a.active
                             .as_ref()
                             .is_some_and(|a| a.release.package_digest == *digest)
-                        && agent
-                            .extension_grants()
-                            .contains(&crate::extension::ExtensionGrant::app(&a.installation_id))
+                        && agent.has_extension_grant(
+                            crate::extension::ExtensionKind::App,
+                            &a.installation_id,
+                        )
                 })
             }
             _ => false,
@@ -238,13 +236,9 @@ impl KernelRuntimeState {
                 content_digest: Some(digest),
                 ..
             } => {
-                let installations = self
-                    .owned
-                    .durable_state_store
-                    .list_app_installations(owner, None, 1000)
-                    .map_err(|_| environment_error("App registry unavailable"))?;
+                let installations =
+                    environment_app_installations(&self.owned.durable_state_store, owner)?;
                 let installation = installations
-                    .installations
                     .iter()
                     .find(|a| {
                         a.app_id == *app_id
@@ -308,5 +302,210 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r4_environment_apply_keeps_live_room_app_grant_and_admits_next_prompt() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("r4-room-app-apply");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+        for index in 0..100 {
+            crate::durable_state::app_state::fixture_installation(
+                &app.durable_state_store(),
+                "alice",
+                &format!("000-fill-{index:03}"),
+            );
+        }
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request().with_owner_user_id("alice"))
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::for_user(
+                session.id(),
+                "r4-owner",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+                "alice",
+            ))
+            .unwrap();
+        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            4,
+        )
+        .runtime_state();
+        let bound = state
+            .grant_agent_extension(
+                agent.id(),
+                crate::extension::ExtensionGrant::app("installed"),
+                "alice",
+            )
+            .await
+            .unwrap();
+        assert!(bound
+            .extension_grants()
+            .iter()
+            .any(|grant| grant.name == "installed" && grant.app_grant.is_some()));
+        let installation = state
+            .owned
+            .durable_state_store
+            .get_app_installation("alice", "installed")
+            .unwrap();
+        let project = state
+            .owned
+            .session_store
+            .get_project(session.project_id())
+            .unwrap();
+        let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+        let current = store.snapshot(&project).unwrap();
+        let mut draft = environment_draft(&current);
+        draft.project_requirements.push(Requirement {
+            requirement_id: "app".into(),
+            title: "Admitted App".into(),
+            scope: RequirementScope::Project,
+            origins: vec![],
+            spec: RequirementSpec::CharioxApps {
+                app_id: installation.app_id,
+                version: None,
+                content_digest: Some(installation.active.unwrap().release.package_digest),
+                required_grants: vec![],
+            },
+            depends_on: vec![],
+            platform_variants: vec![],
+            required: true,
+            legacy_entry: None,
+        });
+        let env = store
+            .save_revision_locked(
+                &current,
+                &crate::local::SaveProjectEnvironmentRevisionRequest {
+                    project_id: project.id().into(),
+                    expected_revision: current.revision,
+                    expected_content_digest: current.content_digest.clone(),
+                    draft,
+                    accepted_proposal_ids: vec![],
+                    excluded_proposal_ids: vec![],
+                },
+                "alice",
+            )
+            .unwrap()
+            .0;
+        let mut wrong_package = env.project_requirements[0].clone();
+        if let RequirementSpec::CharioxApps { content_digest, .. } = &mut wrong_package.spec {
+            *content_digest = Some("f".repeat(64))
+        }
+        assert!(!state
+            .environment_capability_already_granted(&wrong_package, agent.id(), "alice")
+            .unwrap());
+        let target = current_check_target(&config);
+        let LocalDaemonResponse::ProjectEnvironmentPlan { plan } = state
+            .plan_project_environment(
+                crate::local::PlanProjectEnvironmentRequest {
+                    project_id: project.id().into(),
+                    expected_revision: env.revision,
+                    revision_digest: env.content_digest.clone(),
+                    target: target.clone(),
+                    selected_items: vec![],
+                },
+                "alice",
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("Plan expected")
+        };
+        state
+            .apply_project_environment(
+                crate::local::ApplyProjectEnvironmentRequest {
+                    project_id: project.id().into(),
+                    expected_revision: env.revision,
+                    revision_digest: env.content_digest.clone(),
+                    target,
+                    operation_id: "room-app".into(),
+                    plan_id: plan.plan_id,
+                    selected_items: plan.selected_items,
+                    per_item_opt_ins: plan
+                        .required_opt_ins
+                        .into_iter()
+                        .map(|id| EnvironmentItemOptIn {
+                            requirement_id: id,
+                            decision: EnvironmentOptInDecision::Accepted,
+                            user_id: "alice".into(),
+                            recorded_at_ms: crate::session::unix_epoch_ms(),
+                        })
+                        .collect(),
+                },
+                "alice",
+            )
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut settled = false;
+        while std::time::Instant::now() < deadline {
+            let journal = store.load_applies(project.id()).unwrap();
+            if !apply_active(&journal.attempts.last().unwrap().operation) {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        if !settled {
+            state
+                .cancel_environment_operation(
+                    crate::local::EnvironmentOperationRequest {
+                        project_id: project.id().into(),
+                        operation_id: "room-app".into(),
+                    },
+                    "alice",
+                )
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        let operation = store
+            .load_applies(project.id())
+            .unwrap()
+            .attempts
+            .last()
+            .unwrap()
+            .operation
+            .clone();
+        let prompt = if operation.phase == EnvironmentOperationPhase::Ready {
+            Some(
+                state
+                    .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                        session_id: session.id().into(),
+                        prompt: crate::session::PromptQueueItem::new(
+                            "r4-next-prompt",
+                            attachment.id(),
+                            agent.id(),
+                            "Continue with the applied App",
+                            crate::session::PromptStatus::Queued,
+                        ),
+                        force_queue: true,
+                        refresh_projection: true,
+                    })
+                    .await,
+            )
+        } else {
+            None
+        };
+        state.delete_session_id(session.id()).await.unwrap();
+        assert!(
+            settled,
+            "Apply asked for an existing live Room App grant again"
+        );
+        assert_eq!(operation.phase, EnvironmentOperationPhase::Ready);
+        assert_eq!(operation.receipts.len(), 1);
+        let prompt_error = prompt.unwrap().err().map(|error| error.to_string());
+        assert!(
+            prompt_error.is_none(),
+            "the next idle prompt must pass applied App binding validation: {prompt_error:?}"
+        );
     }
 }

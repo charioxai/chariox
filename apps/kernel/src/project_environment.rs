@@ -1,6 +1,8 @@
 //! MP-08: Project environment policy shared by every kernel placement.
 //! Discovery contains names and locators only. Values belong to the Vault.
 
+mod app_inventory;
+pub(crate) use app_inventory::environment_app_installations;
 mod aggregate;
 mod aggregate_projection;
 mod aggregate_store;
