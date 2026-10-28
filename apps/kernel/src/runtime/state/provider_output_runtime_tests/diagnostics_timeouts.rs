@@ -9,14 +9,30 @@ struct RefusedSubmit {
     run_id: String,
     prompt_id: String,
     follow_ups: WorkflowPromptDispatches,
+    provider: Option<crate::provider::FakeOpenCodeServer>,
     _worktree: crate::test_support::TestWorktree,
 }
 
-/// The active prompt's structured submit fails with `error`.
-async fn refused_structured_submit(
-    error: crate::error::DaemonError,
-    room_agent_tools: bool,
-) -> RefusedSubmit {
+/// How the active prompt's structured submit fails.
+enum FailedSubmit {
+    /// The finished submit job carries this error.
+    Injected(crate::error::DaemonError),
+    /// A real OpenCode run submits to a provider that answers this way.
+    OpenCode(crate::provider::PromptReply),
+}
+
+/// The active prompt's structured submit fails as `failure` says.
+async fn refused_structured_submit(failure: FailedSubmit, room_agent_tools: bool) -> RefusedSubmit {
+    let provider = match &failure {
+        FailedSubmit::OpenCode(reply) => {
+            Some(crate::provider::FakeOpenCodeServer::start(reply.clone()))
+        }
+        FailedSubmit::Injected(_) => None,
+    };
+    let (adapter, model, endpoint) = match &provider {
+        Some(provider) => ("opencode", "default", provider.endpoint.clone()),
+        None => ("codex", "fixture-model", "test-codex-runtime".to_string()),
+    };
     let worktree = crate::test_support::TestWorktree::new("submit-failure-queued-recovery");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -31,10 +47,10 @@ async fn refused_structured_submit(
         .unwrap();
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
-        "codex",
-        "codex",
+        adapter,
+        adapter,
         "default",
-        "fixture-model",
+        model,
     )
     .with_agent_id(agent.id());
     let mut run = crate::provider::RuntimeProviderRun::new(
@@ -49,7 +65,7 @@ async fn refused_structured_submit(
             pty_env: Default::default(),
             pty_env_remove: Vec::new(),
             working_directory: None,
-            structured_endpoint: Some("test-codex-runtime".into()),
+            structured_endpoint: Some(endpoint.clone()),
         },
     );
     run.set_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
@@ -94,17 +110,66 @@ async fn refused_structured_submit(
         config.room_agent_tools = true;
         runtime.owned.config_projection.update(config);
     }
-    runtime
-        .owned
-        .provider_store
-        .push_finished_structured_prompt_submit_for_test(
-            session.id().into(),
-            run.id().into(),
-            agent.id().into(),
-            prompt_id.clone(),
-            Err(error),
-        );
-    let follow_ups = runtime.owned.reap_structured_prompt_jobs();
+    let follow_ups = match failure {
+        FailedSubmit::Injected(error) => {
+            runtime
+                .owned
+                .provider_store
+                .push_finished_structured_prompt_submit_for_test(
+                    session.id().into(),
+                    run.id().into(),
+                    agent.id().into(),
+                    prompt_id.clone(),
+                    Err(error),
+                );
+            runtime.owned.reap_structured_prompt_jobs()
+        }
+        FailedSubmit::OpenCode(_) => {
+            runtime.owned.provider_store.bind_opencode_runtime_for_test(
+                run.id(),
+                &endpoint,
+                "fixture-session",
+            );
+            runtime
+                .owned
+                .provider_store
+                .enqueue_structured_prompt_submit(
+                    session.id().into(),
+                    run.id().into(),
+                    agent.id().into(),
+                    prompt_id.clone(),
+                    &prompt_id,
+                    &run,
+                    "active submit",
+                    "",
+                    &[],
+                    crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
+                    None,
+                    false,
+                )
+                .unwrap();
+            // The provider actor submits on its own thread; reap until the
+            // turn settles.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let follow_ups = runtime.owned.reap_structured_prompt_jobs();
+                if runtime
+                    .owned
+                    .operational_history_store
+                    .load_prompt_settlement_event(session.id(), agent.id(), &prompt_id)
+                    .unwrap()
+                    .is_some()
+                {
+                    break follow_ups;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the submitted prompt never settled"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
     RefusedSubmit {
         runtime,
         session_id: session.id().into(),
@@ -112,6 +177,7 @@ async fn refused_structured_submit(
         run_id: run.id().into(),
         prompt_id,
         follow_ups,
+        provider,
         _worktree: worktree,
     }
 }
@@ -128,10 +194,10 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
         follow_ups,
         ..
     } = refused_structured_submit(
-        crate::error::DaemonError::LocalTransport {
+        FailedSubmit::Injected(crate::error::DaemonError::LocalTransport {
             operation: "submit structured provider prompt",
             message: "fixture transport timeout".into(),
-        },
+        }),
         false,
     )
     .await;
@@ -164,9 +230,19 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
 /// What a room agent's owner sees after the submit fails with `error`: the
 /// provider-error transcript and the failure recorded on the settlement.
 async fn owner_view_of_failed_submit(
-    error: crate::error::DaemonError,
+    failure: FailedSubmit,
 ) -> (Vec<String>, Option<serde_json::Value>) {
-    let failed = refused_structured_submit(error, true).await;
+    let failed = refused_structured_submit(failure, true).await;
+    if let Some(provider) = &failed.provider {
+        assert!(
+            provider
+                .requests()
+                .iter()
+                .any(|line| line.contains("/prompt_async ")),
+            "the prompt never reached the provider: {:?}",
+            provider.requests()
+        );
+    }
     let transcript = failed
         .runtime
         .owned
@@ -190,30 +266,50 @@ async fn owner_view_of_failed_submit(
     (transcript, failure)
 }
 
-// A refused submit tells a room agent's owner the provider's own reason.
+// An OpenCode error response to the prompt tells a room agent's owner the
+// provider's own reason, through the real submit and the reaper.
 #[tokio::test]
-async fn a_refused_structured_submit_shows_a_room_agent_owner_the_providers_reason() {
-    const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
-         Please try a different model.";
-    let (transcript, failure) =
-        owner_view_of_failed_submit(crate::error::DaemonError::ProviderRefusal {
-            message: REFUSAL.into(),
-        })
-        .await;
-    let expected = crate::provider::ProviderFailure::classify("codex", REFUSAL);
+async fn an_opencode_refusal_shows_a_room_agent_owner_the_providers_reason() {
+    const REFUSAL: &str = "Model access is disabled for this workspace.";
+    let (transcript, failure) = owner_view_of_failed_submit(FailedSubmit::OpenCode(
+        crate::provider::PromptReply::Status {
+            code: 400,
+            body: r#"{"name":"UnknownError","data":{"message":"Model access is disabled for this workspace."}}"#,
+        },
+    ))
+    .await;
+    let expected = crate::provider::ProviderFailure::classify("opencode", REFUSAL);
     assert_eq!(transcript, vec![expected.notice()]);
     assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
+}
+
+// A connection that closes, or an error status without text, has no provider reason.
+#[tokio::test]
+async fn an_opencode_transport_fault_stays_hidden_from_a_room_agent_owner() {
+    for reply in [
+        crate::provider::PromptReply::Dropped,
+        crate::provider::PromptReply::Status {
+            code: 500,
+            body: "",
+        },
+    ] {
+        let (transcript, failure) =
+            owner_view_of_failed_submit(FailedSubmit::OpenCode(reply)).await;
+        assert!(transcript.is_empty(), "{transcript:?}");
+        assert_eq!(failure, None);
+    }
 }
 
 // A kernel-side submit error carries no provider reason.
 #[tokio::test]
 async fn a_kernel_submit_error_stays_hidden_from_a_room_agent_owner() {
-    let (transcript, failure) =
-        owner_view_of_failed_submit(crate::error::DaemonError::LocalTransport {
+    let (transcript, failure) = owner_view_of_failed_submit(FailedSubmit::Injected(
+        crate::error::DaemonError::LocalTransport {
             operation: "submit structured provider prompt",
             message: "provider run actor queue rejected command for `run-1`: queue is full".into(),
-        })
-        .await;
+        },
+    ))
+    .await;
     assert!(transcript.is_empty(), "{transcript:?}");
     assert_eq!(failure, None);
 }

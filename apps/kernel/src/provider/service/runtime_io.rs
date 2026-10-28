@@ -464,6 +464,24 @@ impl ProviderProcessService {
     }
 
     #[cfg(test)]
+    pub(crate) fn bind_opencode_runtime_for_test(
+        &self,
+        run_id: &str,
+        endpoint: &str,
+        session_id: &str,
+    ) {
+        let state = crate::provider::opencode_runtime::OpenCodeRuntimeState::new(
+            endpoint.to_string(),
+            session_id.to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        self.run_actor_mailbox
+            .insert_opencode_runtime(run_id.to_string(), state);
+    }
+
+    #[cfg(test)]
     pub(crate) fn use_manual_output_polls_for_tests(&self) {
         self.run_actor_mailbox.use_manual_output_polls_for_tests();
     }

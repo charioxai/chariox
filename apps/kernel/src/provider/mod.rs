@@ -135,6 +135,8 @@ pub(crate) use opencode::{
     shutdown_opencode_account_endpoints, OpenCodeDiscoveryConfigDirectory,
 };
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
+#[cfg(test)]
+pub(crate) use opencode_client::fake_server::{FakeOpenCodeServer, PromptReply};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,
