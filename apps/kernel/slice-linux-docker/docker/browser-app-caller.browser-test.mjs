@@ -69,7 +69,7 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill']]) {
       if (input.startsWith('room_')) {
         const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
@@ -79,6 +79,9 @@ test('caller attribution and registered form completion through Chromium', async
         const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:input !== 'room_fill'};
         await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
           node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
+      } else if (input === 'text' || input === 'printable') {
+        await browserClick('#filled');
+        await browserInput(input === 'text' ? {kind:'text',text:'Inserted'} : {kind:'key',key:'a'},'agent-one');
       } else if (input === 'click') await browserClick('#agent','agent-one');
       else if (input === 'form_click') await browserClick('#save button','agent-one');
       else {
@@ -88,7 +91,8 @@ test('caller attribution and registered form completion through Chromium', async
       if (input === 'click' || input === 'room_click') assert.equal(await evaluate('lastInputTimestamp <= performance.now()'),true,'input labels must not change App event clocks');
       const firstInput = await nextCall();
       assert.equal(firstInput.method, firstMethod);
-      assert.deepEqual(firstInput.actor,{kind:'agent',id:'agent-one'}, 'ordinary browser input must carry the invoking agent');
+      assert.deepEqual(firstInput.actor,{kind:'agent',id:'agent-one'}, input+' input must carry the invoking agent');
+      assert.equal((await agent('compete','agent-two')).result.code,'view_busy');
       await browserClick('#human');
       const humanInput = await nextCall(); assert.equal(humanInput.method,'human'); assert.equal(humanInput.actor,undefined);
       await respond(humanInput); await respond(firstInput);

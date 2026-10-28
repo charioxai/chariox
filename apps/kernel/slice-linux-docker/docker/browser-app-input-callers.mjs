@@ -6,9 +6,23 @@ export function createInputCallers() {
   const entries = new Map();
   const callers = new WeakMap();
   const edits = new WeakMap();
+  let source;
   globalThis.addEventListener('input', event => {
-    const token = edits.get(event.target);
+    const key = source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target ? source : null;
+    const token = edits.get(event.target) ?? (key && callers.get(key));
     if (event.isTrusted && entries.get(token)?.timestamp != null) callers.set(event, token);
+    if (key) source = undefined;
+  }, true);
+  globalThis.addEventListener('submit', event => {
+    const origin = source;
+    source = undefined;
+    if (!origin || origin.defaultPrevented || !event.isTrusted) return;
+    const control = origin.type === 'click' ? origin.target.closest?.('button,input') : origin.target;
+    if (control?.form !== event.target) return;
+    if (origin.type === 'click' ? control.type !== 'submit' || event.submitter !== control
+      : origin.key !== 'Enter' || control.tagName !== 'INPUT') return;
+    const token = callers.get(origin);
+    if (entries.get(token)?.timestamp != null) callers.set(event, token);
   }, true);
   // The label is transport metadata. Capture it before App listeners and
   // expose the actual dispatch time so App debounce/animation clocks stay sane.
@@ -16,8 +30,23 @@ export function createInputCallers() {
   for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keydown','keypress','keyup','wheel']) {
     globalThis.addEventListener(type, event => {
       if (!event.isTrusted) return;
+      // The native default action follows propagation. Keep its exact source
+      // until its generated input/submit or the next physical event, including
+      // an unclaimed human event. There is no wall-clock attribution window.
+      const previous = source;
+      source = undefined;
+      // Enter's native implicit submission clicks the default button without
+      // the CDP timestamp. It is still part of that key's default action.
+      if (type === 'click' && event.detail === 0 && previous?.type === 'keydown'
+        && previous.key === 'Enter' && !previous.defaultPrevented
+        && previous.target.form && event.target.form === previous.target.form) {
+        const token = callers.get(previous);
+        if (entries.get(token)?.timestamp != null) { callers.set(event, token); source = event; }
+      }
       for (const [token, entry] of entries) if (entry.timestamp === label(event)) {
         callers.set(event, token);
+        if (type === 'keydown' || type === 'click') source = event;
+        else if (type === 'keypress' && callers.get(previous) === token) source = previous;
         Object.defineProperty(event, 'timeStamp', { value: performance.now() });
         break;
       }
@@ -66,6 +95,7 @@ export function createInputCallers() {
       // Dispatch has acknowledged every event. No later event gets this caller;
       // the handlers already holding it retain it until their promises settle.
       entry.timestamp = null;
+      if (source && callers.get(source) === token) source = undefined;
       await Promise.allSettled([...entry.handlers]);
       entries.delete(token);
     },
