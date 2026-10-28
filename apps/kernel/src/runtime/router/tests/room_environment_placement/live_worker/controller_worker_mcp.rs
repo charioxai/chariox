@@ -5,6 +5,7 @@ use base64::Engine as _;
 use chariox_relay::protocol::ClientTarget;
 use futures_util::FutureExt;
 
+mod app_views;
 mod capability_request_grant;
 mod capability_response_ordering;
 #[path = "controller_artifacts.rs"]
