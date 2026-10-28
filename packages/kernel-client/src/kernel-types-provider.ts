@@ -351,8 +351,8 @@ export type QueuedPromptUpdatedPayload = {
   agent_activity_revision: number
 }
 
-/** Local 589: read-only references, with no credential/profile locations. */
-export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "usage">
+/** Local 770: read-only account identity and status, with no credential/profile locations. */
+export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "auth_state" | "services" | "usage"> & { account_id: string }
 export type AgentUsageSnapshot = {
   session_id: string
   agent_id: string

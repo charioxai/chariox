@@ -1,15 +1,23 @@
 # Provider usage references
 
-MP-08 / MP-10 / MP-11: these references are kernel facts shared by ordinary and
+MP-08 / MP-09 / MP-10 / MP-11: these references are kernel facts shared by ordinary and
 managed clients. They are read-only; account management remains in Settings.
 
-Local protocol 589 / relay peer 195 adds two reads:
+Local protocol 770 / relay peer 320 carries these two reads (introduced at
+589 / 195), including the account identity and authentication projection:
 
 - `GetProviderUsageSnapshot {}` returns `ProviderUsageSnapshot { accounts }`.
-  Each account has only `provider`, `profile_id`, `label` and the existing
-  `usage` snapshot. Meters retain their provider source, observation time,
+  Each account has `provider`, `profile_id`, `account_id`, `label`, `auth_state`,
+  `services` and the existing `usage` snapshot. `account_id` is an opaque identity
+  derived from provider-reported identity or the native store and machine scope;
+  it lets clients merge references to the same account without merging labels.
+  `auth_state` reflects native provider observations; `services` names configured
+  OpenCode services. Saved OpenCode credentials are shown as “Login saved”;
+  their presence does not prove credential validity or a billing balance.
+  Unobserved native defaults are omitted. Explicit profiles remain visible with
+  their observed status, including “Not signed in.” Meters retain their provider source, observation time,
   duration, reset, percentage and reported credit balance. No missing number
-  is estimated. The account namespace matches the ordinary account list.
+  is estimated. Ordinary and managed kernels share this account projection.
 - `GetAgentUsageSnapshot { session_id, agent_id }` returns
   `AgentUsageSnapshot { snapshot }`. Room membership and agent ownership are
   checked. `context` is absent until the current provider session reports used

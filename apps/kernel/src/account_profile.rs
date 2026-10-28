@@ -5,6 +5,8 @@
 
 #[path = "account_profile_copy.rs"]
 mod account_copy;
+#[path = "account_profile_usage.rs"]
+mod usage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};

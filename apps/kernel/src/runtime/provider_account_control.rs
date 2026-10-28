@@ -30,16 +30,7 @@ pub(crate) async fn execute_provider_account_request(
     let runtime_for_checks = runtime_state.clone();
     let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => {
-            let accounts = registry
-                .list(&owner_user_id, None)?
-                .into_iter()
-                .map(|profile| crate::local::ProviderUsageAccount {
-                    provider: profile.provider,
-                    profile_id: profile.profile_id,
-                    label: profile.label,
-                    usage: profile.usage,
-                })
-                .collect();
+            let accounts = registry.usage_accounts(&owner_user_id, &config.host_machine_id)?;
             Ok(LocalDaemonResponse::ProviderUsageSnapshot { accounts })
         }
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
