@@ -1,0 +1,60 @@
+{
+  "local_protocol": 647,
+  "requests": [
+    {
+      "BeginAppInstall": {
+        "session_id": "session",
+        "request_id": "retry",
+        "upload_handle": "upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected_package_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source": "dev_push"
+      }
+    },
+    {
+      "BeginAppUpdate": {
+        "session_id": "session",
+        "request_id": "retry",
+        "upload_handle": "upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected_package_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source": "dev_push",
+        "installation_id": "dev",
+        "expected_generation": "1"
+      }
+    },
+    {
+      "BeginAppInstall": {
+        "session_id": "session",
+        "request_id": "retry",
+        "upload_handle": "upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected_package_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source": "register"
+      }
+    },
+    {
+      "BeginAppUpdate": {
+        "session_id": "session",
+        "request_id": "retry",
+        "upload_handle": "upload_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expected_package_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "source": "register",
+        "installation_id": "dev",
+        "expected_generation": "1"
+      }
+    }
+  ],
+  "response": {
+    "AppInstallation": {
+      "installation": {
+        "installation_id": "dev",
+        "app_id": "com.example.dev",
+        "channel": "dev",
+        "dev_room_id": "room",
+        "generation": "1",
+        "active_release": null,
+        "pending_generation": "2",
+        "admission_paused": false,
+        "data_kept": true
+      }
+    }
+  }
+}

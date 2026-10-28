@@ -1,3 +1,12 @@
+export const appDevPushMinimumProtocolVersion = 647
+export function beginAppDevPushRequest(options: { sessionId: string; requestId: string; directory: string }) {
+  return { BeginAppDevPush: { session_id: options.sessionId, request_id: options.requestId, directory: options.directory } }
+}
+export function getAppDevPushRequest(options: { sessionId: string; requestId: string }) {
+  return { GetAppDevPush: { session_id: options.sessionId, request_id: options.requestId } }
+}
+
+export const appDevRegisterMinimumProtocolVersion = 644
 export const appHostActionMinimumProtocolVersion = 409
 export const appFileRevokeMinimumProtocolVersion = 394
 export const appDataSnapshotRestoreMinimumProtocolVersion = 410
@@ -50,13 +59,13 @@ export function abortAppPackageUploadRequest(handle: string) {
 }
 
 /** The upload is owner-bound by the kernel; this request supplies no trust key or approval. */
-export function beginAppInstallRequest(options: { sessionId: string; requestId: string; uploadHandle: string; expectedPackageDigest: string }) {
-  return { BeginAppInstall: { session_id: options.sessionId, request_id: options.requestId, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
+export function beginAppInstallRequest(options: { sessionId: string; requestId: string; uploadHandle: string; expectedPackageDigest: string; source?: "dev_push" | "register" }) {
+  return { BeginAppInstall: { ...(options.source ? { source: options.source } : {}), session_id: options.sessionId, request_id: options.requestId, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
 }
 
 /** Replaces the release of an existing installation, fenced on the generation the caller read. */
-export function beginAppUpdateRequest(options: { sessionId: string; requestId: string; installationId: string; expectedGeneration: string; uploadHandle: string; expectedPackageDigest: string }) {
-  return { BeginAppUpdate: { session_id: options.sessionId, request_id: options.requestId, installation_id: options.installationId, expected_generation: options.expectedGeneration, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
+export function beginAppUpdateRequest(options: { sessionId: string; requestId: string; installationId: string; expectedGeneration: string; uploadHandle: string; expectedPackageDigest: string; source?: "dev_push" | "register" }) {
+  return { BeginAppUpdate: { ...(options.source ? { source: options.source } : {}), session_id: options.sessionId, request_id: options.requestId, installation_id: options.installationId, expected_generation: options.expectedGeneration, upload_handle: options.uploadHandle, expected_package_digest: options.expectedPackageDigest } }
 }
 
 export function getAppInstallOperationRequest(requestId: string) {

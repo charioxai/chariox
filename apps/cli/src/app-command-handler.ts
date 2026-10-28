@@ -119,17 +119,21 @@ export async function handleAppSlashCommand(
     } else throw new Error("usage: /app publisher enroll|status|cancel")
     return
   }
-  if (command.args[0] === "dev") {
+  if (command.args[0] === "dev" || command.args[0] === "register") {
     const loop = deps.appDevLoop
     if (!loop) throw new Error("The App dev loop is unavailable in this terminal")
     const [, ...args] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
-    if (args.length === 1 && args[0] === "stop") {
+    if (command.args[0] === "dev" && args.length === 1 && args[0] === "stop") {
       deps.appendNotice(await loop.stop() ? "App dev loop stopped." : "No App dev loop is running in this terminal.")
       return
     }
-    const usage = 'usage: /app dev "DIRECTORY" [--key PRIVATE] | /app dev stop'
-    if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error(usage)
-    await loop.start(args[0], args[2] ? { key: args[2] } : {})
+    if (command.args[0] === "register") {
+      if (!args[0] || args[0].startsWith("--") || !(args.length === 1 || (args.length === 3 && args[1] === "--key" && args[2]))) throw new Error('usage: /app register "DIRECTORY" [--key PRIVATE]')
+      await loop.register(args[0], args[2] ? { key: args[2] } : {})
+    } else {
+      if (args.length !== 1 || !args[0] || args[0].startsWith("--")) throw new Error('usage: /app dev "DIRECTORY" | /app dev stop')
+      await loop.start(args[0])
+    }
     return
   }
   // `/app file revoke` reads no local file: the shared App command sends it.

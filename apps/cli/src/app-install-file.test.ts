@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { AppFileInstaller, FollowLostContact, formatInstallFailure, formatInstallOperation, KernelFailure } from "./app-install-file.js"
+import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 import { AppFileSource, chunkBytes, maxArchiveBytes, InstallFileChanged } from "./app-install-file/source.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { runAppCommand } from "./app-command.js"
@@ -552,5 +553,31 @@ test("readiness cancellation and deadline stay distinct in operation output", ()
     assert.match(text, new RegExp(failure))
     if (suffix === "cancelled") assert.doesNotMatch(text, /deadline|timed out|timeout/)
     else assert.doesNotMatch(text, /cancelled/)
+  }
+})
+
+// MP-08 / MP-10 / MP-11: feature-version refusals are not dropped connections.
+test("protocol-644 source errors reach the App installer without transport retries", async t => {
+  const f = await sourceFixture(t)
+  for (const source of ["dev_push", "register"] as const) {
+    for (const refusal of [
+      new KernelProtocolMinimumError("App dev and register needs protocol ≥644; update the kernel"),
+      new Error("unknown field `source`, expected `session_id`"),
+    ]) {
+      const k = kernel()
+      let begins = 0
+      const installer = new AppFileInstaller(async request => {
+        if (request.BeginAppInstall) { begins++; throw refusal }
+        return k.send(request)
+      }, () => {}, f.root)
+      t.after(() => installer.dispose())
+      await assert.rejects(installer.install(f.path, "session", source), error => {
+        assert.ok(error instanceof KernelProtocolMinimumError)
+        assert.match(error.message, /644/)
+        return true
+      })
+      assert.equal(begins, 1)
+      assert.equal(k.upload?.phase, "aborted")
+    }
   }
 })

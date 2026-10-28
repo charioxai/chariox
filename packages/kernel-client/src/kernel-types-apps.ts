@@ -18,7 +18,10 @@ export type AppPublisherEnrollmentSummary = {
   failure: string | null
 }
 
+export type AppAcquisitionSource = "local_file" | "dev_push" | "register" | "library" | "direct_feed"
 export type AppInstallationSummary = {
+  channel: "dev" | "release"
+  dev_room_id: string | null
   installation_id: string
   app_id: string
   /** Opaque decimal generation, never convert to a JavaScript number. */

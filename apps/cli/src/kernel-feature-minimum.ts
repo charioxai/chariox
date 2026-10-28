@@ -8,6 +8,8 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  BeginAppDevPush: { feature: "Kernel App dev push", minimum: requests.appDevPushMinimumProtocolVersion },
+  GetAppDevPush: { feature: "Kernel App dev push", minimum: requests.appDevPushMinimumProtocolVersion },
   AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   GetClientCatalogRevisions: { feature: "Catalog revisions", minimum: requests.clientCatalogRevisionsMinimumProtocolVersion },
@@ -70,6 +72,8 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = name === "KeepManagedEnvironmentRunning"
       ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
+  } else if ((name === "BeginAppInstall" || name === "BeginAppUpdate") && payload?.source != null) {
+    feature = { feature: "App dev and register", minimum: requests.appDevRegisterMinimumProtocolVersion }
   } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
     feature = { feature: "App automation injection", minimum: 491 }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {

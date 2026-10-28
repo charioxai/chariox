@@ -88,6 +88,9 @@ impl KernelRuntimeState {
         self.app_control().publishers().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
+        if let Err(error) = self.sync_dev_app_bindings().await {
+            tracing::warn!(%error, "MP-08/MP-10/MP-11: dev App binding failed; retrying after the next maintenance pass");
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .lifecycle()
@@ -458,13 +461,17 @@ impl KernelRuntimeState {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             let installs = self.app_control().installs().clone();
+            let dev_push = self.app_control().dev_push().clone();
             let runtime = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || installs.shutdown_blocking(runtime))
-                .await
-                .map_err(|_| DaemonError::LocalTransport {
-                    operation: "runtime.app_install_shutdown",
-                    message: "App installation tasks did not drain".into(),
-                })?;
+            tokio::task::spawn_blocking(move || {
+                dev_push.shutdown_blocking(runtime.clone());
+                installs.shutdown_blocking(runtime)
+            })
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "runtime.app_install_shutdown",
+                message: "App installation tasks did not drain".into(),
+            })?;
         }
         self.owned.sweep_kernel_operation_interactions(true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

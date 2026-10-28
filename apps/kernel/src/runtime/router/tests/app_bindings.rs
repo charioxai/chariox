@@ -928,6 +928,7 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
         .generation;
     let update = dispatch(
         LocalDaemonRequest::BeginAppUpdate(crate::local::BeginAppUpdateRequest {
+            source: Default::default(),
             session_id: session.clone(),
             request_id: "missing-binding-reinstall".into(),
             installation_id: "installed".into(),
@@ -986,6 +987,100 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
     let control = state.app_control().installs().clone();
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || control.shutdown_blocking(handle))
+        .await
+        .unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: the dev tool is a Room capability, not an App binding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn app_dev_push_is_listed_only_in_the_developer_room_and_checks_invocation() {
+    let fixture = Fixture::new();
+    let (app, router, room, _agent, auth) =
+        fixture.router(crate::provider::AgentPermissionLevel::Yolo);
+    let state = &router.runtime_state;
+    assert!(!state
+        .runtime_tool_specs_for_auth_token_async(auth.clone())
+        .await
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == "app_dev_push"));
+    let directory = fixture.0.join("missing-source").display().to_string();
+    let request = LocalDaemonRequest::BeginAppDevPush(crate::local::BeginAppDevPushRequest {
+        session_id: room.clone(),
+        request_id: "first-dev".into(),
+        directory: directory.clone(),
+    });
+    let mut command = KernelCommand::from_local_request("first-dev", None, None, &request);
+    command.caller.user_id = Some("alice".into());
+    assert!(matches!(
+        state
+            .app_control()
+            .dev_push()
+            .execute(state, &command, &request)
+            .await,
+        Some(LocalDaemonResponse::AppDevPushBuilding { .. })
+    ));
+    assert!(state
+        .runtime_tool_specs_for_auth_token_async(auth.clone())
+        .await
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == "app_dev_push"));
+    let result = state
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "app_dev_push",
+            serde_json::json!({"directory":directory,"request_id":"first-dev"}),
+        )
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert_eq!(
+        result.payload["AppDevPushFailed"]["code"],
+        "source_unavailable"
+    );
+
+    let other_auth = {
+        let mut app = app.lock().await;
+        let other = app
+            .sessions_mut()
+            .create_session(
+                CreateSessionRequest::new(fixture.0.to_string_lossy(), fixture.0.to_string_lossy())
+                    .with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(other.id(), "dev-stub").with_owner_user_id("alice"),
+            )
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            other.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "binding-model",
+        );
+        run.runtime_mcp_auth_token().unwrap().to_string()
+    };
+    assert!(!state
+        .runtime_tool_specs_for_auth_token_async(other_auth.clone())
+        .await
+        .unwrap()
+        .iter()
+        .any(|tool| tool.name == "app_dev_push"));
+    assert!(state
+        .dispatch_authenticated_runtime_tool_call(
+            &other_auth,
+            "app_dev_push",
+            serde_json::json!({"directory":directory,"request_id":"first-dev"})
+        )
+        .await
+        .is_err());
+    let dev = state.app_control().dev_push().clone();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || dev.shutdown_blocking(runtime))
         .await
         .unwrap();
 }

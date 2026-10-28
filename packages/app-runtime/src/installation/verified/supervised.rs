@@ -17,8 +17,37 @@ impl VerifiedInstallCandidate {
         installation: &str,
         now_ms: u64,
     ) -> Result<UpdateRecord> {
+        if self.release.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            return Err(VerifiedStageError::SignerMismatch);
+        }
         self.trust.require_current(tx, owner)?;
         create_installation(tx, installation, &self.release.app_id, owner)?;
+        self.stage_supervised_in(tx, owner, installation, 0, now_ms)
+    }
+
+    /// First dev generation shares staging, migrations and commit with release installs.
+    pub fn stage_dev_first_in(
+        &self,
+        tx: &Transaction<'_>,
+        owner: &str,
+        installation: &str,
+        room: &str,
+        now_ms: u64,
+    ) -> Result<UpdateRecord> {
+        identifier(room)?;
+        if self.release.publisher_id != chariox_app_package::v2::DEV_PUBLISHER_ID {
+            return Err(VerifiedStageError::SignerMismatch);
+        }
+        self.trust.require_current(tx, owner)?;
+        let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM app_installations WHERE owner_id=?1 AND app_id=?2 AND channel='dev' AND dev_room_id=?3 AND (active_json IS NOT NULL OR retained_json IS NOT NULL OR pending_generation IS NOT NULL))", params![owner,self.release.app_id,room], |r| r.get(0))?;
+        if exists {
+            return Err(InstallationError::Conflict.into());
+        }
+        create_installation(tx, installation, &self.release.app_id, owner)?;
+        tx.execute(
+            "UPDATE app_installations SET channel='dev', dev_room_id=?1 WHERE installation_id=?2",
+            params![room, installation],
+        )?;
         self.stage_supervised_in(tx, owner, installation, 0, now_ms)
     }
 
@@ -36,10 +65,26 @@ impl VerifiedInstallCandidate {
     ) -> Result<UpdateRecord> {
         self.trust.require_current(tx, owner)?;
         let current = load_installation(tx, installation)?;
+        if (current.channel == crate::installation::channel::InstallationChannel::Dev)
+            != (self.release.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID)
+        {
+            return Err(VerifiedStageError::SignerMismatch);
+        }
         if current.owner_id != owner {
             return Err(InstallationError::NotFound.into());
         }
         let data = current.data_release().ok_or(InstallationError::Inactive)?;
+        if current.channel == crate::installation::channel::InstallationChannel::Release
+            && self.release.version == data.release.version
+        {
+            crate::installation::channel::check_immutable_version(
+                &self.release.app_id,
+                &self.release.version,
+                Some(&data.release.package_digest),
+                &self.release.package_digest,
+            )
+            .map_err(|_| InstallationError::Invalid("immutable release version"))?;
+        }
         if self.release.schema_version < data.release.schema_version {
             return Err(InstallationError::Invalid("data schema downgrade").into());
         }
@@ -54,6 +99,7 @@ impl VerifiedInstallCandidate {
         expected_generation: u64,
         now_ms: u64,
     ) -> Result<UpdateRecord> {
+        immutable_version(tx, owner, &self.release)?;
         let record = stage_release(
             tx,
             installation,
@@ -62,6 +108,8 @@ impl VerifiedInstallCandidate {
             now_ms,
         )?;
         save_binding(tx, owner, &record, &self.trust)?;
+        tx.execute("INSERT INTO app_installation_authority(installation_id,generation,authority_json) VALUES(?1,?2,?3)",
+            params![installation, sql_generation(record.token.generation)?, serde_json::to_string(&self.authority).map_err(|_| VerifiedStageError::Metadata)?])?;
         tx.execute(
             "INSERT INTO app_installation_supervised_stages(installation_id,generation)
              VALUES(?1,?2)",
@@ -191,6 +239,10 @@ impl StageTrustBinding {
         record.phase = UpdatePhase::Prepared;
         record.updated_at_ms = now_ms;
         save_update(tx, &record)?;
+        immutable_version(tx, owner, &record.release)?;
+        if record.release.publisher_id != chariox_app_package::v2::DEV_PUBLISHER_ID {
+            tx.execute("INSERT INTO app_release_versions(owner_id,publisher_id,app_id,version,package_digest) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING", params![owner,record.release.publisher_id,record.release.app_id,record.release.version,record.release.package_digest])?;
+        }
         commit_generation(tx, &self.token, now_ms).map_err(Into::into)
     }
 
@@ -232,4 +284,19 @@ impl StageTrustBinding {
         save_update(tx, &record)?;
         Ok(())
     }
+}
+
+fn immutable_version(tx: &Transaction<'_>, owner: &str, release: &ReleaseMetadata) -> Result<()> {
+    if release.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+        return Ok(());
+    }
+    let known: Option<String> = tx.query_row("SELECT package_digest FROM app_release_versions WHERE owner_id=?1 AND publisher_id=?2 AND app_id=?3 AND version=?4", params![owner,release.publisher_id,release.app_id,release.version], |r| r.get(0)).optional()?;
+    crate::installation::channel::check_immutable_version(
+        &release.app_id,
+        &release.version,
+        known.as_deref(),
+        &release.package_digest,
+    )
+    .map_err(|_| InstallationError::Invalid("immutable release version"))?;
+    Ok(())
 }

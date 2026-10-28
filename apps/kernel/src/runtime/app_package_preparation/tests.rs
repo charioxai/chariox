@@ -161,7 +161,15 @@ fn service(store: &DurableKernelStateStore) -> (AppPackageUploadControl, AppPack
     let uploads = AppPackageUploadControl::new(store.path().to_owned());
     (
         uploads.clone(),
-        AppPackagePreparation::new(store.clone(), uploads),
+        AppPackagePreparation::new(
+            store.clone(),
+            uploads,
+            crate::config::UserCredentialVaultConfig {
+                backend: crate::config::CredentialVaultBackend::ProcessMemory,
+                ..Default::default()
+            },
+            "preparation-tests".into(),
+        ),
     )
 }
 fn prepare(
@@ -173,6 +181,7 @@ fn prepare(
         owner.into(),
         handle.into(),
         Arc::new(Semaphore::new(8)).try_acquire_owned().unwrap(),
+        PreparationSource::Publisher,
     ))
 }
 
@@ -278,13 +287,19 @@ fn interrupted_publication_retry_and_revocation_before_writer_stage_are_safe() {
     let handle = upload(&uploads, "alice", &archive(27), true);
     assert_eq!(
         service
-            .prepare_at("alice", &handle, crate::session::unix_epoch_ms(), |point| {
-                if point == PreparationCheckpoint::Published {
-                    Err(PreparationError::PublicationInterrupted)
-                } else {
-                    Ok(())
-                }
-            })
+            .prepare_at(
+                "alice",
+                &handle,
+                crate::session::unix_epoch_ms(),
+                |point| {
+                    if point == PreparationCheckpoint::Published {
+                        Err(PreparationError::PublicationInterrupted)
+                    } else {
+                        Ok(())
+                    }
+                },
+                PreparationSource::Publisher
+            )
             .err(),
         Some(PreparationError::PublicationInterrupted)
     );

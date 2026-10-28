@@ -223,6 +223,8 @@ response_policies! {
         RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
+        AppDevPushBuilding,
+        AppDevPushFailed,
         AppPackageUploadStatus,
         AppInstallationsListed,
         AppInstallation,

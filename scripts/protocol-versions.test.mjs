@@ -41,3 +41,9 @@ test("dictation603 retains594 and567 within the32-entry policy", () => {
   assert.ok(policy.upgradeFrom.length <= 32)
   assert.ok(policy.rollbackTo.length <= 32)
 })
+
+// MP-08 / MP-10 / MP-11: D1 adds dev/register sources and channel projections.
+test("D1 App sources use the coordinator-allocated local protocol", () => {
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
+  assert.ok(pair.local >= 644, "dev/register shapes require allocated protocol 644")
+})

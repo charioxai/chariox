@@ -409,7 +409,11 @@ impl DaemonApp {
             ),
             history,
             operational_history,
-            app_control: crate::runtime::app_control::AppControlService::new(durable_state.clone()),
+            app_control: crate::runtime::app_control::AppControlService::with_vault_config(
+                durable_state.clone(),
+                config.user_config.credential_vault.clone(),
+                config.daemon_id.clone(),
+            ),
             durable_state,
             worker_prompt_receipts,
             worker_steer_receipts,

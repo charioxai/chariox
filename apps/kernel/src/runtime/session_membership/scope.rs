@@ -662,6 +662,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
         | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppDevPush(_)
+        | LocalDaemonRequest::GetAppDevPush(_)
         | LocalDaemonRequest::BeginAppUpdate(_)
         | LocalDaemonRequest::GetAppInstallOperation(_)
         | LocalDaemonRequest::CancelAppInstallOperation(_)
