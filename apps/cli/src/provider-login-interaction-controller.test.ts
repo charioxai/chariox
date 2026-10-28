@@ -255,7 +255,7 @@ test("MP-08 / MP-11 completion identity uses only the saved profile RPC", async 
 })
 
 for (const message of [
-  "That code looks incomplete. Copy the whole code, including the part after #.",
+  "The code looks incomplete. Copy the whole code, including # and the part after it.",
   "That code was not accepted. Open the new sign-in link and copy a new code.",
 ]) {
   test(`MP-08/MP-11 structured retry restores the code field: ${message}`, async () => {
@@ -286,7 +286,49 @@ for (const message of [
     assert.equal(state.problem, message)
     h.controller.dispose()
   })
+
+  test(`MP-08/MP-10/MP-11 first attachment at a forwarded retry preserves repeated errors: ${message}`, async () => {
+    let reads = 0
+    const h = harness([], {
+      getKernelId: async () => "home",
+      getLoginStatus: async () => { reads++; throw Error("forwarded login must use projections") },
+    })
+    const retry = { ...interaction, message }
+    try {
+      assert.equal(h.controller.stripState(retry)!.problem, message, "the first observed message can already be a retry")
+      await h.tick()
+      assert.equal(h.timers.length, 0, "forwarded logins stop polling")
+      assert.equal(h.controller.stripState(retry)!.problem, message)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(h.controller.codeSent(retry), true)
+        assert.equal(h.controller.stripState(retry)!.checking, true, "the old retry cannot answer a new submission")
+        assert.equal(h.controller.stripState(retry)!.problem, null)
+        retry.requested_at_ms++
+        const state = h.controller.stripState(retry)!
+        assert.equal(state.checking, false, "a new request with the same retry answers the submission")
+        assert.equal(state.problem, message)
+      }
+      assert.equal(reads, 0)
+    } finally { h.controller.dispose() }
+  })
 }
+
+test("MP-08/MP-10/MP-11 first attachment to forwarded sign-in instructions has no problem", async () => {
+  const h = harness([], { getKernelId: async () => "home" })
+  const initial = {
+    ...interaction,
+    message: "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below.",
+  }
+  try {
+    assert.equal(h.controller.stripState(initial)!.problem, null)
+    await h.tick()
+    assert.equal(h.timers.length, 0)
+    assert.equal(h.controller.stripState(initial)!.problem, null)
+    h.controller.codeSent(initial)
+    assert.equal(h.controller.stripState(initial)!.checking, true)
+    assert.equal(h.controller.stripState(initial)!.problem, null)
+  } finally { h.controller.dispose() }
+})
 
 
 test("MP-08/MP-11 a status read started before submission cannot answer the new code", async () => {

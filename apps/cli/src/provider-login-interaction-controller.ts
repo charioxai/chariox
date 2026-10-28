@@ -1,6 +1,7 @@
 import {
   PROVIDER_LOGIN_CODE_CHOICE_ID,
   providerLoginName,
+  providerLoginMessageProblem,
   providerLoginProblem,
   providerLoginView,
   type ProviderLoginView,
@@ -53,7 +54,6 @@ type TrackedLogin = {
   sentInteractionAt: number | null
   problem: string | null
   submission: number
-  initialMessage: string | null
   projectionOnly: boolean
 }
 
@@ -151,7 +151,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       tracked.set(key, started)
       return
     }
-    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, sentMessage: null, sentInteractionAt: null, problem: null, submission: 0, initialMessage: null, projectionOnly: false }
+    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, sentMessage: null, sentInteractionAt: null, problem: null, submission: 0, projectionOnly: false }
     tracked.set(key, login)
     login.timer = setTimer(() => { void poll(login) }, 0)
   }
@@ -182,10 +182,9 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     if (!view.url && !view.takesCode) return null
     const login = ref ? tracked.get(keyOf(ref)) : undefined
     if (login) {
-      login.initialMessage ??= interaction.message
       const newRequest = login.sentOutput !== null && login.sentInteractionAt !== interaction.requested_at_ms
       if (login.projectionOnly || !login.status || newRequest) {
-        updateProblem(login, projection.terminal_output_base64, interaction.message !== login.initialMessage ? interaction.message : null, newRequest)
+        updateProblem(login, projection.terminal_output_base64, providerLoginMessageProblem(interaction.message), newRequest)
       }
     }
     const startedAt = login?.status?.started_at_ms
