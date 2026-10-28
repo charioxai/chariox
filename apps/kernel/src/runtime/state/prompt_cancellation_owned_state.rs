@@ -3,6 +3,25 @@
 use super::owned::OwnedPromptCancellation;
 use super::*;
 
+/// How the kernel itself ends an active prompt: a person cancelled it, or the
+/// kernel restarted and could not resume it.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PromptEnding {
+    Cancelled,
+    InterruptedByRestart(&'static str),
+}
+
+impl PromptEnding {
+    pub(super) fn outcome(self) -> crate::provider::TurnOutcome {
+        match self {
+            Self::Cancelled => crate::provider::TurnOutcome::cancelled(),
+            Self::InterruptedByRestart(reason) => {
+                crate::provider::TurnOutcome::interrupted_by_restart(reason)
+            }
+        }
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn cancel_active_prompt_only(
         &self,
@@ -56,6 +75,23 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
+        self.finalize_local_prompt_ending(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+            provider_run_id,
+            PromptEnding::Cancelled,
+        )
+    }
+
+    pub(super) fn finalize_local_prompt_ending(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        provider_run_id: Option<&str>,
+        ending: PromptEnding,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
             return Err(DaemonError::AgentNotInSession {
@@ -82,12 +118,17 @@ impl KernelRuntimeOwnedState {
                 .get_run_for_agent(session_id, agent_id)
                 .map(|run| run.id().to_string())
         });
-        self.record_cancelled_prompt_settlement(
+        self.record_prompt_ending_settlement(
             session_id,
             agent_id,
             &prompt,
             cancellation_provider_run_id.as_deref(),
+            ending,
         );
+        if matches!(ending, PromptEnding::InterruptedByRestart(_)) {
+            self.agent_store
+                .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
+        }
         if let Some(substitute_run) = cancellation_provider_run_id
             .as_deref()
             .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
@@ -320,6 +361,23 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
     ) {
+        self.record_prompt_ending_settlement(
+            session_id,
+            agent_id,
+            prompt,
+            provider_run_id,
+            PromptEnding::Cancelled,
+        );
+    }
+
+    fn record_prompt_ending_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        ending: PromptEnding,
+    ) {
         if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
             crate::app::clear_claude_context_delivery_for_settled_prompt(&run, prompt.id());
         }
@@ -347,6 +405,15 @@ impl KernelRuntimeOwnedState {
             .archive
             .mode
             == crate::config::HistoryArchiveMode::External;
+        let (status, failure) = match ending {
+            PromptEnding::Cancelled => {
+                (crate::git_observer::CompletedTurnSettlementStatus::Cancelled, None)
+            }
+            PromptEnding::InterruptedByRestart(_) => (
+                crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                Some(ending.outcome()),
+            ),
+        };
         self.operational_history_store.record_prompt_settlement(
             archive_enabled,
             session_id,
@@ -354,18 +421,21 @@ impl KernelRuntimeOwnedState {
             prompt.id(),
             provider_run_id,
             settled_at_ms,
-            "cancelled",
-            None,
+            status.as_str(),
+            failure.as_ref(),
         );
-        self.completed_git_turn_snapshots.record_prompt_settlement(
-            session_id,
-            agent_id,
-            provider_run_id.unwrap_or("provider-run-cancelled"),
-            prompt,
-            settled_at_ms,
-            Some(prompt.created_at_ms()),
-            crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
-        );
+        self.completed_git_turn_snapshots
+            .record_prompt_settlement_with_termination(
+                session_id,
+                agent_id,
+                provider_run_id.unwrap_or("provider-run-cancelled"),
+                prompt,
+                settled_at_ms,
+                Some(prompt.created_at_ms()),
+                status,
+                None,
+                failure,
+            );
     }
 
     #[cfg(test)]
