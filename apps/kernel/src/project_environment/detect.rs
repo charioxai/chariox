@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub struct EnvironmentDetection {
     pub evidence_digest: String,
+    file_inventory: BTreeMap<String, BTreeSet<String>>,
     pub proposals: Vec<EnvironmentProposal>,
     pub skips: Vec<EnvironmentItemResult>,
     pub code_folders: BTreeSet<String>,
@@ -101,8 +102,16 @@ pub fn detect_environment(
             )
         })
         .collect();
+    let mut file_inventory: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for file in &index.files {
+        file_inventory
+            .entry(file.folder_id.clone())
+            .or_default()
+            .insert(file.path.clone());
+    }
     Ok(EnvironmentDetection {
         evidence_digest,
+        file_inventory,
         proposals,
         skips: importer.skips,
         code_folders: importer.code_folders,
@@ -138,7 +147,12 @@ impl EnvironmentDetection {
     ) -> (ProjectEnvironmentDiscoveryInput, bool) {
         let mut paths: BTreeMap<String, BTreeSet<String>> = model_folders
             .iter()
-            .map(|id| (id.clone(), BTreeSet::new()))
+            .map(|id| {
+                (
+                    id.clone(),
+                    self.file_inventory.get(id).cloned().unwrap_or_default(),
+                )
+            })
             .collect();
         let mut references: BTreeMap<(String, String), ProjectEnvironmentEntry> = BTreeMap::new();
         for proposal in &self.proposals {

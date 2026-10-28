@@ -441,3 +441,23 @@ mod review_7;
 
 #[path = "detect_review_8_tests.rs"]
 mod review_8;
+
+#[test]
+fn r4_detect_prompt_retains_plain_folder_inventory() {
+    let root = TestWorktree::new("r4-detect-inventory");
+    write(&root, "brief.md", "A product brief");
+    write(&root, "design.svg", "<svg/>");
+    let folders = vec![folder(&root)];
+    let detection = detect_environment(&folders, "environment").unwrap();
+    let (input, _) = detection.discovery_input("project", &folders, &["folder".into()].into());
+    assert!(input.references.is_empty());
+    let prompt = project_environment_detect_prompt(&input).unwrap();
+    let metadata: serde_json::Value =
+        serde_json::from_str(prompt.split_once("Metadata:\n").unwrap().1).unwrap();
+    assert_eq!(
+        metadata["changed_paths"]["folder"],
+        serde_json::json!(["brief.md", "design.svg"])
+    );
+    assert!(prompt.len() < 34 * 1024);
+}
+

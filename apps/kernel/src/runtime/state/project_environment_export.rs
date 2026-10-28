@@ -403,7 +403,12 @@ impl KernelRuntimeState {
             session: Some(session.clone()),
         };
         let result = self
-            .discover_project_environment(session.id(), agent.id(), input)
+            .run_project_environment_discovery(
+                session.id(),
+                agent.id(),
+                input,
+                project_environment_detect_prompt(input)?,
+            )
             .await;
         // The existing parser forbids invented names/locations. Hint prose cannot author requirements.
         let cleanup = self.delete_environment_utility_session(&session).await;
@@ -422,6 +427,22 @@ impl KernelRuntimeState {
         agent_id: &str,
         input: &ProjectEnvironmentDiscoveryInput,
     ) -> Result<ProjectEnvironmentManifest, DaemonError> {
+        self.run_project_environment_discovery(
+            session_id,
+            agent_id,
+            input,
+            project_environment_discovery_prompt(input)?,
+        )
+        .await
+    }
+
+    async fn run_project_environment_discovery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        input: &ProjectEnvironmentDiscoveryInput,
+        prompt: String,
+    ) -> Result<ProjectEnvironmentManifest, DaemonError> {
         let (_, mut run) = assert_agent_utility_can_run(
             self,
             session_id,
@@ -438,7 +459,7 @@ impl KernelRuntimeState {
         )?;
         run.set_metadata_only_discovery(scratch.0.clone());
         let output = run_provider_utility_prompt(self, run, AgentUtilityPromptParts {
-            visible_user_prompt: project_environment_discovery_prompt(input)?,
+            visible_user_prompt: prompt,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
         }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
         let manifest = parse_project_environment_discovery_output(&output, input)?;

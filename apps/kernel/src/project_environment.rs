@@ -27,6 +27,7 @@ mod transfer;
 pub use aggregate::*;
 pub use aggregate_projection::*;
 pub use detect::*;
+pub use detect_metadata::project_environment_detect_prompt;
 pub use detect_store::*;
 pub use discovery::*;
 pub(crate) use import::*;

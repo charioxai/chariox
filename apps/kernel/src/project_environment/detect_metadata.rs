@@ -35,3 +35,18 @@ pub(super) fn bound_detect_metadata(
 fn encoded_size(value: &impl serde::Serialize) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
+
+// Detect keeps a separate prompt path from export discovery.
+pub fn project_environment_detect_prompt(
+    input: &ProjectEnvironmentDiscoveryInput,
+) -> Result<String, crate::error::DaemonError> {
+    let (bounded, _) = bound_detect_metadata(input.clone());
+    let encoded = serde_json::to_string(&bounded)
+        .map_err(|_| super::environment_error("Detect metadata encoding failed"))?;
+    if encoded.len() > 32 * 1024 {
+        return Err(super::environment_error("Detect metadata exceeds bounds"));
+    }
+    Ok(format!(
+        "MP-08 Project environment Detect. Classify only this bounded filename inventory and reference metadata. Folder identities are the keys in changed_paths. Tools are disabled; no file contents or values are supplied. Return only a JSON Project environment manifest with schema_version 1, the exact project_id and evidence_digest, entries copied from references (classification may change), private_files [], and toolchain_hints/package_hints/service_hints. Hints are review proposals, never readiness or authority to install anything. Never invent reference names, use sites or locators.\nMetadata:\n{encoded}"
+    ))
+}
