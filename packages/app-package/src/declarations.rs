@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::{
     json::read_json,
     manifest::{valid_function_name, validate_origin},
-    ErrorCode, HttpMethod, Limits, Manifest, PackageError, Result,
+    Capabilities, ErrorCode, HttpMethod, Limits, PackageError, Result,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -100,8 +100,17 @@ declaration_document!(ToolsDocument, tools, ToolDeclaration);
 declaration_document!(EventsDocument, events, EventDeclaration);
 declaration_document!(ActionsDocument, actions, ActionDeclaration);
 
+/// Where a manifest keeps its declaration documents, whatever its schema.
+pub(crate) struct DeclarationPaths<'a> {
+    pub tools: Option<&'a str>,
+    pub events: Option<&'a str>,
+    pub actions: Option<&'a str>,
+}
+
 pub(crate) fn read_declarations(
-    manifest: &Manifest,
+    paths: DeclarationPaths<'_>,
+    capabilities: &Capabilities,
+    directed_events: bool,
     files: &BTreeMap<String, &[u8]>,
     limits: &Limits,
 ) -> Result<Declarations> {
@@ -122,21 +131,28 @@ pub(crate) fn read_declarations(
         )
     }
     let mut declarations = Declarations::default();
-    if let Some(path) = &manifest.tools {
+    if let Some(path) = paths.tools {
         declarations.tools = load::<ToolsDocument>(path, files, limits)?.tools;
     }
-    if let Some(path) = &manifest.events {
+    if let Some(path) = paths.events {
         declarations.events = load::<EventsDocument>(path, files, limits)?.events;
     }
-    if let Some(path) = &manifest.actions {
+    if let Some(path) = paths.actions {
         declarations.actions = load::<ActionsDocument>(path, files, limits)?.actions;
     }
-    declarations.validate(manifest, limits)?;
+    declarations.validate(capabilities, directed_events, limits)?;
     Ok(declarations)
 }
 
 impl Declarations {
-    pub fn validate(&self, manifest: &Manifest, limits: &Limits) -> Result<()> {
+    /// `directed_events` is whether the manifest's kernel floor admits directed
+    /// events: protocol 292 for v1, the `directed-events` feature for v2.
+    pub fn validate(
+        &self,
+        capabilities: &Capabilities,
+        directed_events: bool,
+        limits: &Limits,
+    ) -> Result<()> {
         check_names(self.tools.iter().map(|item| item.name.as_str()), limits)?;
         check_names(self.events.iter().map(|item| item.name.as_str()), limits)?;
         check_names(self.actions.iter().map(|item| item.name.as_str()), limits)?;
@@ -165,7 +181,7 @@ impl Declarations {
             }
         }
         for event in &self.events {
-            if event.schema_version == 0 || manifest.min_kernel_protocol < 292 {
+            if event.schema_version == 0 || !directed_events {
                 return invalid(
                     "directed events require a positive schemaVersion and kernel protocol 292",
                 );
@@ -217,8 +233,7 @@ impl Declarations {
                 ) {
                     return invalid("effect route method must be POST, PUT or PATCH");
                 }
-                if !manifest
-                    .capabilities
+                if !capabilities
                     .network
                     .iter()
                     .any(|dest| dest.origin == route.origin && dest.methods.contains(&route.method))

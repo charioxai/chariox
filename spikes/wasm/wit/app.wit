@@ -1,0 +1,118 @@
+// Spike subset of the async Chariox App world (full surface: wit-full/app.wit).
+// One instance serves many calls at once; JSON values stay JSON text that the
+// kernel validates against the signed package schemas.
+package chariox:app@0.2.0;
+
+interface types {
+  /// JSON text. The host checks it with the wire rules before sending.
+  type json = string;
+
+  record app-error {
+    code: string,
+    message: string,
+    retryable: option<bool>,
+  }
+
+  enum actor-kind { human, agent, background }
+  record actor { kind: actor-kind, id: string }
+
+  /// Kernel-issued context of one call (InvocationContext in the JS SDK).
+  record invocation-context {
+    deadline-ms: u64,
+    installation-id: option<string>,
+    room-id: option<string>,
+    operation-id: option<string>,
+    agent-id: option<string>,
+    task-id: option<string>,
+    turn-id: option<string>,
+    actor: option<actor>,
+  }
+
+  /// An App event delivered by the kernel.
+  record event { name: string, data: json }
+}
+
+/// Registration: called only from `handlers.register`; sealed by worker.ready.
+interface registry {
+  tool: func(name: string);
+  event: func(name: string);
+  lifecycle: func(event: string);
+}
+
+interface state {
+  use types.{json, app-error};
+  record state-record { value: json, version: u64 }
+  record check { key: string, version: option<u64> }
+  variant write { put(tuple<string, json>), delete(string) }
+  record transaction {
+    schema-version: u32,
+    checks: list<check>,
+    writes: list<write>,
+  }
+  record committed { revision: u64 }
+
+  get: async func(key: string) -> result<option<state-record>, app-error>;
+  transact: async func(tx: transaction) -> result<committed, app-error>;
+}
+
+interface http {
+  use types.{app-error};
+  record request {
+    url: string,
+    method: string,
+    headers: list<tuple<string, string>>,
+    body: option<list<u8>>,
+    connection-id: option<string>,
+    operation-id: option<string>,
+  }
+  record response-head {
+    status: u16,
+    headers: list<tuple<string, string>>,
+    url: string,
+  }
+  record response {
+    head: response-head,
+    body: list<u8>,
+  }
+  /// Buffered request through the kernel HTTP broker (512 KiB response cap).
+  send: async func(req: request) -> result<response, app-error>;
+  /// Streaming response: the body flows with backpressure, no size cap.
+  /// Dropping the stream cancels the broker stream.
+  fetch: async func(req: request) -> result<tuple<response-head, stream<u8>>, app-error>;
+}
+
+interface events {
+  use types.{event, app-error};
+  /// Long-lived subscription to kernel-delivered App events. The kernel's
+  /// dispatch is acknowledged only once the event is in the stream buffer, so
+  /// a slow reader slows the sender instead of growing memory.
+  subscribe: async func(name: string) -> result<stream<event>, app-error>;
+}
+
+interface log {
+  use types.{json};
+  enum level { debug, info, warn, error }
+  write: func(level: level, message: string, fields: json);
+}
+
+interface handlers {
+  use types.{json, app-error, invocation-context};
+  /// Registers tools/events/lifecycle names through `registry`.
+  register: func() -> result<_, app-error>;
+  /// Many calls run at once on one instance. `cancel` resolves with a reason
+  /// when the kernel cancels the call or its deadline passes; the call should
+  /// stop and return. It never resolves for a call that ends normally.
+  call-tool: async func(name: string, input: json, context: invocation-context, cancel: future<string>) -> result<json, app-error>;
+}
+
+world app {
+  /// WASI 0.3: `wait-for` is an async import (used for the timer-only
+  /// many-callers cell, which needs no broker call).
+  import wasi:clocks/monotonic-clock@0.3.0;
+  import registry;
+  import state;
+  import http;
+  import events;
+  import log;
+  export handlers;
+}

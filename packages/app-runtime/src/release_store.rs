@@ -3,6 +3,7 @@
 //! a check-then-open pathname. The original signed archive remains available for
 //! policy/signature reverification after restart.
 
+pub mod aot_key;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lease;
 #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -183,6 +183,118 @@ pub struct Migration {
     pub entry: String,
 }
 
+impl Publisher {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !valid_identifier(&self.id)
+            || !valid_identifier(&self.key_id)
+            || self.name.trim().is_empty()
+            || self.name.len() > 256
+        {
+            return Err(invalid_manifest(
+                "publisher identity, keyId and name are required",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl AgentPanel {
+    pub(crate) fn size_valid(&self) -> bool {
+        match (self.placement, self.size) {
+            (PanelPlacement::None, Some(_)) => false,
+            (_, Some(size)) => (120..=1200).contains(&size),
+            (_, None) => true,
+        }
+    }
+}
+
+impl Capabilities {
+    pub(crate) fn validate(&self) -> Result<()> {
+        unique(&self.clipboard)?;
+        unique(&self.external_files)?;
+        unique(&self.workflows)?;
+        unique(&self.agents)?;
+        if self.connections.len() > 8 {
+            return Err(invalid_manifest("too many connection declarations"));
+        }
+        let mut generators = BTreeSet::new();
+        for connection in &self.connections {
+            let name = |value: &str, dot: bool| {
+                !value.is_empty()
+                    && value.len() <= 128
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || byte == b'-'
+                            || byte == b'_'
+                            || (dot && byte == b'.')
+                    })
+            };
+            if !name(&connection.generator, true)
+                || !generators.insert(&connection.generator)
+                || connection.actions.is_empty()
+                || connection.actions.len() > 32
+                || !connection.actions.iter().all(|action| name(action, true))
+            {
+                return Err(invalid_manifest(
+                    "connections must name distinct generators and their allowed actions",
+                ));
+            }
+            unique(&connection.actions)?;
+        }
+        if self.network.len() > 64 {
+            return Err(invalid_manifest("too many network destinations"));
+        }
+        let mut origins = BTreeSet::new();
+        for destination in &self.network {
+            validate_origin(&destination.origin)?;
+            if !origins.insert(&destination.origin) || destination.methods.is_empty() {
+                return Err(invalid_manifest(
+                    "destinations must be unique and declare allowed methods",
+                ));
+            }
+            unique(&destination.methods)?;
+        }
+        Ok(())
+    }
+}
+
+impl Migrations {
+    /// `entry_ok` is the schema's rule for what a migration step file is:
+    /// JavaScript in v1, a component in v2.
+    pub(crate) fn validate(&self, limits: &Limits, entry_ok: fn(&str) -> bool) -> Result<()> {
+        validate_path(&self.directory, limits)?;
+        if self.directory != "migrations"
+            || self.steps.is_empty()
+            || self.steps.len() > limits.max_declarations
+            || self.steps.len() != self.target_version as usize
+        {
+            return Err(invalid_manifest(
+                "migrations must declare the complete bounded version chain",
+            ));
+        }
+        let mut entries = BTreeSet::new();
+        for (index, step) in self.steps.iter().enumerate() {
+            validate_path(&step.entry, limits)?;
+            if step.from as usize != index
+                || step.to as usize != index + 1
+                || !step.entry.starts_with("migrations/")
+                || !entry_ok(&step.entry)
+                || !entries.insert(&step.entry)
+            {
+                return Err(invalid_manifest(
+                    "migration steps must be unique entries ordered from zero to target",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn invalid_manifest(message: &'static str) -> PackageError {
+    PackageError::new(ErrorCode::InvalidManifest, message)
+}
+
 impl Manifest {
     pub fn validate(&self, limits: &Limits) -> Result<()> {
         let invalid = |message| PackageError::new(ErrorCode::InvalidManifest, message);
@@ -202,13 +314,7 @@ impl Manifest {
                 "contract, protocol and resource policy are required",
             ));
         }
-        if !valid_identifier(&self.publisher.id)
-            || !valid_identifier(&self.publisher.key_id)
-            || self.publisher.name.trim().is_empty()
-            || self.publisher.name.len() > 256
-        {
-            return Err(invalid("publisher identity, keyId and name are required"));
-        }
+        self.publisher.validate()?;
         validate_path(&self.runtime.entry, limits)?;
         validate_path(&self.ui.entry, limits)?;
         if !self.runtime.entry.starts_with("runtime/") || !javascript_path(&self.runtime.entry) {
@@ -218,12 +324,7 @@ impl Manifest {
             return Err(invalid("UI entry must be HTML inside ui/"));
         }
         if let Some(panel) = &self.ui.agent_panel {
-            let size_ok = match (panel.placement, panel.size) {
-                (PanelPlacement::None, Some(_)) => false,
-                (_, Some(size)) => (120..=1200).contains(&size),
-                (_, None) => true,
-            };
-            if !size_ok || self.min_kernel_protocol < AGENT_PANEL_PROTOCOL {
+            if !panel.size_valid() || self.min_kernel_protocol < AGENT_PANEL_PROTOCOL {
                 return Err(invalid(
                     "ui.agentPanel needs minKernelProtocol 380 and a size of 120 to 1200 CSS pixels (none takes no size)",
                 ));
@@ -238,74 +339,9 @@ impl Manifest {
                 return Err(invalid("declarations must be JSON inside schemas/"));
             }
         }
-        unique(&self.capabilities.clipboard)?;
-        unique(&self.capabilities.external_files)?;
-        unique(&self.capabilities.workflows)?;
-        unique(&self.capabilities.agents)?;
-        if self.capabilities.connections.len() > 8 {
-            return Err(invalid("too many connection declarations"));
-        }
-        let mut generators = BTreeSet::new();
-        for connection in &self.capabilities.connections {
-            let name = |value: &str, dot: bool| {
-                !value.is_empty()
-                    && value.len() <= 128
-                    && value.bytes().all(|byte| {
-                        byte.is_ascii_lowercase()
-                            || byte.is_ascii_digit()
-                            || byte == b'-'
-                            || byte == b'_'
-                            || (dot && byte == b'.')
-                    })
-            };
-            if !name(&connection.generator, true)
-                || !generators.insert(&connection.generator)
-                || connection.actions.is_empty()
-                || connection.actions.len() > 32
-                || !connection.actions.iter().all(|action| name(action, true))
-            {
-                return Err(invalid(
-                    "connections must name distinct generators and their allowed actions",
-                ));
-            }
-            unique(&connection.actions)?;
-        }
-        if self.capabilities.network.len() > 64 {
-            return Err(invalid("too many network destinations"));
-        }
-        let mut origins = BTreeSet::new();
-        for destination in &self.capabilities.network {
-            validate_origin(&destination.origin)?;
-            if !origins.insert(&destination.origin) || destination.methods.is_empty() {
-                return Err(invalid(
-                    "destinations must be unique and declare allowed methods",
-                ));
-            }
-            unique(&destination.methods)?;
-        }
+        self.capabilities.validate()?;
         if let Some(migrations) = &self.migrations {
-            validate_path(&migrations.directory, limits)?;
-            if migrations.directory != "migrations"
-                || migrations.steps.is_empty()
-                || migrations.steps.len() > limits.max_declarations
-                || migrations.steps.len() != migrations.target_version as usize
-            {
-                return Err(invalid(
-                    "migrations must declare the complete bounded version chain",
-                ));
-            }
-            let mut entries = BTreeSet::new();
-            for (index, step) in migrations.steps.iter().enumerate() {
-                validate_path(&step.entry, limits)?;
-                if step.from as usize != index
-                    || step.to as usize != index + 1
-                    || !step.entry.starts_with("migrations/")
-                    || !javascript_path(&step.entry)
-                    || !entries.insert(&step.entry)
-                {
-                    return Err(invalid("migration steps must be unique JavaScript entries ordered from zero to target"));
-                }
-            }
+            migrations.validate(limits, javascript_path)?;
         }
         Ok(())
     }
@@ -346,7 +382,7 @@ pub(crate) fn valid_function_name(value: &str) -> bool {
         && value.as_bytes()[0].is_ascii_lowercase()
 }
 
-fn valid_app_id(value: &str) -> bool {
+pub(crate) fn valid_app_id(value: &str) -> bool {
     value.len() <= 128
         && value.split('.').count() >= 3
         && value.split('.').all(|part| {

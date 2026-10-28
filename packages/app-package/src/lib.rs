@@ -8,6 +8,7 @@ pub mod developer;
 mod error;
 mod json;
 mod manifest;
+pub mod v2;
 
 use std::collections::BTreeMap;
 
@@ -110,11 +111,11 @@ pub struct InventoryFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PublisherSignature {
-    key_id: String,
-    algorithm: String,
-    digest: String,
-    value: String,
+pub(crate) struct PublisherSignature {
+    pub(crate) key_id: String,
+    pub(crate) algorithm: String,
+    pub(crate) digest: String,
+    pub(crate) value: String,
 }
 
 /// Safe to display as a *claim* during local key enrollment. This type is never
@@ -186,40 +187,8 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &VerificationPolicy) -> Result<Verifi
                 "publisher signing key has not been enrolled",
             )
         })?;
-    let signature_bytes = BASE64.decode(&envelope.signature.value).map_err(|_| {
-        PackageError::new(
-            ErrorCode::InvalidSignature,
-            "signature is not standard base64",
-        )
-    })?;
-    if BASE64.encode(&signature_bytes) != envelope.signature.value {
-        return Err(PackageError::new(
-            ErrorCode::InvalidSignature,
-            "signature base64 is not canonical",
-        ));
-    }
-    let signature = Signature::from_slice(&signature_bytes).map_err(|_| {
-        PackageError::new(
-            ErrorCode::InvalidSignature,
-            "invalid Ed25519 signature length",
-        )
-    })?;
     let signed_bytes = signing_bytes(&envelope.manifest_value, &envelope.inventory)?;
-    if digest(&signed_bytes) != envelope.signature.digest {
-        return Err(PackageError::new(
-            ErrorCode::IntegrityMismatch,
-            "signed envelope digest mismatch",
-        ));
-    }
-    trusted
-        .public_key
-        .verify_strict(&signed_bytes, &signature)
-        .map_err(|_| {
-            PackageError::new(
-                ErrorCode::InvalidSignature,
-                "publisher signature verification failed",
-            )
-        })?;
+    verify_signature(trusted, &envelope.signature, &signed_bytes)?;
     check_compatibility(&envelope.manifest, policy)?;
     if envelope.inventory.files.len() != entries.len() - 3 {
         return Err(PackageError::new(
@@ -243,8 +212,13 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &VerificationPolicy) -> Result<Verifi
         }
         files.insert(entry.path.clone(), entry.data);
     }
-    check_payload(&envelope.manifest, &files, &policy.limits)?;
-    let declarations = declarations::read_declarations(&envelope.manifest, &files, &policy.limits)?;
+    check_payload(
+        &envelope.manifest.required_paths(),
+        envelope.manifest.migrations.as_ref(),
+        &files,
+        &policy.limits,
+    )?;
+    let declarations = read_v1_declarations(&envelope.manifest, &files, &policy.limits)?;
     Ok(VerifiedPackage {
         manifest: envelope.manifest,
         signer: trusted.clone(),
@@ -282,8 +256,13 @@ pub fn pack(
         .iter()
         .map(|(path, bytes)| (path.clone(), bytes.as_slice()))
         .collect();
-    check_payload(manifest, &borrowed, limits)?;
-    declarations::read_declarations(manifest, &borrowed, limits)?;
+    check_payload(
+        &manifest.required_paths(),
+        manifest.migrations.as_ref(),
+        &borrowed,
+        limits,
+    )?;
+    read_v1_declarations(manifest, &borrowed, limits)?;
     let inventory = Inventory {
         schema: INTEGRITY_SCHEMA.to_owned(),
         files: files
@@ -329,6 +308,24 @@ pub fn pack(
     archive::encode(&entries, limits)
 }
 
+fn read_v1_declarations(
+    manifest: &Manifest,
+    files: &BTreeMap<String, &[u8]>,
+    limits: &Limits,
+) -> Result<Declarations> {
+    declarations::read_declarations(
+        declarations::DeclarationPaths {
+            tools: manifest.tools.as_deref(),
+            events: manifest.events.as_deref(),
+            actions: manifest.actions.as_deref(),
+        },
+        &manifest.capabilities,
+        manifest.min_kernel_protocol >= 292,
+        files,
+        limits,
+    )
+}
+
 struct Envelope {
     manifest: Manifest,
     manifest_value: Value,
@@ -352,14 +349,69 @@ fn read_envelope(entries: &[archive::Entry<'_>], limits: &Limits) -> Result<Enve
             )
         })?;
     manifest.validate(limits)?;
+    let inventory = read_inventory(entries[1].data, INTEGRITY_SCHEMA, limits)?;
+    let signature = read_signature(entries[2].data, &manifest.publisher.key_id, limits)?;
+    Ok(Envelope {
+        manifest,
+        manifest_value,
+        inventory,
+        signature,
+    })
+}
+
+/// The signature must be canonical base64 over the signed bytes, match its
+/// recorded digest, and verify strictly against the enrolled key.
+pub(crate) fn verify_signature(
+    trusted: &TrustedPublisher,
+    signature: &PublisherSignature,
+    signed_bytes: &[u8],
+) -> Result<()> {
+    let signature_bytes = BASE64.decode(&signature.value).map_err(|_| {
+        PackageError::new(
+            ErrorCode::InvalidSignature,
+            "signature is not standard base64",
+        )
+    })?;
+    if BASE64.encode(&signature_bytes) != signature.value {
+        return Err(PackageError::new(
+            ErrorCode::InvalidSignature,
+            "signature base64 is not canonical",
+        ));
+    }
+    let parsed = Signature::from_slice(&signature_bytes).map_err(|_| {
+        PackageError::new(
+            ErrorCode::InvalidSignature,
+            "invalid Ed25519 signature length",
+        )
+    })?;
+    if digest(signed_bytes) != signature.digest {
+        return Err(PackageError::new(
+            ErrorCode::IntegrityMismatch,
+            "signed envelope digest mismatch",
+        ));
+    }
+    trusted
+        .public_key
+        .verify_strict(signed_bytes, &parsed)
+        .map_err(|_| {
+            PackageError::new(
+                ErrorCode::InvalidSignature,
+                "publisher signature verification failed",
+            )
+        })
+}
+
+/// Shared by every package schema: the inventory is sorted, bounded and never
+/// lists a control or signature entry.
+pub(crate) fn read_inventory(bytes: &[u8], schema: &str, limits: &Limits) -> Result<Inventory> {
     let inventory: Inventory = json::read_json(
-        entries[1].data,
+        bytes,
         limits.max_metadata_bytes,
         limits,
         ErrorCode::IntegrityMismatch,
         true,
     )?;
-    if inventory.schema != INTEGRITY_SCHEMA
+    if inventory.schema != schema
         || inventory.files.len() > limits.max_entries.saturating_sub(3)
         || inventory
             .files
@@ -384,15 +436,23 @@ fn read_envelope(entries: &[archive::Entry<'_>], limits: &Limits) -> Result<Enve
             ));
         }
     }
+    Ok(inventory)
+}
+
+pub(crate) fn read_signature(
+    bytes: &[u8],
+    manifest_key_id: &str,
+    limits: &Limits,
+) -> Result<PublisherSignature> {
     let signature: PublisherSignature = json::read_json(
-        entries[2].data,
+        bytes,
         limits.max_metadata_bytes.min(4096),
         limits,
         ErrorCode::InvalidSignature,
         true,
     )?;
     if signature.algorithm != "ed25519"
-        || signature.key_id != manifest.publisher.key_id
+        || signature.key_id != manifest_key_id
         || !valid_digest(&signature.digest)
     {
         return Err(PackageError::new(
@@ -400,18 +460,19 @@ fn read_envelope(entries: &[archive::Entry<'_>], limits: &Limits) -> Result<Enve
             "invalid publisher signature envelope",
         ));
     }
-    Ok(Envelope {
-        manifest,
-        manifest_value,
-        inventory,
-        signature,
-    })
+    Ok(signature)
 }
 
 fn signing_bytes(manifest: &Value, inventory: &Inventory) -> Result<Vec<u8>> {
-    json::canonical(
-        &json!({ "schema": SIGNATURE_SCHEMA, "manifest": manifest, "inventory": inventory }),
-    )
+    signing_bytes_for(SIGNATURE_SCHEMA, manifest, inventory)
+}
+
+pub(crate) fn signing_bytes_for(
+    schema: &str,
+    manifest: &Value,
+    inventory: &Inventory,
+) -> Result<Vec<u8>> {
+    json::canonical(&json!({ "schema": schema, "manifest": manifest, "inventory": inventory }))
 }
 
 fn check_compatibility(manifest: &Manifest, policy: &VerificationPolicy) -> Result<()> {
@@ -444,13 +505,14 @@ fn check_compatibility(manifest: &Manifest, policy: &VerificationPolicy) -> Resu
     Ok(())
 }
 
-fn check_payload(
-    manifest: &Manifest,
+pub(crate) fn check_payload(
+    required_paths: &[&str],
+    migrations: Option<&Migrations>,
     files: &BTreeMap<String, &[u8]>,
     limits: &Limits,
 ) -> Result<()> {
-    for path in manifest.required_paths() {
-        if !files.contains_key(path) {
+    for path in required_paths {
+        if !files.contains_key(*path) {
             return Err(PackageError::new(
                 ErrorCode::MissingEntry,
                 format!("declared file is missing: {path}"),
@@ -471,19 +533,17 @@ fn check_payload(
                 "file exceeds byte limit",
             ));
         }
-        if [".node", ".so", ".dylib", ".dll", ".exe"]
+        if [".node", ".so", ".dylib", ".dll", ".exe", ".cwasm"]
             .iter()
             .any(|suffix| path.to_ascii_lowercase().ends_with(suffix))
         {
             return Err(PackageError::new(
                 ErrorCode::UnsupportedFeature,
-                "native add-ons and executable artifacts are outside the v1 package contract",
+                "native add-ons, serialized native code and executable artifacts are outside the package contract",
             ));
         }
         if path.starts_with("migrations/")
-            && !manifest
-                .migrations
-                .as_ref()
+            && !migrations
                 .is_some_and(|migrations| migrations.steps.iter().any(|step| step.entry == *path))
         {
             return Err(PackageError::new(
@@ -495,11 +555,11 @@ fn check_payload(
     Ok(())
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn valid_digest(value: &str) -> bool {
+pub(crate) fn valid_digest(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value.as_bytes()[7..]
