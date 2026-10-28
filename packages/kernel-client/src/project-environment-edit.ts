@@ -23,13 +23,27 @@ export function mergeEnvironmentDraft(base: EnvironmentRevisionDraft, draft: Env
     return { ...r, ...patch }
   }
   const merged = all(latest).flatMap(r => { const result = merge(r); return result ? [result] : [] })
-  for (const r of all(draft)) if (!original.has(r.requirement_id) && !merged.some(current => current.requirement_id === r.requirement_id)) merged.push(r)
-  return { project_requirements: merged.filter(r => r.scope.kind === "project"), folders: latest.folders.map(f => {
-    const old = base.folders.find(folder => folder.folder_id === f.folder_id)
-    const ours = draft.folders.find(folder => folder.folder_id === f.folder_id)
-    return { ...f, label: old && ours && old.label !== ours.label ? ours.label : f.label, requirements: merged.filter(r => r.scope.kind === "folder" && r.scope.folder_id === f.folder_id) }
-  }) }
+  for (const r of all(draft)) {
+    const before = original.get(r.requirement_id)
+    const changed = before && ["title", "scope", "spec", "required", "depends_on", "platform_variants"].some(field => JSON.stringify(before[field as keyof Requirement]) !== JSON.stringify(r[field as keyof Requirement]))
+    // Explicit review can restore our edited row; unchanged rows follow the other editor's removal.
+    if ((!before || changed) && !merged.some(current => current.requirement_id === r.requirement_id)) merged.push(r)
+  }
+  return {
+    project_requirements: merged.filter(r => r.scope.kind === "project"), folders: latest.folders.map(f => {
+      const old = base.folders.find(folder => folder.folder_id === f.folder_id)
+      const ours = draft.folders.find(folder => folder.folder_id === f.folder_id)
+      return { ...f, label: old && ours && old.label !== ours.label ? ours.label : f.label, requirements: merged.filter(r => r.scope.kind === "folder" && r.scope.folder_id === f.folder_id) }
+    })
+  }
 }
 export function saveEnvironmentRevisionRequest(environment: ProjectEnvironment, draft: EnvironmentRevisionDraft, accepted: readonly string[] = [], excluded: readonly string[] = []) {
   return { SaveProjectEnvironmentRevision: { projectId: environment.local_project_id, expectedRevision: environment.revision, expectedContentDigest: environment.content_digest, draft, acceptedProposalIds: accepted, excludedProposalIds: excluded } } as const
+}
+
+// MP-08 / MP-10 / MP-11: explicit rebase never invents current detection provenance.
+export function rebaseEnvironmentProvenance(draft: EnvironmentRevisionDraft, latest: ProjectEnvironment): EnvironmentRevisionDraft {
+  const known = new Map([...latest.project_requirements, ...latest.folders.flatMap(f => f.requirements), ...latest.proposals.map(p => p.requirement)].map(r => [r.requirement_id, r]))
+  const restore = (r: Requirement): Requirement => { const current = known.get(r.requirement_id); return { ...r, origins: current?.origins ?? [], legacy_entry: current?.legacy_entry ?? null } }
+  return { project_requirements: draft.project_requirements.map(restore), folders: draft.folders.map(f => ({ ...f, requirements: f.requirements.map(restore) })) }
 }

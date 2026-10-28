@@ -18,7 +18,10 @@ pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
             else {
                 continue;
             };
-            if pid <= 1 || pid == std::process::id() || !owns_writer(pid, &pipes) {
+            if super::signal_pid(pid.into()).is_err()
+                || pid == std::process::id()
+                || !owns_writer(pid, &pipes)
+            {
                 continue;
             }
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };

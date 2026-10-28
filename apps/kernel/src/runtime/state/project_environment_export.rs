@@ -462,7 +462,7 @@ impl KernelRuntimeState {
             visible_user_prompt: prompt,
             hidden_system_context: "Classify only the supplied Project environment metadata. No tools or source contents are available.".into(),
         }, "discover Project environment", ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery, crate::runtime::agent_utility_executor::AGENT_UTILITY_TIMEOUT).await?;
-        let manifest = parse_project_environment_discovery_output(&output, input)?;
+        let manifest = parse_project_environment_discovery_decisions(&output, input)?;
         let decided = manifest
             .private_files
             .iter()

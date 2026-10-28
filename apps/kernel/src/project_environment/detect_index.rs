@@ -63,9 +63,19 @@ pub(super) fn safe_metadata(value: &str) -> bool {
         .any(|marker| value.contains(marker))
 }
 pub(super) fn credential_content(text: &str) -> bool {
+    credential_matches(text, true)
+}
+// Metadata contains names and references; a bare name is never a plaintext value.
+pub(super) fn credential_metadata(text: &str) -> bool {
+    credential_matches(text, false)
+}
+fn credential_matches(text: &str, private_content: bool) -> bool {
     super::index::contains_secret_configuration(text)
         || legacy_key_literal(text)
-        || text.split([':', '=']).take(100_000).any(|prefix| {
+        // Metadata skips bare names; File contents retain the conservative name heuristic.
+        || text.split_inclusive([':', '=']).take(100_000).filter_map(|part| {
+            part.strip_suffix(':').or_else(|| part.strip_suffix('=')).or_else(|| private_content.then_some(part))
+        }).any(|prefix| {
             let key = prefix
                 .rsplit(['{', ',', '\n'])
                 .next()
@@ -379,14 +389,14 @@ fn walk(
 
 // MP-11: Retain the source directory FD while enumerating. A rename/symlink race cannot
 // change the directory behind the view or redirect a subsequent content read.
-struct EvidenceRoot {
+pub(super) struct EvidenceRoot {
     #[cfg(not(unix))]
     path: std::path::PathBuf,
     #[cfg(unix)]
     anchor: std::fs::File,
 }
 impl EvidenceRoot {
-    fn open(path: &Path) -> Result<Self, DaemonError> {
+    pub(super) fn open(path: &Path) -> Result<Self, DaemonError> {
         #[cfg(unix)]
         {
             use std::os::fd::{AsRawFd, FromRawFd};
@@ -456,7 +466,7 @@ impl EvidenceRoot {
         }
         Ok(anchor)
     }
-    fn file(&self, relative: &str) -> Result<std::fs::File, DaemonError> {
+    pub(super) fn file(&self, relative: &str) -> Result<std::fs::File, DaemonError> {
         #[cfg(unix)]
         let file = self.open_relative(relative, false)?;
         #[cfg(not(unix))]
@@ -470,7 +480,7 @@ impl EvidenceRoot {
         }
         Ok(file)
     }
-    fn directory(
+    pub(super) fn directory(
         &self,
         relative: &str,
     ) -> Result<(Option<std::fs::File>, std::path::PathBuf), DaemonError> {
@@ -502,6 +512,27 @@ impl EvidenceRoot {
                 }
             }
             Ok((None, path))
+        }
+    }
+}
+
+#[cfg(test)]
+mod envp03_credential_names {
+    use super::*;
+    // MP-08 / MP-10 / MP-11: metadata names do not weaken conservative File content filtering.
+    #[test]
+    fn names_are_metadata_while_private_content_remains_filtered() {
+        for name in ["Secrets", "API_TOKEN", "Credentials", "RAW_SECRET"] {
+            assert!(!credential_metadata(name));
+            assert!(credential_content(name));
+        }
+        for value in [
+            "password=synthetic-regression-value",
+            "api_key:synthetic-regression-value",
+            "https://example:synthetic-regression-value@example.invalid",
+        ] {
+            assert!(credential_metadata(value));
+            assert!(credential_content(value));
         }
     }
 }

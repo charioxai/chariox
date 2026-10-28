@@ -368,8 +368,14 @@ impl ProjectEnvironmentStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
-                .map_err(|_| environment_error("secure environment directory failed"))?;
+            // MP-08 / MP-10 / MP-11: reads must not dirty private directory metadata.
+            let permissions = fs::metadata(&self.root)
+                .map_err(|_| environment_error("environment directory unavailable"))?
+                .permissions();
+            if permissions.mode() & 0o7777 != 0o700 {
+                fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+                    .map_err(|_| environment_error("secure environment directory failed"))?;
+            }
         }
         let path = self.path(project).with_extension(extension);
         let mut options = OpenOptions::new();
@@ -399,6 +405,33 @@ impl ProjectEnvironmentStore {
 
 #[cfg(test)]
 mod lock_tests {
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_reads_do_not_dirty_an_already_secure_directory() {
+        use std::os::unix::fs::MetadataExt;
+        let root = crate::test_support::TestWorktree::new("envp03-lock-read-metadata");
+        let store = super::ProjectEnvironmentStore::new(root.path());
+        drop(store.identity_lock("project").unwrap());
+        let before = std::fs::metadata(&store.root).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        drop(store.identity_lock("project").unwrap());
+        let after = std::fs::metadata(&store.root).unwrap();
+        assert_eq!(
+            (after.ctime(), after.ctime_nsec()),
+            (before.ctime(), before.ctime_nsec()),
+            "a read lock must not rewrite secure directory metadata"
+        );
+        std::fs::set_permissions(
+            &store.root,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        drop(store.identity_lock("project").unwrap());
+        assert_eq!(
+            std::fs::metadata(&store.root).unwrap().mode() & 0o7777,
+            0o700
+        );
+    }
     use super::*;
 
     #[test]

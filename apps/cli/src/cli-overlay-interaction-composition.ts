@@ -1,4 +1,5 @@
 import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
+import { copyTextToClipboard } from "./clipboard.js"
 import { MouseButton } from "@opentui/core"
 import { createEffect, on } from "solid-js"
 
@@ -94,6 +95,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   const hotkeyDebug = hotkeyDebugReporter.report
 
   const environmentController = createProjectEnvironmentReadController({
+    copyLink: link => { void copyTextToClipboard(link,deps.renderer).then(()=>deps.flashFooter("Web Environment link copied · select this kernel and Project in Web","info")).catch(()=>deps.flashFooter("Copy the displayed Web Environment link","info")) },
     send: request => deps.client.send(request),
     pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
     textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),

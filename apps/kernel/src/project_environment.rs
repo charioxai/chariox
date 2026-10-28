@@ -14,6 +14,7 @@ mod discovery;
 mod import;
 mod index;
 mod launch;
+mod manual_files;
 mod materialization_transaction;
 mod materialize;
 mod model;
@@ -22,6 +23,8 @@ mod refresh;
 mod resolver;
 mod review;
 mod revisions;
+mod scope_conflicts;
+mod specification_validation;
 mod store;
 mod transfer;
 
@@ -34,6 +37,7 @@ pub use discovery::*;
 pub(crate) use import::*;
 pub use index::*;
 pub(crate) use launch::*;
+pub(crate) use manual_files::verify_manual_files;
 pub use materialize::*;
 pub use model::*;
 pub(crate) use private_overlay::*;
@@ -53,3 +57,6 @@ mod aggregate_tests;
 
 #[cfg(test)]
 mod detect_tests;
+
+#[cfg(test)]
+mod review1118_metadata_tests;
