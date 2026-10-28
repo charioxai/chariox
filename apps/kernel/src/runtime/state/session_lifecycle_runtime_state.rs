@@ -2359,4 +2359,79 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    #[tokio::test]
+    async fn session_activity_moves_for_prompt_transitions_but_not_presence_or_focus() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let session = create_activity_test_session(&runtime, "semantic-activity");
+        let id = session.id().to_owned();
+        let before = session.last_activity_at_ms();
+        let mut touched = session.clone();
+        touched.touch();
+        touched.set_focused_agent(Some("agent".into()));
+        runtime.owned.session_store.restore_session(touched);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            before
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt",
+            "attachment",
+            "agent",
+            "Work",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt.clone()), Default::default())
+            .unwrap();
+        let started = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(started > before);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt), Default::default())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            started
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", None, Default::default())
+            .unwrap();
+        let ended = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(ended > started);
+        // A metadata snapshot captured before the turn cannot roll activity backwards.
+        runtime.owned.session_store.restore_session(session);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            ended
+        );
+    }
 }

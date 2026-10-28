@@ -220,6 +220,15 @@ impl KernelRuntimeOwnedState {
             message_id,
             completed_at_ms,
         );
+        if let Err(error) =
+            self.record_session_activity(session_id, crate::session::unix_epoch_ms())
+        {
+            crate::logging::error_with_fields(
+                "daemon.activity",
+                "Could not persist session message activity",
+                serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+            );
+        }
         self.notify_metaagent_trace_activity(session_id, agent_id.as_deref());
     }
 

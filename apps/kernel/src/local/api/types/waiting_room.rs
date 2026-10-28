@@ -6,6 +6,8 @@ pub struct GetWaitingRoomInventoryRequest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListWaitingRoomSessionsRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_version: Option<String>,
     pub cursor: Option<String>,
     pub limit: Option<u32>,
 }
@@ -112,6 +114,8 @@ pub struct WaitingRoomPublicSnapshot {
 pub struct WaitingRoomPublicSessionSummary {
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at_ms: Option<u64>,
     pub id: String,
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +133,7 @@ pub struct WaitingRoomPublicSessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     pub created_at_ms: u64,
+    pub last_activity_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +162,8 @@ pub struct WaitingRoomPublicProjectSummary {
     pub name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at_ms: Option<u64>,
     pub kind: crate::session::RuntimeProjectKind,
     pub status: crate::session::RuntimeProjectStatus,
     pub created_at_ms: u64,
