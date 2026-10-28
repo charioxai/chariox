@@ -17,7 +17,7 @@ describes native JSONL persistence, `thread/read`, `thread/resume` and versioned
 schema generation. The [CLI reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli)
 describes `codex exec resume`; its Markdown export is not a native checkpoint.
 The selected-file portability claim is an inference verified with official
-tooling, not a documented provider export RPC. See the lane's retained real
+tooling, not a documented provider export RPC. See the retained real
 proof for its exact CLI, model, account-transfer and workspace-relocation results.
 
 `ProviderProcessServiceStore::export_native_checkpoint` requires an ended run
