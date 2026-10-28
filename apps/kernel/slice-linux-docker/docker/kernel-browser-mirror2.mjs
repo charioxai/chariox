@@ -375,8 +375,6 @@ export class Mirror2 {
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
       scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
-    // The viewer answers this packet with a native page display: start it now, while the packet travels.
-    this.host.navigationDisplays?.start(scope, tabId, documentId);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
   }

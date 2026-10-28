@@ -1,6 +1,8 @@
 // MP-08/MP-10/MP-11: only a negotiated kernel lease admits crop geometry.
 export const regionMinimumProtocolVersion = 519;
 export const visiblePageMinimumProtocolVersion = 536;
+// MP-08/MP-10/MP-11 (P1): a Tab display carries the Tab's later documents on the same binding.
+export const tabDisplayMinimumProtocolVersion = 720;
 export function regionBindingCurrent(binding) {
  const {binding_id,document_id,sequence,css_width,css_height,device_scale_factor:scale}=binding;
  return binding.source_kind==='region'&&typeof binding_id==='string'&&binding_id.length>0&&binding_id.length<=256&&
@@ -15,7 +17,7 @@ export function displayGeometryMatches(binding,frame) {
  if(source?.kind==='desktop')return frame.document_id===source.generation&&frame.device_scale_factor===binding.device_scale_factor&&frame.width===source.width&&frame.height===source.height&&frame.css_width===source.width/frame.device_scale_factor&&frame.css_height===source.height/frame.device_scale_factor;
  if(binding.source_kind==='region')return regionBindingCurrent(binding)&&
   frame.css_width===binding.css_width&&frame.css_height===binding.css_height&&
-  frame.device_scale_factor===binding.device_scale_factor&&frame.document_id===binding.document_id;
+  frame.device_scale_factor===binding.device_scale_factor&&(binding.tab_display===true||frame.document_id===binding.document_id);
  return (frame.css_width===1280&&frame.css_height===800)||
   (frame.css_width===1920&&frame.css_height===1080&&frame.device_scale_factor===1);
 }

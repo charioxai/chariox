@@ -185,6 +185,15 @@ export async function displayCredit(host, stream, command, signal) {
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
   if (command.push.reset) stream.resetForDelivery();
   const deadline = now() + budgetMs;
+  // P1: a parked Tab display holds the pump's credit until the Tab's next commit unparks it (or the budget ends).
+  // A retired binding still ends the pump at once, so the viewer learns it before its next navigation.
+  if (stream.parked) {
+    await stream.waitUnparked(budgetMs);
+    const region = stream.regionLease;
+    if (region && !(command.generation === host.generation && stream.regionSource.valid() && region.isAlive() && stream.regionWindow.isCurrent()))
+      throw new UserDomainRefusal('stale_reference', 'region_retired');
+    if (stream.parked) return { generation: host.generation, frame_sent: false, display_frame: null };
+  }
   for (;;) {
     const reply = await displayCredit(host, stream, command, signal);
     if (reply.frame_sent) {

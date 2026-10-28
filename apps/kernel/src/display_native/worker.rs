@@ -89,6 +89,13 @@ mod region_tests {
             serde_json::from_str::<Command>(r#"{"windows":{"id":4}}"#),
             Ok(Command::Windows { .. })
         ));
+        // MP-08/MP-10: a parked Tab display pauses readback and resumes it.
+        for pause in [true, false] {
+            assert!(matches!(
+                serde_json::from_str::<Command>(&format!(r#"{{"pause":{pause}}}"#)),
+                Ok(Command::Pause { pause: p }) if p == pause
+            ));
+        }
         // The worker's own bound owner is the only inventory owner.
         assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
     }
@@ -240,6 +247,10 @@ enum Command {
     },
     Wake {
         wake: bool,
+    },
+    /// MP-08/MP-10: a parked page display reads nothing back; damage still accrues for the resume.
+    Pause {
+        pause: bool,
     },
     Refresh {
         refresh: bool,
@@ -615,6 +626,7 @@ pub(super) fn run() -> Result<(), String> {
     let mut refresh = true;
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut wake = None;
+    let mut paused = false;
     let mut inventory = None;
     let mut damage_at = epoch();
     // MP-08/MP-10: video encoding runs on its own thread so readback continues
@@ -731,7 +743,7 @@ pub(super) fn run() -> Result<(), String> {
         if resume(&direct)? {
             (dirty, refresh, wake) = (true, true, Some(epoch()));
         }
-        let due = !held && readback_due(dirty, wake.is_some(), last.elapsed());
+        let due = !held && !paused && readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -844,7 +856,7 @@ pub(super) fn run() -> Result<(), String> {
         }
         let [retire_fd, link_fd] = locked_direct(&direct).fds();
         let timeout = poll_timeout(
-            dirty,
+            dirty && !paused,
             slots.iter().any(|s| s.available()),
             held,
             link_fd >= 0,
@@ -931,6 +943,12 @@ pub(super) fn run() -> Result<(), String> {
                     eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
                 }
                 Command::Wake { wake: true } => wake = Some(epoch()),
+                Command::Pause { pause } => {
+                    if paused && !pause {
+                        (dirty, refresh, wake) = (true, true, Some(epoch()));
+                    }
+                    paused = pause;
+                }
                 Command::Refresh { refresh: true } => {
                     dirty = true;
                     refresh = true;

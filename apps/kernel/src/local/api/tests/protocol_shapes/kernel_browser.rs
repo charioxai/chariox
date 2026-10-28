@@ -177,6 +177,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             bitrate: 2_000_000,
             device_scale_factor: 2,
             initial_push: false,
+            tab_display: false,
         },
         Command::DisplayNext {
             subscription_id: "s".into(),
@@ -557,7 +558,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1537d21345b80c50e9b0446f2af5cfb76cc654fbb0c56b94092aa43afee432c1"
+        "cc958b66793b7d36947a4bcdc06da7ae09a71f3bf0dcb79596aafe5442456cff"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
