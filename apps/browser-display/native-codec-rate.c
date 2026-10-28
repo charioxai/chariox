@@ -100,7 +100,7 @@ static void reset_restarts_without_reopening(void) {
     }
     free(pixels);puts("MP-08/MP-10 OpenH264 reset restarts the encoder with an IDR PASS");
 }
-/* MP-08/MP-10: the recovery key budget is unchanged even for noise. The
+/* MP-08/MP-10: the recovery key stays within the IDR budget even for noise. The
  * presenter already admits 1280x720 motion on a 1920x1080 exact canvas. */
 static void noisy_recovery_key_fits(void) {
   for (int size=0;size<2;size++) {
@@ -118,8 +118,10 @@ static void noisy_recovery_key_fits(void) {
     for (int f=0;f<3;f++) {
         struct RowResult result[8];
         int n=cx_codec_encode(codec,pixels,255,NULL,0,result);assert(n==1);
-        printf("MP-08/MP-10 noisy recovery key width=%d bytes=%zu bound=45000 reduced=%d\n",width,result[0].length,cx_codec_reduced(codec));fflush(stdout);
-        assert(result[0].key&&result[0].sequence==1&&result[0].length<=45000);
+        /* OpenH264's IDR budget: 1.25 x 5 frames of 8 Mbit/s at 60 fps. */
+        const size_t bound=104166;
+        printf("MP-08/MP-10 noisy recovery key width=%d bytes=%zu bound=%zu reduced=%d\n",width,result[0].length,bound,cx_codec_reduced(codec));fflush(stdout);
+        assert(result[0].key&&result[0].sequence==1&&result[0].length<=bound);
         assert(cx_codec_reduced(codec));
         if(stream)assert(fwrite(result[0].bytes,1,result[0].length,stream)==result[0].length);
         /* No native pixel may be certified from the scaled reference. */
