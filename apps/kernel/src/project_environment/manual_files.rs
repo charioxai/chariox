@@ -190,7 +190,8 @@ fn ignored(root: &Path, path: &str, roots: &[std::path::PathBuf]) -> Option<bool
         .env("GIT_CONFIG_GLOBAL", "/dev/null");
     let output = crate::local::provider_requests::capture_inventory_probe(
         command,
-        std::time::Duration::from_millis(500),
+        // Optional metadata must leave time for file validation and owned cleanup.
+        std::time::Duration::from_millis(100),
     )
     .ok()?;
     let _stdout = Zeroizing::new(output.stdout);
