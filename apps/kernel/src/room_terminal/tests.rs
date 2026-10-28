@@ -524,6 +524,18 @@ async fn a_restart_ends_terminals_and_keeps_scrollback() {
     tokio::time::sleep(Duration::from_millis(1200)).await;
     first.pump_once();
 
+    until("periodic snapshot before simulated restart", || async {
+        std::fs::read(root.path().join("terminals").join(format!("{id}.json")))
+            .ok()
+            .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+            .is_some_and(|record| {
+                record["screen_text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("before-restart"))
+            })
+    })
+    .await;
+
     let second = service(root.path());
     let summary = &second.list("room-1")[0];
     assert_eq!(summary.terminal_id, id);
