@@ -19,6 +19,8 @@ const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
 
 #[derive(Default)]
 struct DurableRestoreDiagnostics {
+    // Compaction can leave activity before the first retained session record.
+    session_activity_by_id: BTreeMap<String, u64>,
     ignored_prompt_state_count: usize,
     sample_missing_session_ids: BTreeSet<String>,
     sample_truncated: bool,
@@ -1278,6 +1280,11 @@ impl DaemonApp {
                             operation: "durable_state.restore_session_activity",
                             message: "Session activity has no timestamp".into(),
                         })?;
+                diagnostics
+                    .session_activity_by_id
+                    .entry(session_id.to_owned())
+                    .and_modify(|previous| *previous = (*previous).max(timestamp_ms))
+                    .or_insert(timestamp_ms);
                 if let Ok(session) = self.sessions.get_session(session_id) {
                     if self.session_belongs_to_current_kernel(&session)
                         && session.status() != crate::session::SessionStatus::Ended
@@ -1374,6 +1381,9 @@ impl DaemonApp {
                 )?;
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
+                }
+                if let Some(timestamp_ms) = diagnostics.session_activity_by_id.get(session.id()) {
+                    session.note_activity_at(*timestamp_ms);
                 }
                 let private_states =
                     if let Some(states) = event.payload.get("prompt_private_states") {
