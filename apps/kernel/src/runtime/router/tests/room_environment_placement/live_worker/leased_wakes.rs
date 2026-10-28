@@ -234,7 +234,27 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     )
     .await
     .expect("submit the delegated turn through the real relay");
-    leased_run(&fixture, &room, &child).await;
+    let run = leased_run(&fixture, &room, &child).await;
+    let history = fixture.home.app.lock().await.operational_history_store();
+    // Running is projected before the stub's input echo. Let that output reach
+    // home before appending the answer whose completion event we are checking.
+    eventually("the leased prompt echo in home history", || {
+        let output: String = history
+            .load_session_history_entries(&room, Some(&child))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| {
+                entry.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
+                    && entry.provider_run_id.as_deref() == Some(run.as_str())
+            })
+            .map(|entry| entry.text)
+            .collect();
+        output
+            .trim_end()
+            .ends_with("MP-10 A10 delegated leased work")
+            .then_some(())
+    })
+    .await;
     fixture
         .home
         .runtime_state
