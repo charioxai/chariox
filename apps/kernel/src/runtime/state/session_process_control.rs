@@ -14,6 +14,7 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         let session = self.owned.session_store.get_session(session_id)?;
         if session.owner_user_id() != caller
+            && !self.is_legacy_local_terminal_owner(session_id, caller)
             && !session
                 .collaboration_level_for_user(caller)
                 .is_some_and(|level| level.can_prompt_agent_directly())

@@ -401,7 +401,7 @@ fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
         let command = KernelCommand::from_local_request_with_caller(
             "enrolled-terminal",
             KernelCommandSource::LocalIpc,
-            caller,
+            caller.clone(),
             None,
             None,
             &request,
@@ -410,6 +410,35 @@ fn the_enrolled_owner_of_a_legacy_local_room_keeps_its_terminals() {
             .await
             .expect("the enrolled owner of its local Room uses terminals");
         assert!(matches!(result, RoomTerminalResult::Listed { .. }));
+        let request =
+            LocalDaemonRequest::StopSessionProcesses(crate::local::StopSessionProcessesRequest {
+                session_id: session_id.clone(),
+                target: crate::runtime::process_resources::ProcessControlTarget::Process {
+                    process_id: "ended-process".into(),
+                },
+            });
+        let command = KernelCommand::from_local_request_with_caller(
+            "enrolled-process-stop",
+            KernelCommandSource::LocalIpc,
+            caller,
+            None,
+            None,
+            &request,
+        );
+        let error = router
+            .dispatch(command, request)
+            .await
+            .expect_err("an ended target is refused after ownership authorization");
+        assert!(
+            matches!(
+                error,
+                DaemonError::LocalTransport {
+                    operation: "stop session process",
+                    ..
+                }
+            ),
+            "the enrolled owner must reach target validation: {error}"
+        );
     });
 }
 
