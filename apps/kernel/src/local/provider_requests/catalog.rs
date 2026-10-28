@@ -693,7 +693,6 @@ fn claude_profile_auth_status(
     })
 }
 
-
 fn claude_auth_status_until(
     provider: &str,
     account_profile: &str,

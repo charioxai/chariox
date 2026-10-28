@@ -353,9 +353,9 @@ pub(super) fn constraints_overlap(
     }
     Some(false)
 }
-pub(super) use super::check_health::health_until;
 #[cfg(test)]
 pub(super) use super::check_health::health;
+pub(super) use super::check_health::health_until;
 
 /// MP-08 / MP-10 / MP-11: package and font inventory reads installed facts,
 /// never lockfiles as proof, package scripts or package-manager mutations.
