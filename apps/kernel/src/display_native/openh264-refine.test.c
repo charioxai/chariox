@@ -50,7 +50,21 @@ int main(void) {
     int painted=cx_openh264_encode(h,planes,strides,width,height,1,&packet,&capacity,&key);
     printf("MP-08/MP-10 first paint after a blank key qp=%d bytes=%d\n",h->qp,painted);fflush(stdout);
     assert(painted>0&&!key&&h->qp<CX_QP_MAX);
-    cx_openh264_close(h);free(packet);free(blank);free(y);free(u);free(v);
+    cx_openh264_close(h);
+    /* A page that settles in steps: a key of the blank window, a header paints first, then the laid-out page
+     * (its background and text: every macroblock changes) half a second later. The layout gets a budget too. */
+    uint8_t *header=malloc((size_t)width*height),*layout=malloc((size_t)width*height);assert(header&&layout);
+    memcpy(header,blank,(size_t)width*height);memset(header,16,(size_t)width*48);
+    for (size_t i=0;i<(size_t)width*height;i++) layout[i]=y[i]==235?220:y[i];
+    memset(layout,16,(size_t)width*48);
+    uint8_t *header_planes[3]={header,u,v},*layout_planes[3]={layout,u,v};
+    h=cx_openh264_open(width,height,bitrate,1,0,model);assert(h);
+    assert(cx_openh264_encode(h,blank_planes,strides,width,height,0,&packet,&capacity,&key)>0&&key);
+    for (int n=1;n<30;n++) assert(cx_openh264_encode(h,header_planes,strides,width,height,(uint64_t)n,&packet,&capacity,&key)>0&&!key);
+    int settled=cx_openh264_encode(h,layout_planes,strides,width,height,30,&packet,&capacity,&key);
+    printf("MP-08/MP-10 settled layout after a header qp=%d bytes=%d\n",h->qp,settled);fflush(stdout);
+    assert(settled>0&&!key&&h->qp<=idr_qp+2);
+    cx_openh264_close(h);free(packet);free(blank);free(header);free(layout);free(y);free(u);free(v);
     puts("MP-08/MP-10 OpenH264 page IDR budget and refinement PASS");
     return 0;
 }
