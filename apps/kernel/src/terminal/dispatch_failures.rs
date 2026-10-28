@@ -23,6 +23,20 @@ pub(crate) fn user_facing_dispatch_failure(error: &DaemonError) -> String {
     message.to_string()
 }
 
+/// The provider's own failure when it refused the dispatch. A kernel-side
+/// error carries none and stays an internal diagnostic.
+pub(crate) fn provider_dispatch_failure(
+    adapter_key: &str,
+    error: &DaemonError,
+) -> Option<crate::provider::ProviderFailure> {
+    match error {
+        DaemonError::LocalTransport { message, .. } => Some(
+            crate::provider::ProviderFailure::classify(adapter_key, message),
+        ),
+        _ => None,
+    }
+}
+
 fn operation_failure_summary(operation: &str) -> &'static str {
     match operation {
         "session_permissions" => "The provider could not confirm session permissions.",

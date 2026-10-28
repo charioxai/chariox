@@ -912,14 +912,22 @@ impl KernelRuntimeState {
                 .as_ref()
                 .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
             let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
-            if failed_prompt_matches {
-                owned.record_provider_failure_output(
+            let adapter_key = owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .map(|run| run.adapter_key().to_string())
+                .unwrap_or_default();
+            let failure = if failed_prompt_matches {
+                owned.record_dispatch_failure_output(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     &dispatch.agent_id,
-                    &dispatch_failure,
-                );
-            }
+                    &adapter_key,
+                    &error,
+                )
+            } else {
+                None
+            };
             let (should_advance, released_claim) = match owned
                 .settle_failed_local_prompt_without_advance(
                     &dispatch.session_id,
@@ -927,6 +935,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
                     &crate::terminal::user_facing_dispatch_failure(&error),
+                    failure,
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -958,11 +967,6 @@ impl KernelRuntimeState {
                 .as_ref()
                 .filter(|_| should_advance && failed_prompt_matches)
             {
-                let adapter_key = owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)
-                    .map(|run| run.adapter_key().to_string())
-                    .unwrap_or_default();
                 owned.record_failed_request(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
@@ -4239,6 +4243,73 @@ pub(in crate::runtime::state) mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_dispatch_shows_a_room_agent_owner_the_providers_reason() {
+        const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
+             Please try a different model.";
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let adapter_key = runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .unwrap()
+            .adapter_key()
+            .to_string();
+        let expected = crate::provider::ProviderFailure::classify(&adapter_key, REFUSAL);
+        assert_eq!(
+            expected.cause,
+            crate::provider::ProviderFailureCause::Overloaded
+        );
+        let prompt_id = dispatch.prompt_id.clone();
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "test prompt dispatch",
+                    message: REFUSAL.to_string(),
+                },
+            )
+            .await
+            .expect_err("dispatch failure should be returned");
+
+        let transcript = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id)
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(transcript, vec![expected.notice()]);
+        let visible_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .filter(|event| !event.is_internal_dispatch_diagnostic())
+            .filter_map(|event| event.content)
+            .collect::<Vec<_>>();
+        assert!(visible_history.contains(&expected.notice()));
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .unwrap()
+            .expect("the refused turn settles");
+        assert_eq!(
+            settlement
+                .metadata
+                .get(crate::history::PROMPT_FAILURE_METADATA_KEY),
+            Some(&serde_json::to_value(&expected).unwrap())
+        );
+    }
+
+    #[tokio::test]
     async fn failed_local_dispatch_emits_completion_and_marks_agent_error() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
@@ -4278,10 +4349,12 @@ pub(in crate::runtime::state) mod tests {
             .into_iter()
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .collect::<Vec<_>>();
-        // The dispatch error, then the failed turn's "not carried out" entry.
+        // The provider's failure, then the failed turn's "not carried out" entry.
         assert_eq!(provider_errors.len(), 2);
-        assert!(String::from_utf8_lossy(&provider_errors[0].bytes)
-            .contains("Provider prompt dispatch failed"));
+        assert_eq!(
+            String::from_utf8_lossy(&provider_errors[0].bytes),
+            crate::provider::ProviderFailure::classify("dev-stub", "rejected").notice()
+        );
         assert!(String::from_utf8_lossy(&provider_errors[1].bytes)
             .starts_with("Request not carried out: "));
 
@@ -4329,6 +4402,7 @@ pub(in crate::runtime::state) mod tests {
                 &dispatch.prompt_id,
                 &provider_run_id,
                 "provider retired before settlement",
+                None,
             )
             .expect("failed prompt should settle")
             .is_some());
@@ -4347,6 +4421,7 @@ pub(in crate::runtime::state) mod tests {
                 &dispatch.prompt_id,
                 &provider_run_id,
                 "duplicate failed settlement",
+                None,
             )
             .expect("duplicate settlement should be harmless")
             .is_none());
@@ -5798,6 +5873,7 @@ pub(in crate::runtime::state) mod tests {
                 "stale-prompt-id",
                 &provider_run_id,
                 "late dispatch failure",
+                None,
             )
             .expect("stale failure should be ignored");
         assert!(settlement.is_none());

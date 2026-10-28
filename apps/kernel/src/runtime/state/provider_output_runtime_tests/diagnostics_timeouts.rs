@@ -2,8 +2,18 @@ use super::*;
 
 // MP-08/MP-10: a failed structured submit must hand its accepted backlog to
 // the runtime dispatcher after retiring the unresponsive provider.
-#[tokio::test]
-async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
+struct RefusedSubmit {
+    runtime: KernelRuntimeState,
+    session_id: String,
+    agent_id: String,
+    run_id: String,
+    prompt_id: String,
+    follow_ups: WorkflowPromptDispatches,
+    _worktree: crate::test_support::TestWorktree,
+}
+
+/// A structured provider refuses the active prompt's submit with `message`.
+async fn refused_structured_submit(message: &str, room_agent_tools: bool) -> RefusedSubmit {
     let worktree = crate::test_support::TestWorktree::new("submit-failure-queued-recovery");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -76,6 +86,11 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
     .unwrap();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    if room_agent_tools {
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+    }
     runtime
         .owned
         .provider_store
@@ -83,36 +98,99 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
             session.id().into(),
             run.id().into(),
             agent.id().into(),
-            prompt_id,
+            prompt_id.clone(),
             Err(crate::error::DaemonError::LocalTransport {
                 operation: "submit structured provider prompt",
-                message: "fixture transport timeout".into(),
+                message: message.into(),
             }),
         );
     let follow_ups = runtime.owned.reap_structured_prompt_jobs();
-    let settled = runtime.owned.session_snapshot(session.id()).unwrap();
-    assert!(settled.active_prompt_for_agent(agent.id()).is_none());
+    RefusedSubmit {
+        runtime,
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        run_id: run.id().into(),
+        prompt_id,
+        follow_ups,
+        _worktree: worktree,
+    }
+}
+
+// MP-08/MP-10: a failed structured submit must hand its accepted backlog to
+// the runtime dispatcher after retiring the unresponsive provider.
+#[tokio::test]
+async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
+    let RefusedSubmit {
+        runtime,
+        session_id,
+        agent_id,
+        run_id,
+        follow_ups,
+        ..
+    } = refused_structured_submit("fixture transport timeout", false).await;
+    let settled = runtime.owned.session_snapshot(&session_id).unwrap();
+    assert!(settled.active_prompt_for_agent(&agent_id).is_none());
     assert_eq!(
-        settled.queued_prompts_for_agent(agent.id()).unwrap().len(),
+        settled.queued_prompts_for_agent(&agent_id).unwrap().len(),
         1
     );
     assert_eq!(
         runtime
             .owned
             .provider_store
-            .get_run(run.id())
+            .get_run(&run_id)
             .unwrap()
             .state(),
         crate::provider::ProviderRunState::Ended
     );
     assert_eq!(
         follow_ups.project_queue_promotions,
-        vec![(session.id().to_owned(), agent.id().to_owned())],
+        vec![(session_id.clone(), agent_id.clone())],
         "accepted backlog must receive one queue recovery follow-up"
     );
     assert!(
         runtime.owned.reap_structured_prompt_jobs().is_empty(),
         "a consumed structured failure must not schedule recovery twice"
+    );
+}
+
+// A refused submit tells a room agent's owner the provider's own reason.
+#[tokio::test]
+async fn a_refused_structured_submit_shows_a_room_agent_owner_the_providers_reason() {
+    let refused = refused_structured_submit(
+        "Codex error [server_overloaded]: Selected model is at capacity. \
+         Please try a different model.",
+        true,
+    )
+    .await;
+    let expected = crate::provider::ProviderFailure::classify(
+        "codex",
+        "Codex error [server_overloaded]: Selected model is at capacity. \
+         Please try a different model.",
+    );
+
+    let transcript = refused
+        .runtime
+        .owned
+        .terminal_stream
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+        .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(transcript, vec![expected.notice()]);
+    let settlement = refused
+        .runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(&refused.session_id, &refused.agent_id, &refused.prompt_id)
+        .unwrap()
+        .expect("the refused turn settles");
+    assert_eq!(
+        settlement
+            .metadata
+            .get(crate::history::PROMPT_FAILURE_METADATA_KEY),
+        Some(&serde_json::to_value(&expected).unwrap())
     );
 }
 

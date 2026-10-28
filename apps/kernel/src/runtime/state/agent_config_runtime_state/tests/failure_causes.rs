@@ -333,3 +333,40 @@ async fn a_cancelled_turn_does_not_retain_a_late_failure() {
         .unwrap();
     assert_eq!(settled.failure, None);
 }
+
+fn enable_room_agent_tools(turn: &FailingTurn) {
+    let mut config = turn.runtime.owned.config_projection.snapshot();
+    config.room_agent_tools = true;
+    turn.runtime.owned.config_projection.update(config);
+}
+
+fn owner_visible_history_texts(turn: &FailingTurn) -> Vec<String> {
+    turn.runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&turn.session_id, Some(&turn.agent_id))
+        .unwrap()
+        .into_iter()
+        .filter(|event| !event.is_internal_dispatch_diagnostic())
+        .filter_map(|event| event.content)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_room_agent_owner_sees_the_providers_reason_for_a_failed_turn() {
+    let turn = subscribed_failing_turn().await;
+    enable_room_agent_tools(&turn);
+
+    turn.fail_run(&turn.failed_run_id, OVERLOADED).await;
+
+    let failure = followed_error_failure(&turn).expect("typed cause");
+    assert_eq!(failure.cause, ProviderFailureCause::Overloaded);
+    assert!(
+        provider_error_outputs(&turn).contains(&failure.notice()),
+        "the transcript line carries the headline and the provider message"
+    );
+    assert!(
+        owner_visible_history_texts(&turn).contains(&failure.notice()),
+        "history keeps the same line for the owner"
+    );
+}

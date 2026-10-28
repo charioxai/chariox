@@ -2103,7 +2103,13 @@ async fn failed_prompt_dispatch_persists_terminal_prompt_settlement() {
             .metadata
             .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
             .and_then(serde_json::Value::as_str),
-        Some("cancelled")
+        Some("failed")
+    );
+    assert!(
+        settlement
+            .metadata
+            .contains_key(crate::history::PROMPT_FAILURE_METADATA_KEY),
+        "the refused turn keeps the provider's reason"
     );
 }
 
