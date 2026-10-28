@@ -57,3 +57,26 @@ test('native text edits capture only synchronous events on the edited element', 
   listeners.get('input')(event);assert.equal(inputs.token(event),undefined);
   await inputs.end('caller');assert.throws(()=>inputs.edit(element,'A😀B','caller'),/expired/);
 });
+
+test('native key defaults retain only the stamped source, and human input clears it', async () => {
+  const listeners = new Map();
+  const inputs = vm.runInNewContext(`(${createInputCallers.toString()})()`, {
+    performance:{timeOrigin:0,now:()=>1},addEventListener(type,fn){listeners.set(type,fn);},
+  });
+  const target = {tagName:'INPUT'};
+  const event = (type, properties = {}) => ({type,target,isTrusted:true,timeStamp:10000,...properties});
+  const dispatch = value => { listeners.get(value.type)(value); return inputs.token(value); };
+  inputs.begin('caller',10);
+  dispatch(event('keydown'));
+  dispatch(event('keypress'));
+  assert.equal(dispatch(event('input',{timeStamp:50})),'caller','native input has its own clock');
+  assert.equal(dispatch(event('input',{timeStamp:51})),undefined,'the default edit is consumed once');
+  const prevented = event('keydown'); dispatch(prevented); prevented.defaultPrevented = true;
+  assert.equal(dispatch(event('input')),undefined);
+  dispatch(event('keydown')); dispatch(event('keydown',{timeStamp:50}));
+  assert.equal(dispatch(event('input')),undefined,'concurrent human typing has no agent token');
+  dispatch(event('keydown')); dispatch(event('keyup'));
+  assert.equal(dispatch(event('input')),undefined,'the paired release ends the source');
+  dispatch(event('keydown')); await inputs.end('caller');
+  assert.equal(dispatch(event('input')),undefined,'retired source cannot tag delayed input');
+});
