@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -21,6 +21,28 @@ use tokio::{
 pub const CAPACITY: usize = 128;
 const FRAME_BUDGET: Duration = Duration::from_secs(30);
 type Pending = HashMap<String, oneshot::Sender<Outcome>>;
+
+struct Outgoing {
+    message: Message,
+    live: Option<Arc<FrameState>>,
+}
+
+// The first write and cancellation compete once; retired requests stay unsent.
+#[derive(Default)]
+struct FrameState(AtomicU8);
+const QUEUED: u8 = 0;
+const SENT: u8 = 1;
+const RETIRED: u8 = 2;
+impl FrameState {
+    fn start(&self) -> bool {
+        self.0
+            .compare_exchange(QUEUED, SENT, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+    fn retire(&self) -> bool {
+        self.0.swap(RETIRED, Ordering::AcqRel) == SENT
+    }
+}
 
 pub fn error(code: &str, message: impl Into<String>) -> RemoteError {
     RemoteError {
@@ -41,7 +63,7 @@ pub struct Ipc {
     generation: Arc<str>,
     next: Arc<AtomicU64>,
     pending: Arc<Mutex<Pending>>,
-    outgoing: mpsc::Sender<Message>,
+    outgoing: mpsc::Sender<Outgoing>,
     closed: watch::Sender<bool>,
 }
 pub struct Transport {
@@ -61,7 +83,7 @@ impl Ipc {
     pub fn start(stream: UnixStream, generation: String) -> wasmtime::Result<Transport> {
         let (mut reader, mut writer) =
             Channel::new(stream, generation.clone(), Sender::Supervisor)?.split();
-        let (outgoing, mut messages) = mpsc::channel(CAPACITY);
+        let (outgoing, mut messages) = mpsc::channel::<Outgoing>(CAPACITY);
         let (incoming, requests) = mpsc::channel(CAPACITY);
         let ipc = Ipc {
             generation: generation.into(),
@@ -79,7 +101,10 @@ impl Ipc {
                     _ = closed.wait_for(|value| *value) => break,
                     message = messages.recv() => match message { Some(message) => message, None => break },
                 };
-                if writer.send(&message, FRAME_BUDGET).await.is_err() {
+                if message.live.as_ref().is_some_and(|live| !live.start()) {
+                    continue;
+                }
+                if writer.send(&message.message, FRAME_BUDGET).await.is_err() {
                     break;
                 }
             }
@@ -162,14 +187,19 @@ impl Ipc {
             }
             pending.insert(id.clone(), send);
         }
+        let live = Arc::new(FrameState::default());
         let mut guard = PendingCall {
             ipc: self.clone(),
             id: id.clone(),
             completed: false,
+            live: live.clone(),
         };
         let request = async {
             self.outgoing
-                .send(message)
+                .send(Outgoing {
+                    message,
+                    live: Some(live),
+                })
                 .await
                 .map_err(|_| error("APP_IPC_CLOSED", "worker channel closed"))?;
             match receive.await {
@@ -191,7 +221,10 @@ impl Ipc {
         let id = format!("cleanup-{}", self.next.fetch_add(1, Ordering::Relaxed));
         if self
             .outgoing
-            .try_send(self.message(id, method.into(), params, wall_ms() + 30_000))
+            .try_send(Outgoing {
+                message: self.message(id, method.into(), params, wall_ms() + 30_000),
+                live: None,
+            })
             .is_err()
         {
             self.close();
@@ -220,7 +253,10 @@ impl Ipc {
             }
         }
         self.outgoing
-            .send(message)
+            .send(Outgoing {
+                message,
+                live: None,
+            })
             .await
             .map_err(|_| wasmtime::Error::msg("App IPC closed"))
     }
@@ -232,18 +268,24 @@ struct PendingCall {
     ipc: Ipc,
     id: String,
     completed: bool,
+    live: Arc<FrameState>,
 }
 impl Drop for PendingCall {
     fn drop(&mut self) {
         self.ipc.pending.lock().unwrap().remove(&self.id);
+        let sent = self.live.retire();
         if !self.completed
+            && sent
             && self
                 .ipc
                 .outgoing
-                .try_send(Message::Cancel {
-                    version: WIRE_VERSION,
-                    generation: self.ipc.generation.to_string(),
-                    id: self.id.clone(),
+                .try_send(Outgoing {
+                    message: Message::Cancel {
+                        version: WIRE_VERSION,
+                        generation: self.ipc.generation.to_string(),
+                        id: self.id.clone(),
+                    },
+                    live: None,
                 })
                 .is_err()
         {
