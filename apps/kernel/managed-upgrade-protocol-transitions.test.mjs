@@ -86,3 +86,22 @@ test("binary exec keeps staging protocol 629 upgrade and rollback within the pol
     assert.ok(policy[direction].length <= 32)
   }
 })
+
+// The base policy admits 506 and docs/PROTOCOL.md keeps it as an explicit predecessor.
+test("a managed kernel on protocol 506 upgrades to the current protocol and rolls back", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-506-policy-"))
+  try {
+    const newRoot = join(scratch, `protocol-${localProtocolVersion}`)
+    const fixturePolicy = join(newRoot, POLICY_RELATIVE_PATH)
+    await mkdir(dirname(fixturePolicy), { recursive: true })
+    await writeFile(fixturePolicy, await readFile(POLICY_PATH), { mode: 0o600, flag: "wx" })
+    const oldRoot = join(scratch, "protocol-506")
+    const transition = (fromRoot, from, toRoot, to) => execFileSync(process.execPath, [
+      UPGRADE_STATE_SCRIPT, "validate-protocol-transition", fromRoot, String(from), toRoot, String(to),
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+    assert.equal(transition(oldRoot, 506, newRoot, localProtocolVersion), "")
+    assert.equal(transition(newRoot, localProtocolVersion, oldRoot, 506), "")
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
