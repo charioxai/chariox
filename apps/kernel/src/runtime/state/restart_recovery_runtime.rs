@@ -887,18 +887,46 @@ impl KernelRuntimeState {
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
 
+    async fn recover_local_prompt_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<String, DaemonError> {
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        let prompt = prompt.clone();
+        self.with_app_side_effect(move |app| {
+            if let Some(workflow_run_id) = prompt.workflow_run_id() {
+                let node_run_id =
+                    prompt
+                        .workflow_node_run_id()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "recover workflow provider",
+                            message: "workflow prompt has no node binding".into(),
+                        })?;
+                crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+                    app,
+                    &session_id,
+                    &agent_id,
+                    workflow_run_id,
+                    node_run_id,
+                )
+            } else {
+                app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
+            }
+        })
+        .await
+    }
+
     async fn redispatch_local_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        let session_id_owned = session_id.to_string();
-        let agent_id_owned = agent_id.to_string();
         let provider_run_id = self
-            .with_app_side_effect(move |app| {
-                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-            })
+            .recover_local_prompt_provider(session_id, agent_id, prompt)
             .await?;
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
@@ -1062,12 +1090,8 @@ impl KernelRuntimeState {
             &operation_id,
             crate::session::DurablePromptDeliveryPhase::Dispatching,
         )?;
-        let session_id_owned = session_id.to_string();
-        let agent_id_owned = agent.id().to_string();
         let provider_run_id = match self
-            .with_app_side_effect(move |app| {
-                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-            })
+            .recover_local_prompt_provider(session_id, agent.id(), &prompt)
             .await
         {
             Ok(provider_run_id) => provider_run_id,
@@ -1580,13 +1604,23 @@ mod tests {
     }
 
     fn runtime_with_queued_prompt(published: bool) -> (KernelRuntimeState, String, String) {
+        runtime_with_workflow_prompt(published, false)
+    }
+
+    fn runtime_with_workflow_prompt(
+        published: bool,
+        active: bool,
+    ) -> (KernelRuntimeState, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let workspace = std::env::current_dir().expect("test workspace should resolve");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                workspace.to_string_lossy(),
-                workspace.to_string_lossy(),
-            ))
+            .create_session(
+                CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                    .with_agent_defaults(crate::session::SessionAgentDefaults {
+                        provider: "dev-stub".into(),
+                        ..Default::default()
+                    }),
+            )
             .expect("session should create");
         let mut session_with_agents = session.clone();
         session_with_agents.set_agents(vec![agent.clone()]);
@@ -1677,14 +1711,30 @@ mod tests {
             "resume queued work",
             PromptStatus::Queued,
         )
-        .with_workflow_context(workflow_run.id(), &node_run_id);
+        .with_workflow_context(workflow_run.id(), &node_run_id)
+        .with_durable_operation("workflow-restart", "workflow-restart");
         let outcome = app
-            .prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
-            .expect("prompt should queue");
-        assert!(matches!(
-            outcome,
-            crate::session::PromptSubmissionOutcome::Queued { .. }
-        ));
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, !active)
+            .expect("workflow prompt should be admitted");
+        if active {
+            let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome else {
+                panic!("workflow prompt should start");
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+                None,
+                None,
+            )
+            .expect("accepted delivery should persist");
+        } else {
+            assert!(matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            ));
+        }
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
         let app = Arc::new(Mutex::new(app));
@@ -1762,6 +1812,69 @@ mod tests {
             crate::provider::ProviderRunState::Starting
                 | crate::provider::ProviderRunState::Running
         ));
+    }
+
+    #[tokio::test]
+    async fn accepted_workflow_restart_keeps_its_runtime_tools() {
+        let (runtime, session_id, agent_id) = runtime_with_workflow_prompt(false, true);
+        let before = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let original = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&before, &agent_id)
+            .unwrap();
+        let original_binding = (
+            original.workflow_run_id().unwrap().to_string(),
+            original.workflow_node_run_id().unwrap().to_string(),
+        );
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.accepted_local_redispatched, 1, "{summary:?}");
+        assert_eq!(summary.failed_reconciliations, 0);
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .unwrap();
+        assert!(
+            run.workflow_tools_enabled(),
+            "recovered node needs its runtime tools before dispatch"
+        );
+        let tools =
+            runtime.runtime_tool_specs_for_auth_token(run.runtime_mcp_auth_token().unwrap());
+        for name in [
+            "ack_workflow_turn",
+            "validate_workflow_handoff",
+            "validate_and_submit_workflow_run_output",
+        ] {
+            assert!(tools.iter().any(|tool| tool.name == name), "missing {name}");
+        }
+        let after = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let recovered = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after, &agent_id)
+            .unwrap();
+        assert_eq!(recovered.id(), original.id());
+        assert_eq!(
+            recovered.workflow_run_id(),
+            Some(original_binding.0.as_str())
+        );
+        assert_eq!(
+            recovered.workflow_node_run_id(),
+            Some(original_binding.1.as_str())
+        );
+        assert_eq!(after.workflow_runs().len(), 1);
+        assert_eq!(after.workflow_runs()[0].node_runs().len(), 1);
     }
 
     #[tokio::test]
