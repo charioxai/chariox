@@ -200,11 +200,22 @@ impl KernelRuntimeState {
             Err(error) => return Some(Err(error)),
         };
         Some(Ok(view_result(
-            self.app_view_tool(run.id(), &agent, name, arguments).await,
+            self.app_view_tool(run, &agent, name, arguments).await,
         )))
     }
 
     async fn app_view_tool(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+        agent: &crate::agent::AgentInstance,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Value, ViewError> {
+        self.app_view_tool_for_run_id(run.id(), agent, name, arguments)
+            .await
+    }
+
+    async fn app_view_tool_for_run_id(
         &self,
         run_id: &str,
         agent: &crate::agent::AgentInstance,

@@ -73,7 +73,7 @@ impl KernelRuntimeState {
             let agent = super::super::super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
                 .authorize_invocation_context(context)?;
             let run_id = crate::provider::projected_leased_provider_run_id(&context.leased_agent_id, &context.worker_provider_run_id);
-            Ok(view_result(self.app_view_tool(&run_id, &agent, &tool.tool_name, arguments).await))
+            Ok(view_result(self.app_view_tool_for_run_id(&run_id, &agent, &tool.tool_name, arguments).await))
         }.await)
     }
 }
