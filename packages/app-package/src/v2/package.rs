@@ -373,6 +373,14 @@ fn read_documents(
         files,
         limits,
     )?;
+    for name in &manifest.idempotent_tools {
+        if !declarations.tools.iter().any(|tool| &tool.name == name) {
+            return Err(PackageError::new(
+                ErrorCode::InvalidManifest,
+                format!("idempotentTools names undeclared tool `{name}`"),
+            ));
+        }
+    }
     let ui_actions = match &manifest.ui_actions {
         Some(path) => read_ui_actions(files[path.as_str()], limits)?,
         None => Vec::new(),

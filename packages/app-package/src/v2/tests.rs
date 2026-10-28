@@ -664,3 +664,49 @@ fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
     assert_eq!(error.code, ErrorCode::IncompatibleContract);
     assert!(error.message.contains("chariox:app/migration@1.0.0"));
 }
+
+#[test]
+fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
+    let fixture = base();
+    let original = serde_json::to_value(&fixture.manifest).unwrap();
+    assert!(original.get("idempotentTools").is_none());
+    let mut declared = original;
+    declared["idempotentTools"] = json!(["list"]);
+    let manifest: ManifestV2 =
+        serde_json::from_value(declared).expect("v2 supports explicit retry declarations");
+    let serialized = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(serialized["idempotentTools"], json!(["list"]));
+}
+
+#[test]
+fn idempotent_tool_policy_rejects_undeclared_names_and_changes_signed_content() {
+    let mut fixture = base();
+    let original = packed(&fixture, &[]);
+    let original_digest = verify(&original, &policy())
+        .unwrap()
+        .digests()
+        .content
+        .clone();
+    fixture.manifest.idempotent_tools = vec!["create_todo".into()];
+    let declared = packed(&fixture, &[]);
+    let verified = verify(&declared, &policy()).unwrap();
+    assert_ne!(verified.digests().content, original_digest);
+    assert_eq!(verified.manifest().idempotent_tools, ["create_todo"]);
+    fixture.manifest.idempotent_tools = vec!["absent".into()];
+    assert!(pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &[],
+        &Limits::default()
+    )
+    .is_err());
+    for names in [
+        vec!["create_todo", "create_todo"],
+        vec!["z", "a"],
+        vec!["Bad-Name"],
+    ] {
+        fixture.manifest.idempotent_tools = names.into_iter().map(String::from).collect();
+        assert!(fixture.manifest.validate(&Limits::default()).is_err());
+    }
+}

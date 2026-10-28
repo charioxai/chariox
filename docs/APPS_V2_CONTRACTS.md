@@ -20,6 +20,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `ui-actions`, `agent-panel`, `connections`, `directed-events`), so a package
   cannot understate them. The kernel states which features it supports; no
   protocol number is copied into a package.
+- Optional `idempotentTools` names sorted, unique declared backend tools that
+  the worker may replay once after instance loss. Omission permits no automatic
+  replay; effects and action descriptions never imply idempotence.
 - `schemas/ui-actions.json` (`UiActionDeclaration`): name, description, input
   and optional output schema, `effect` `read | write | approval`, and an
   `approvalReason` for, and only for, `approval`. Backend `actions` keep their

@@ -9,6 +9,7 @@ members = [
     "packages/app-wit",
     "packages/event-protocol",
     "packages/app-runtime",
+    "packages/app-wasm-worker",
     "adapters/rust",
 ]
 # Vendored upstreams and scratch worktrees carry their own Cargo manifests;
