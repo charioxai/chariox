@@ -158,7 +158,7 @@ fn check_journal_grows_atomically_and_imports_append_snapshots() {
 fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks {
+    let checks = EnvironmentChecks {
         folder_binding_digest: "legacy".into(),
         ..Default::default()
     };
