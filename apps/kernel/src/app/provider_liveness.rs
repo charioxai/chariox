@@ -346,6 +346,12 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 termination.reason
             )
         };
+        super::provider_output_fanout::ProviderOutputFanout::new(self.app).fail_pending_tools(
+            &self.app.prompt_activity_store(),
+            &outcome.session_id,
+            &outcome.provider_run_id,
+            &termination,
+        );
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
         if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {

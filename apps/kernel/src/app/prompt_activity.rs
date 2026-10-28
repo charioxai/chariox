@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -11,7 +11,8 @@ pub(crate) struct ActivePromptState {
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
     pub(crate) settlement_requested: bool,
-    pub(crate) active_tool_ids: BTreeSet<String>,
+    // Adapter-local tool state can disappear before process liveness reports exit.
+    pub(crate) active_tools: BTreeMap<String, crate::provider::ProviderPromptChunk>,
 }
 
 impl ActivePromptState {
@@ -57,7 +58,18 @@ impl ActivePromptState {
             status.as_str(),
             "pending" | "queued" | "started" | "running" | "in_progress" | "inprogress" | "waiting"
         ) {
-            self.active_tool_ids.insert(id.to_string());
+            self.active_tools.insert(
+                id.to_string(),
+                crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: merge_key.map(str::to_string),
+                    bytes:
+                        crate::provider_output_policy::output_bounds::bounded_terminal_output_bytes(
+                            &crate::terminal::TerminalOutputKind::ProviderTool,
+                            bytes,
+                        ),
+                },
+            );
         } else if matches!(
             status.as_str(),
             "completed"
@@ -77,13 +89,39 @@ impl ActivePromptState {
                 | "cancelled"
                 | "canceled"
         ) {
-            self.active_tool_ids.remove(id);
+            self.active_tools.remove(id);
         }
+    }
+
+    fn take_failed_provider_tools(
+        &mut self,
+        reason: &str,
+    ) -> Vec<crate::provider::ProviderPromptChunk> {
+        std::mem::take(&mut self.active_tools)
+            .into_values()
+            .map(|mut chunk| {
+                // Only valid, bounded provider tool objects enter active_tools.
+                let mut payload: serde_json::Value = serde_json::from_slice(&chunk.bytes)
+                    .expect("retained provider tool snapshot must be JSON");
+                payload["status"] = serde_json::json!("error");
+                payload["error"] = serde_json::json!(reason);
+                if let Some(state) = payload
+                    .get_mut("state")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    state.insert("status".into(), serde_json::json!("error"));
+                    state.insert("error".into(), serde_json::json!(reason));
+                }
+                chunk.bytes =
+                    serde_json::to_vec(&payload).expect("provider tool snapshot must encode");
+                chunk
+            })
+            .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn has_active_provider_tools(&self) -> bool {
-        !self.active_tool_ids.is_empty()
+        !self.active_tools.is_empty()
     }
 }
 
@@ -418,6 +456,17 @@ pub(crate) struct PromptActivityStore {
 }
 
 impl PromptActivityStore {
+    pub(crate) fn take_failed_provider_tools(
+        &self,
+        provider_run_id: &str,
+        reason: &str,
+    ) -> Vec<crate::provider::ProviderPromptChunk> {
+        self.write()
+            .get_mut(provider_run_id)
+            .map(|state| state.take_failed_provider_tools(reason))
+            .unwrap_or_default()
+    }
+
     pub(crate) fn read(&self) -> MutexGuard<'_, BTreeMap<String, ActivePromptState>> {
         self.inner
             .lock()
@@ -510,7 +559,7 @@ mod tests {
             saw_response_content: false,
             completion_recorded: true,
             settlement_requested: false,
-            active_tool_ids: BTreeSet::new(),
+            active_tools: BTreeMap::new(),
         };
 
         activity.request_settlement();
@@ -532,7 +581,7 @@ mod tests {
             saw_response_content: true,
             completion_recorded: false,
             settlement_requested: false,
-            active_tool_ids: BTreeSet::new(),
+            active_tools: BTreeMap::new(),
         };
 
         activity.observe_provider_tool(

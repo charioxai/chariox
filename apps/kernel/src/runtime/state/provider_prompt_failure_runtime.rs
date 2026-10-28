@@ -77,6 +77,15 @@ impl KernelRuntimeState {
         if bound_to_another_run || ended_run_replaced {
             return Ok(false);
         }
+        if expected_prompt_id
+            .is_some_and(|id| id != active_prompt.id() || active_prompt.is_external())
+        {
+            return Ok(false);
+        }
+        if let Some(termination) = provider_termination.as_ref() {
+            // Settle tools before failure clears activity or promotes a queued turn.
+            owned.record_failed_provider_tools(session_id, provider_run_id, &agent_id, termination);
+        }
         let guarded_prompt_id = active_prompt.id().to_string();
         self.flush_provider_history(provider_run_id).await?;
         if self

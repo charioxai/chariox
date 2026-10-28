@@ -186,6 +186,14 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if expected_prompt_id.is_some_and(|expected_prompt_id| prompt.id() != expected_prompt_id) {
             return Ok(false);
         };
+        if let Some(termination) = provider_termination.as_ref() {
+            super::provider_output_fanout::ProviderOutputFanout::new(self.app).fail_pending_tools(
+                &self.prompt_activity,
+                session_id,
+                provider_run_id,
+                termination,
+            );
+        }
         if expected_prompt_id.is_some() {
             let diagnosed = self
                 .provider_store
@@ -351,7 +359,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
     }
 

@@ -13,6 +13,32 @@ const PROVIDER_TOOL_LARGE_PAYLOAD_REPORT_BYTES: usize = 1024 * 1024;
 const PROVIDER_OUTPUT_TRUNCATION_LOG_DELTA_BYTES: usize = 1024 * 1024;
 const PROVIDER_TOOL_METADATA_HASH_STRING_BYTES: usize = 4096;
 
+#[cfg(test)]
+#[test]
+fn process_tool_settlement_preserves_terminal_reason_at_output_bound() {
+    let reason = "provider process tree exceeded its memory limit of 33554432 bytes";
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "id": "large-tool", "tool": "Bash", "status": "error", "error": reason,
+        "input": {"args": vec!["long argument"; 2000]},
+        "output": "partial output".repeat(2000),
+    }))
+    .unwrap();
+    let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
+    assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+    let payload: Value = serde_json::from_slice(&bounded).unwrap();
+    assert_eq!(payload["id"], "large-tool");
+    assert_eq!(payload["status"], "error");
+    assert_eq!(payload["error"], reason);
+
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "id": "large-error", "tool": "Bash", "status": "error",
+        "error": {"details": vec!["provider error detail"; 2000]},
+    }))
+    .unwrap();
+    let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
+    assert!(bounded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES);
+}
+
 pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[u8]) -> Vec<u8> {
     if bytes.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES {
         return bytes.to_vec();
@@ -294,9 +320,12 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let mut fallback = serde_json::Map::new();
     if let Value::Object(object) = &value {
-        for key in ["id", "tool", "status", "name", "command"] {
-            if let Some(value) = object.get(key).cloned() {
-                fallback.insert(key.to_string(), value);
+        for key in ["id", "tool", "status", "name", "command", "error"] {
+            if let Some(value) = object.get(key) {
+                if key == "error" && !value.is_string() {
+                    continue;
+                }
+                fallback.insert(key.to_string(), value.clone());
             }
         }
     }
