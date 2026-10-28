@@ -536,10 +536,9 @@ export class Mirror2 {
       }
       // An opted-in viewer can prepare DOM/CSS before the font bytes arrive;
       // its positive native-font requirements still fence the paint handover.
-      // Legacy viewers retain first-packet fonts. Resource bytes otherwise
-      // travel only without DOM changes, so an echo never queues behind them.
+      // Legacy viewers retain first-packet fonts; other resource bytes follow resourcesRide.
       const fontsAt = timestamp();
-      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) || this.streamingRest(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.resourcesRide(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -575,11 +574,7 @@ export class Mirror2 {
     if (!reset && !fallback) {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
       stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
-      if (!resources.length && this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) {
-        let full = stream.deferredSheets.shift();
-        if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
-        if (full && !replaced.has(full.id)) sheets.push({ op: 'css', id: full.id, css: full.css });
-      }
+      if (this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) sheets.push(...await this.dueSheets(world, stream, replaced));
     }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -689,6 +684,19 @@ export class Mirror2 {
   // for the on-screen images: their bytes travel with the rest's chunks unless viewer input is recent.
   streamingRest(stream, source) { return stream.viewportFirst && source.snapshot_viewport_complete === true && source.snapshot_complete !== true && !this.recentInput(stream); }
   // A packet's resource budget; smaller within a second of viewer input.
+  // Resource bytes ride a packet without DOM changes, a streaming viewport-first rest, or (P9) any packet without recent
+  // input: a settling document's images then follow its DOM in the same packets, and an echo never queues behind them.
+  resourcesRide(stream, source) { return this.empty(stream, source) || this.streamingRest(stream, source) || !this.recentInput(stream); }
+  // P9: every due full sheet rides one packet up to the packet budget; each used to cost a credit round trip.
+  async dueSheets(world, stream, replaced) {
+    const sheets = []; let budget = this.packetBytes(stream);
+    do {
+      let full = stream.deferredSheets.shift();
+      if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
+      if (full && !replaced.has(full.id)) { sheets.push({ op: 'css', id: full.id, css: full.css }); budget -= full.css.length; }
+    } while (budget > 0 && this.sheetsDue(stream));
+    return sheets;
+  }
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }
