@@ -414,6 +414,7 @@ fn sealed_registry_recovers_scrubbing_and_masks_without_human_clearance() {
     let key = crate::transport::relay_crypto::generate_private_key_base64();
     let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
     let command = Command::Action {
+        agent_id: None,
         execution_id: "input".into(),
         target_id: "target".into(),
         document_id: "document".into(),

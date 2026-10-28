@@ -67,14 +67,23 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh']]) {
-      if (input === 'click') await browserClick('#agent','agent-one');
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh']]) {
+      if (input.startsWith('room_')) {
+        const selector = input === 'room_click' ? '#agent' : '#save input';
+        const { root } = await connection.send('DOM.getDocument', {}, sessionId);
+        const { nodeId } = await connection.send('DOM.querySelector', { nodeId: root.nodeId, selector }, sessionId);
+        const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
+        const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
+        const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:true};
+        await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
+          node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
+      } else if (input === 'click') await browserClick('#agent','agent-one');
       else if (input === 'form_click') await browserClick('#save button','agent-one');
       else {
         await browserClick('#save input');
         await browserInput({kind:'key',key:'Enter'},'agent-one');
       }
-      if (input === 'click') assert.equal(await evaluate('lastInputTimestamp <= performance.now()'),true,'input labels must not change App event clocks');
+      if (input === 'click' || input === 'room_click') assert.equal(await evaluate('lastInputTimestamp <= performance.now()'),true,'input labels must not change App event clocks');
       const firstInput = await nextCall();
       assert.equal(firstInput.method, firstMethod);
       assert.deepEqual(firstInput.actor,{kind:'agent',id:'agent-one'}, 'ordinary browser input must carry the invoking agent');
