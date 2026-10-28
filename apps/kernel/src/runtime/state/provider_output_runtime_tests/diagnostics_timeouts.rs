@@ -12,8 +12,11 @@ struct RefusedSubmit {
     _worktree: crate::test_support::TestWorktree,
 }
 
-/// A structured provider refuses the active prompt's submit with `message`.
-async fn refused_structured_submit(message: &str, room_agent_tools: bool) -> RefusedSubmit {
+/// The active prompt's structured submit fails with `error`.
+async fn refused_structured_submit(
+    error: crate::error::DaemonError,
+    room_agent_tools: bool,
+) -> RefusedSubmit {
     let worktree = crate::test_support::TestWorktree::new("submit-failure-queued-recovery");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -99,10 +102,7 @@ async fn refused_structured_submit(message: &str, room_agent_tools: bool) -> Ref
             run.id().into(),
             agent.id().into(),
             prompt_id.clone(),
-            Err(crate::error::DaemonError::LocalTransport {
-                operation: "submit structured provider prompt",
-                message: message.into(),
-            }),
+            Err(error),
         );
     let follow_ups = runtime.owned.reap_structured_prompt_jobs();
     RefusedSubmit {
@@ -127,7 +127,14 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
         run_id,
         follow_ups,
         ..
-    } = refused_structured_submit("fixture transport timeout", false).await;
+    } = refused_structured_submit(
+        crate::error::DaemonError::LocalTransport {
+            operation: "submit structured provider prompt",
+            message: "fixture transport timeout".into(),
+        },
+        false,
+    )
+    .await;
     let settled = runtime.owned.session_snapshot(&session_id).unwrap();
     assert!(settled.active_prompt_for_agent(&agent_id).is_none());
     assert_eq!(
@@ -154,22 +161,13 @@ async fn structured_submit_failure_schedules_queued_prompt_recovery_once() {
     );
 }
 
-// A refused submit tells a room agent's owner the provider's own reason.
-#[tokio::test]
-async fn a_refused_structured_submit_shows_a_room_agent_owner_the_providers_reason() {
-    let refused = refused_structured_submit(
-        "Codex error [server_overloaded]: Selected model is at capacity. \
-         Please try a different model.",
-        true,
-    )
-    .await;
-    let expected = crate::provider::ProviderFailure::classify(
-        "codex",
-        "Codex error [server_overloaded]: Selected model is at capacity. \
-         Please try a different model.",
-    );
-
-    let transcript = refused
+/// What a room agent's owner sees after the submit fails with `error`: the
+/// provider-error transcript and the failure recorded on the settlement.
+async fn owner_view_of_failed_submit(
+    error: crate::error::DaemonError,
+) -> (Vec<String>, Option<serde_json::Value>) {
+    let failed = refused_structured_submit(error, true).await;
+    let transcript = failed
         .runtime
         .owned
         .terminal_stream
@@ -178,20 +176,46 @@ async fn a_refused_structured_submit_shows_a_room_agent_owner_the_providers_reas
         .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
         .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
         .collect::<Vec<_>>();
-    assert_eq!(transcript, vec![expected.notice()]);
-    let settlement = refused
+    let settlement = failed
         .runtime
         .owned
         .operational_history_store
-        .load_prompt_settlement_event(&refused.session_id, &refused.agent_id, &refused.prompt_id)
+        .load_prompt_settlement_event(&failed.session_id, &failed.agent_id, &failed.prompt_id)
         .unwrap()
-        .expect("the refused turn settles");
-    assert_eq!(
-        settlement
-            .metadata
-            .get(crate::history::PROMPT_FAILURE_METADATA_KEY),
-        Some(&serde_json::to_value(&expected).unwrap())
-    );
+        .expect("the failed turn settles");
+    let failure = settlement
+        .metadata
+        .get(crate::history::PROMPT_FAILURE_METADATA_KEY)
+        .cloned();
+    (transcript, failure)
+}
+
+// A refused submit tells a room agent's owner the provider's own reason.
+#[tokio::test]
+async fn a_refused_structured_submit_shows_a_room_agent_owner_the_providers_reason() {
+    const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
+         Please try a different model.";
+    let (transcript, failure) =
+        owner_view_of_failed_submit(crate::error::DaemonError::ProviderRefusal {
+            message: REFUSAL.into(),
+        })
+        .await;
+    let expected = crate::provider::ProviderFailure::classify("codex", REFUSAL);
+    assert_eq!(transcript, vec![expected.notice()]);
+    assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
+}
+
+// A kernel-side submit error carries no provider reason.
+#[tokio::test]
+async fn a_kernel_submit_error_stays_hidden_from_a_room_agent_owner() {
+    let (transcript, failure) =
+        owner_view_of_failed_submit(crate::error::DaemonError::LocalTransport {
+            operation: "submit structured provider prompt",
+            message: "provider run actor queue rejected command for `run-1`: queue is full".into(),
+        })
+        .await;
+    assert!(transcript.is_empty(), "{transcript:?}");
+    assert_eq!(failure, None);
 }
 
 #[tokio::test]

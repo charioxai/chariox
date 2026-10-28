@@ -53,7 +53,7 @@ fn claude_headless_dispatch_failure_requires_provider_retirement(
         } | DaemonError::ProviderProtocol {
             operation: "submit Claude headless prompt",
             ..
-        }
+        } | DaemonError::ProviderRefusal { .. }
     )
 }
 
@@ -634,11 +634,7 @@ impl KernelRuntimeState {
                         if let Some(message) =
                             claude_native_dispatch_terminal_failure(&provider_run)
                         {
-                            return Err(DaemonError::ProviderProtocol {
-                                provider_run_id: dispatch.provider_run_id.clone(),
-                                operation: "submit Claude headless prompt",
-                                message,
-                            });
+                            return Err(DaemonError::ProviderRefusal { message });
                         }
                         if tokio::time::Instant::now() >= deadline {
                             return Err(DaemonError::LocalTransport {
@@ -4242,10 +4238,11 @@ pub(in crate::runtime::state) mod tests {
         assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
-    #[tokio::test]
-    async fn a_refused_dispatch_shows_a_room_agent_owner_the_providers_reason() {
-        const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
-             Please try a different model.";
+    /// What a room agent's owner sees after the dispatch fails with `error`:
+    /// the provider-error transcript and the failure recorded on the settlement.
+    async fn owner_view_of_failed_dispatch(
+        error: DaemonError,
+    ) -> (String, Vec<String>, Option<serde_json::Value>) {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
         let mut config = runtime.owned.config_projection.snapshot();
@@ -4258,21 +4255,10 @@ pub(in crate::runtime::state) mod tests {
             .unwrap()
             .adapter_key()
             .to_string();
-        let expected = crate::provider::ProviderFailure::classify(&adapter_key, REFUSAL);
-        assert_eq!(
-            expected.cause,
-            crate::provider::ProviderFailureCause::Overloaded
-        );
         let prompt_id = dispatch.prompt_id.clone();
 
         runtime
-            .fail_prompt_dispatch(
-                dispatch,
-                DaemonError::LocalTransport {
-                    operation: "test prompt dispatch",
-                    message: REFUSAL.to_string(),
-                },
-            )
+            .fail_prompt_dispatch(dispatch, error)
             .await
             .expect_err("dispatch failure should be returned");
 
@@ -4284,7 +4270,6 @@ pub(in crate::runtime::state) mod tests {
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
             .collect::<Vec<_>>();
-        assert_eq!(transcript, vec![expected.notice()]);
         let visible_history = runtime
             .owned
             .operational_history_store
@@ -4294,19 +4279,55 @@ pub(in crate::runtime::state) mod tests {
             .filter(|event| !event.is_internal_dispatch_diagnostic())
             .filter_map(|event| event.content)
             .collect::<Vec<_>>();
-        assert!(visible_history.contains(&expected.notice()));
         let settlement = runtime
             .owned
             .operational_history_store
             .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
             .unwrap()
             .expect("the refused turn settles");
+        let failure = settlement
+            .metadata
+            .get(crate::history::PROMPT_FAILURE_METADATA_KEY)
+            .cloned();
+        (adapter_key, [transcript, visible_history].concat(), failure)
+    }
+
+    #[tokio::test]
+    async fn a_refused_dispatch_shows_a_room_agent_owner_the_providers_reason() {
+        const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
+             Please try a different model.";
+        let (adapter_key, visible, failure) =
+            owner_view_of_failed_dispatch(DaemonError::ProviderRefusal {
+                message: REFUSAL.to_string(),
+            })
+            .await;
+        let expected = crate::provider::ProviderFailure::classify(&adapter_key, REFUSAL);
         assert_eq!(
-            settlement
-                .metadata
-                .get(crate::history::PROMPT_FAILURE_METADATA_KEY),
-            Some(&serde_json::to_value(&expected).unwrap())
+            expected.cause,
+            crate::provider::ProviderFailureCause::Overloaded
         );
+        assert!(visible.contains(&expected.notice()));
+        assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_kernel_dispatch_error_stays_hidden_from_a_room_agent_owner() {
+        for message in [
+            "provider process for `run-1` was not ready",
+            "provider run actor queue rejected command for `run-1`: queue is full",
+        ] {
+            let (_, visible, failure) =
+                owner_view_of_failed_dispatch(DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: message.to_string(),
+                })
+                .await;
+            assert!(
+                !visible.iter().any(|text| text.contains(message)),
+                "{message} reached the owner: {visible:?}"
+            );
+            assert_eq!(failure, None, "{message} settled with a provider failure");
+        }
     }
 
     #[tokio::test]
@@ -4349,12 +4370,10 @@ pub(in crate::runtime::state) mod tests {
             .into_iter()
             .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
             .collect::<Vec<_>>();
-        // The provider's failure, then the failed turn's "not carried out" entry.
+        // The dispatch error, then the failed turn's "not carried out" entry.
         assert_eq!(provider_errors.len(), 2);
-        assert_eq!(
-            String::from_utf8_lossy(&provider_errors[0].bytes),
-            crate::provider::ProviderFailure::classify("dev-stub", "rejected").notice()
-        );
+        assert!(String::from_utf8_lossy(&provider_errors[0].bytes)
+            .contains("Provider prompt dispatch failed"));
         assert!(String::from_utf8_lossy(&provider_errors[1].bytes)
             .starts_with("Request not carried out: "));
 

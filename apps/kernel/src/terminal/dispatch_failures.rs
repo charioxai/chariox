@@ -15,7 +15,7 @@ pub(crate) fn is_internal_dispatch_diagnostic(message: &str) -> bool {
 pub(crate) fn user_facing_dispatch_failure(error: &DaemonError) -> String {
     let message = match error {
         DaemonError::ProviderProtocol { operation, .. } => operation_failure_summary(operation),
-        DaemonError::LocalTransport { message, .. } => {
+        DaemonError::LocalTransport { message, .. } | DaemonError::ProviderRefusal { message } => {
             return crate::provider::sanitize_provider_diagnostic(message);
         }
         _ => "The provider could not complete the request.",
@@ -30,7 +30,7 @@ pub(crate) fn provider_dispatch_failure(
     error: &DaemonError,
 ) -> Option<crate::provider::ProviderFailure> {
     match error {
-        DaemonError::LocalTransport { message, .. } => Some(
+        DaemonError::ProviderRefusal { message } => Some(
             crate::provider::ProviderFailure::classify(adapter_key, message),
         ),
         _ => None,
