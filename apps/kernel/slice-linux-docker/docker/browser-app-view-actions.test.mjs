@@ -26,12 +26,12 @@ function form(name, attributes, controls) {
 // them is recorded in `native`, a plain assignment is not.
 const nativeSetter = () => ({ prototype: Object.defineProperty({}, 'value', {
   set(value) { this.native = [...(this.native ?? []), value]; this.value = value; } }) });
-function page(forms = [], request = () => Promise.resolve(null)) {
+function page(forms = [], request = () => Promise.resolve(null), inputs) {
   const context = { document: { querySelectorAll: () => forms }, TextEncoder, Event: class { constructor(type) { this.type = type; } },
     HTMLInputElement: nativeSetter(), HTMLSelectElement: nativeSetter(), HTMLTextAreaElement: nativeSetter(),
-    setTimeout, clearTimeout, request };
-  const api = vm.runInNewContext(`(${createViewActions.toString()})(request)`, context);
-  return { api, forms };
+    setTimeout, clearTimeout, request, inputs };
+  const api = vm.runInNewContext(`(${createViewActions.toString()})(request, inputs)`, context);
+  return { api, forms, context };
 }
 const closed = { type: 'object', additionalProperties: false };
 const addTodo = { name: 'add_todo', description: 'Add a todo', inputSchema: { ...closed, properties: { text: { type: 'string' } } }, effect: 'write' };
@@ -227,4 +227,25 @@ test('a human-only form registers without an agent declaration', async () => {
   await node.submit({ preventDefault() {} });
   assert.equal(received, 'Draft');
   assert.equal(api.agent.registrations().length, 0);
+});
+
+test('UI callbacks capture the input caller and keep it separate from a human callback', async () => {
+  const event = { kind: 'input' }, calls = [], tracked = [];
+  let release;
+  const {api, context} = page([], async (method, _params, token) => {
+    calls.push({method, token});
+    if (method === 'save') await new Promise(resolve => { release = resolve; });
+  }, {token: source => source === event ? 'input-token' : undefined, track: (token, promise) => tracked.push({token,promise})});
+  const run = api.action(addTodo, async ({human}, caller) => {
+    await caller.call(human ? 'human' : 'save');
+    await caller.call(human ? 'human_done' : 'refresh');
+  });
+  context.event = event;
+  const agent = run({human:false});
+  context.event = undefined;
+  await run({human:true});
+  release(); await agent;
+  assert.deepEqual(calls.map(call => call.token), ['input-token',undefined,undefined,'input-token']);
+  assert.equal(tracked[0].token,'input-token');
+  assert.equal(tracked[0].promise,agent);
 });
