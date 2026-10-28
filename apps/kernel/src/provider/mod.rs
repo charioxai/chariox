@@ -1,4 +1,3 @@
-#[cfg(test)]
 pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
@@ -7,7 +6,9 @@ pub(crate) use utility_admission::ProviderUtilityAdmission;
 mod account_credential;
 mod claude;
 mod claude_runtime;
-pub(crate) use claude_runtime::usage::claude_status_line_usage_snapshot;
+pub(crate) use claude_runtime::usage::{
+    claude_status_line_context_usage, claude_status_line_usage_snapshot,
+};
 mod account_handoff;
 mod codex;
 mod codex_client;
@@ -55,6 +56,11 @@ pub(crate) use account_credential::{
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
+
+/// Names the launching kernel's pid in every process it starts for a provider run, and so in the
+/// tool processes that run starts. A restored kernel ends those of a kernel that is gone.
+pub(crate) const PROVIDER_OWNER_PID_ENV: &str = "CHARIOX_PROVIDER_OWNER_PID";
 pub(crate) use claude::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
     fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
@@ -477,6 +483,8 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
         }),
     }
 }
+#[cfg(test)]
+pub(crate) use opencode_binding::permission_tests::assert_archived_opencode_resume_contract;
 pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,

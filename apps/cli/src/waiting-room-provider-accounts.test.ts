@@ -200,7 +200,7 @@ test("MP-08 / MP-11 an unvalidated linked account asks for a check instead of an
   const profile = account("codex", "linked", true)
   profile.auth_state = "unknown"
   assert.equal(providerAccountDisplayLabel(profile), `${profile.label} · sign-in not checked`)
-  assert.match(selectedProviderAccountStartBlockReason([profile], "codex", "default") ?? "", /Refresh its status/)
+  assert.equal(selectedProviderAccountStartBlockReason([profile], "codex", "default"), null)
   assert.equal(providerAccountSignInCommand(profile), "/provider accounts refresh codex linked")
 })
 
@@ -257,10 +257,11 @@ test("exhausted OpenCode service stays visible but does not block the start", ()
   }
 })
 
-// MP-08 / MP-10 / MP-11: stale account references require an explicit local action.
-test("MP-08 / MP-10 / MP-11 missing target profile directs login or copy", () => {
+// MP-08 / MP-10 / MP-11: the kernel checks explicit namespaces; missing defaults still need login.
+test("explicit Claude references defer to the kernel while missing defaults need sign-in", () => {
   for (const mode of ["claude", "claude-p", "claude-headless"]) {
     assert.equal(selectedProviderAccountStartBlockReason([], mode, "claude-miguel"), null)
+    assert.match(selectedProviderAccountStartBlockReason([], mode, "default") ?? "", /needs sign-in/)
   }
 })
 
@@ -275,6 +276,19 @@ test("explicit accounts outside the home inventory defer authentication to the k
 })
 
 // MP-08 / MP-11: kernel first-use verification and native fallback own admission.
+test("unknown accounts defer the first prompt and Start to the kernel", () => {
+  for (const provider of ["codex", "opencode", "claude"]) {
+    const profile = account(provider, "newly-linked", true)
+    profile.auth_state = "unknown"
+    assert.equal(selectedProviderAccountStartBlockReason([profile], provider, profile.profile_id), null)
+    assert.equal(selectedProviderAccountStartBlockReason([profile], provider, "default"), null)
+    for (const state of ["error", "not_configured", "expired"] as const) {
+      if (provider === "claude" && state === "expired") continue
+      assert.match(selectedProviderAccountStartBlockReason([{ ...profile, auth_state: state }], provider, profile.profile_id) ?? "", /needs sign-in/)
+    }
+  }
+})
+
 test("Claude unknown and expired observations defer recovery to the kernel", () => {
   for (const provider of ["claude", "claude-p", "claude-headless"]) {
     for (const state of ["unknown", "expired"] as const) {

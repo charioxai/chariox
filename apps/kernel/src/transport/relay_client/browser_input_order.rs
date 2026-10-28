@@ -48,6 +48,25 @@ impl BrowserInputOrder {
         })
     }
 }
+tokio::task_local! {
+    /// The relay input turn of the browser input this task serves (none on other transports).
+    static INPUT_TURN: std::cell::RefCell<Option<Turn>>;
+}
+/// Serve one request while holding its input turn; the turn ends with the request unless
+/// `release_input_turn` gives it back earlier.
+pub(super) async fn serve_holding<F: std::future::Future>(
+    turn: Option<Turn>,
+    request: F,
+) -> F::Output {
+    INPUT_TURN
+        .scope(std::cell::RefCell::new(turn), request)
+        .await
+}
+/// PERF_AUDIT 4.2.2: what is left of this browser input only reads (its Chrome window follow), so
+/// later input on its lane may start; a typed burst no longer waits one window read per key.
+pub(crate) fn release_input_turn() {
+    let _ = INPUT_TURN.try_with(|turn| drop(turn.borrow_mut().take()));
+}
 impl Turn {
     /// Wait for earlier input on this key. A mirror read then gives its turn back
     /// before it runs, so later input never waits for it (protocol 516).
@@ -132,6 +151,25 @@ mod tests {
         drop(first);
         third.ready().await;
         drop(third);
+        assert_eq!(order.0.lock().unwrap().pending, 0);
+    }
+    #[tokio::test]
+    async fn mp08_a_released_input_turn_lets_the_next_key_enter_during_its_follow() {
+        let order = BrowserInputOrder::default();
+        let mut first = order.reserve("tab".into()).unwrap();
+        first.ready().await;
+        let mut second = order.reserve("tab".into()).unwrap();
+        serve_holding(Some(first), async {
+            assert!(timeout(Duration::from_millis(5), second.ready())
+                .await
+                .is_err());
+            release_input_turn();
+            timeout(Duration::from_millis(50), second.ready())
+                .await
+                .expect("the next key enters while the first input's follow still runs");
+        })
+        .await;
+        drop(second);
         assert_eq!(order.0.lock().unwrap().pending, 0);
     }
     #[tokio::test]

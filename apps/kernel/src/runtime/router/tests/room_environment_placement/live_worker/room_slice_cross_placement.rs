@@ -277,6 +277,7 @@ async fn agent_on_second_home_local_slice_uses_the_room_environment_without_dire
             RelayPeerRequest::SubmitLeasedPrompt {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
                 expected_profile,
+                provider_resume_state: None,
                 prompt: "exercise the home-owned Room Environment".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),

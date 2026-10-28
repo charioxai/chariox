@@ -83,3 +83,14 @@ function attachment(
     ...overrides,
   }
 }
+
+
+test("history merging keeps byte size when the alternate adds an image preview", () => {
+  const result = mergeSessionHistoryPromptAttachments([
+    { url: "file:///image.png", mime: "image/png", size_bytes: 3_000_000 },
+  ], [
+    { url: "file:///image.png", mime: "image/png", preview_url: "data:image/png;base64,aGk=" },
+  ])
+  assert.equal(result[0]?.size_bytes, 3_000_000)
+  assert.equal(result[0]?.preview_url, "data:image/png;base64,aGk=")
+})

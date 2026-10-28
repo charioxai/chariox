@@ -18,9 +18,12 @@ async function waitFor(check, timeout = 12000) {
 async function fixture(prefix) {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
   await mkdir(path.join(root, "bin"));
-  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py"]) {
+  for (const name of ["slice-screen.sh", "browser-lifecycle.py", "browser-upload-store.py", "room-desktop-environment.py"]) {
     await copyFile(new URL(`./${name}`, import.meta.url), path.join(root, name));
   }
+  // The fake browser does not use D-Bus, but the real launcher still requires its private binding.
+  await mkdir(path.join(root, "private"));
+  await writeFile(path.join(root, "private/desktop-session-address"), `unix:path=${root}/desktop-bus`, { mode: 0o600 });
   const env = { ...process.env, PATH: `${root}/bin:${process.env.PATH}`, CHARIOX_SLICE_ROOT: root,
     CHARIOX_SLICE_CHROME_PROFILE: `${root}/profile`, HOME: root, TMPDIR: root,
     CHARIOX_BROWSER_LIFECYCLE_ROOT: `${root}/lifetimes`, PYTHONDONTWRITEBYTECODE: "1", NODE_BINARY: process.execPath };

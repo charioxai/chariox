@@ -1,4 +1,8 @@
 pub use api::{
+    AgentContextUsage, AgentExecutionRoute, AgentUsageSnapshot, GetAgentUsageSnapshotRequest,
+    GetProviderUsageSnapshotRequest, ProviderUsageAccount,
+};
+pub use api::{
     AttachWorkflowNotificationRequest, DetachWorkflowNotificationRequest,
     ListWorkflowNotificationsRequest, NotificationDeliveryMode,
     RegisterWorkflowNotificationSourceRequest, WorkflowNotificationAck,
@@ -7,6 +11,9 @@ pub use api::{
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
 mod api;
+pub use api::{
+    AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,
+};
 pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,
 };
@@ -35,7 +42,7 @@ pub use api::{
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
-    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveProjectRequest,
+    ApprovalPasskey, ApproveRemoteMachineRequest, ArchiveAgentRequest, ArchiveProjectRequest,
     ArmDeploymentCredentialEnrollmentRequest, AttachSessionViewRequest, AttachToSessionRequest,
     AttachWorkspaceLinkRequest, BatchOperationFailure, BindWorkflowCodeSourceRequest,
     BindWorkflowEndpointRequest, BindWorkflowPublicationDeploymentRequest,
@@ -50,14 +57,14 @@ pub use api::{
     CloudSessionMember, CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
     CompletePromptRequest, ConfigureRelayRequest, ConnectCloudRelayRequest,
     ControlRoomWorkflowRunsRequest, ControlWorkflowPublicationRuntimeRequest,
-    CreateAgentPromptScheduleRequest, CreateAgentWorkflowRequest, CreateCloudSessionInviteRequest,
-    CreateDisposableWorkerRequest, CreateManagedEnvironmentRequest, CreatePairingInviteRequest,
-    CreateSessionInviteRequest, CreateSliceBackupRequest, CreateSliceRequest,
-    CreateTerminalPairingLinkRequest, CreateWorkflowCodeArtifactRequest,
-    CreateWorkflowEndpointRequest, CreateWorkflowPromptQueueRequest,
-    CreateWorkflowPublicationRequest, CreateWorkflowRequest, CreateWorkflowScheduleRequest,
-    CreateWorkflowWatchdogRequest, CreateWorkspaceDirectoryRequest, CreateWorkspaceLinkRequest,
-    CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
+    CopyProviderAccountToKernelRequest, CreateAgentPromptScheduleRequest,
+    CreateAgentWorkflowRequest, CreateCloudSessionInviteRequest, CreateDisposableWorkerRequest,
+    CreateManagedEnvironmentRequest, CreatePairingInviteRequest, CreateSessionInviteRequest,
+    CreateSliceBackupRequest, CreateSliceRequest, CreateTerminalPairingLinkRequest,
+    CreateWorkflowCodeArtifactRequest, CreateWorkflowEndpointRequest,
+    CreateWorkflowPromptQueueRequest, CreateWorkflowPublicationRequest, CreateWorkflowRequest,
+    CreateWorkflowScheduleRequest, CreateWorkflowWatchdogRequest, CreateWorkspaceDirectoryRequest,
+    CreateWorkspaceLinkRequest, CreateWorkspacePullRequestRequest, CreateWorkspaceWorktreeRequest,
     CredentialEnrollmentCallback, CredentialEnrollmentInteractionStatus, CycleAgentFocusRequest,
     DeleteCredentialSecretRequest, DeleteKernelRequest, DeleteProjectRequest, DeleteSessionRequest,
     DeleteWorkflowCodeArtifactRequest, DeleteWorkflowRegistryEntryRequest,
@@ -114,13 +121,13 @@ pub use api::{
     ListRemoteMachineKernelsRequest, ListRemoteMachinesRequest,
     ListRoomEnvironmentActionHistoryRequest, ListScriptsRequest, ListSessionMembersRequest,
     ListSessionsRequest, ListSkillsRequest, ListSliceAuditRequest, ListSlicesRequest,
-    ListTerminalsRequest, ListWorkflowCodeArtifactsRequest, ListWorkflowPromptQueuesRequest,
-    ListWorkflowPublicationsRequest, ListWorkflowRegistryRequest, ListWorkflowRunsRequest,
-    ListWorkflowSchedulesRequest, ListWorkflowWatchdogsRequest, ListWorkflowsRequest,
-    ListWorkspaceFilesRequest, ListWorkspaceLinksRequest, ListWorkspaceWorktreesRequest,
-    LoadWorkflowRegistryEntryRequest, LocalDaemonRequest, LocalDaemonResponse,
-    LockCredentialVaultRequest, LogoutCloudRelayRequest, LogoutProviderRequest,
-    ManageCredentialVaultRequest, ManagedContextDevelopmentLaunchTarget,
+    ListTerminalsRequest, ListWaitingRoomSessionsRequest, ListWorkflowCodeArtifactsRequest,
+    ListWorkflowPromptQueuesRequest, ListWorkflowPublicationsRequest, ListWorkflowRegistryRequest,
+    ListWorkflowRunsRequest, ListWorkflowSchedulesRequest, ListWorkflowWatchdogsRequest,
+    ListWorkflowsRequest, ListWorkspaceFilesRequest, ListWorkspaceLinksRequest,
+    ListWorkspaceWorktreesRequest, LoadWorkflowRegistryEntryRequest, LocalDaemonRequest,
+    LocalDaemonResponse, LockCredentialVaultRequest, LogoutCloudRelayRequest,
+    LogoutProviderRequest, ManageCredentialVaultRequest, ManagedContextDevelopmentLaunchTarget,
     ManagedContextLaunchTarget, ManagedContextOutboundImportReceipt,
     ManagedContextOutboundOperationPhase, ManagedContextOutboundOperationStatus,
     ManagedContextRepositoryLaunchTarget, ManagedContextTransferTarget,
@@ -194,9 +201,9 @@ pub use api::{
     SessionHistoryBlobContentPage, SessionHistoryOutlineAgent, SessionHistoryOutlineBlob,
     SessionHistoryOutlineCursor, SessionHistoryOutlineTurn, SessionHistoryOutlineTurnLifecycle,
     SessionInviteRecord, SetCredentialSecretRequest, SetProjectPinnedRequest,
-    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetUserConfigValueRequest,
-    SetWorkflowFlushContextRequest, SetWorkflowNodeCanCompleteRunRequest,
-    SetWorkflowNodeCanEmitIntermediateOutputRequest,
+    SetProviderAccountCredentialRequest, SetRoomBrowserBarRequest, SetRoomPinnedRequest,
+    SetUserConfigValueRequest, SetWorkflowFlushContextRequest,
+    SetWorkflowNodeCanCompleteRunRequest, SetWorkflowNodeCanEmitIntermediateOutputRequest,
     SetWorkflowNodeIntermediateOutputSchemaRequest, SetWorkflowNodeMaxTurnsRequest,
     SetWorkflowNodeWaitForAllInputsRequest, SetWorkflowRunOutputSchemaRequest,
     SetWorkflowScheduleEnabledRequest, SetWorkflowWatchdogEnabledRequest,
@@ -231,7 +238,7 @@ pub use api::{
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
     WaitingRoomPublicWorkflowEdgeSummary, WaitingRoomPublicWorkflowEndpointSummary,
     WaitingRoomPublicWorkflowNodeSummary, WaitingRoomPublicWorkflowSummary,
-    WaitingRoomSessionActivitySummary, WorkflowCodePackageExportTarget,
+    WaitingRoomSessionActivitySummary, WaitingRoomSessionPage, WorkflowCodePackageExportTarget,
     WorkflowCodeSourceExportTarget, WorkflowDesignEdge, WorkflowDesignEdgePatch,
     WorkflowDesignEndpoint, WorkflowDesignEndpointPatch, WorkflowDesignNode,
     WorkflowDesignNodePatch, WorkflowDesignOp, WorkflowDesignOpForwarded, WorkflowDesignPoint,
@@ -278,10 +285,21 @@ pub use api::{
     BindRoomEnvironmentSliceRequest, CaptureRoomEnvironmentScreenshotRequest,
     ReadRoomEnvironmentScreenshotChunkRequest, RoomBrowserArtifactRequest,
     RoomEnvironmentScreenshotArtifact, RoomEnvironmentScreenshotChunk, RoomEnvironmentSliceBinding,
+    RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 pub use api::{
-    ExtendKernelSudoRequest, KernelAccessGrant, KernelSudoTurn, ListKernelAccessGrantsRequest,
-    RequestKernelAccessRequest, RequestKernelSudoRequest, RevokeKernelAccessGrantRequest,
+    DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,
+    DictationRequest, DictationResult, DictationStatus, DICTATION_MAX_AUDIO_BYTES,
+    DICTATION_MAX_CHUNK_BYTES, DICTATION_SAMPLE_RATE_HZ,
+};
+pub use api::{
+    ExtendKernelSudoRequest, ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel,
+    GatewayKernelStatus, GatewayKernelVia, HeartbeatAttachmentsRequest, JoinKernelLinkRequest,
+    KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat, KernelSudoTurn,
+    ListGatewayKernelsRequest, ListKernelAccessGrantsRequest, ListKernelDirectoryRequest,
+    OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest, RequestKernelAccessRequest,
+    RequestKernelSudoRequest, RevokeKernelAccessGrantRequest, StatKernelFileRequest,
+    WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     GetKernelResourceTelemetryRequest, KernelResourceTelemetryDisk, KernelResourceTelemetryLogs,
@@ -291,8 +309,9 @@ pub use api::{
 };
 pub use api::{
     HandoffOutcome, HandoffResponseAction, HandoffStatus, HandoffValue,
-    KernelAccessProviderHarness, KernelAccessRequester, KernelConnectionClass, PasskeyPrompt,
-    PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind, SudoRequestPresentation,
+    KernelAccessProviderHarness, KernelAccessRequester, KernelAccessTerm, KernelConnectionClass,
+    PasskeyPrompt, PasskeyPromptClosure, PasskeyPromptClosureReason, PasskeyPromptKind,
+    SudoRequestPresentation,
 };
 pub use api::{
     KernelBrowserCommand, KernelBrowserDisplayTarget, KernelBrowserInput,
@@ -321,4 +340,11 @@ pub use api::{
     ExportProjectEnvironmentRequest, PlanProjectEnvironmentRequest, PreviewEnvironmentDiffRequest,
     PreviewEnvironmentImportRequest, RetryEnvironmentOperationRequest,
     SaveProjectEnvironmentRevisionRequest,
+};
+
+pub use api::{
+    AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,
+    EventKernelIssue, EventRefs, EventRunState, EventSessionState, EventSubscription, EventTarget,
+    EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent, OutsideEventValue,
+    SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
 };

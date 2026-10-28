@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
-import { Mirror2, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -130,18 +130,18 @@ test('MP-10: a repeated large stylesheet travels once per snapshot epoch', () =>
 });
 
 test('MP-10: opaque region area is clipped to the viewport for the 25% handoff budget', () => {
-  assert.equal(regionArea([{ box: [0, 0, 640, 400] }]), 256000);
-  assert.equal(regionArea([{ box: [-100, 700, 400, 400] }]), 300 * 100);
-  assert.ok(regionArea([{ box: [0, 0, 1280, 300] }]) > 0.25 * 1280 * 800);
-  assert.ok(regionArea([{ box: [10, 10, 300, 168] }]) < 0.25 * 1280 * 800);
+  assert.equal(regionArea([{ box: [0, 0, 640, 400] }],pageSize()), 256000);
+  assert.equal(regionArea([{ box: [-100, 700, 400, 400] }],pageSize()), 300 * 100);
+  assert.ok(regionArea([{ box: [0, 0, 1280, 300] }],pageSize()) > 0.25 * 1280 * 800);
+  assert.ok(regionArea([{ box: [10, 10, 300, 168] }],pageSize()) < 0.25 * 1280 * 800);
 });
 
 test('MP-08/MP-10: an article lead video stays a region of the mirrored page; only a media-dominated viewport hands off', () => {
   // Real BBC article (c32l4ekpvzl8o, 1280x800): the lead video is 721x406 CSS px (29% of the viewport).
-  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }]), false);
-  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }, { box: [957, 124, 300, 250] }]), false);
-  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 800] }]), true);
-  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 480] }, { box: [0, 480, 1280, 40] }]), true);
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }],pageSize()), false);
+  assert.equal(regionOverBudget([{ box: [272, 141, 721, 406] }, { box: [957, 124, 300, 250] }],pageSize()), false);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 800] }],pageSize()), true);
+  assert.equal(regionOverBudget([{ box: [0, 0, 1280, 480] }, { box: [0, 480, 1280, 40] }],pageSize()), true);
 });
 
 test('MP-08/MP-10: a credit replayed after a reconnect gets its original packet, not a new sequence', async () => {
@@ -508,7 +508,7 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  const body=Buffer.from('body{color:green}'),calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address,limit){assert.equal(actual,world);assert.equal(address,'https://public.example/style.css');assert.equal(limit,16*1024*1024);return body}}}}});
- mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
@@ -517,9 +517,38 @@ test('a cross-origin stylesheet whose href has a fragment is read by its request
  const body=Buffer.from('body{color:green}'),asked=[];
  const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
- mirror.evaluate=async(_world,expression)=>{assert(expression.includes(body.toString()));return body.toString()};
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
  assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
+});
+
+// browserperf r9: Wikipedia's skin sheet is lossy in the CSSOM, so every article re-parsed it chunk by chunk in the page.
+test('MP-08/MP-10: a same-site navigation reuses the normalized text of a cross-origin sheet it already parsed',async()=>{
+ const source='.a{border:var(--w) solid;border-color:red}',parsed='.a { border: var(--w) solid; border-color: red; }';
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(source)}}}}});
+ const expressions=[];
+ mirror.evaluate=async(world,expression)=>{
+  if(expression.includes('compatMode'))return world.mode==='BackCompat';
+  expressions.push(expression);const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));
+  return {css:`sanitized:${sheets[0].body??parsed}`,parsed:sheets.map(sheet=>sheet.body===undefined?parsed:null),used:null};
+ };
+ const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ const first=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Linux'),'https://en.wikipedia.org/w/load.php?skin');
+ const next=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Web_browser'),'https://en.wikipedia.org/w/load.php?skin');
+ assert(expressions[0].includes(JSON.stringify(source)),'the first document parses the source');
+ assert(!expressions[1].includes(JSON.stringify(source))&&expressions[1].includes(JSON.stringify(parsed)),'the next document of the site takes the normalized text');
+ assert.equal(first,`sanitized:${parsed}`);assert.equal(next,`sanitized:${parsed}`);
+ await mirror.crossOriginSheet(world('https://other.example/'),'https://en.wikipedia.org/w/load.php?skin');
+ await mirror.crossOriginSheet(world('https://en.wikipedia.org/quirks','BackCompat'),'https://en.wikipedia.org/w/load.php?skin');
+ assert(expressions[2].includes(JSON.stringify(source))&&expressions[3].includes(JSON.stringify(source)),'another origin or compatibility mode parses the source itself');
+});
+
+test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
+ const cache=new ParsedSheets(2,10);
+ cache.put('a','1234');cache.put('b','1234');cache.take('a');cache.put('c','1234');
+ assert.deepEqual([...cache.bodies.keys()],['a','c'],'the least recently used body leaves first');
+ cache.put('d','123456789');assert.deepEqual([...cache.bodies.keys()],['d']);assert.equal(cache.size,9);
+ cache.put('e','12345678901');assert.equal(cache.bodies.has('e'),false,'a body larger than the bound is not kept');
 });
 
 test('MP-10 M2: first-packet font bytes use the completed response before the Page content gate',async()=>{
@@ -629,14 +658,18 @@ test('MP-08/MP-10/MP-11 native preview follows a document transition, not initia
  assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'typed');
 });
 
-test('MP-08/MP-10/MP-11 the protected native preview can initialize before observer work',async()=>{
+test('MP-08/MP-10/MP-11 mirror preparation does not wait for an unavailable native preview',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
- const displays=new Map(),host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays,chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
- const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let ready=false;
- mirror.world=async()=>{assert(ready,'observer must leave startup time for the protected native source');throw Error('observer reached after preview')};
- const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope');pending.catch(()=>{});
- await new Promise(resolve=>setTimeout(resolve,10));ready=true;displays.set('native',{tab_id:'t',generation:1,observed_by:'scope',expires:Date.now()+60000,regionTarget:{kind:'visible_page'},regionLease:{document_id:'new'},regionSource:{attested:true,valid:()=>true,sample:()=>({})}});
- await assert.rejects(pending,/observer reached after preview/);
+ const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays:new Map(),chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};
+ const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
+ let reached=false;const abort=new AbortController();
+ mirror.world=async()=>{reached=true;throw Error('ordinary mirror preparation')};
+ const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope',abort.signal).catch(error=>error);
+ try {
+  await new Promise(setImmediate);
+  assert.equal(reached,true,'preparing a mirror must not depend on the optional native producer starting');
+  assert.match((await pending).message,/ordinary mirror preparation/);
+ } finally {abort.abort();await pending;}
 });
 
 for(const reply of ['evicted','delta','rejected'])test('MP-08/MP-10/MP-11 navigation during '+reply+' refuses before a snapshot or renderer query',async()=>{
@@ -774,7 +807,7 @@ test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without los
 });
 
 test('MP-08/MP-10/MP-11 a renderer that stays busy keeps the native preview waiting instead of failing the subscription',async()=>{
- const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',previewWaitedDocument:'new',issued:6,document_id:'old',resetAt:7};
+ const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
  const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},mirrorTarget:async()=>tab};
  const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});let busy=true;
  mirror.world=async()=>{if(busy)throw Object.assign(Error('browser CDP method Page.getFrameTree timed out after 5000ms'),{code:'browser_cdp_timeout'});throw Error('observer reached')};
@@ -943,4 +976,106 @@ test('MP-08/MP-10/MP-11: a reset preserves native-focus typing without relaxing 
   await assert.rejects(resolve(2, { kind: 'key', key: 'a' }), /stale mirror input epoch/);
   stream.fallback = false; tab.document_id = 'next';
   await assert.rejects(resolve(2, { kind: 'key', key: 'a' }), /stale mirror input document/);
+});
+
+// browserperf r2: a live resize that lands while a packet is observed answers that credit with a reset at the new
+// size; an error there retired the viewer's mirror and showed "Loading page…" for the whole drag.
+test('MP-08/MP-10 a layout change during an observation answers the same credit with a reset', async () => {
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } });
+  let builds = 0;
+  mirror.packet = async () => { builds++; if (builds === 1) throw new Error('MP-11: mirror layout changed during observation'); return 'reset at the new size'; };
+  const stream = { chain: Promise.resolve(), hurry: 0 };
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 4, wait_ms: 0 }, 'scope'), 'reset at the new size');
+  assert.equal(builds, 2);
+  // A resend answered from history is a plain packet, not a promise.
+  let looked = 0; mirror.lost = () => looked++ === 0 ? null : 'issued packet from history';
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 3, wait_ms: 0, resend: true }, 'scope'), 'issued packet from history');
+  mirror.lost = () => null;
+  mirror.packet = async () => { throw new Error('MP-11: stale mirror protection policy or subscription'); };
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /stale mirror protection/);
+});
+
+// #1073 P2: a live drag can retire the observation and then its replacement; the credit keeps retrying until its deadline.
+test('MP-08/MP-10 repeated layout changes during one credit still answer it with a reset, within the credit deadline', async () => {
+  const mirror = new Mirror2({ host: { pageSize, scales: new Map() } });
+  mirror.lost = () => null;
+  let builds = 0;
+  mirror.packet = async () => { builds++; if (builds <= 3) throw new Error('MP-11: mirror layout changed during observation'); return 'reset at the final size'; };
+  const stream = { chain: Promise.resolve(), hurry: 0 };
+  assert.equal(await mirror.next(stream, { subscription_id: 's', after_sequence: 4, wait_ms: 0 }, 'scope'), 'reset at the final size');
+  assert.equal(builds, 4, 'three consecutive layout changes, then the current reset');
+  // The retries stay within the credit's own budget: past it the layout error reaches the viewer.
+  mirror.busyMs = 0; mirror.creditSlackMs = 30; builds = 0;
+  mirror.packet = async () => { builds++; await new Promise(resolve => setTimeout(resolve, 10)); throw new Error('MP-11: mirror layout changed during observation'); };
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 5, wait_ms: 0 }, 'scope'), /layout changed during observation/);
+  assert(builds >= 2 && builds <= 5, `bounded by the credit deadline (${builds} builds)`);
+  // A cancelled credit stops retrying at once.
+  const controller = new AbortController(); controller.abort(); builds = 0; mirror.creditSlackMs = 10000;
+  await assert.rejects(mirror.next(stream, { subscription_id: 's', after_sequence: 6, wait_ms: 0 }, 'scope', { signal: controller.signal }), /layout changed during observation/);
+  assert.equal(builds, 1);
+});
+
+// browserperf r10: a 16k-node snapshot took ~45 ms longer to cross CDP as a by-value object than as one JSON string.
+test('MP-08/MP-10: snapshots and drains cross CDP as one JSON string', async () => {
+ const sent = [], value = { root: 'n1', nodes: [{ id: 'n1', parent: null, kind: 'document' }], ops: [], sheets: [], resources: [], scroll: [0, 0] };
+ const world = { connection: { async send(method, params) { sent.push(params.expression); return { result: { value: params.expression.startsWith('JSON.stringify(') ? JSON.stringify(value) : value } }; } }, sessionId: 'S', contextId: 1, ref: 'm', frame: { id: 'F', loaderId: 'D' } };
+ const mirror = new Mirror2({ host: {} });
+ assert.deepEqual(await mirror.snapshotOnce(world, 'p', () => 1000), value);
+ assert.deepEqual(sent, ['JSON.stringify(m.snapshot())'], 'the snapshot is serialized in the page as JSON');
+ assert.deepEqual(await mirror.evaluate(world, 'm.drain()', false, 1000, true), value);
+ assert.equal(sent[1], 'JSON.stringify(m.drain())');
+});
+
+// browserperf r10: the escaped-function-name rewrite retried at every character of a name, so a long base64 data
+// URL in a sheet with any backslash cost time quadratic in its length (20 KB: ~0.4 s, in the page and the kernel).
+test('MP-08/MP-10: sanitizing a sheet with a long inline data URL and an escape stays linear', () => {
+ const css = `.a{content:"\\2022"}.b{background:url(data:image/png;base64,${'QUFB'.repeat(5000)})}.c{background:u\\72l(x.png)}`;
+ const started = performance.now(), out = sanitizeMirrorCss(css, 'https://x/', () => 'r1');
+ assert(performance.now() - started < 100, `took ${Math.round(performance.now() - started)} ms`);
+ assert.equal(out, '.a{content:"\\2022"}.b{background:url("mr:r1")}.c{background:url("mr:r1")}');
+});
+
+test('MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800', async () => {
+  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40]}];
+  assert.equal(regionArea(boxes,size),3200);
+  assert.equal(regionOverBudget([{box:[0,0,1280,800]}],size),true);
+  assert.equal(regionOverBudget([{box:[0,0,1000,800]}],size),false);
+  const {encodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),async screenshot(tab,clip){
+    shots.push(clip);return {data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255))};
+  }};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>null;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,[{x:1400,y:820,width:80,height:40,scale:1}]);
+  assert.equal(tiles.length,1); assert.equal(tiles[0].width,80); assert.equal(tiles[0].height,40);
+});
+
+for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
+  const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
+  let viewport = {width:1610,height:900};
+  const connection = {isOpen:()=>true,send:async()=>({frameTree:{frame:{loaderId:'doc'}}})};
+  const world = {connection,contextId:7,sessionId:'s',frame:{id:'f',loaderId:'doc'},ref:'m'};
+  const child = {...world,contextId:8,sessionId:'child'};
+  const region = 'n1000000003';
+  const stream = {id:'s',wire:2,chain:Promise.resolve(),world,tab_id:'t',document_id:'doc',policy,issued:1,resetAt:1,
+    attrSequence:new Map(),identity:new Map(),introduced:new Map([[region,1]]),frameSlots:new Map([[1,{owner:'n2',child}]])};
+  const host = {generation:1,protection:policy,browser:{connection},tabs:new Map([['t',tab]]),scales:new Map([['t',1]]),pageSize:()=>viewport};
+  const mirror = new Mirror2({host,assertWebTab(){},require:()=>stream});
+  mirror.regionBoxes = async()=>[{id:region,box:[1400,820,100,60]}];
+  mirror.evaluate = async (owner,expression) => {
+    if(expression.includes('.point(')){assert.equal(owner,child);return {x:4,y:8};}
+    if(expression.includes('.frameOrigin(')){assert.equal(owner,world);return [1400,820,1,1];}
+    return true;
+  };
+  mirror.regions.record(stream,{reset:true,nodes:[{id:region,parent:null,kind:'tile'}]});
+  const lease = await mirror.regions.resolve({mirror_subscription_id:'s',generation:1,document_id:'doc',sequence:1,region_id:region},'scope');
+  try {
+    const command = {kind,x:4,y:8,sequence:1,...(kind==='scroll'?{delta_x:0,delta_y:120}:{})};
+    const resolved = await lease.resolveInput(command,'scope');
+    assert.deepEqual(resolved.input,{kind,x:1404,y:828,...(kind==='scroll'?{delta_x:0,delta_y:120}:{})});
+    await resolved.guard();
+    viewport = {width:1280,height:800};
+    await assert.rejects(lease.resolveInput(command,'scope'),/region_retired/,'a resize still retires the old lease');
+    await assert.rejects(mirror.resolveInput(stream,tab,{subscription_id:'s',sequence:1,action:{kind,node_id:region,x:4,y:8,delta_x:0,delta_y:120}},'scope'),/changed mirror input target/,'the committed smaller viewport remains the input bound');
+  } finally {await lease.close();}
 });

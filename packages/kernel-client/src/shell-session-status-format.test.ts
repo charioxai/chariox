@@ -261,3 +261,11 @@ test("formatSessionRuntimeStatus renders unfocused unread idle output as done", 
   assert.match(rendered, /agent runtime:\n  - agent-done: Done /)
   assert.match(rendered, /\n  - agent-focused: Idle /)
 })
+
+
+test("archived agents do not appear in active session status", () => {
+  const session = makeSession({ agents: [makeAgent({ id: "live", agent_ref: "live" }), makeAgent({ id: "archived", agent_ref: "archived", archived: true })] })
+  const text = formatSessionRuntimeStatus(session)
+  assert.ok(!text.includes("archived"))
+  assert.equal(session.agents.length, 2)
+})

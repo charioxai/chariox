@@ -314,6 +314,7 @@ async fn cold_claude_credential_preflight_does_not_fence_the_home_prompt() {
                 model: Some("sonnet".into()),
                 effort: None,
             },
+            None,
             "resume the same native conversation",
             "",
             Vec::new(),
@@ -405,6 +406,7 @@ async fn unavailable_claude_profile_keeps_a_definitive_rejection_receipt() {
                 model: Some("sonnet".into()),
                 effort: None,
             },
+            None,
             "unavailable selected profile",
             "",
             Vec::new(),
@@ -455,4 +457,55 @@ async fn stale_active_run_hint_requires_cold_claude_credential_on_worker() {
         other => panic!("unexpected worker cold-launch error: {other}"),
     }
     assert!(fixture.state.owned.provider_store.list_runs().is_empty());
+}
+
+#[tokio::test]
+async fn leased_permission_session_grant_ends_after_a_scope_round_trip() {
+    use crate::runtime::state::claude_permission_rules::{session_grant, GrantScope};
+    use std::path::Path;
+    let fixture = native_lease_fixture();
+    let state = &fixture.state;
+    let agent = state
+        .update_relay_leased_agent_config(
+            &fixture.leased_agent_id,
+            AgentExecutionMode::Build,
+            AgentPermissionLevel::Required,
+        )
+        .await
+        .unwrap();
+    let scope = GrantScope {
+        working_directory: Some(Path::new("/work/app").to_path_buf()),
+        permission_level: AgentPermissionLevel::Required,
+        execution_mode: AgentExecutionMode::Build,
+    };
+    let grant = session_grant(
+        "Bash",
+        &serde_json::json!({"command":"cargo test"}),
+        Some(Path::new("/work/app")),
+    )
+    .unwrap();
+    for (mode, level) in [
+        (AgentExecutionMode::Plan, AgentPermissionLevel::Required),
+        (AgentExecutionMode::Build, AgentPermissionLevel::Yolo),
+    ] {
+        state
+            .claude_session_grants
+            .remember(&agent.backing_agent_id, scope.clone(), &grant);
+        state
+            .update_relay_leased_agent_config(&fixture.leased_agent_id, mode, level)
+            .await
+            .unwrap();
+        state
+            .update_relay_leased_agent_config(
+                &fixture.leased_agent_id,
+                AgentExecutionMode::Build,
+                AgentPermissionLevel::Required,
+            )
+            .await
+            .unwrap();
+        assert!(state
+            .claude_session_grants
+            .covering(&agent.backing_agent_id, &scope, &grant)
+            .is_none());
+    }
 }

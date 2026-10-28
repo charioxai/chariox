@@ -36,7 +36,7 @@ test("workflow inspector projects node instruction editor metadata and callbacks
   assert.deepEqual(inspector?.meta, [
     "Workflow: workflow-1 (Release)",
     "Node: node-1",
-    "Agent: agent-a (Builder)",
+    "Agent: Builder",
   ])
   assert.equal(inspector?.draft, "draft instructions")
 
@@ -114,7 +114,7 @@ test("workflow inspector projects runtime state for the selected workflow node",
   assert.deepEqual(inspector?.meta.slice(0, 5), [
     "Workflow: workflow-1 (Release)",
     "Selected: node node-1",
-    "Agent: agent-a (Builder)",
+    "Agent: Builder",
     "Run: run-new",
     "Run status: failed",
   ])

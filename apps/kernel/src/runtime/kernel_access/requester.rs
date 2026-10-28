@@ -148,7 +148,7 @@ pub(crate) fn popup_copy(
         });
         return (
             "External agent access",
-            format!("{who} wants access to Chariox. Allow?"),
+            format!("{who} wants access to this kernel and your other kernels. Allow?"),
         );
     }
     let minutes = remaining_minutes.max(1);
@@ -171,11 +171,11 @@ mod tests {
         let copy = |harness, grant| popup_copy(harness, grant, 5).1;
         assert_eq!(
             copy(None, true),
-            "An external agent wants access to Chariox. Allow?"
+            "An external agent wants access to this kernel and your other kernels. Allow?"
         );
         assert_eq!(
             copy(Some(KernelAccessProviderHarness::Claude), true),
-            "Claude Code (an external agent) wants access to Chariox. Allow?"
+            "Claude Code (an external agent) wants access to this kernel and your other kernels. Allow?"
         );
         assert_eq!(
             copy(Some(KernelAccessProviderHarness::Claude), false),

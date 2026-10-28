@@ -839,4 +839,58 @@ fn a_publication_previews_its_apps_before_and_after_preparation() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// A repeated Start for a trigger that already runs answers with that gateway, though
+/// every automatic port is taken: it needs no new socket.
+#[test]
+fn a_repeated_start_of_a_running_trigger_needs_no_free_port() {
+    let harness = LocalRouterTestHarness::new();
+    let graph = create_publication_test_graph(&harness, "repeat-start");
+    let publication = publish(&harness, &graph, "repeat-start", "ingress");
+    let runtime = harness.runtime_state();
+    harness.block_on_test_task({
+        let (runtime, session_id, publication_id) = (
+            runtime.clone(),
+            graph.session_id.clone(),
+            publication.id().to_owned(),
+        );
+        async move {
+            runtime
+                .fixture_run_publication_runtime(&session_id, &publication_id)
+                .await
+        }
+    });
+    // A port that cannot be bound is as taken as one this test holds.
+    let _taken: Vec<_> = (3000..=3099)
+        .filter_map(|port| std::net::TcpListener::bind(("127.0.0.1", port)).ok())
+        .collect();
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::ControlWorkflowPublicationRuntime(
+            crate::local::ControlWorkflowPublicationRuntimeRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().into(),
+                action: crate::local::WorkflowPublicationRuntimeAction::Start,
+                host: None,
+                port: None,
+                kernel_url: None,
+            },
+        ))
+        .expect("a running trigger answers a repeated Start");
+
+    match response {
+        crate::local::LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
+            status,
+            message,
+            ..
+        } => {
+            assert_eq!(status, "running");
+            assert_eq!(
+                message.as_deref(),
+                Some("publication runtime is already running")
+            );
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
 mod copy;

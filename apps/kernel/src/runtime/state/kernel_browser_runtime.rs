@@ -1,6 +1,7 @@
 //! MD-2/MD-3: routing and focused-agent MCP adapter for the host service.
 use super::*;
 use crate::local::KernelBrowserCommand;
+use crate::runtime::kernel_browser_features as features;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
 /// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
@@ -391,19 +392,15 @@ impl KernelRuntimeState {
             } => self.is_room_display(subscription_id),
             _ => false,
         };
-        if !room_control
-            && std::env::var("CHARIOX_KERNEL_BROWSER_DISPLAY").as_deref() != Ok("1")
-            && !(std::env::var("CHARIOX_KERNEL_BROWSER_MIRROR").as_deref() == Ok("1")
-                && matches!(
-                    &request,
-                    KernelBrowserDisplayRequest::Takeover { .. }
-                        | KernelBrowserDisplayRequest::Release { .. }
-                        | KernelBrowserDisplayRequest::Actors
-                ))
-        {
-            return Err(host_error(
-                "MD-DISPLAY: experimental display disabled".into(),
-            ));
+        let mirror_control = features::mirror_enabled()
+            && matches!(
+                &request,
+                KernelBrowserDisplayRequest::Takeover { .. }
+                    | KernelBrowserDisplayRequest::Release { .. }
+                    | KernelBrowserDisplayRequest::Actors
+            );
+        if !(room_control || features::display_enabled() || mirror_control) {
+            return Err(host_error("MD-DISPLAY: display disabled".into()));
         }
         Box::pin(self.kernel_browser_display_request(caller, request)).await
     }
@@ -674,10 +671,13 @@ impl KernelRuntimeState {
             .await?;
         // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left is read after the
         // serial input lane is free (a read inside it queued every later key) and joins this reply.
+        // The relay's input turn for this lane is given back too: a typed URL otherwise waited one
+        // omnibox read per character, and its Enter reached Chrome 0.3-0.5 s late.
         let follow = input_at
             .and(result.as_object_mut())
             .and_then(|reply| reply.remove("_follow"));
         if let Some(follow) = follow {
+            crate::transport::relay_client::release_input_turn();
             let admission =
                 host.admit_terminal(&user, caller.terminal_lifetime.clone().unwrap_or_default());
             let params = serde_json::json!({"op":"chrome_window_follow","tab_id":follow["tab_id"],"switches":follow["switches"],"observed_by":actor});
@@ -764,8 +764,8 @@ impl KernelRuntimeState {
                     input_schema: serde_json::json!({"type":"object","properties":{"agent":{"type":"string","minLength":1},"resources":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["browser_tab","app_view"]},"tab_id":{"type":"string"},"view_id":{"type":"string"}},"required":["kind"]}}},"required":["agent","resources"],"additionalProperties":false}), });
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
-                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -1094,6 +1094,72 @@ mod document_tests {
                 "MD-3: caller-bound retry receipts must distinguish connections"
             );
             assert_eq!(a.caller, retry.caller);
+        });
+    }
+
+    #[test]
+    fn mirror_and_display_requests_are_admitted_without_environment() {
+        // MP-08/MP-11: a plain kernel serves the mirror and display; "0" is the kill switch.
+        crate::test_support::isolated_env_test!();
+        use crate::runtime::command::{KernelCommand, KernelCommandSource};
+        use crate::runtime::router::CommandRouter;
+        std::env::remove_var("CHARIOX_KERNEL_BROWSER_MIRROR");
+        std::env::remove_var("CHARIOX_KERNEL_BROWSER_DISPLAY");
+        std::env::set_var(
+            "CHARIOX_KERNEL_BROWSER_SCRIPT",
+            "/nonexistent/kernel-browser-host.mjs",
+        );
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let state = router.runtime_state();
+            let request = crate::local::LocalDaemonRequest::KernelBrowser(
+                crate::local::KernelBrowserRequest {
+                    command: KernelBrowserCommand::State,
+                },
+            );
+            let caller = KernelCommand::from_local_request_with_caller(
+                "gate-check",
+                KernelCommandSource::LocalCli,
+                router
+                    .local_terminal_caller(KernelCommandSource::LocalCli, "gate-connection")
+                    .await,
+                None,
+                None,
+                &request,
+            );
+            let refusal = |command| {
+                let (state, caller) = (&state, &caller);
+                async move {
+                    state
+                        .kernel_browser_terminal_request(caller, command)
+                        .await
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_default()
+                }
+            };
+            let mirror = || KernelBrowserCommand::MirrorClose {
+                subscription_id: "gate".into(),
+                generation: 1,
+            };
+            let display = || KernelBrowserCommand::DisplayCapture {
+                tab_id: "gate".into(),
+                generation: 1,
+            };
+            for command in [mirror(), display()] {
+                let error = refusal(command).await;
+                assert!(!error.contains("disabled"), "default must admit: {error}");
+            }
+            std::env::set_var("CHARIOX_KERNEL_BROWSER_MIRROR", "0");
+            std::env::set_var("CHARIOX_KERNEL_BROWSER_DISPLAY", "0");
+            assert!(refusal(mirror()).await.contains("mirroring disabled"));
+            assert!(refusal(display()).await.contains("display disabled"));
         });
     }
 

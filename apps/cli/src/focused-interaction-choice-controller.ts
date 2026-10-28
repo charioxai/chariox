@@ -37,6 +37,8 @@ export type FocusedInteractionChoiceControllerDeps = {
   /** Text already typed in the composer; Enter and digits then belong to it. */
   getComposerText?: () => string
   getSessionId: () => string
+  /** The session's interactions as this client holds them now (kernel events may be newer than a response). */
+  getActiveInteractions: () => readonly RuntimeInteraction[]
   getSelectedIndex: (interactionId: string) => number | undefined
   setSelectedIndex: (interactionId: string, index: number) => void
   getCustomReply: (interactionId: string) => string
@@ -131,8 +133,13 @@ export function createFocusedInteractionChoiceController(
       // Provider sign-in keeps one interaction alive across code/retry phases.
       if (!providerLogin) answered.add(key)
       if (answered.size > 256) answered.delete(answered.values().next().value!)
-      deps.applySessionState(providerLogin ? session : { ...session, active_interactions: session.active_interactions?.filter(item =>
-        item.id !== interaction.id || item.requested_at_ms !== interaction.requested_at_ms) ?? [] })
+      const remaining = session.active_interactions?.filter(item =>
+        item.id !== interaction.id || item.requested_at_ms !== interaction.requested_at_ms) ?? []
+      // The answer can make the kernel ask the next question at once (the Vault unlock duration after the
+      // passphrase). The response snapshot may predate it while the kernel event already placed it here.
+      const asked = deps.getActiveInteractions().filter(item =>
+        item.requested_at_ms > interaction.requested_at_ms && !remaining.some(other => other.id === item.id))
+      deps.applySessionState(providerLogin ? session : { ...session, active_interactions: [...remaining, ...asked] })
       if (!submittedSecret) {
         deps.clearCustomReply(interaction.id)
         deps.setCustomEditing(interaction.id, false)

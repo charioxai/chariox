@@ -72,7 +72,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::ListArchivedAgents(request) => {
+            LocalRequestMetadata::new("agent.archived.list", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::SetRoomPinned(request) => {
+            LocalRequestMetadata::new("room.pin", Interactive).session(&request.session_id)
+        }
         LocalDaemonRequest::Notes(_) => LocalRequestMetadata::new("notes", Normal),
+        LocalDaemonRequest::Dictation(_) => LocalRequestMetadata::new("dictation", Normal),
         LocalDaemonRequest::KernelBrowser(_) => LocalRequestMetadata::new("kernel_browser", Normal),
         LocalDaemonRequest::CaptureVisibleRegion(_) => {
             LocalRequestMetadata::new("screenshot.capture", Normal)
@@ -81,6 +88,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("app.publisher.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
+        }
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => {
+            LocalRequestMetadata::new("agent.usage_snapshot.get", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
         }
         LocalDaemonRequest::BeginAppInstall(request) => {
             LocalRequestMetadata::new("app.install.begin", Interactive).optional_session(
@@ -131,6 +143,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => {
             LocalRequestMetadata::new("environment.tab.accessibility.get", Normal)
                 .session(&request.session_id)
+        }
+        LocalDaemonRequest::RoomTerminal(request) => {
+            LocalRequestMetadata::new("terminal.room", Normal).session(&request.session_id)
         }
         LocalDaemonRequest::RoomBrowserArtifact(request) => {
             LocalRequestMetadata::new("environment.browser.artifact", Normal)
@@ -211,6 +226,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("credential.secret.delete", Normal)
                 .optional_session(request.session_id.as_deref())
                 .optional_agent(request.agent_id.as_deref())
+        }
+        LocalDaemonRequest::CopyProviderAccountToKernel(_) => {
+            LocalRequestMetadata::new("provider_account.copy", Normal)
         }
         LocalDaemonRequest::SetProviderAccountCredential(request) => {
             LocalRequestMetadata::new("provider_account.credential.set", Interactive)
@@ -410,6 +428,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::SetAgentDeadline(request) => {
+            LocalRequestMetadata::new("agent.deadline.set", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::GetAgentDeadline(request) => {
+            LocalRequestMetadata::new("agent.deadline.get", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::AliasAgent(request) => {
             LocalRequestMetadata::new("agent.alias", Interactive)
                 .session(&request.session_id)
@@ -470,6 +498,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::ForkAgent(request) => {
             LocalRequestMetadata::new("agent.fork", Interactive).session(&request.session_id)
+        }
+        LocalDaemonRequest::ArchiveAgent(request) => {
+            LocalRequestMetadata::new("agent.archive", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
         }
         LocalDaemonRequest::DestroyAgent(request) => {
             LocalRequestMetadata::new("agent.destroy", Interactive)
@@ -596,15 +629,32 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
+        LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
         LocalDaemonRequest::ListKernelAccessGrants(_) => "kernel_access.list",
         LocalDaemonRequest::RevokeKernelAccessGrant(_) => "kernel_access.revoke",
+        LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",
+        LocalDaemonRequest::UnsubscribeEvents(_) => "events.unsubscribe",
+        LocalDaemonRequest::GetEventSubscription(_) => "events.subscription",
+        LocalDaemonRequest::ListEvents(_) => "events.list",
+        LocalDaemonRequest::WaitEvents(_) => "events.wait",
+        LocalDaemonRequest::AckEvents(_) => "events.ack",
+        LocalDaemonRequest::ListGatewayKernels(_) => "kernel_gateway.list",
+        LocalDaemonRequest::HeartbeatAttachments(_) => "kernel_gateway.heartbeat",
+        LocalDaemonRequest::JoinKernelLink(_) => "kernel_gateway.join",
+        LocalDaemonRequest::ForgetGatewayKernel(_) => "kernel_gateway.forget",
+        LocalDaemonRequest::StatKernelFile(_) => "machine_file.stat",
+        LocalDaemonRequest::ListKernelDirectory(_) => "machine_file.list",
+        LocalDaemonRequest::ReadKernelFile(_) => "machine_file.read",
+        LocalDaemonRequest::WriteKernelFile(_) => "machine_file.write",
         LocalDaemonRequest::KernelBrowser(_) => "kernel_browser",
         LocalDaemonRequest::Notes(_) => "notes",
+        LocalDaemonRequest::Dictation(_) => "dictation",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::BeginAppPublisherEnrollment(_) => "app.publisher.begin",
         LocalDaemonRequest::GetAppPublisherEnrollment(_) => "app.publisher.status",
@@ -736,6 +786,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "environment.tab.accessibility.get"
         }
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
         LocalDaemonRequest::RoomBrowserArtifact(_) => "environment.browser.artifact",
         LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
         LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
@@ -770,6 +821,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetClientCatalogSnapshot(_) => "client.catalog_snapshot.get",
         LocalDaemonRequest::GetClientCatalogRevisions(_) => "client.catalog_revisions.get",
         LocalDaemonRequest::GetProviderCommandCatalogs(_) => "provider.command_catalogs.get",
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
+        LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
         LocalDaemonRequest::ListProviderAccountProfiles(_) => "provider_account.list",
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
         LocalDaemonRequest::CreateProviderAccountProfile(_) => "provider_account.create",
@@ -835,6 +888,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
+        LocalDaemonRequest::CopyProviderAccountToKernel(_) => "provider_account.copy",
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
@@ -875,6 +929,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::QueryFreshRemoteMachineKernels(_) => {
             "remote_machine.kernel.query_fresh"
         }
+        LocalDaemonRequest::ListWaitingRoomSessions(_) => "waiting_room.sessions.list",
         LocalDaemonRequest::GetWaitingRoomInventory(_) => "waiting_room.inventory.get",
         LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_) => "waiting_room.public_snapshot.get",
         LocalDaemonRequest::ListExternalProviderSessions(_) => "external_provider_session.list",
@@ -956,6 +1011,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CaptureScreenshot(_) => "capability.screenshot.capture",
         LocalDaemonRequest::StoreTransferredFile(_) => "capability.file.store_transferred",
         LocalDaemonRequest::AliasSession(_) => "session.alias",
+        LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
+        LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
@@ -964,11 +1021,13 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ForkAgent(_) => "agent.fork",
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
+        LocalDaemonRequest::ArchiveAgent(_) => "agent.archive",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",
         LocalDaemonRequest::SyncRemoteExtensionManifest(_) => "agent.extension.manifest_sync",
         LocalDaemonRequest::ListHomeExtensionAudit(_) => "agent.extension.audit",
+        LocalDaemonRequest::ListArchivedAgents(_) => "agent.archived.list",
         LocalDaemonRequest::ListAgents(_) => "agent.list",
         LocalDaemonRequest::RegisterWorkflowNotificationSource(_) => {
             "workflow.notifications.register"

@@ -128,7 +128,7 @@ async fn enrollment_exchange<T: DeserializeOwned + Send + 'static>(
     body: Value,
 ) -> Result<T, DaemonError> {
     tokio::task::spawn_blocking(move || {
-        let response = ureq::AgentBuilder::new()
+        let response = crate::outbound_dial::agent_builder()
             .redirects(0)
             .timeout(std::time::Duration::from_secs(30))
             .build()

@@ -190,16 +190,23 @@ impl HttpTransport {
     ) -> Result<()> {
         let initial_deadline = admitted + Duration::from_secs(30);
         let lifetime = admitted + STREAM_LIFETIME;
-        let addresses = self
-            .dns
-            .resolve(target, initial_deadline, stopped.clone(), lease.clone())
-            .await?;
+        let addresses = crate::outbound_dial::interleave_families(
+            self.dns
+                .resolve(target, initial_deadline, stopped.clone(), lease.clone())
+                .await?,
+        );
         let mut connected = None;
-        for selected in addresses {
+        for (index, selected) in addresses.iter().copied().enumerate() {
             if super::stopped(stopped) {
                 return Err(HttpError::Cancelled);
             }
-            let attempt = initial_deadline.min(Instant::now() + Duration::from_secs(5));
+            // Stagger fallback addresses, but let the final path retry its SYN
+            // within the remaining request budget when no fallback remains.
+            let attempt = if index + 1 == addresses.len() {
+                initial_deadline
+            } else {
+                initial_deadline.min(Instant::now() + crate::outbound_dial::ADDRESS_ATTEMPT_TIMEOUT)
+            };
             let socket = tokio::select! {
                 biased;
                 _ = super::cancelled(stopped) => return Err(HttpError::Cancelled),

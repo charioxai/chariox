@@ -76,7 +76,7 @@ pub(crate) fn execute_search_workspace_directories_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let limit = request.limit.unwrap_or(12).clamp(1, 50);
     let directories =
-        search_workspace_directories(&request.query, limit, infer_waiting_room_launch_target())?;
+        search_workspace_directories(&request.query, limit, infer_waiting_room_launch_target(&[]))?;
     let workspace_git = directories
         .iter()
         .map(|path| crate::local::WorkspaceDirectoryGitSummary {
@@ -103,7 +103,7 @@ pub(crate) fn execute_create_workspace_directory_request(
 pub(crate) fn execute_list_workspace_worktrees_request(
     request: ListWorkspaceWorktreesRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let launch_target = infer_waiting_room_launch_target();
+    let launch_target = infer_waiting_room_launch_target(&[]);
     let worktrees = list_workspace_worktrees(
         &request.workspace_id,
         launch_target
@@ -119,7 +119,7 @@ pub(crate) fn execute_list_workspace_worktrees_request(
 pub(crate) fn execute_create_workspace_worktree_request(
     request: CreateWorkspaceWorktreeRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let launch_target = infer_waiting_room_launch_target();
+    let launch_target = infer_waiting_room_launch_target(&[]);
     let worktree = create_waiting_room_worktree(
         &request.workspace_id,
         request.path.as_deref(),

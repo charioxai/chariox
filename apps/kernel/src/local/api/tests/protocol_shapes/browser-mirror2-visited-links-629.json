@@ -1,0 +1,36 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10"
+  ],
+  "local_protocol": 636,
+  "peer_protocol": 239,
+  "allocation": "coordinator-allocated local 593, relay peer unchanged: additive visited_links (empty href for a link visited from the page's origin)",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2,
+        "visited_links": true
+      }
+    }
+  },
+  "subscribed": {
+    "subscription_id": "s",
+    "generation": 1,
+    "tab_id": "t",
+    "device_scale_factor": 1,
+    "wire": 2,
+    "visited_links": true
+  },
+  "remark_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "ops": [
+      {"op": "attr", "id": "n7", "name": "href", "value": ""}
+    ]
+  }
+}

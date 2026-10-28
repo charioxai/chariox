@@ -257,7 +257,8 @@ impl CharioxSkillRegistry {
         url: &str,
     ) -> Result<(CharioxSkillMetadata, PathBuf), DaemonError> {
         let url = skill_content_url(url)?;
-        let response = ureq::get(&url)
+        let response = crate::outbound_dial::agent()
+            .get(&url)
             .call()
             .map_err(|error| skill_url_error("skill.upsert.url", error))?;
         let skill_md = response

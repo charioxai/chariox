@@ -8,13 +8,20 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 #[test]
 fn public_remote_completion_preserves_worker_termination() {
     crate::test_support::isolated_env_test!();
-    run_async_with_large_test_stack(
-        "public-remote-completion-worker-termination",
-        public_remote_completion_preserves_worker_termination_async,
-    );
+    run_async_with_large_test_stack("public-remote-completion-worker-termination", || {
+        public_remote_completion_preserves_worker_termination_async(false)
+    });
 }
 
-async fn public_remote_completion_preserves_worker_termination_async() {
+#[test]
+fn compat_remote_completion_accepts_mapped_already_settled_error() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("public-remote-completion-already-settled", || {
+        public_remote_completion_preserves_worker_termination_async(true)
+    });
+}
+
+async fn public_remote_completion_preserves_worker_termination_async(already_settled: bool) {
     let _relay_test_guard = relay_client_test_guard().await;
     let _test_home = RelayTestHome::new();
     let server = RelayServer::new(RelayConfig {
@@ -277,8 +284,14 @@ async fn public_remote_completion_preserves_worker_termination_async() {
                 serde_json::to_string(
                     &chariox_relay::protocol::RelayEnvelope::DaemonIncomingPeerResponse {
                         relay_request_id,
-                        encrypted_response: Some(encrypted_response),
-                        error: None,
+                        encrypted_response: (!already_settled).then_some(encrypted_response),
+                        error: already_settled.then(|| {
+                            super::super::request_errors::map_relay_error(
+                                &crate::error::DaemonError::NoActivePrompt {
+                                    session_id: "worker-room".to_string(),
+                                },
+                            )
+                        }),
                     },
                 )
                 .expect("worker response envelope should serialize")
@@ -381,12 +394,27 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         None,
         &completion_request,
     );
-    let LocalDaemonResponse::PromptCompleted { completion } = router
-        .dispatch(completion_command, completion_request)
-        .await
-        .expect("public remote completion should succeed")
-    else {
-        panic!("public remote completion should return a completed prompt");
+    let completion = if already_settled {
+        // The provider-side compatibility service consumes the peer DaemonError
+        // directly; the public router has its own typed error projection.
+        let mut home = app.lock().await;
+        tokio::task::block_in_place(|| {
+            crate::app::KernelAgentService::new(&mut home).complete_active_prompt(
+                &session_id,
+                &agent_id,
+                None,
+            )
+        })
+        .expect("mapped already-settled peer error must finalize the home prompt")
+    } else {
+        let LocalDaemonResponse::PromptCompleted { completion } = router
+            .dispatch(completion_command, completion_request)
+            .await
+            .expect("public remote completion should succeed")
+        else {
+            panic!("public remote completion should return a completed prompt");
+        };
+        completion
     };
     worker_response
         .await
@@ -400,14 +428,17 @@ async fn public_remote_completion_preserves_worker_termination_async() {
         .expect("remote completion should be projected");
     assert_eq!(
         projected.provider_termination,
-        Some(crate::provider::ProviderRunTermination::process_exit(
-            23, 17_600
-        )),
+        (!already_settled)
+            .then(|| crate::provider::ProviderRunTermination::process_exit(23, 17_600)),
         "normal public completion must retain the worker-reported termination"
     );
     assert_eq!(
         projected.settlement_status,
-        crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        if already_settled {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        } else {
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        },
         "worker-reported termination must not project a successful turn"
     );
     assert_eq!(
@@ -417,8 +448,18 @@ async fn public_remote_completion_preserves_worker_termination_async() {
             .get_agent(&agent_id)
             .expect("remote agent should remain available")
             .state(),
-        crate::agent::AgentState::Error,
+        if already_settled {
+            crate::agent::AgentState::Focused
+        } else {
+            crate::agent::AgentState::Error
+        },
     );
+    assert!(app
+        .lock()
+        .await
+        .prompt_owner_active_prompt_for_agent(&session_id, &agent_id)
+        .unwrap()
+        .is_none());
 
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("relay server task should join");
@@ -569,12 +610,31 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         .await
         .expect("home remote inventory should refresh");
 
-    let session_id = {
+    let (session_id, home_tool_token) = {
         let mut app = app_home.lock().await;
-        let (session, _) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+        let (session, home_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-home",
+                std::env::temp_dir().to_string_lossy(),
+            ))
             .expect("home session should be created");
-        session.id().to_string()
+        let home_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "native-tui-idle",
+                )
+                .with_agent_id(home_agent.id().to_string()),
+            )
+            .expect("the home agent's provider run should launch");
+        let token = home_run
+            .runtime_mcp_auth_token()
+            .expect("the home agent's run should hold runtime tool auth")
+            .to_string();
+        (session.id().to_string(), token)
     };
 
     let remote_agent = {
@@ -685,14 +745,34 @@ async fn agents_can_be_spawned_on_a_remote_machine_and_cleaned_up_async() {
         &remote_agent,
     ))
     .await;
+    Box::pin(assert_remote_room_terminal(
+        &app_home,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
+    Box::pin(assert_home_agent_tools_reach_worker_terminal(
+        &app_home,
+        &home_tool_token,
+        &remote_agent,
+    ))
+    .await;
 
-    {
-        let mut app = app_home.lock().await;
-        let destroyed = crate::app::KernelSessionService::new(&mut app)
-            .destroy_agent(remote_agent.id())
-            .expect("remote agent should destroy");
-        assert_eq!(destroyed.id(), remote_agent.id());
-    }
+    Box::pin(assert_worker_provider_tools_act_as_the_home_agent(
+        &app_home,
+        &app_worker,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
+
+    Box::pin(assert_ending_the_room_stops_worker_terminals(
+        &app_home,
+        &app_worker,
+        &session_id,
+        &remote_agent,
+    ))
+    .await;
 
     {
         let mut app = app_worker.lock().await;
@@ -787,6 +867,562 @@ async fn assert_remote_native_terminal_resize(
     ));
     let app = app_worker.lock().await;
     assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
+}
+
+/// A home agent's terminal tools reach a terminal hosted by a worker: the
+/// list shows it with its host, and read, send and close take the host back.
+async fn assert_home_agent_tools_reach_worker_terminal(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    token: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let host = remote_agent.id();
+    let call = |tool: &'static str, arguments: serde_json::Value| {
+        let router = router.clone();
+        let token = token.to_string();
+        async move {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(&token, tool, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{tool}: {error}"))
+        }
+    };
+    let opened = call(
+        "chariox.terminal_open",
+        serde_json::json!({ "host_agent": host }),
+    )
+    .await;
+    assert!(opened.ok, "{:?}", opened.payload);
+    assert_eq!(opened.payload["terminal"]["host_agent"], host);
+    let id = opened.payload["terminal"]["terminal_id"]
+        .as_str()
+        .expect("terminal id")
+        .to_string();
+
+    let listed = call("chariox.terminal_list", serde_json::json!({})).await;
+    let listed = listed.payload["terminals"].as_array().expect("terminals");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|terminal| (
+                terminal["terminal_id"].as_str().unwrap(),
+                terminal["host_agent"].as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id.as_str(), Some(host))],
+        "the home agent's list shows the worker's terminal and its host"
+    );
+
+    let sent = call(
+        "chariox.terminal_send",
+        serde_json::json!({
+            "terminal_id": id,
+            "host_agent": host,
+            "text": "echo tool-worker-$((6*7))",
+            "enter": true,
+        }),
+    )
+    .await;
+    assert!(sent.ok, "{:?}", sent.payload);
+    let waited = call(
+        "chariox.terminal_wait",
+        serde_json::json!({
+            "terminal_id": id,
+            "host_agent": host,
+            "until": [{"text": "tool-worker-42"}],
+            "after_offset": sent.payload["after_offset"],
+            "timeout_seconds": 20,
+        }),
+    )
+    .await;
+    assert_eq!(
+        waited.payload["still_running"], false,
+        "{:?}",
+        waited.payload
+    );
+    let read = call(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": id, "host_agent": host }),
+    )
+    .await;
+    assert!(read.payload["screen_text"]
+        .as_str()
+        .unwrap()
+        .contains("tool-worker-42"));
+    let closed = call(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": id, "host_agent": host }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true);
+}
+
+/// A provider that runs on the worker uses terminals as its home agent in
+/// the home Room: it continues a program the home agent started, and it can
+/// open a terminal on the home kernel, a machine of the home Room.
+async fn assert_worker_provider_tools_act_as_the_home_agent(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    app_worker: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    use base64::Engine as _;
+    let (worker_token, home_agent_id) = {
+        let home = app_home.lock().await;
+        let worker_provider_run_id = home
+            .agents()
+            .get_agent(remote_agent.id())
+            .expect("remote agent should remain available")
+            .remote_execution()
+            .and_then(|binding| binding.active_worker_provider_run_id.clone())
+            .expect("worker provider run should be projected");
+        let worker = app_worker.lock().await;
+        let token = worker
+            .providers()
+            .get_run(&worker_provider_run_id)
+            .expect("worker provider run should exist")
+            .runtime_mcp_auth_token()
+            .expect("the worker run should hold runtime tool auth")
+            .to_string();
+        let home_agent_id = home
+            .agents()
+            .list_agents()
+            .into_iter()
+            .find(|agent| agent.session_id() == session_id && agent.id() != remote_agent.id())
+            .expect("the Room has its own home agent")
+            .id()
+            .to_string();
+        (token, home_agent_id)
+    };
+    let home_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let client = |operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: Some(remote_agent.id().to_string()),
+            host_agent: None,
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let worker_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_worker), 8);
+    let tool = |name: &'static str, arguments: serde_json::Value| {
+        let router = worker_router.clone();
+        let token = worker_token.clone();
+        async move {
+            router
+                .runtime_state()
+                .dispatch_authenticated_runtime_tool_call(&token, name, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{name}: {error}"))
+        }
+    };
+
+    // The home agent starts `cat` on its worker; it now drives the terminal.
+    let RoomTerminalResult::Opened { terminal } = client(RoomTerminalOperation::Open {
+        cols: 90,
+        rows: 24,
+        title: None,
+        command: None,
+    })
+    .await
+    else {
+        panic!("the home agent's terminal should open on the worker");
+    };
+    let id = terminal.terminal_id;
+    client(RoomTerminalOperation::Input {
+        terminal_id: id.clone(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode("cat\r"),
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // The same agent's tool call, authenticated by the worker's provider
+    // token, continues that program instead of being a different driver.
+    let sent = tool(
+        "chariox.terminal_send",
+        serde_json::json!({ "terminal_id": id, "text": "from-the-provider", "enter": true }),
+    )
+    .await;
+    assert!(
+        sent.ok,
+        "the worker provider is the home agent that started `cat`: {:?}",
+        sent.payload
+    );
+    let waited = tool(
+        "chariox.terminal_wait",
+        serde_json::json!({
+            "terminal_id": id,
+            "until": [{"text": "from-the-provider"}],
+            "after_offset": sent.payload["after_offset"],
+            "timeout_seconds": 20,
+        }),
+    )
+    .await;
+    assert_eq!(
+        waited.payload["still_running"], false,
+        "{:?}",
+        waited.payload
+    );
+    let closed = tool(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": id }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
+
+    // The home kernel is a machine of the home Room the provider can name.
+    let opened = tool(
+        "chariox.terminal_open",
+        serde_json::json!({ "host_agent": home_agent_id }),
+    )
+    .await;
+    assert!(opened.ok, "{:?}", opened.payload);
+    assert!(
+        opened.payload["terminal"]["host_agent"].is_null(),
+        "a terminal on the home kernel names no worker: {:?}",
+        opened.payload
+    );
+    let home_terminal = opened.payload["terminal"]["terminal_id"]
+        .as_str()
+        .expect("home terminal id")
+        .to_string();
+    let read = tool(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": home_terminal, "host_agent": home_agent_id }),
+    )
+    .await;
+    assert!(read.ok, "{:?}", read.payload);
+    let closed = tool(
+        "chariox.terminal_close",
+        serde_json::json!({ "terminal_id": home_terminal, "host_agent": home_agent_id }),
+    )
+    .await;
+    assert_eq!(closed.payload["closed"], true, "{:?}", closed.payload);
+
+    // A terminal the user opened on the home kernel names no worker. The
+    // provider addresses it by asking for the home kernel, without naming
+    // any home agent of the Room.
+    let user_client = |operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: None,
+            host_agent: None,
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let RoomTerminalResult::Opened { terminal } = user_client(RoomTerminalOperation::Open {
+        cols: 90,
+        rows: 24,
+        title: None,
+        command: None,
+    })
+    .await
+    else {
+        panic!("the user's terminal should open on the home kernel");
+    };
+    let user_terminal = terminal.terminal_id;
+    let listed = tool("chariox.terminal_list", serde_json::json!({})).await;
+    assert!(
+        listed.payload["terminals"]
+            .as_array()
+            .expect("terminals")
+            .iter()
+            .any(|terminal| terminal["terminal_id"] == user_terminal.as_str()
+                && terminal["host_agent"].is_null()),
+        "the provider's list shows the home terminal without a worker: {:?}",
+        listed.payload
+    );
+    let home_only = tool(
+        "chariox.terminal_list",
+        serde_json::json!({ "home_kernel": true }),
+    )
+    .await;
+    assert_eq!(
+        home_only.payload["terminals"].as_array().map(Vec::len),
+        Some(1),
+        "{:?}",
+        home_only.payload
+    );
+    let read = tool(
+        "chariox.terminal_read",
+        serde_json::json!({ "terminal_id": user_terminal, "home_kernel": true }),
+    )
+    .await;
+    assert!(read.ok, "{:?}", read.payload);
+    let sent = tool(
+        "chariox.terminal_send",
+        serde_json::json!({ "terminal_id": user_terminal, "text": "echo home-ok", "enter": true, "home_kernel": true }),
+    )
+    .await;
+    assert!(sent.ok, "{:?}", sent.payload);
+    assert!(
+        worker_router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &worker_token,
+                "chariox.terminal_read",
+                serde_json::json!({
+                    "terminal_id": user_terminal,
+                    "host_agent": home_agent_id,
+                    "home_kernel": true,
+                }),
+            )
+            .await
+            .is_err(),
+        "a machine is named once"
+    );
+    user_client(RoomTerminalOperation::Close {
+        terminal_id: user_terminal,
+    })
+    .await;
+}
+
+/// Ending the Room stops the terminals its agents' workers host and releases
+/// their leases, so nothing keeps running there.
+async fn assert_ending_the_room_stops_worker_terminals(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    app_worker: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    let leased_agent_id = remote_agent
+        .remote_execution()
+        .expect("agent is leased to a worker")
+        .leased_agent_id
+        .clone();
+    let backing_session_id = {
+        let mut app = app_worker.lock().await;
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent_id)
+            .expect("worker leased agent should exist")
+            .backing_session_id
+    };
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+        session_id: session_id.to_string(),
+        acting_agent: Some(remote_agent.id().to_string()),
+        host_agent: None,
+        operation: RoomTerminalOperation::Open {
+            cols: 80,
+            rows: 24,
+            title: None,
+            command: Some(vec!["sleep".to_string(), "300".to_string()]),
+        },
+    });
+    let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+    match router.dispatch(command, request).await {
+        Ok(LocalDaemonResponse::RoomTerminal {
+            result: RoomTerminalResult::Opened { .. },
+        }) => {}
+        other => panic!("a long-running worker terminal should open: {other:?}"),
+    }
+    let worker_terminals = || async {
+        app_worker
+            .lock()
+            .await
+            .room_terminals()
+            .list(&backing_session_id)
+            .len()
+    };
+    assert_eq!(worker_terminals().await, 1, "the worker hosts the terminal");
+
+    let request = LocalDaemonRequest::EndSession(crate::local::EndSessionRequest {
+        session_id: session_id.to_string(),
+    });
+    let command = KernelCommand::from_local_request("end-room", None, None, &request);
+    router
+        .dispatch(command, request)
+        .await
+        .expect("the Room should end");
+    for _ in 0..50 {
+        if worker_terminals().await == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        worker_terminals().await,
+        0,
+        "ending the Room leaves no terminal running on the worker"
+    );
+}
+
+/// A Room terminal for an agent leased to a worker runs on the worker, over
+/// the relay, and never on the home kernel.
+async fn assert_remote_room_terminal(
+    app_home: &Arc<Mutex<DaemonApp>>,
+    session_id: &str,
+    remote_agent: &crate::agent::AgentInstance,
+) {
+    use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+    use base64::Engine as _;
+    let home_router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(Arc::clone(app_home), 8);
+    let call = |acting_agent: Option<&str>, host_agent: Option<&str>, operation| {
+        let router = home_router.clone();
+        let request = LocalDaemonRequest::RoomTerminal(RoomTerminalRequest {
+            session_id: session_id.to_string(),
+            acting_agent: acting_agent.map(str::to_string),
+            host_agent: host_agent.map(str::to_string),
+            operation,
+        });
+        async move {
+            let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
+            match router.dispatch(command, request).await {
+                Ok(LocalDaemonResponse::RoomTerminal { result }) => result,
+                other => panic!("unexpected terminal response: {other:?}"),
+            }
+        }
+    };
+    let agent = Some(remote_agent.id());
+    let RoomTerminalResult::Opened { terminal } = call(
+        agent,
+        None,
+        RoomTerminalOperation::Open {
+            cols: 90,
+            rows: 24,
+            title: None,
+            command: None,
+        },
+    )
+    .await
+    else {
+        panic!("terminal should open on the worker");
+    };
+    assert_eq!(
+        terminal.host_agent.as_deref(),
+        agent,
+        "an opened worker terminal names the agent that hosts it"
+    );
+    let id = terminal.terminal_id;
+    let typed = call(
+        agent,
+        None,
+        RoomTerminalOperation::Input {
+            terminal_id: id.clone(),
+            data_base64: base64::engine::general_purpose::STANDARD
+                .encode("echo remote-$((6*7)); pwd\r"),
+        },
+    )
+    .await;
+    assert!(matches!(typed, RoomTerminalResult::Input { input } if input.accepted));
+    let mut screen = String::new();
+    for _ in 0..100 {
+        if let RoomTerminalResult::Snapshot { snapshot } = call(
+            agent,
+            None,
+            RoomTerminalOperation::Snapshot {
+                terminal_id: id.clone(),
+            },
+        )
+        .await
+        {
+            screen = snapshot.screen_text;
+        }
+        if screen.contains("remote-42") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        screen.contains("remote-42"),
+        "worker terminal output: {screen}"
+    );
+    let RoomTerminalResult::Output { output } = call(
+        None,
+        agent,
+        RoomTerminalOperation::ReadOutput {
+            terminal_id: id.clone(),
+            after_offset: 0,
+            wait_ms: 0,
+        },
+    )
+    .await
+    else {
+        panic!("worker output expected")
+    };
+    assert_eq!(output.terminal.host_agent.as_deref(), agent);
+    let RoomTerminalResult::Waited { waited } = call(
+        None,
+        output.terminal.host_agent.as_deref(),
+        RoomTerminalOperation::Wait {
+            terminal_id: id.clone(),
+            watches: vec![crate::room_terminal::RoomTerminalWatch::OutputContains {
+                text: "remote-42".into(),
+            }],
+            after_offset: Some(0),
+            timeout_ms: 100,
+        },
+    )
+    .await
+    else {
+        panic!("worker wait expected")
+    };
+    assert_eq!(waited.terminal.host_agent.as_deref(), agent);
+    assert!(matches!(
+        call(
+            None,
+            waited.terminal.host_agent.as_deref(),
+            RoomTerminalOperation::Snapshot {
+                terminal_id: id.clone()
+            }
+        )
+        .await,
+        RoomTerminalResult::Snapshot { .. }
+    ));
+    let RoomTerminalResult::Listed { terminals } =
+        call(None, None, RoomTerminalOperation::List).await
+    else {
+        panic!("a list answers with terminals");
+    };
+    assert_eq!(
+        terminals
+            .iter()
+            .map(|terminal| (
+                terminal.terminal_id.as_str(),
+                terminal.host_agent.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(id.as_str(), agent)],
+        "the Room-wide list shows the worker's terminal and names the agent that hosts it; \
+         the home kernel holds none"
+    );
+    assert!(matches!(
+        call(None, agent, RoomTerminalOperation::List).await,
+        RoomTerminalResult::Listed { terminals } if terminals.len() == 1
+    ));
+    assert!(matches!(
+        call(
+            agent,
+            None,
+            RoomTerminalOperation::Close { terminal_id: id }
+        )
+        .await,
+        RoomTerminalResult::Closed
+    ));
 }
 
 #[test]
@@ -1220,9 +1856,41 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 attachments: vec![],
             })
         };
+        let kernel = app_home.lock().await.config().daemon_id.clone();
+        router
+            .runtime_state()
+            .outside_part_request(
+                "outside-coordinator",
+                true,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                &LocalDaemonRequest::SubscribeEvents(crate::local::SubscribeEventsRequest {
+                    targets: vec![crate::local::EventTarget {
+                        kernel,
+                        session_id: session_id.clone(),
+                        agent_id: Some(remote_agent_id.clone()),
+                    }],
+                }),
+            )
+            .unwrap();
+        let steer_ids = || {
+            router
+                .runtime_state()
+                .outside_store()
+                .outside_list("outside-coordinator", None, 100)
+                .unwrap()
+                .unwrap()
+                .events
+                .into_iter()
+                .filter_map(|event| match event.value {
+                    crate::local::OutsideEventValue::Steer { steer_id } => Some(steer_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
         let bad = request("old-home-prompt");
         let command = KernelCommand::from_local_request("stale-native-steer", None, None, &bad);
         assert!(router.dispatch(command, bad).await.is_err());
+        assert!(steer_ids().is_empty(), "a refused steer publishes nothing");
         let request = request("prompt-1");
         let command =
             KernelCommand::from_local_request("native-active-steer", None, None, &request);
@@ -1256,11 +1924,15 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                 response.is_err(),
                 "a late receipt must not commit to the settled home turn"
             );
+            assert!(
+                steer_ids().is_empty(),
+                "a rejected receipt publishes nothing"
+            );
         } else {
-            assert!(matches!(
-                response.unwrap(),
-                LocalDaemonResponse::ActivePromptSteered { .. }
-            ));
+            let LocalDaemonResponse::ActivePromptSteered { prompt } = response.unwrap() else {
+                panic!("native steer must be accepted");
+            };
+            assert_eq!(steer_ids(), vec![prompt.id().to_string()]);
             timeout(Duration::from_secs(3), async {
                 loop {
                     let count = app_worker
@@ -2467,8 +3139,23 @@ async fn remote_machine_agents_materialize_file_attachments_on_the_worker_async(
     let worker_path = materialized.url().trim_start_matches("file://");
     let worker_bytes = std::fs::read(worker_path).expect("worker attachment should exist");
     assert_eq!(worker_bytes, b"remote attachment body");
+    let attachment_root = {
+        let mut app = app_worker.lock().await;
+        let leased = RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&remote_leased_agent_id)
+            .expect("the worker should hold the leased agent");
+        crate::runtime::agent_actor::prompt_attachment_materialization::inline_prompt_attachment_root(
+            &leased.backing_session_id,
+            &leased.backing_agent_id,
+        )
+    };
+    assert!(
+        std::path::Path::new(worker_path).starts_with(&attachment_root),
+        "leased files must be inside the provider attachment bind"
+    );
 
     let _ = std::fs::remove_file(&source_path);
+    let _ = std::fs::remove_file(worker_path);
     let _ = shutdown_home_tx.send(true);
     let _ = shutdown_worker_tx.send(true);
     connector_home.await.expect("home connector should join");

@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "30553a86ec7f8e0d98844a5dce6ef4b05250cc0ad35eeb64b771dffc8cec3bb1"
+        "1537d21345b80c50e9b0446f2af5cfb76cc654fbb0c56b94092aa43afee432c1"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -646,4 +646,45 @@ fn mp08_mp10_mp11_browser_window_display_560_snapshot() {
     let extra = serde_json::json!({"KernelBrowser":{"command":{"op":"display_subscribe","tab_id":"t","generation":7,
         "target":{"kind":"browser_window","window_generation":3,"xid":42},"codecs":["png"],"bitrate":2000000,"device_scale_factor":1}}});
     assert!(serde_json::from_value::<LocalDaemonRequest>(extra).is_err());
+}
+
+// MP-08/MP-10/MP-11: coordinator allocated 629/232 for the shared resize mutation.
+#[test]
+fn browser_resize_protocol629_snapshot() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 629);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 232);
+    }
+    let bytes = include_bytes!("browser-resize-629.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "65a21c0be1468f33e4a03d9d887ebbb4426bb2c9c4f5327a530e3017de6df855"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut foreign = snapshot["request"].clone();
+    foreign["KernelBrowser"]["command"]["window_id"] = serde_json::json!(42);
+    assert!(serde_json::from_value::<LocalDaemonRequest>(foreign).is_err());
+}
+
+// MP-08/MP-09/MP-10/MP-11: one browser dialog state and answer for viewers and agents.
+#[test]
+fn browser_dialog_protocol630_snapshot() {
+    let bytes = include_bytes!("browser-dialog-630.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), snapshot["request"]);
+    let mut invalid = snapshot["request"].clone();
+    invalid["KernelBrowser"]["command"]
+        .as_object_mut()
+        .unwrap()
+        .remove("dialog_id");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
 }

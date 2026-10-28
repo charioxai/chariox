@@ -131,7 +131,7 @@ focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
 
 ### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, a running prompt submitted by the owner
+A running prompt submitted by the owner
 through a human attachment supplies acquisition causation. Agent messages,
 workflows, schedules and continuations do not. A new App binding or kernel
 browser grant also requires the owner's resource-specific `RuntimeInteraction`
@@ -663,7 +663,7 @@ the event status and retry path rather than being silently dropped.
 
 ## 3.3.4 Regular Agent Room Tools (MP-08 / MP-10 / MP-11, A01)
 
-PR1 is enabled with `CHARIOX_ROOM_AGENT_TOOLS=1`. Ordinary provider runs receive
+PR1 is always enabled. Ordinary provider runs receive
 `chariox.room.*`, command/guide discovery, public room history/trace, and the
 existing workflow-code/registry tools. Legacy `/meta` remains available during
 migration. Aliases share the kernel admission path; they do not create another
@@ -701,10 +701,30 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
+### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
+
+Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
+deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
+`AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
+A deadline can shorten, never extend. The kernel rejects new work after it is
+reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
+admission fencing from completed cleanup. A kernel restart enforces overdue
+work on startup. This does not add a relay shape; peer **181** is inherited.
+Leased executors require their own deadline enforcement and are refused here.
+
+`RelayStatus.status.capabilities` advertises `agent_deadline_v1` only when these
+requests are implemented. Coordinator adapters check that capability before
+sending either request. Without it they report no kernel deadline and may keep
+a coordinator-side timer, whose process, network and access grant are required;
+that timer is not durable kernel enforcement.
+
 ## 3.3.5 Durable Agent Tasks and Events (MP-08 / MP-09 / MP-10 / MP-11, A02)
 
 MP-08 / MP-09 / MP-10 / MP-11: the integrated acceptance contract uses local
-protocol **513** and relay peer protocol **121**. It combines the agent-model
+protocol **591** and relay peer protocol **197** (the agent-model line's 537/145
+allocation and the landing's 567/175 are merged into this number). It combines main 520/128 direct browser/terminal carriers and
+owner-managed machine/context admission with the agent-model 513/121 union:
+it retains the agent-model
 493/102 task, wake, Goal and leased-watcher contracts; main's local 490 bounded
 relay response framing and socket-local receipts; and the native display,
 App-view, Notes, grant, capture, DOM-mirror and agent-tab contracts integrated
@@ -712,10 +732,45 @@ at local 491. The display history includes bounded stripes (447), binary frames
 with WebP tiles and scroll rectangles (466), and relay display push/ACKs (475).
 Binary transport downgrade does not admit an obsolete worker runtime: remote
 lease creation, restored bindings, Room browser forwarding, context transfer and
-hosted slice receipts require peer 121 or newer. 513/121 also includes main's
+hosted slice receipts require peer 181 or newer. The aggregate also includes main's
 local 491 / relay peer 101 (#974) kernel ownership, waiting-room and Room
-workflow contracts. Client feature floors depend on
-the contracts they use; this entry allocates no new protocol version.
+workflow contracts. Client feature floors are listed separately below; the
+merged 585/181 allocation identifies the integrated runtime contract; the landing's
+567/175 `fonts` op `absent` list is part of it.
+
+MP-08 / MP-10 / MP-11: 573/181 fences the leased assessment control identity.
+The worker maps `completion-assessment:<backing-prompt-id>` to
+`completion-assessment:home:<home-prompt-id>` only through its private durable
+admission binding. Other assessments cannot supply this check's verdict, even
+when their bytes arrive after its prompt boundary. Both kernels must speak 181;
+178 workers do not provide this identity. Ordinary failed completions retain the
+worker termination and settle as failed work. Upgrade/rollback keep 567 and 570
+reciprocal within the existing 32-entry policy; 370 is the oldest unpinned
+intermediate removed to make room.
+
+MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
+actor normalization for display metadata/credits and the historical workflow
+read policy. A run with neither immutable agent creator nor invoking-user proof
+is visible only to the authenticated kernel owner, even when another member
+has Full collaboration. List, Get, snapshots and updates mark it with
+`created_before_ownership_tracking=true`; current endpoint/Room ownership never
+reassigns it. Web/TUI label it **Created before ownership tracking · read-only**.
+Coordinator decision of 2026-10-13 17:12: the authenticated kernel owner may
+stop/cancel a non-terminal historical run, including a captured Room Stop.
+Pause and Resume remain denied for everyone; other callers and all controls of
+terminal historical records remain denied before idempotent shortcuts. Stop
+never creates invoker proof or removes the historical label. New admissions retain
+the transactional immutable proof. Managed upgrade policy retains 506 as an
+explicit predecessor; the aggregate retains 493, 506, 513 and 520 in both
+upgrade and rollback policy. The shared agent-tab inventory minimum is 486
+(`kernelBrowserAgentTabsMinimumProtocolVersion`), enforced by the OSS CLI's
+`/access tabs` command. Owner-managed context transfer retains the C5 minimums
+of local 520 and peer 128. The OSS CLI has no separate Goal or window-sudo
+feature-version gate. The paired Cloud client defines its own web feature
+floors; they are not shared OSS minimums or implied by the aggregate allocation.
+The version-bound aggregate snapshot
+and encrypted lease-admission drill cover both parent contracts and rejection
+of older worker contracts.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -761,7 +816,7 @@ Older workers fail admission before creating a launch. Kernel-managed cwd,
 permission approval, output protection and pinned process signals apply on worker.
 
 
-With `CHARIOX_ROOM_AGENT_TOOLS=1`, local protocol 452 projects independent
+Local protocol 452 projects independent
 `agent_tasks` in the shared session snapshot. The kernel owns their SQLite
 ledger, attributed inbox, obligations and exact provider acceptance receipts.
 Task prompt IDs stay stable through admission, queueing, promotion and replay;
@@ -786,6 +841,9 @@ with the original task; its cancellation outcome invalidates the original
 wait, and a watched process settles only after physical exit. An owner Resume
 or corrective continuation takes precedence over that task's pending inbox
 delivery, so the event cannot create a replacement task during admission.
+Cancelling a wake that already ended (fired, exited, lost or cancelled) is
+idempotent: the answer is `settled:true` plus `final_state`; an unknown wake ID
+stays an error.
 
 A workflow node that yields remains supervised by its durable task after the
 native provider turn ends. The returned workflow run ID stays live and
@@ -1382,6 +1440,8 @@ Current slice-management surface:
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
+- Local daemon protocol v589 / relay peer v195 adds `GetProviderUsageSnapshot {}` and `GetAgentUsageSnapshot {session_id, agent_id}`. The read-only account response contains only provider/profile id/label and the existing provider-observed usage meters (rolling windows, credits, reset and observation times). It uses the ordinary provider-account authority owner scope, never refreshes credentials, and never estimates missing balances or windows. The agent response requires Room membership and an agent belonging to that Room. It returns observed context used/limit when available and the actual execution target (slice name, remote kernel alias/id, or local kernel alias/id), with the home kernel as `via` for remote execution. Context has no observation timestamp because provider-run activity time is not a usage observation. Remote admission credentials and profile locations are never included. Clients below 589 omit the usage menu, context ring and routed execution label without issuing the new requests.
+
 - Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
 - Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
@@ -3499,12 +3559,12 @@ Workflow trigger and deployment direction:
   Every use checks the process identity again to prevent PID reuse.
 
   An unapproved Unix peer can only send `RequestKernelAccess` with
-  `holder_pid` and optional `lifetime_minutes` (protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
+  `holder_pid` and optional `term` (protocol 568 replaces `lifetime_minutes`; protocol 451 removes `session_id`; old session-bearing requests are rejected). The holder
   must be the peer or an OS-verified ancestor. The kernel raises an owner-only
-  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to Chariox. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
+  passkey popup. Its copy is one short kernel-written question (grant: "<name> (an external agent) wants access to this kernel and your other kernels. Allow?"; extension: "<name>'s access ends in N minutes. Extend?"); `<name>` is only a harness recognised by exact configured path, otherwise "An external agent". The popup shows no pid, path, process start, version or scope; those stay in `requester` and the audit stream. No session must exist. Access popups use the kernel-wide interaction routing id `kernel-access`; this is not a session or grant scope.
   `RespondToInteraction` on this routing id returns `KernelAccessDecisionResponded { interaction_id }`, with no session projection.
   Grant and extension prompts have kind `access_grant` or `access_extension`,
-  `lifetime_minutes`, and `max_lifetime_minutes`. Protocol 470 adds an optional
+  `term` (protocol 568), and `max_lifetime_minutes`. Protocol 470 adds an optional
   `requester` object to both `RuntimeInteraction` and `PasskeyPrompt` for grant
   and extension decisions, established from the same OS-verified holder:
   `executable` (full path), `pid`, `process_start_id` (opaque decimal string,
@@ -3539,8 +3599,10 @@ Workflow trigger and deployment direction:
   their ancestor. Normal ownership and membership checks still apply.
   The holder cannot answer critical/passkey-required approvals or payments,
   mint/extend grants, change the passkey/access configuration, read/export
-  secrets, attach to a REMOTE kernel or issue kernel-peer requests. Internal
-  leased-worker execution remains the local kernel’s responsibility.
+  secrets, or issue kernel-peer requests. Protocol 568 lets the holder reach the
+  user's other machines through this kernel's gateway (below); it never receives a
+  relay token, key or Cloud credential. Internal leased-worker execution remains
+  the local kernel’s responsibility.
   A holder may request `/sudo` for a local agent in any local session; each
   request requires a fresh terminal popup confirmation. No remember window
   applies and the holder never submits the passkey or becomes a sudoagent.
@@ -3567,15 +3629,18 @@ Workflow trigger and deployment direction:
   switches authority. Fresh connections prefer the holder’s own eligible
   process grant over an ancestor’s. There is no session-based selection or
   response filtering. Session end does not revoke a local-kernel grant.
-  Grants stay in memory and do not survive a restart. Durable grant events
-  record metadata and outcomes; terminal-answer and passkey verification
+  Grants stay in memory. Only a grant that lasts until its holder exits
+  survives a restart, under the same id and event inbox, while the same
+  process (pid, start time, uid, executable) still lives; a timed grant ends.
+  Durable grant events record metadata and outcomes (a granted event also
+  records the holder's process identity, which a restart checks again); terminal-answer and passkey verification
   events correlate by interaction id. They contain no passkey or bearer.
 
   TCP and relay access requests return a pointer to the Unix socket; neither
   transport can use a grant. Existing TCP token and tokenless log-mode
   behavior remains until enforcement. `LocalIpcClient` supports
   `ws+unix:///absolute/socket`. `chariox access request
-  [--holder-pid <pid>] [--minutes <minutes>] [--socket <path>]` waits for
+  [--holder-pid <pid>] [--until-exit | --minutes <minutes>] [--socket <path>]` waits for
   the popup and prints public grant metadata. MP-08 / MP-10 / MP-11: the default
   holder is the nearest installed official provider in the CLI launcher's
   OS-verified ancestry, including native Codex behind its npm launcher. Unknown
@@ -4052,7 +4117,7 @@ or multiple active workflow runs. Subscribers always belong to workflows.
 ### MP-08 / MP-09 / MP-10 / MP-11 — transitional durable agent lifecycle (A02)
 
 Local daemon protocol **452** adds `RuntimeSession.agent_tasks`; relay82 is inherited
-from #885. The transitional `CHARIOX_ROOM_AGENT_TOOLS=1` surface publishes
+from #885. The room agent tools surface publishes
 `chariox.events.subscribe/subscriptions/inbox/ack/yield/blocked`. Tools require the
 current task and prompt IDs; hidden turn context supplies both. Independent
 user prompts retain separate task records. Work can be working, waiting on
@@ -4797,6 +4862,183 @@ clears the list. `browser-mirror2-font-absent-567.json` pins the shape (Rust has
 `browser_mirror2_font_absent_567_shape_is_pinned`). Older kernels never send the field; older
 viewers refuse it, so they must stay below 567 or negotiate the same wire.
 
+Allocated 603/209 extends the original594/200 `Dictation` request with service and setup state.
+The original594 fixture remains immutable. The expanded contract uses the `Dictation` request (terminal callers only, like `Notes`): kernel
+dictation, speech-to-text on the kernel the person is connected to. `status` reports the model as
+`not_downloaded`, `downloading` (`received_bytes` of `total_bytes`), `ready` or `failed` (`reason`)
+and the saved `language`, explicit `configured` flag, selected `service`, owner-scoped `vault_key`
+handle and `key_state` (`not_required`, `locked`, `missing` or `saved`; never a key value).
+`set_service` selects local/OpenAI/ElevenLabs and marks the kernel configured; `clear_service` resets
+configuration to Not set up without deleting the model. `download_model` starts or resumes the pinned download (it never starts
+without this explicit request); `set_language` saves an ISO 639-1 code or `null` (detect);
+`append_audio` adds 16 kHz mono 16-bit little-endian PCM at the `offset` the kernel already holds
+(chunks of at most 256 KiB, a recording of at most 120 s, four recordings at a time, discarded after
+120 s idle); `transcribe` returns `{ text, language }` and discards the recording. Refusals use the
+relay error codes `dictation_model_missing`, `dictation_audio_invalid`,
+`dictation_audio_out_of_order`, `dictation_audio_too_long`, `dictation_audio_unknown`,
+`dictation_language_invalid`, `dictation_settings_failed`, `dictation_busy` and
+`dictation_transcription_failed`. `dictation-603.json` pins the shape (Rust hash test
+`dictation_603_snapshot`). Older kernels refuse the request; clients require603 for the expanded contract. See
+`docs/DICTATION.md`.
+
+MP-08 / MP-10 / MP-11: allocated 596/202 makes two changes for clients that draw a Room from its first reply.
+`GetSessionState` (and the `state` of `AttachSessionView`) reads `agent_activity_revision` before it reads
+the session, so a state is never older than its revision; `session_snapshot` already labelled its
+revision before its state, so a client can order the two by revision and apply a snapshot's `session`,
+`room_workflows` and `agent_activity` instead of asking `GetSessionState` again. `AttachSessionView`
+takes the optional `latest_prompt_count` (default 1, capped at 20 like the history outline): how many of the latest prompts per
+agent the initial `history` holds, so a pane that needs more than one turn draws filled in one reply and
+older turns only ever load above it. Older kernels ignore the field and return one turn; clients
+feature-detect 596 for both and keep the read-after-event path below it.
+
+MP-08 / MP-10 / MP-11: the same 596/202 allocation (still unpublished on main, so it stays inside 596; if it
+had been published it would take 598/204) adds two events to a session subscription and one field to every
+subscription, so a client draws from events instead of reading again. Fixture: `session-feed-596.json`
+(`session_feed_596_shapes_are_pinned`), which pins all three shapes.
+- `agent_turn_changed { session_id, agent_id, history_revision, turn }`: the agent's latest turn changed.
+  `turn` is exactly the `SessionHistoryOutlineTurn` that `GetSessionHistoryOutline` (one prompt) and
+  `AttachSessionView.history` return, read the same way, so a client applies it with the code it has. It is
+  sent when terminal output, an assistant message or an activity change touches the agent, at most once per
+  50 ms per agent, and once more at the turn's end with its final status (`completed`, `cancelled` or
+  `failed`; the kernel looks again for up to 2 s until history shows the end). Nothing is sent when the
+  turn is identical to the one last sent, nor before the subscription's first snapshot: the view's own
+  read covers everything before it. `history_revision` is the newest history sequence stored for the agent
+  when the turn was read, before it was read, so the turn is never older than its revision. It orders
+  events of one agent, never decreases and, like `agent_activity_revision`, is a label the client compares,
+  not a cursor. Only agents of the session the caller may see get the event; external-agent streams never do.
+- `home_extension_audit_appended { session_id, agent_id, audit_event }`: a row appended to the agent's home
+  extension audit. `audit_event` is the row `ListHomeExtensionAudit` returns (`sequence`, `event_id`, `kind`,
+  `subject_id`, `timestamp_ms`, `payload`). It is named `audit_event` because `event` is the tag of every
+  kernel event. Only the caller's own audit rows arrive (same authority as the list) and only those of the
+  session's agents.
+- `home_extension_audit_lagged { session_id }`: the subscription's audit broadcast backlog overflowed.
+  The surviving partial batch is discarded and one signal replaces it. A client re-reads
+  `ListHomeExtensionAudit` once for each watched agent, replacing its cached list, then resumes applying
+  appended rows (deduplicated by audit `event_id` or `sequence`). Unrelated durable-state events share
+  the backlog, so their sequences cannot detect gaps in this audit feed.
+- `heartbeat_interval_ms` on the subscribe frame of a Room-list (`waiting_room_inventory`) or session
+  subscription: how often this subscription's `heartbeat` event arrives, at least 500. Left out, the interval
+  is as before (5 s). Below 500 the subscribe is refused with the error code `invalid_heartbeat_interval`.
+  Over the relay the field travels in `client_subscribe` and `daemon_subscribe`, next to
+  `resume_from_event_id`; a relay or kernel that does not know it ignores it and the default stays, so a
+  client keeps its liveness check while heartbeats arrive slower than it asked. `AttachSessionView` does not
+  take the field: the subscription that follows it does.
+  Repeating a client subscription applies the new interval; omitting it restores the default. A relay
+  client retires the old binding before replacing it when the interval changes, keeping the event cursor.
+  Direct and relay subscriptions continue emitting heartbeats while turn revisions, history outlines,
+  and audit feed rows are read; a slow history writer or database query does not suspend the schedule.
+Older kernels send neither event; clients feature-detect 596 and keep the read-after-event path below it.
+External agents v2 (provisional 568/176, renumbered by landing order): an access grant has a typed
+`term`, `{"minutes": n}` or `"until_holder_exits"`, replacing `lifetime_minutes` on
+`RequestKernelAccess`, on `KernelAccessGrant` and on access popups (`PasskeyPrompt.term`, the term the
+popup starts on; sudo popups keep `lifetime_minutes`). A request without a term gets the configured
+default (`grant_default_minutes`, 8 hours); `lifetime_minutes` is now an unknown field and is refused.
+The approve answer's `custom_reply` chooses the term: a number of minutes, or `until_exit` (access
+grants only; an extension adds minutes and refuses it). An unrecognised reply is refused. A grant of
+`until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
+holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
+or on passkey rotation. It survives a kernel restart under the same grant id and event inbox while
+the same holder process lives: the stopping kernel answers a waiting holder with an empty,
+`timed_out` list (not `subscription_ended`), and the next start restores the grant after checking
+the holder again (a holder gone by then ends the grant as `process_exit`). Descendants of the holder
+are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
+grants or draw the popup need 568.
+Relay peer 176 carries the same shapes. The Rust hash test
+`local_kernel_access_protocol_451_has_no_session_scope_or_bearer` pins them.
+
+Kernel gateway (same provisional 568/176). A grant holder names another kernel and the local kernel
+forwards the request over the relay, as a terminal-class client of the target kernel; the target stays the
+authority for its own sessions, agents, terminals and files.
+- Unix-socket frames: `request` frames take an optional `kernel` (the name `ListGatewayKernels` shows: the machine's name when the user has one kernel there, else `<machine>/<label>`; a kernel id, a kernel alias or a machine alias also works when it fits exactly one kernel, else `kernel_ambiguous` lists the candidates).
+  The response frame echoes it (`kernel`, absent for local answers). A frame with `kernel` on a connection
+  that is not a grant holder's is refused; a kernel request is never answered locally.
+- Subscriptions: a `subscribe` frame with `kernel` starts the same event stream on that kernel (a relay
+  `ClientSubscribe` from the gateway key; the target heartbeats the attachment itself). The ack is the target's;
+  each `event` frame carries `kernel`, and its `event_id` counts on the target's stream, so a resume sends
+  `resume_from_event_id` from the last one seen. The gateway renews the relay token in place before it expires.
+  If the connection to the kernel ends, the agent receives a second `response` frame with the subscribe
+  request's id and error `kernel_connection_lost` naming the last event id. One subscription per connection.
+- Attachments: an `AttachToSession` answered by a kernel is kept alive by the origin kernel while the grant is
+  live and the kernel answers: every 10 s it sends `HeartbeatAttachments { attachments: [{session_id,
+  attachment_id}] }` -> `AttachmentsHeartbeated { lapsed: [attachment_id] }` (the target records a terminal
+  heartbeat for the caller's own attachments; any other id is reported lapsed). A `DetachFromSession` stops it; a
+  grant that ends or three missed beats stop it, and the target sweeps the attachment after 30 s.
+- `ListGatewayKernels {}` -> `GatewayKernelsListed { kernels: [{name, kernel_id, label, machine_id, machine_alias,
+  status: online|offline|unpaired, last_seen_ms, gateway_ready, via: hosted|self_hosted}] }`. The list comes from one
+  inventory source (the relay inventory, filtered to the account's fresh Cloud targets when hosted). An offline
+  kernel stays listed with its last-seen time. A self-hosted kernel that answers but refuses this gateway (its owner revoked it there) is `unpaired`, not `offline`; hosted lists cannot tell and keep `online` until a call answers `kernel_unpaired`.
+- Origin decision: the local kernel checks that the grant is live and that the request shape is not human-only
+  (`authorize_gateway_request`; the same shape set as a local request: credentials, pairing, relay and Cloud
+  identity, protected configuration, any answer carrying a passkey). Interactions belong to the target.
+- Forwarding: one relay client connection per target (key-bound 5-minute client token from the kernel's Cloud
+  credential when hosted, replaced before it expires, closed after 5 idle minutes). The gateway key pair is made
+  by the kernel on first use and never returned by any request. The encrypted request is
+  `{command_id, request, on_behalf_of: {origin_kernel, origin_name?, grant_id, harness}}`. `origin_name` is how the origin kernel names itself to its owner (`<machine>/<alias>`); the target lists the gateway as `Agent gateway of <origin_name>` in its paired clients, and as `Agent gateway of <origin_kernel>` when it is absent. A target that advertises the
+  `kernel_gateway_v1` capability (in `RelayStatus.capabilities` and relay presence) refuses the human-only set for
+  any request that carries `on_behalf_of`, classifies `RespondToInteraction` from its own pending interactions and
+  never needs the origin's grant. A target without it rejects the envelope; the gateway then sends a plain
+  request for everything except `RespondToInteraction`, which is refused with `kernel_incompatible`.
+- Terminals: `RoomTerminal` is forwarded like any request. It is repeatable by `operation` (`list`, `snapshot`,
+  `read_output`, `wait`); `open`, `input`, `resize` and `close` go through the ledger, so a retried `input` never types
+  twice. The origin waits the usual 30 s plus the request's own `wait_ms` / `timeout_ms` (at most 240 s). A target
+  advertises `room_terminal_v1` (in `RelayStatus.capabilities` and relay presence); the gateway refuses
+  `RoomTerminal` to a kernel without it with `kernel_incompatible`, before sending anything. A grant holder is told
+  the terminal service's own sentence ("this Room has no terminal ...") instead of a withheld-detail message.
+- Sudo: `RequestKernelSudo` is forwarded like any state-changing request and, with `on_behalf_of`, is raised on the
+  target as its own sudo popup (requester shown as `<harness> via <origin_name>`; the person chooses the 1/2/4/8 h
+  window and types the target's passkey there). The origin waits for the answer (30 s plus 10 minutes). The requester
+  lives on the target as `<origin_kernel>:<grant_id>` until the origin reports its grant ended: a forwarded
+  `RevokeKernelAccessGrant { grant_id }` whose `grant_id` is the `on_behalf_of.grant_id` ends that requester's pending
+  request and running window (idempotent, no `command_id`, nothing else is revoked). Without `on_behalf_of` the
+  request is still refused.
+  The target also enforces the requester's liveness itself: the requester carries a 45 s lease, and the origin renews it
+  every 10 s while its grant lives with `RenewKernelSudoRequester {}` (only with `on_behalf_of`, no `command_id`, answered
+  `KernelSudoRequesterRenewed { renewed }`; `false` means the target no longer knows the requester). A lease that lapses
+  (origin killed, restarted, partitioned) ends the pending popup and the running window on the target without any report,
+  and a lapsed lease is never revived by a later renewal. Both shapes were added to the provisional 569/177.
+- The gateway on the target: a request carrying `on_behalf_of` records its sender, keyed by the relay's
+  authenticated client key (`gateway-origins.json`), and `ListPairedClients` lists it as `Agent gateway of <origin
+  kernel>` with client id `agent-gateway:<thumbprint>`. `RevokePairedClient` on that id refuses the key from then on,
+  with or without `on_behalf_of` (the origin reports `kernel_unpaired`). The owner lets it back in with
+  `RecordPairedClient` for that id, or by pairing it again with a link they just made (`JoinTerminalPairingLink`, the
+  one request a revoked gateway may still send). An unreadable list refuses gateway
+  requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
+  provider harness the kernel recognised, for display.
+- At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
+  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
+  before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
+  interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
+  id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
+- Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
+  another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
+  target keeps running.
+- Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
+  gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
+  size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
+  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 256 KiB) ->
+  `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
+  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `KernelFileWritten { path, received, complete,
+  sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
+  only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
+  kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
+  The first chunk replaces whatever is at the staging name; later chunks continue only a private regular file of the
+  kernel's user, never a link or another user's file (`file_staging_untrusted`: remove it and upload again).
+  A file is at most 2 GiB (`file_too_large`). Reads and write chunks name their offset, so a retry is safe and they
+  skip the at-most-once ledger. Typed errors: `file_path_invalid`, `file_not_found`, `file_permission_denied`,
+  `file_not_a_file`, `file_too_large`, `file_chunk_too_large`, `file_offset_mismatch`, `file_hash_mismatch`,
+  `file_staging_untrusted`, `file_exists`, `file_io_failed`; each message already says what to do next.
+- Self-hosted kernels (no Cloud profile): the kernels are the kernels this kernel paired with. Human-only requests,
+  refused for grant holders and forwarded requests: `JoinKernelLink { link, relay_token? }` -> `GatewayKernelJoined
+  { kernel }` (the gateway key asks the kernel that made a terminal pairing link, over the operator relay, to admit
+  it with `JoinTerminalPairingLink`; the link's relay must be this kernel's relay; a scoped relay also needs the
+  operator CLIENT token in `relay_token`) and `ForgetGatewayKernel { name }` -> `GatewayKernelForgotten
+  { kernel_id }`. Pairings are kept in `gateway-kernels.json` (0600) with the target key learned at first contact
+  and pinned from then on (a connection that announces another key is refused). `ListGatewayKernels` asks each paired kernel for its status over its own relay link: one that answers is online and its capabilities refresh, one that does not is offline with its last answer time. No relay inventory permission is needed, so a scoped relay works with the CLIENT token alone. Every state-changing request is audited as `kernel_access.forward` (kernel, request kind, outcome, latency; no payload) on the sending kernel and `kernel_gateway.request` (origin kernel, harness, request kind) on the receiving one. A refusal is
+  `kernel_join_refused`. The grant on the other kernel is revoked there; forgetting only drops it here.
+The Rust hash test `kernel_gateway_protocol_568_shapes_and_hash` pins the shapes.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
@@ -4932,3 +5174,483 @@ absent `prompt_id` (kernels below local 545) as unscoped. No field or variant is
 added; the bump records the changed relay terminal-event semantics under the
 Protocol Change Rule. Web/native minimums are unchanged unless a client requires
 prompt-scoped live rows.
+
+
+### Room stars (588/194)
+
+MP-11: `SetRoomPinned { session_id, pinned }` returns `RoomPinned { session }`.
+It persists the Room's `pinned` flag on its session and publishes the normal
+session and waiting-room projections so all of the person's clients see it.
+Like Project stars, the Room owner controls the pin. Room stars do not change
+last-used ordering. Legacy session records default to unpinned.
+
+Clients use these requests only with protocol 588 or newer. Protocol 567 clients
+continue to work; web clients attached to a 567 kernel keep Room stars in their
+own browser storage. This feature does not raise the general client minimum.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — reversible agent archive (636 / peer 239)
+
+`ArchiveAgent { session_id, agent_id, archived }` retains its protocol592 shape.
+It durably fences the owner's agent before stopping its provider process,
+queued prompts, wakes and terminals, withdrawing process-bound interactions and
+releasing its worker lease. Identity, configuration, history, provider thread and
+grants stay. Errors leave it archived and explain how to retry cleanup. Unarchive
+finishes cleanup, refreshes remote placement and returns the same agent idle;
+no prompt is launched. Children and unrelated Room agents continue. An active
+workflow node must be paused/rebound first. Agents cannot archive through sudo.
+`AgentArchived { session, agent }` returns the result and repaired focus.
+`ListArchivedAgents { session_id }` returns `AgentsListed` with archived agents;
+ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
+including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
+for edge cases, resource ownership and the proposal approval requirement.
+
+### Staging new UI union (599/205)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),
+usage (589/195), agent archive (592/198), dictation (594/200), and session
+snapshot state (596/202). It keeps protocol 567 and each feature predecessor
+reciprocal for managed upgrade and rollback. The 32-entry validator limit
+requires retiring unshipped branch protocols 371–375; released 376/377/411,
+Apps 416, main 472/520, display 552, and staging 567 remain admitted.
+The general web minimum remains 567; clients gate additive requests separately.
+
+
+### Staging new UI + dictation union (610/216)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union adds Vault speech services
+(603/209: speech-service selection, owner Vault metadata, setup state and
+recording context) to the 599/205 staging union. It keeps 599 and 567 as
+reciprocal managed-upgrade predecessors. The 32-entry validator limit retires
+the unshipped branch protocol 378; the other admitted releases stay. Clients
+require 603 for the Dictation settings contract and gate it separately from
+the general web minimum.
+
+### Staging union with external agents v2 (614/220)
+
+MP-08 / MP-09 / MP-10 / MP-11: this union carries the 610/216 staging line and
+the external agents v2 line (609/215: gateway kernels, outside events, agent
+deadlines, kernel files, provider account copy). Both lines keep their
+contracts; clients feature-detect each by its own allocated number. 610 stays a
+reciprocal managed-upgrade predecessor; 609 never shipped and is not admitted.
+The 32-entry validator limit retires the unshipped branch protocol 525.
+A subscribe frame that names a `kernel` (gateway route) and also sets
+`heartbeat_interval_ms` is refused with `heartbeat_interval_not_routable`: the
+routed kernel's own interval applies, so the field is not silently dropped.
+### Agent task and wake ledger projection — allocated 561 / 169 on the event-core line, carried by the merged local 567 / relay peer 175 (MP-08 / MP-09 / MP-10 / MP-11)
+
+The kernel keeps one durable task per provider turn and one durable wake per
+kernel-owned wake source (`kind` names the driver, for example `timer`). Both are
+additive; no client minimum is raised, and an old client simply ignores them.
+
+- `RuntimeSession.agent_tasks` is the session's `AgentTaskExecution` list: every
+  unfinished task plus the 32 most recent finished ones. A task has a `state`
+  (`working`, `waiting`, `blocked`, `done`, `cancelled`), its open `obligations`,
+  its `wait` (registration ids and finite `deadline_ms`), a monotonic `revision`
+  and a redacted `reason`.
+- `RuntimeSession.agent_wakes` is the `AgentWake` list: every armed wake plus the 64
+  most recent finished ones from the last day, with the driver's one-line
+  `summary`, proof of life (`verified_at_ms`), `next_due_ms`, and the receipts of the
+  last occurrence (`last_fired_at_ms`, `last_delivery`, `last_delivered_at_ms`,
+  `last_acknowledged_at_ms`). A client shows them and never decides them.
+- Both lists follow agent trace visibility: a caller who cannot see an agent's
+  trace does not receive its tasks or wakes. Empty lists are omitted.
+- Kernel event `agent_task_updated` (`session_id`, `task`) carries one changed
+  task. A subscriber that receives it applies it by `task_id` and `revision` and
+  need not wait for the next full snapshot. A wake change, or a task leaving the
+  bounded list, still sends the full session snapshot, because no event carries it.
+- Relay peer 169 binds the peer-visible session projection to local 561. There is
+  no new peer message.
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents` with the webhooks the integration's generator received for
+the calling owner (delivery id, event/action, `repo#PR` subject, received and
+published times, status; never prompt or reply context).
+`ReplayEventConnectionEvent { connection_id, delivery_id }` re-publishes one stored
+event and returns `EventConnectionEventReplayed`; AEDS dedupes on the occurrence id,
+so a replay of an already published event is acknowledged without a second run.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
+request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
+Relay peer 159 only pairs the embedded local response union with local 551.
+
+### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
+
+Numbering: the terminal shapes below were written at 562/170 and are carried by
+the provisional pair local 569 / peer 177 (568/176 is provisional for external
+agents); the final pair is fixed by landing order. The "170 re-binds ..." wording
+below means the peer version that carries them.
+
+A Room has kernel-owned terminals: real PTYs running the user's login shell
+(`$SHELL -l -i`, else the account's shell; bash instead of a bare `sh` account shell,
+as in a slice) in the Room's project folder, or a given program (argv, no shell). One request, `RoomTerminal { session_id,
+acting_agent?, operation }`, answers with `RoomTerminal { result }`.
+
+Operations: `open` (cols, rows, title?, command?), `list`, `snapshot`
+(screen text, scrollback text, redraw ANSI, cursor, output offset), `input`
+(base64 keystrokes written as one unit), `resize`, `read_output`
+(`after_offset`, `wait_ms`; `gap: true` means resync from a snapshot), `wait`
+(`finished`, `output_contains`, `waiting_for_input` conditions, capped at 240 s
+below the provider tool limit; on timeout `fired` is null and the program is
+still running) and `close`.
+
+A runtime tool `chariox.events.terminal` (`terminal_id`, `until` as for `wait`,
+`after_offset`, `host_agent` / `home_kernel` as for the other terminal tools,
+the agent's own machine by default) registers a notification in the wake
+registry as a `terminal` wake: yield on its registration and the kernel wakes
+the agent once with the exit code (`finished`) or the matched text and the
+screen, ending the wake. A terminal closed or ended first ends it as lost. For a
+terminal on a leased worker the worker runs the watch (the capped `wait` of the
+Room terminal peer request, repeated from the last output offset) and the home
+reports the one occurrence; a worker unreachable for 120 s, a replaced lease or
+a home restart ends the wake as lost, and the terminal itself is not affected.
+
+- Only the Room's owner may send it. A Room made before Cloud enrollment (owner
+  `local`) stays usable by the enrolled terminal. `host_agent` and `acting_agent`
+  must belong to the request's Room. Invited members get
+  `OwnershipAccessDenied`; people outside the Room never pass membership.
+- `acting_agent` names a Room agent to type as (the runtime tool bridge sets
+  it). Without it the actor is the user.
+- One driver: at the prompt any Room agent can type. A foreground program
+  (foreground process group is not the shell) belongs to the actor who
+  submitted it until it exits; other agents get `accepted: false` with
+  `refusal: "busy (driven by <actor>)"` and can still read. The user can
+  always type. The state is `driver: free | busy { driven_by }` in every
+  summary.
+- A tab the user typed in, resized or opened can be closed only by the user.
+- Closing a terminal, or its shell exiting, ends every process left in the shell's
+  session (background jobs included). The shell keeps the kernel user's SSH agent and
+  Git settings and does not inherit the kernel's own relay and local-auth tokens.
+- An operation for an agent that is leased to a worker (leased worker or slice) runs
+  on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
+  names the agent whose machine hosts the terminal when the actor is the user.
+  Every summary of a worker's terminal carries `host_agent`, to send back on later
+  requests about it. A `list` without `host_agent` or `acting_agent` is Room-wide:
+  this kernel's terminals plus those of every worker the Room's agents are leased
+  to; a worker that cannot be reached fails the list instead of hiding its tabs.
+- `wait` and `finished` use the shell's own report. For bash and zsh the kernel hands
+  the shell prompt hooks through its environment (no rc file is edited): OSC 133 `C`
+  before a command line runs and `D;<status>` after it, so a builtin or an instant
+  command is reported finished with its exit code. Nested shells do not repeat the
+  marks. A shell that cannot report (any other shell, a profile that replaces the
+  hooks) falls back to sampling the foreground process group, which reports no exit code.
+- An agent uses the terminals through the runtime tools `chariox.terminal_open`,
+  `_list`, `_send` (returns the `after_offset` to pass to `_wait`), `_read`, `_wait`
+  and `_close`, typed as the calling agent. Typing follows the agent's own permission
+  level in the Room: `yolo` asks nothing; `required` asks per `open` with a command and
+  per `_send` through the Room's `RuntimeInteraction`. Terminal output is untrusted data.
+- Tearing down a leased agent's backing Room (destroying the lease, expiry) ends its
+  terminals.
+- A terminal survives client disconnects. It ends on close, when its shell or
+  command exits, or with its Room. A kernel restart ends it as
+  `ended: kernel restarted` and keeps the scrollback.
+- Peer 177 only re-binds the embedded local response union to local 569; no
+  peer request is added.
+
+#### Terminal clients (TUI)
+
+`chariox terminal --session REF [--kernel-url URL] [list | new [TITLE] | close TERMINAL | TERMINAL]` and the TUI's
+`/room terminal [...]` attach the screen to a Room terminal (the newest running one, else a new one). Ctrl-] detaches;
+the terminal keeps running. The client resizes the terminal to its own size, draws `snapshot.screen_ansi_base64` on the
+outer terminal's alternate screen, then long-polls `read_output` from `snapshot.output_offset` and sends keystrokes
+as `input`. Rules every client follows:
+
+- A full-screen program inside the terminal never switches the outer screen: its alternate-screen switches are
+  turned into a clear (entering) or a fresh snapshot redraw (leaving).
+- A lost connection keeps the last screen; the client retries `read_output` from the same offset. `gap: true` means
+  the offset is no longer retained: redraw from a snapshot. Only a refusal by the kernel ends the attach.
+- Input that was in flight when the connection dropped is not replayed.
+- While a person types or output flows, the kernel looks at the PTY every 5 ms (every 100 ms when idle), so an echo
+  does not wait for the idle tick.
+
+
+### MP-08 / MP-10 / MP-11: bounded waiting-room sessions (provisional 569/177)
+
+The waiting-room inventory and public snapshot return the 100 most recently used
+sessions (fewer when the byte budget is reached), `sessions_total`, and an optional
+`sessions_next_cursor`. A client opens the full session list by sending
+`ListWaitingRoomSessions { cursor, limit }`; `WaitingRoomSessionsListed { page }`
+returns `sessions`, `total`, and `next_cursor`. Limits default to 500 and clamp to
+1–500. Row updates also carry the current count and cursor, including metadata-only
+changes while the visible recent rows stay the same. Cursors order by last-used
+time and session id, so equal timestamps do not
+skip or repeat rows. New activity may move a row into the recent inventory;
+clients merge by session id. Each snapshot/page stays below 2 MiB of JSON, leaving
+room for the encrypted/base64 relay envelope within 4 MiB. Oversized metadata or
+an individual summary returns a typed error and a recovery instruction. The
+relay's message cap is unchanged. Old clients receive the recent inventory;
+clients that need the full list feature-detect the cursor and fetch older pages
+when the person opens the picker. These shapes stay on the coordinator-approved
+provisional 569/177 pair pending integration renumbering.
+
+`RequestKernelSudo` returns distinct `kernel_sudo_refused` and
+`kernel_sudo_expired` errors, on Unix and forwarded paths. The first records a
+person's refusal; the second tells the caller to submit a new request and approve
+it in a Chariox client. Neither error retries automatically.
+
+A third refusal, `kernel_sudo_room_owner_local`, tells the caller that the Room
+was created before the kernel was enrolled (its owner is `local`), so sudo cannot
+be authorized for it; the fix is to re-create the Room after enrollment. It carries
+no other detail.
+
+### Outside event inbox (MP-08 / MP-09 / MP-10 / MP-11)
+
+Allocated local protocol 585 covers the external-agent / agent-model union,
+outside event subscriptions and agent deadlines; relay peer 181 retains the
+merged peer contracts. The event requests are available to external Unix
+access grants and their kernel gateway only. They are absent from session-agent
+tools and sudo's allowed request vocabulary.
+
+`SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
+omitting the agent follows every agent in the session, including later additions.
+`UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
+{ since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
+{ cursor }` share one grant-owned inbox. A wait returns pending records immediately
+or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+oldest first, limited to 1,000 records and the existing relay envelope budget.
+Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
+`EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
+
+Records contain a home cursor, source kernel and machine, session and optional
+agent, a typed state change, one-line summary, timestamp and resource references.
+Only agent/task states, interaction state, terminal job exits, delivered steers and
+session changes are collected. Passkey interactions carry the section 8 approval pointer, without
+the prompt body. Session agents retain their existing session-scoped event tools.
+
+Every source kernel filters its own durable part. The gateway commits imported
+records and each source cursor together before acknowledging that source. Target
+restart and relay loss preserve parts and cursors. Pending inboxes retain at most
+100,000 records, replacing removed ranges with explicit per-kernel gaps. Source
+acknowledgements update bounded forwarding counters in the subscription metadata;
+those counters contain subject identifiers and counts only.
+
+Grant expiry, revoke, holder exit, a home-kernel restart (except of a grant that
+lasts until its holder exits, which keeps its subscription) and explicit cancellation
+end the subscription. The final control record is the only reply an admitted wait
+may send after its grant ends. Remote cleanup remains durable through reconnect.
+Sessions and agents created under an external grant are followed automatically;
+`no_subscribe: true` on CreateSession, SpawnAgent or SpawnAgents opts out.
+
+Creation and event interest have separate outcomes. `SessionCreated`, `AgentSpawned`
+and `AgentsSpawned` retain their successful IDs if automatic following fails,
+including an already cancelled subscription or the 1,024-target limit. The reply
+then includes optional `event_subscription_error: {code, message}` (code
+`events_subscription_failed`); normal success omits it. Keep the returned IDs
+and recover the subscription rather than retrying creation. Local 585 covers
+this metadata too; relay peer 181 is unchanged.
+
+A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
+has been taken by the agent's provider (the home provider or the leased worker),
+the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
+stale or rejected steer records nothing. If the event cannot be recorded after
+delivery, the request fails with the code `prompt_steer_event_unrecorded` and a
+message that names the steer id, says it was delivered and must not be sent again;
+it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
+Local 591 and relay peer 197 add this event shape, and
+`RelayStatus.status.capabilities` advertises `outside_steer_events_v1` for it.
+
+MP-08 / MP-09 / MP-10 / MP-11, local 631 / peer 234: the gateway records
+per-kernel health transitions in the same grant-owned inbox:
+`{ "type": "kernel_health", "value": { "online": false,
+"reason": "kernel_offline" } }`. `kernel` identifies the followed source;
+`session_id` and `machine` are empty for this kernel-level control record, and
+`agent_id` is absent. `reason` is the gateway error code (a reason class, without
+error details), `events_part_failed` for a remote part failure, or `connected` on
+recovery. A non-retryable refusal of a caller's `SubscribeEvents` is returned
+without changing the health baseline or appending a health event. Background
+pump failures still update subscription health and append a transition, including
+persistent non-retryable refusals. The first successful connection
+establishes a baseline; an initial failure and each later online/offline change
+append a durable event. Repeated failures, including a different failure reason,
+do not append duplicates; `GetEventSubscription` retains the current full error.
+The health observation and inbox append commit together. Events have home
+cursors, retain normal ordering and acknowledgement rules, wake an outstanding
+`WaitEvents`, and never enter another grant's inbox. Removed targets and ended
+subscriptions collect no later health events. Callers that depend on these wakes
+require gateway protocol 631; existing CLI callers keep their supported minimum.
+Retention excludes home-observed health records from source gap ranges and
+dropped counts. A kernel's gap position still advances through its dropped
+health records so an unacknowledged listed cursor cannot silently skip a lost
+transition. Health-only loss advances the home cursor floor, even when other
+kernels retain source gaps, without fabricating source loss; subscription status
+retains the current health.
+The relay remains an opaque carrier and clients need no health polling.
+
+File writes and file transfers alone are not inbox events. Lane coordination
+uses the existing explicit interaction primitive: follow the lane's Room/agent,
+then have that agent call `request_popup` with the question, fixed choice ids and
+exact replies, and a bounded timeout. The outside inbox receives the pending
+interaction with `refs.interaction_id`; read that Room's interaction through
+`GetSessionState`, then answer using `RespondToInteraction { session_id,
+interaction_id, choice_id }` on the event's kernel. Follow resolution normally.
+Do not use a handoff file's appearance as an implicit question. This keeps
+ordinary files and transfers independent from request/reply coordination and
+adds no filesystem watch lifecycle or path authorization surface. In the c3
+coordinator, file-only asks in `flat`/`lanewait`/`watch` must move to this path;
+file/resource monitoring that is not a lane question keeps its explicit watcher.
+With a 631 gateway, `c3-wait.sh` can invoke `chariox events wait` directly and
+delete its post-wait `events subscription` request and synthetic exit-4 branch:
+health changes now return exit 0 with an event and the next cursor, even during
+a long wait. Inspect `value.online` and retain the subscription on disconnect;
+never replay an uncertain command automatically.
+
+Focused red/green drill: `scripts/drills/outside-health-events.mjs` takes private
+`--kernel-binary`, `--cli-binary`, `--relay-binary`, `--state-root` and
+`--evidence-dir` paths. `--binary-manifest` names JSON containing `expectation`
+(`base` or `green`) and a `head` (40 hex characters) and `sha256` for each of
+`kernel`, `cli` and `relay`; binary hashes must match before anything starts.
+It runs the native CLI against two real kernels and a local scoped relay,
+checks a terminal exit, interrupts a drained wait by stopping the worker, and
+starts recovery while a second wait is outstanding. `--expect-base` asserts
+the old timeout behavior; without it both health wakes and increasing cursors
+are required. The drill removes its state and stops only its recorded children.
+
+### MP-08 / MP-10 / MP-11: live browser layout (629/232)
+
+Allocated local 629/peer 232 adds `KernelBrowser.command={op:"resize",tab_id,generation,width,height}`.
+The result is `{width,height}` in CSS pixels. The current bounds are 320×200 through 1920×1080.
+This is a normal owner/agent mutation on the existing Tab and action ledger. It does not start a
+stopped browser or grant observation/input. Native rectangles retire before the owned window
+changes; fresh captures repeat the ordinary document, policy, ownership and pixel checks.
+Mirror registrations remain attached. Resize sets one shared window layout for every existing
+and subsequently opened Tab until the browser stops or another resize replaces it. This intentionally
+takes precedence over protocol 560 subscription layouts: remote browser observers see the same
+page geometry, and opening or closing a viewer does not restore its previous layout.
+An acknowledgement confirms layout application, not client paint.
+
+The web sends the newest container size per animation frame with one request in flight. It reflows
+mirror CSS without scaling; video retains its old pixels unscaled, cropped/padded until the new
+capture arrives. Kernels below 629 retain the existing fitted layout and receive no resize command.
+Functional and performance acceptance must be recorded separately from this protocol contract.
+
+### MP-08 / MP-10: viewport-first mirror snapshot and `:visited` links (629/232)
+
+Allocated local 629 adds two opt-in `mirror_subscribe` capabilities for `wire:2`; the
+subscribed reply echoes each one it accepted.
+
+`viewport_first:true` lets the reset snapshot carry the on-screen part of the document first.
+An off-screen block-level element in normal flow may arrive without its children and with
+`deferred:[x,y,width,height,height_pin,margin_top,margin_bottom]` in document CSS pixels; the
+viewer holds that box until the children arrive in later `children` ops. Packets carry
+`snapshot_viewport_complete` once every on-screen node has been sent and the document has loaded.
+The web hands over on it only when each kept box sits where the page has it, and otherwise waits
+for `snapshot_complete` as before. A subscription that did not ask receives whole snapshots and no
+viewport flag. Kernels below 629 and older viewers keep the existing behaviour.
+
+`visited_links:true` lets a link the kernel saw visited travel with `href:""` instead of `href:"#"`; the
+viewer draws it `:visited`, because an empty `href` names the viewer document itself. Like Chrome's
+partitioned visited links, a visit counts on the origin whose page started it (a typed URL on its own
+origin). The kernel keeps the 4096 most recent visits of the browser profile in memory, applies them
+at each snapshot and re-marks a link visited later with an ordinary `attr` op, without a reset. A
+viewer that did not ask never receives an empty `href`, and its validator keeps refusing one.
+
+The relay never parses mirror records, which travel inside `KernelBrowser` results; peer 232 is
+raised for the resize command above. The web offers the new fields only to kernels at local 629 or
+later. The 629/232 union keeps 614 as a reciprocal managed-upgrade predecessor and retires the
+unshipped branch protocol 588 from the 32-entry list.
+
+### OSS landing union protocol 629 / peer 232
+
+The combined landing keeps local protocol 629 and peer 232. It includes the
+viewport resize, viewport-first mirror and visited-link shapes from 629/232,
+and the optional prompt attachment history `size_bytes` from 627/230. Web clients
+using live browser layout or attachment size metadata require local 629; peer
+kernels forwarding these operations require peer 232. The encrypted carrier's
+12 MiB prompt request admission changes bounds without adding a wire shape.
+Older history without `size_bytes` remains readable. The protocol fixtures and
+shape/hash tests cover both changes under this shared pair.
+
+
+### Binary Room exec (local 632 / peer 235)
+
+MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
+The existing Room owner, external-grant and worker-lease checks apply unchanged;
+a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
+advertises this additive contract. The relay still carries opaque encrypted
+requests and responses, using its existing bounded framing and flow control.
+
+- `exec_open { command: [program, ...args] }` starts argv directly in the Room's
+  project directory; `exec_opened { exec_id }` identifies the running command.
+- `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
+  has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
+  It uses the same Room authority and worker forwarding as all exec operations.
+- `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
+  next stdin byte offset; `exec_input { next_offset }` acknowledges admission to
+  the bounded input queue. A repeated last write with identical bytes is safe.
+  `exec_input_busy` means retry that same offset after draining output. No byte
+  count or time limit applies to the whole stream.
+- `exec_stdin_close { exec_id, offset }` queues EOF after accepted writes.
+- `exec_read { exec_id, after_cursor, wait_ms }` acknowledges all output through
+  that cursor and returns `exec_output { chunks, next_cursor, outcome }`.
+  Each chunk is `{ cursor, stream: stdout|stderr, data_base64 }`; cursors start
+  at one and increase across both streams. Per-stream bytes stay ordered;
+  cross-stream order records read arrival, not OS write chronology. A page has
+  at most 256 KiB of raw data. Waits cap at 240 s. Empty pages retain the cursor.
+  Output is replayable until acknowledged; stale or never-issued cursors fail
+  explicitly. `outcome` is present only on a page containing the final output,
+  after process reaping and both output pipes settle: `exited { code }`,
+  `signaled { signal }` or `failed { message }`.
+- `exec_cancel { exec_id }` cancels the owned process and closes its pipes;
+  already-buffered output remains available. Cancellation before pipe EOF publishes
+  `failed` with `command canceled before its output ended; the stream is incomplete`,
+  even if the process exited zero. Lease expiry uses `expired` in that message;
+  an actual pipe read error retains its I/O failure reason.
+  `exec_close { exec_id }` cancels and
+  releases the record. Room end and kernel shutdown cancel all owned execs.
+
+Each exec retains at most 1 MiB / 128 chunks of unacknowledged raw output,
+one 32 KiB read per output pipe and eight stdin chunks (at most 2 MiB queued,
+plus one 256 KiB write in flight). Full output buffers stop
+reading the child pipes; full input queues refuse new admission. Slow readers
+therefore apply backpressure without dropping bytes. There are at most sixteen
+records per Room and sixty-four per kernel, including completed records: close
+collected commands. List execs to discover abandoned IDs, then close them to
+reclaim their processes. A record expires five minutes after its last output
+read request, including completed records. A read renews that lease on entry;
+listing, stdin writes and the completion of an old long poll do not. Expiry removes the record, kills the
+owned process tree and reaps it before releasing managed work. A disconnected
+reader can resume within that bound using its exec ID, accepted stdin offset
+and last consumed output cursor; disconnect never reruns the command. Records
+and bytes are memory-only: a kernel restart invalidates them and a crash leaves
+command outcomes unknown. These bytes never enter Room history or the persistent
+gateway ledger. Open uses the existing at-most-once ledger; chunk,
+EOF, list, read, cancel and close operations are repeatable without growing it.
+Managed placement uses the same implementation; running execs count as work and
+respect the existing quiescence fence, preserving automatic shutdown policy.
+
+`chariox exec [--kernel NAME] --session ROOM [--host-agent AGENT] -- argv...`
+wires binary stdin/stdout/stderr directly, drains both output pipes while feeding
+stdin, closes stdin on EOF, and returns the remote code (128 + signal on Unix).
+While a local stdout or stderr write is pending, the CLI renews the reader lease
+every minute with a non-waiting read at its last locally consumed cursor. The
+renewal's page is left unconsumed; the CLI settles any in-flight renewal before
+its next normal read acknowledges more bytes.
+SIGINT/SIGTERM cancel the remote command before closing it. Transport loss is
+reported with the exec ID and cursors; commands are never automatically replayed.
+
+### Shared page JavaScript dialogs (local 630 / peer 233)
+
+MP-08 / MP-09 / MP-10 / MP-11: browser `state` and `state_wait` expose
+`dialogs[]` with `dialog_id`, `tab_id`, `generation`, `document_id`, `kind`
+(`alert`, `confirm`, `prompt`, `beforeunload`), `message` and `origin`.
+Prompts also publish their bounded initial reply as `default_prompt`, so the
+viewer input shows the page's default. Defaults never enter the event journal
+or dialog-answer results; oversized defaults remain controller-local.
+The kernel controller retains one pending identity per page from CDP opening
+and closing events, independently of native Chrome window availability.
+A dialog opening during a state read releases that read without waiting on
+its blocked renderer. Navigation, target retirement and disconnect retire it.
+
+Viewers and agent browser tools answer through the same `KernelBrowser`
+`dialog` command with the four exact identity fields and `action` (`accept`
+or `dismiss`). Optional `prompt_text` is bounded to 2048 UTF-8 bytes; omission
+preserves the private prompt default and an explicit empty string clears it.
+Defaults and entered replies are excluded from the event journal. A replaced,
+answered or concurrently claimed identity is refused without answering another
+dialog. The answer bypasses renderer observation barriers, retains ordinary
+browser authority checks and wakes shared state readers.
+
+The Web dialog presentation depends on 630 and feature-detects the optional
+field; older kernels keep their existing behavior and the overall Web minimum
+does not rise. Both native-window and mirror/video viewers use this shared
+state. The relay remains an opaque encrypted carrier.

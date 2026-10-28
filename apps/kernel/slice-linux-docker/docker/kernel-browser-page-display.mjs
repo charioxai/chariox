@@ -3,7 +3,6 @@
 import {randomUUID} from 'node:crypto';
 import {CaptureRefusal,UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {displayGeometry} from './kernel-browser-geometry.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import {createRegionDisplay} from './kernel-browser-region-display.mjs';
@@ -69,7 +68,7 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   };
   // The existing native observer retires this measurement on resize, zoom,
   // tab/window changes or detach. A cold binding retains fresh measurement.
-  const viewportGuard=frameProof&&typeof metrics==='string'?host.tabGroups?.nativeStateGuard?.():null;
+  const viewportGuard=frameProof&&typeof metrics?.key==='string'?host.tabGroups?.nativeStateGuard?.():null;
   const viewport=await measure();
   const geometry=visiblePageGeometry(window,viewport);
   host.timing.event?.('native_visible_page_geometry',{client_width:viewport.clientWidth,client_height:viewport.clientHeight,crop_width:geometry.width,crop_height:geometry.height,scale:window.scale});
@@ -147,8 +146,8 @@ export async function inputVisiblePage(host,stream,command,scope,signal){
 // hint, never a caller rectangle: it must fit inside the kernel viewport. No live stream, mirror or window read binds
 // the capture, so it works right after a navigation.
 export async function captureVisiblePage(host,tab,frame){
- const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor,width=frame?.width/scale,height=frame?.height/scale;
- if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>displayGeometry.width||height>displayGeometry.height)throw new CaptureRefusal('view_resized');
+ const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor,width=frame?.width/scale,height=frame?.height/scale,page=host.pageSize(tab.tab_id);
+ if(!Number.isInteger(width)||!Number.isInteger(height)||width<1||height<1||width>page.width||height>page.height)throw new CaptureRefusal('view_resized');
  const shot=await host.displayScreenshot(tab,{x:0,y:0,width,height,scale:1},false);
  if(shot.width!==frame.width||shot.height!==frame.height)throw new CaptureRefusal('view_resized');
  return {...shot,protected_regions:shot[displayMaskRegions]??[]};

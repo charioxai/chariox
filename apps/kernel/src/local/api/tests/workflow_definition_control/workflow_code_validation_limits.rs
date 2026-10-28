@@ -756,3 +756,69 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 
     std::fs::remove_dir_all(&workspace_root).expect("temporary workspace should be removed");
 }
+
+#[test]
+fn archive_agent_releases_workflow_code_capacity() {
+    let node_path = find_node_for_workflow_code_local_api_test()
+        .expect("workflow compiler node must be available");
+    let worktree = crate::test_support::TestWorktree::new("archive-workflow-capacity");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.user_config.workflow.session_default_max_agents = Some(2);
+    let h = LocalRouterTestHarness::with_config(config);
+    let LocalDaemonResponse::SessionCreated { session, agent, .. } = h
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("session")
+    };
+    h.dispatch(
+        serde_json::from_value(serde_json::json!({"ArchiveAgent": {
+            "session_id": session.id(), "agent_id": agent.id(), "archived": true
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    let source = r#"
+workflow.define({ alias: "agent_limit_flow" })
+const planner = workflow.node({
+  handle: "planner",
+  agent: workflow.newAgent({ alias: "agent-limit-planner", provider: "dev-stub", model: "default" }),
+  instructions: "Plan."
+})
+const reviewer = workflow.node({
+  handle: "reviewer",
+  agent: workflow.newAgent({ alias: "agent-limit-reviewer", provider: "dev-stub", model: "default" }),
+  instructions: "Review.",
+  canCompleteWorkflowRun: true
+})
+workflow.edge(planner, reviewer, { handle: "plan_to_review" })
+workflow.endpoint(planner, { handle: "entry", alias: "entry" })
+"#;
+    let LocalDaemonResponse::WorkflowCodeValidated { result } = h
+        .dispatch(LocalDaemonRequest::ValidateWorkflowCode(
+            crate::local::ValidateWorkflowCodeRequest {
+                session_id: session.id().into(),
+                node_path: node_path.display().to_string(),
+                source: source.into(),
+                language: None,
+                provider_rebindings: Vec::new(),
+                agent_rebindings: Vec::new(),
+            },
+        ))
+        .unwrap()
+    else {
+        panic!("validation")
+    };
+    assert!(
+        !result
+            .validation
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "session_agent_limit_exceeded"),
+        "archived agents must release generated-agent capacity: {:?}",
+        result.validation.diagnostics
+    );
+    assert!(result.validation.ok, "{:?}", result.validation.diagnostics);
+}

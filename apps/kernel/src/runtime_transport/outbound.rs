@@ -7,6 +7,7 @@ pub(super) struct OutboundBoundary {
     runtime: crate::runtime::state::KernelRuntimeState,
     peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
     grant: Arc<std::sync::Mutex<Option<String>>>,
+    connection: Arc<Mutex<ConnectionState>>,
 }
 
 pub(super) enum Payload {
@@ -19,11 +20,13 @@ impl OutboundBoundary {
         runtime: crate::runtime::state::KernelRuntimeState,
         peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
         grant: Arc<std::sync::Mutex<Option<String>>>,
+        connection: Arc<Mutex<ConnectionState>>,
     ) -> Self {
         Self {
             runtime,
             peer,
             grant,
+            connection,
         }
     }
 
@@ -31,10 +34,45 @@ impl OutboundBoundary {
     where
         S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
     {
+        let mut payload = payload;
         let closing = matches!(&payload, Payload::Control(Message::Close(_)));
         if !closing && !unix_access::delivery_live(&self.runtime, self.peer.as_ref(), &self.grant) {
-            return false;
+            self.runtime.pump_kernel_access();
+            let request = match &payload {
+                Payload::Frame(KernelOutgoingFrame::Response { request_id, .. }) => {
+                    Some(request_id.clone())
+                }
+                _ => None,
+            };
+            let admitted = if let Some(request) = request.as_ref() {
+                self.connection
+                    .lock()
+                    .await
+                    .outside_wait_requests
+                    .contains(request)
+            } else {
+                false
+            };
+            if admitted {
+                if !self.replace_ending_receipt(&mut payload) {
+                    return false;
+                }
+            } else {
+                // No data, heartbeat or unrelated reply may race the admitted wait's ending.
+                return !self
+                    .connection
+                    .lock()
+                    .await
+                    .outside_wait_requests
+                    .is_empty();
+            }
         }
+        let response_id = match &payload {
+            Payload::Frame(KernelOutgoingFrame::Response { request_id, .. }) => {
+                Some(request_id.clone())
+            }
+            _ => None,
+        };
         let message = match payload {
             Payload::Frame(frame) => {
                 if self.peer.is_some() {
@@ -55,6 +93,7 @@ impl OutboundBoundary {
                         Err(_) => match frame {
                             KernelOutgoingFrame::Response { request_id, .. } => {
                                 let refusal = KernelOutgoingFrame::Response {
+                                    kernel: None,
                                     request_id,
                                     response: Box::new(None),
                                     error: Some(withheld_error()),
@@ -102,7 +141,39 @@ impl OutboundBoundary {
             // No unclassified binary/text escape hatch to the socket.
             Payload::Control(_) => return false,
         };
-        writer.send(message).await.is_ok()
+        let sent = writer.send(message).await.is_ok();
+        if let Some(id) = response_id {
+            self.connection
+                .lock()
+                .await
+                .outside_wait_requests
+                .remove(&id);
+        }
+        sent
+    }
+
+    fn replace_ending_receipt(&self, payload: &mut Payload) -> bool {
+        if !self.peer.as_ref().is_some_and(|peer| peer.alive()) {
+            return false;
+        }
+        let Some(grant) = self.grant.lock().expect("bound grant poisoned").clone() else {
+            return false;
+        };
+        let Ok(Some(receipt)) = self.runtime.outside_ended_response(&grant) else {
+            return false;
+        };
+        let Payload::Frame(KernelOutgoingFrame::Response {
+            kernel: None,
+            response,
+            error,
+            ..
+        }) = payload
+        else {
+            return false;
+        };
+        **response = Some(serde_json::to_value(receipt).expect("typed ending receipt serializes"));
+        *error = None;
+        true
     }
 }
 
@@ -136,6 +207,8 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "pty_write_failed"
             | "pty_resize_failed"
             | "kernel_request_failed"
+            | "session_alias_conflict"
+            | "invalid_session_alias"
             | "kernel_access_denied"
             | "kernel_access_human_only"
             | "kernel_access_not_covered"
@@ -157,8 +230,49 @@ fn project_error(value: &Value) -> KernelTransportError {
         }
         .into();
     }
+    if let Some(message) = crate::error::actionable_refusal_message(code) {
+        projected.code = code.into();
+        projected.message = message.into();
+        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
+    }
     let message = value["message"].as_str().unwrap_or_default();
     if crate::runtime::external_response::public_error_message(message) {
+        projected.message = message.into();
+    }
+    // A request that does not parse says which variant or field it expected: serde's
+    // text about the agent's own request, and how an agent learns the vocabulary.
+    // Only the decoder's exact prefix qualifies; any other `invalid_request` text stays private.
+    if code == "invalid_request"
+        && message.starts_with(&format!(
+            "{}: ",
+            crate::transport::request_decode_error::DECODE_PREFIX
+        ))
+    {
+        projected.code = code.into();
+        projected.message = message.into();
+    }
+    // The kernel writes these sentences itself, from the alias and session the caller
+    // named; they say which session holds the alias so the caller can pick another.
+    if crate::error::is_session_alias_refusal(code, message) {
+        projected.message = message.into();
+    }
+    // The kernel writes this sentence itself around the steer id it generated.
+    if crate::error::is_steer_unrecorded_refusal(code, message) {
+        projected.code = code.into();
+        projected.retryable = false;
+        projected.message = message.into();
+    }
+    // The gateway writes these messages itself, from the kernel name the agent
+    // chose; they carry no provider or parser text.
+    if crate::durable_state::agent_lifecycle::outside::is_public_code(code)
+        || crate::runtime::kernel_gateway::is_public_code(code)
+        || crate::runtime::kernel_access::SudoRequestFailure::is_public_code(code)
+        || crate::runtime::waiting_room_sessions::is_public_code(code)
+        || crate::runtime::kernel_files::is_public_code(code)
+        || crate::room_terminal::is_public_code(code)
+    {
+        projected.code = code.into();
+        projected.retryable = value["retryable"].as_bool().unwrap_or(false);
         projected.message = message.into();
     }
     projected
@@ -172,6 +286,10 @@ macro_rules! public_events {
             match event {
                 $(KernelEvent::$variant { .. } => {},)*
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
+                // Transcript turns are for the session's own clients, not external streams.
+                KernelEvent::AgentTurnChanged { .. } => {},
+                KernelEvent::HomeExtensionAuditAppended { .. } => {},
+                KernelEvent::HomeExtensionAuditLagged { .. } => {},
                 // MP-11: browser display frames stay off external streams.
                 KernelEvent::KernelBrowserFrame { .. } => {},
             }
@@ -203,6 +321,14 @@ public_events! {
     Heartbeat => "heartbeat",
     TransportResumed => "transport_resumed",
     ReplayGap => "replay_gap",
+}
+
+/// Whether an external grant holder may see this event: the list `project_payload` enforces.
+pub(super) fn is_public_event(event: &KernelEvent) -> bool {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|value| value["event"].as_str().map(public_event))
+        .unwrap_or(false)
 }
 
 pub(super) fn project_payload(mut value: Value) -> Result<Value, DaemonError> {

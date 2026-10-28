@@ -28,7 +28,6 @@ import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands
 import { createSlashCommandSubmitController } from "./slash-command-submit-controller.js"
 import { renderPromptTranscript } from "./transcript-render.js"
 import { createWaitingRoomKeyController } from "./waiting-room-key-controller.js"
-import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import { createWaitingRoomPromptBootstrapController } from "./waiting-room-prompt-bootstrap-controller.js"
 import { handleWaitingRoomSlashCommand } from "./waiting-room-slash-command-policy.js"
 import { createWorkspaceShellSubmitController } from "./workspace-shell-controller.js"
@@ -557,6 +556,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getFocusedInteraction: deps.focusedAgentInteraction,
     isAttached: deps.isAttached,
     getSessionId: () => deps.sessionState().id,
+    getActiveInteractions: () => deps.sessionState().active_interactions ?? [],
     getComposerText: () => deps.promptTextController.currentText(),
     getSelectedIndex: deps.interactionChoiceStore.getSelectedIndex,
     setSelectedIndex: deps.interactionChoiceStore.setSelectedIndex,
@@ -656,10 +656,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
   })
 
   const waitingRoomKeyController = createWaitingRoomKeyController({
-    ...(userAppViewsPrototypeEnabled() ? { beginCommand: () => {
-      deps.promptTextController.setText("/")
-      deps.promptInputRefController.focus()
-    } } : {}),
+    focusPrompt: deps.promptInputRefController.focus,
     isAttached: deps.isAttached,
     hotkeysOpen: deps.dialogOverlayOpen,
     promptFocused: deps.promptInputRefController.isFocused,
@@ -710,6 +707,10 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.activateWaitingRoom()
     },
     openManagedMachineDialog: deps.openManagedMachineDialog,
+  })
+  useKeyboard(event => {
+    if (deps.kernelApprovalOwnsInput?.() || deps.providerAccountRecoveryOwnsInput?.()) return
+    waitingRoomKeyController.focusPromptOnSlash(event)
   })
 
   const handleWorkflowDetailPaneKey = (event: { eventType?: string; name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean }) => {

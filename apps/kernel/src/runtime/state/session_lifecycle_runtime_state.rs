@@ -116,7 +116,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         let mut publication_progress = UnpublishedSessionPublicationProgress::default();
         let publication = async {
-            if let LocalDaemonResponse::SessionCreated { session, agent } = response {
+            if let LocalDaemonResponse::SessionCreated { session, agent, .. } = response {
                 let project = if session.is_hidden() {
                     None
                 } else {
@@ -239,7 +239,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -347,7 +351,11 @@ impl KernelRuntimeState {
             }),
         );
         Ok((
-            LocalDaemonResponse::SessionCreated { session, agent },
+            LocalDaemonResponse::SessionCreated {
+                session,
+                agent,
+                event_subscription_error: None,
+            },
             unpublished_session,
         ))
     }
@@ -711,6 +719,14 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
+        if self
+            .owned
+            .durable_state_store
+            .agent_deadline(session_id, local_agent.id())?
+            .is_some()
+        {
+            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
+        }
         let slice_admission = self
             .guard_slice_execution(
                 Some(session_id),
@@ -910,6 +926,41 @@ impl KernelRuntimeState {
         Ok(destroyed)
     }
 
+    fn agents_leased_to_workers(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {
+        self.session_agents(session_id)
+            .into_iter()
+            .filter(|agent| agent.remote_execution().is_some())
+            .collect()
+    }
+
+    /// A Room that is gone no longer needs the machines its agents ran on:
+    /// destroying each lease ends the worker's backing Room and, with it, the
+    /// terminals it hosts. A worker that cannot be reached keeps its lease
+    /// until the lease expires; the failure is logged, never raised, because
+    /// the Room is already gone.
+    async fn release_worker_leases(&self, agents: Vec<crate::agent::AgentInstance>) {
+        for agent in agents {
+            let released = self
+                .with_app_side_effect(|app| {
+                    crate::app::KernelSessionService::new(app)
+                        .destroy_agent_worker_execution_authorized(&agent, &|| {
+                            self.authorize_current_external_command()
+                        })
+                })
+                .await;
+            if let Err(error) = released {
+                crate::logging::error_with_fields(
+                    "daemon.room_workers",
+                    "failed to release a worker lease of an ended Room; its terminals stay until the lease expires",
+                    serde_json::json!({
+                        "agent_id": agent.id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+    }
+
     fn remove_destroyed_agent_provider_processes(&self, provider_run_ids: Vec<String>) {
         if provider_run_ids.is_empty() {
             return;
@@ -978,6 +1029,15 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let owned = &self.owned;
         let durable_session = owned.session_end_snapshot(session_id)?;
+        self.owned.durable_state_store.outside_publish(
+            session_id,
+            None,
+            crate::local::OutsideEventValue::Session {
+                state: crate::local::EventSessionState::Ended,
+            },
+            "session ended",
+            crate::local::EventRefs::default(),
+        )?;
         self.append_session_durable_event("session.ended", &durable_session, "runtime_end_session")
             .await?;
         self.stop_managed_environment_for_session_lifecycle(session_id)
@@ -985,7 +1045,10 @@ impl KernelRuntimeState {
         for agent in owned.agent_store.get_session_agents(session_id) {
             self.revoke_agent_app_capability_grants(&agent).await?;
         }
+        let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
+        self.end_room_terminals(session_id);
+        self.release_worker_leases(worker_agents).await;
         self.sweep_kernel_access();
         owned.clear_session_prompt_runtime_state(session_id);
         let session = owned.publish_session_after_durable_mutation(session);
@@ -1044,8 +1107,13 @@ impl KernelRuntimeState {
         }
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
+        let worker_agents = self.agents_leased_to_workers(&session_id);
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+        // Swept only now: the Room is gone, so an open that raced the delete
+        // fails its own Room check instead of outliving this sweep.
+        self.end_room_terminals(&session_id);
+        self.release_worker_leases(worker_agents).await;
         self.sweep_kernel_access();
         debug_assert_eq!(
             removed_project.as_ref().map(|project| project.id()),
@@ -2117,7 +2185,11 @@ mod tests {
             .owned
             .session_snapshot(&session_id)
             .expect("session snapshot should refresh");
-        let response = LocalDaemonResponse::SessionCreated { session, agent };
+        let response = LocalDaemonResponse::SessionCreated {
+            session,
+            agent,
+            event_subscription_error: None,
+        };
         let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
         let LocalDaemonResponse::SessionCreated { agent, .. } = &response else {
             unreachable!("test response is session.created");

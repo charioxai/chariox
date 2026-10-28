@@ -598,6 +598,8 @@ impl super::KernelRuntimeState {
         let Some(gate) = &self.owned.managed_kernel_quiescence else {
             return Ok(false);
         };
+        self.owned.room_execs.report_work();
+        self.owned.room_terminals.report_work();
         gate.reserve_if_current(challenge, || {
             let running_agent_count = self.owned.managed_running_agent_count_unlocked();
             self.owned
@@ -617,6 +619,8 @@ impl super::KernelRuntimeState {
             .managed_kernel_quiescence
             .as_ref()
             .ok_or_else(|| quiescence_error("managed kernel quiescence is not configured"))?;
+        self.owned.room_execs.report_work();
+        self.owned.room_terminals.report_work();
         gate.apply_release(challenge, outcome, result_sequence, || {
             let running_agent_count = self.owned.managed_running_agent_count_unlocked();
             self.owned
@@ -1027,6 +1031,55 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
         let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
         let _ = std::fs::remove_file(path.with_extension("managed-activity.pending.json"));
+    }
+
+    #[tokio::test]
+    async fn room_exec_is_work_until_reaped_and_respects_the_stop_fence() {
+        let (path, store, transitions, gate, _) = fixture("exec-fence");
+        let service = crate::room_exec::RoomExecService::default();
+        let changes = Arc::new(AtomicU64::new(0));
+        let observed = changes.clone();
+        let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        });
+        service.link_managed_kernel(gate.clone(), Arc::downgrade(&callback));
+        let command = vec!["/bin/sleep".into(), "60".into()];
+        let id = service
+            .open("room", std::path::Path::new("/"), &command)
+            .unwrap();
+        assert!(service.has_running_work());
+        service.close("room", &id).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while service.has_running_work() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            changes.load(Ordering::SeqCst) >= 2,
+            "busy and idle transitions both reach the managed reporter"
+        );
+        gate.confirm_activity_report(
+            7,
+            1,
+            ManagedActivityObservation {
+                running_agent_count: 0,
+                changed_at_ms: 1_000,
+            },
+        );
+        assert!(gate
+            .reserve_if_current(challenge("exec-stop", "nonce"), || current_idle(
+                &transitions
+            ))
+            .unwrap());
+        assert!(
+            service
+                .open("room", std::path::Path::new("/"), &command)
+                .is_err(),
+            "a reserved managed stop fences exec just like terminal open"
+        );
+        cleanup(&path, store);
     }
 
     #[test]

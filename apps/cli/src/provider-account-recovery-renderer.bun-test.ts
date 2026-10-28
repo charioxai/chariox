@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
+import { readFileSync } from "node:fs"
 import { BoxRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createProviderAccountRecoveryController } from "./provider-account-recovery-controller.js"
@@ -101,5 +102,35 @@ test("MP-08/MP-10/MP-11 attached recovery opens visible choices and retains the 
     controller.handleKey({name:"down"})
     controller.handleKey({name:"return"})
     assert.deepEqual(invoked, [{profile:"b",target}])
+  } finally {controller.close();h.renderer.destroy()}
+})
+
+// Exercise the exact strings emitted by kernel admission, rather than stale copies.
+test("MP-08/MP-10/MP-11 current kernel admission refusals retain recovery actions", async () => {
+  const source = readFileSync(new URL("../../kernel/src/error/actionable_refusals.rs", import.meta.url), "utf8")
+  const h = await createTestRenderer({width:100,height:40,useThread:false})
+  const box = new BoxRenderable(h.renderer, {position:"absolute",left:0,top:0})
+  h.renderer.root.add(box)
+  let retries = 0
+  const controller = createProviderAccountRecoveryController({renderer:h.renderer,dimensions:()=>({width:100,height:40}),actions:()=>[
+    {label:"Open Provider Accounts",run(){}},{label:"Switch account",run(){}},{label:"Retry",run(){retries++}},
+  ]})
+  try {
+    controller.assignBox(box)
+    for (const reason of ["unverified", "unauthenticated", "usage_exhausted", "unavailable"]) {
+      const message = source.match(new RegExp(`"provider_profile_${reason}" => "([^"\n]+)"`))?.[1]
+      assert.ok(message, `kernel message for ${reason}`)
+      controller.show(message)
+      await h.renderOnce()
+      assert.equal(controller.ownsInput(), true, reason)
+      const frame = h.captureCharFrame()
+      assert.match(frame, reason === "usage_exhausted" ? /Choose provider account with quota/ : /Provider account needs sign-in/)
+      for (const action of ["Open Provider Accounts", "Switch account", "Retry"]) assert.ok(frame.includes(action), action)
+      controller.handleKey({name:"down"}); controller.handleKey({name:"down"}); controller.handleKey({name:"return"})
+      await new Promise(resolve=>setTimeout(resolve, 10))
+    }
+    assert.equal(retries, 4)
+    controller.show("unrelated prompt rejection")
+    assert.equal(controller.ownsInput(), false)
   } finally {controller.close();h.renderer.destroy()}
 })

@@ -19,6 +19,8 @@ mod history_tests;
 mod test_pause;
 
 #[cfg(test)]
+mod test_deferred_failure;
+#[cfg(test)]
 mod test_profile_revert;
 #[cfg(test)]
 mod test_provider_runs;
@@ -329,7 +331,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })
             .map(|record| record.message)
             .collect::<Vec<_>>();
-        let termination_prompt_id = self
+        let workflow_backing_prompt_id = self
             .app
             .leased_workflow_turns
             .values()
@@ -338,7 +340,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     && binding.provider_run_id == provider_run_id
                     && home_prompt_id.as_deref() == Some(binding.home_prompt_id.as_str())
             })
-            .map(|binding| binding.backing_prompt_id.as_str())
+            .map(|binding| binding.backing_prompt_id.clone());
+        // Ordinary leased turns also have different home and worker prompt IDs.
+        let receipt_backing_prompt_id = home_prompt_id.as_deref().and_then(|home| {
+            self.app
+                .worker_prompt_receipts
+                .get(&leased_agent.id, home)
+                .filter(|record| {
+                    record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
+                })
+                .and_then(|record| record.backing_prompt_id.clone())
+        });
+        let termination_prompt_id = receipt_backing_prompt_id
+            .as_deref()
+            .or(workflow_backing_prompt_id.as_deref())
             .or(home_prompt_id.as_deref());
         let provider_termination = self
             .app
@@ -634,11 +649,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .iter()
                     .any(|key| key == &completion_key)
                 {
+                    // The cached message identity can predate a failed native turn.
+                    // Keep the current scoped termination when replaying its completion.
                     completions.push(RelayProjectedCompletion {
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
                         home_prompt_id: replay.home_prompt_id.clone(),
-                        provider_termination: replay.provider_termination.clone(),
+                        provider_termination: provider_termination
+                            .clone()
+                            .or_else(|| replay.provider_termination.clone()),
                     });
                 }
             }
@@ -762,7 +781,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
                     home_prompt_id: replay.home_prompt_id.clone(),
-                    provider_termination: replay.provider_termination.clone(),
+                    provider_termination: provider_termination
+                        .clone()
+                        .or_else(|| replay.provider_termination.clone()),
                 });
             }
         }
@@ -782,6 +803,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys = Vec::new();
+        }
+        // The worker knows the admitted home/backing pair; the home must never
+        // infer assessment identity from where a delayed chunk lands in history.
+        if let Some(home) = home_prompt_id.as_deref() {
+            let worker_key = receipt_backing_prompt_id
+                .as_deref()
+                .or(workflow_backing_prompt_id.as_deref())
+                .map(|id| format!("completion-assessment:{id}"));
+            let home_key = format!("completion-assessment:home:{home}");
+            output_chunks.retain_mut(|chunk| {
+                if !chunk
+                    .merge_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with("completion-assessment:"))
+                {
+                    return true;
+                }
+                if chunk.merge_key != worker_key {
+                    return false;
+                }
+                chunk.merge_key = Some(home_key.clone());
+                true
+            });
+            for completion in &mut completions {
+                if Some(completion.message_id.as_str()) == worker_key.as_deref() {
+                    completion.message_id.clone_from(&home_key);
+                }
+            }
         }
         if output_chunks.is_empty()
             && notices.is_empty()
@@ -1205,6 +1254,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
             if !intentionally_cancelled
                 && active_prompt.workflow_run_id().is_some()
                 && !workflow_output_ready
+                && crate::app::workflow_output_follow_up::missing_output_is_final(
+                    &self.app.durable_state_store(),
+                    session_id,
+                    &active_prompt,
+                    projected_termination.is_some()
+                        || self
+                            .app
+                            .provider_run_projection
+                            .get(&projected_provider_run_id)
+                            .is_some_and(|run| run.terminal_diagnostic().is_some()),
+                )?
             {
                 if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                     active_prompt.workflow_run_id(),
@@ -1227,6 +1287,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         });
                     let provider_failed =
                         failed_provider.is_some() && provider_diagnostic.is_some();
+                    if provider_diagnostic.is_none()
+                        && self.app.follow_up_missing_workflow_output(
+                            session_id,
+                            &projected_provider_run_id,
+                            &active_prompt,
+                        )?
+                    {
+                        return Ok(outcome);
+                    }
+
                     let (failure_kind, failure_message, notice_message) = if let Some(diagnostic) =
                         provider_diagnostic
                     {
@@ -1338,6 +1408,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .as_ref()
                 .filter(|_| !intentionally_cancelled)
             {
+                outcome.provider_failed = true;
                 let _ = self
                     .app
                     .agents()
@@ -2434,7 +2505,7 @@ mod explicit_completion_tests {
             .is_none());
     }
 
-    fn reused_explicit_completion_run() -> (
+    pub(super) fn reused_explicit_completion_run() -> (
         crate::app::DaemonApp,
         crate::execution_lease::LeasedAgent,
         String,

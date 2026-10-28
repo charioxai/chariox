@@ -187,6 +187,8 @@ need_sudo apt-get install -y \
   jq \
   bubblewrap \
   build-essential \
+  cmake \
+  libclang-dev \
   pkg-config \
   libdbus-1-dev \
   libssl-dev \

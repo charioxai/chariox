@@ -138,6 +138,15 @@ impl ProviderRunProjectionStore {
             .runs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Ended is terminal for a launch generation. A delayed spawn/output
+        // callback must not revive the projection after archive stopped it.
+        if runs.get(&run_id).is_some_and(|previous| {
+            previous.state() == ProviderRunState::Ended
+                && !ended
+                && previous.started_at_ms() == run.started_at_ms()
+        }) {
+            return;
+        }
         let changed = runs.get(&run_id).is_some_and(|previous| {
             previous.remote_extension_manifest() != run.remote_extension_manifest()
         });
@@ -491,6 +500,7 @@ fn filter_provider_processes(
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
+    load_locks: Arc<StdMutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
     changes: Arc<tokio::sync::Notify>,
     revision: Arc<std::sync::atomic::AtomicU64>,
@@ -506,6 +516,25 @@ struct CachedProviderCatalogProjection {
 }
 
 impl ProviderCatalogProjectionStore {
+    // Coalesce one scope without making an unrelated account wait for its native server.
+    pub(crate) async fn lock_load(&self, cache_key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .load_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(cache_key).and_then(std::sync::Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(cache_key.into(), Arc::downgrade(&lock));
+                lock
+            }
+        };
+        lock.lock_owned().await
+    }
+
     pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
         self.get_scoped("", ttl)
     }
@@ -817,6 +846,19 @@ mod provider_catalog_projection_tests {
             store.begin_refresh("owner-a:claude:work:local"),
             Some(store.invalidation_generation())
         );
+    }
+
+    #[test]
+    fn catalog_refreshes_coalesce_only_their_own_scope() {
+        let store = ProviderCatalogProjectionStore::default();
+        let generation = store
+            .begin_refresh("owner-a:opencode")
+            .expect("first refresh of a scope should acquire its gate");
+        assert!(store.begin_refresh("owner-a:opencode").is_none());
+        assert!(store.begin_refresh("owner-b:claude").is_some());
+        store.finish_refresh("owner-a:opencode", generation);
+        assert!(store.begin_refresh("owner-b:claude").is_none());
+        assert!(store.begin_refresh("owner-a:opencode").is_some());
     }
 
     #[test]

@@ -4,12 +4,13 @@
 // imports Solid, then start the CLI.
 import { readFile } from "node:fs/promises"
 
+import { AGENT_VERB_NAMES, runAgentVerb } from "./agent-verbs.js"
 import { parseArgs } from "./cli-options.js"
 
 // Admit ordinary TUI arguments before loading rendering, logging or runtime
 // modules. Subcommands own their parsers and validate before runtime actions.
 const argv = process.argv.slice(2)
-if (!["context", "access", "sudo", "app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud", "login", "setup"].includes(argv[0] ?? "")) {
+if (!["context", ...AGENT_VERB_NAMES, "sudo", "app", "logs", "codex", "claude", "opencode", "publication", "deployments", "deployed", "cloud", "login", "setup"].includes(argv[0] ?? "")) {
   try {
     parseArgs(argv)
   } catch (error) {
@@ -28,12 +29,16 @@ const clientBuild = (from: string, to: string): OnLoad => async (args) => ({
   loader: "js",
 })
 
-Bun.plugin({
-  name: "solid-client-build",
-  setup(build) {
-    build.onLoad({ filter: /[\\/]solid-js[\\/]dist[\\/]server\.js$/ }, clientBuild("server.js", "solid.js"))
-    build.onLoad({ filter: /[\\/]solid-js[\\/]store[\\/]dist[\\/]server\.js$/ }, clientBuild("server.js", "store.js"))
-  },
-})
+// The agent verbs print JSON and never draw the TUI: answer them before the rendering
+// stack loads (its module graph was most of their start-up time).
+if (!(AGENT_VERB_NAMES.includes(argv[0] ?? "") && (await runAgentVerb(argv)))) {
+  Bun.plugin({
+    name: "solid-client-build",
+    setup(build) {
+      build.onLoad({ filter: /[\\/]solid-js[\\/]dist[\\/]server\.js$/ }, clientBuild("server.js", "solid.js"))
+      build.onLoad({ filter: /[\\/]solid-js[\\/]store[\\/]dist[\\/]server\.js$/ }, clientBuild("server.js", "store.js"))
+    },
+  })
 
-await import("./cli-main.js")
+  await import("./cli-main.js")
+}

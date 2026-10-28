@@ -2,6 +2,8 @@
 
 use std::future::Future;
 
+use futures_util::FutureExt;
+
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, RemoteRelayInventoryProjectionStore,
 };
@@ -18,7 +20,23 @@ enum RemoteInventoryRefreshResult {
     TimedOut,
 }
 
-pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<()>>) {
+/// The periodic refresh is slow on purpose; a failed one (Cloud unreachable
+/// after an outage) retries on the next heartbeat so the waiting room's
+/// machine list recovers within seconds.
+pub(super) fn remote_inventory_refresh_due(
+    heartbeat_tick: u64,
+    task: &mut Option<JoinHandle<bool>>,
+) -> bool {
+    let last_refreshed = match task.as_mut() {
+        Some(running) if !running.is_finished() => return false,
+        Some(finished) => matches!(finished.now_or_never(), Some(Ok(true))),
+        None => true,
+    };
+    *task = None;
+    !last_refreshed || heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
+}
+
+pub(super) fn abort_inventory_refresh_task(task: &mut Option<JoinHandle<bool>>) {
     if let Some(handle) = task.take() {
         handle.abort();
     }
@@ -30,7 +48,7 @@ pub(super) fn clear_remote_inventory_projection(router: &CommandRouter) {
 
 pub(super) fn spawn_remote_inventory_projection_refresh(
     router: Arc<CommandRouter>,
-) -> JoinHandle<()> {
+) -> JoinHandle<bool> {
     tokio::spawn(async move {
         match bounded_remote_inventory_refresh(
             router.refresh_remote_relay_inventory_projection(),
@@ -38,7 +56,7 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
         )
         .await
         {
-            RemoteInventoryRefreshResult::Refreshed => {}
+            RemoteInventoryRefreshResult::Refreshed => true,
             RemoteInventoryRefreshResult::Failed(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.relay_client",
@@ -47,6 +65,7 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
                         "error": error,
                     }),
                 );
+                false
             }
             RemoteInventoryRefreshResult::TimedOut => {
                 crate::logging::warn_with_fields(
@@ -56,6 +75,7 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
                         "timeout_ms": REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT.as_millis(),
                     }),
                 );
+                false
             }
         }
     })

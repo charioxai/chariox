@@ -11,11 +11,11 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::WebSocketStream;
 
+use super::super::daemon_requests::request_limits::MAX_MESSAGE_BYTES;
 use super::*;
 
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_HANDSHAKE_FRAME_BYTES: usize = 16 * 1024;
-const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 pub(super) const MAX_PENDING_HANDSHAKES: usize = 8;
 const MAX_SESSIONS: usize = 32;
 const FORWARDING_HEADERS: [&str; 5] = [
@@ -166,6 +166,9 @@ async fn admit(
         .ok_or("kernel is not paired with a Cloud origin")?;
     let expected_host = format!("127.0.0.1:{}", endpoint.port);
     let mut config = WebSocketConfig::default();
+    // Match the relay carrier so oversized requests reach the common length-only
+    // refusal without closing the session. Abusive declared lengths still fail
+    // before reading bodies; authentication retains its smaller handshake bound.
     config.max_message_size = Some(MAX_MESSAGE_BYTES);
     config.max_frame_size = Some(MAX_MESSAGE_BYTES);
     let mut upgrade_refusal = None;

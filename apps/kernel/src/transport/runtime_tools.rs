@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod agent_events;
 mod agent_messaging_tools;
 mod credential_tools;
 mod extension_tools;
@@ -10,9 +11,11 @@ mod meta_tool_specs;
 mod permission_prompt_tool;
 mod recall_tools;
 mod slice_tools;
+mod terminal_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
+pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};
 pub use agent_messaging_tools::*;
 pub use credential_tools::*;
 pub use extension_tools::*;
@@ -22,6 +25,7 @@ pub use meta_tool_specs::meta_runtime_tool_specs;
 pub use permission_prompt_tool::*;
 pub use recall_tools::*;
 pub use slice_tools::{canonical_slice_tool_name, slice_runtime_tool_specs};
+pub use terminal_tools::*;
 pub use validation::{validate_json_output_schema, validate_workflow_handoff_schema};
 pub use workflow_tools::*;
 pub use workspace_live_sync_tools::*;
@@ -238,6 +242,3 @@ pub struct RuntimeToolResult {
 
 mod room_tool_names;
 pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};
-
-mod agent_events;
-pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};

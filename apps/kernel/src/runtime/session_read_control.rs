@@ -39,6 +39,8 @@ pub(crate) fn projected_session_state_response(
     request: &GetSessionStateRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    // The label is read before the session, so a state is never older than its revision.
+    let agent_activity_revision = session_projection.change_sequence();
     let session = match runtime_state.session_state_response(request.clone()) {
         Ok(LocalDaemonResponse::SessionState { session, .. }) => session,
         Ok(_) => unreachable!("session state request returned a different response"),
@@ -71,7 +73,7 @@ pub(crate) fn projected_session_state_response(
     Some(Ok(LocalDaemonResponse::SessionState {
         room_workflows,
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
-        agent_activity_revision: session_projection.change_sequence(),
+        agent_activity_revision,
         session: redacted_session,
     }))
 }
@@ -204,6 +206,22 @@ pub(crate) fn projected_session_inspection_response(
     caller_metaagent_id: Option<&str>,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     match request {
+        LocalDaemonRequest::ListArchivedAgents(request) => {
+            let session =
+                match projected_session_or_absence(session_projection, &request.session_id)? {
+                    Ok(session) => session,
+                    Err(error) => return Some(Err(error)),
+                };
+            let session = session.redacted_for_user(caller_user_id);
+            Some(Ok(LocalDaemonResponse::AgentsListed {
+                agents: session
+                    .agents()
+                    .iter()
+                    .filter(|agent| agent.archived())
+                    .cloned()
+                    .collect(),
+            }))
+        }
         LocalDaemonRequest::ListAgents(request) => {
             let session =
                 match projected_session_or_absence(session_projection, &request.session_id)? {
@@ -212,7 +230,12 @@ pub(crate) fn projected_session_inspection_response(
                 };
             let session = session.redacted_for_user(caller_user_id);
             Some(Ok(LocalDaemonResponse::AgentsListed {
-                agents: session.agents().to_vec(),
+                agents: session
+                    .agents()
+                    .iter()
+                    .filter(|agent| !agent.archived())
+                    .cloned()
+                    .collect(),
             }))
         }
         LocalDaemonRequest::ListWorkflows(request) => {
@@ -489,6 +512,17 @@ pub(crate) async fn execute_session_read_request(
         }
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => {
             execute_list_room_environment_action_history_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::ListArchivedAgents(request) => {
+            let session = runtime_state.session_snapshot(&request.session_id).await?;
+            Ok(LocalDaemonResponse::AgentsListed {
+                agents: session
+                    .agents()
+                    .iter()
+                    .filter(|agent| agent.archived())
+                    .cloned()
+                    .collect(),
+            })
         }
         LocalDaemonRequest::ListAgents(request) => {
             execute_list_agents_request(runtime_state, request).await

@@ -28,6 +28,21 @@ struct Evidence {
 fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
     let evidence = conformance_evidence();
     let mut failures = Vec::new();
+    assert_file_contains(
+        "packages/kernel-client/src/kernel-types-provider.ts",
+        &[
+            "ProviderUsageAccount",
+            "AgentUsageSnapshot",
+            "used_tokens",
+            "target_kernel_id",
+        ],
+        &mut failures,
+    );
+    assert_file_contains(
+        "apps/kernel/src/local/api/tests/protocol_shapes/usage_snapshot.rs",
+        &["usage_snapshot_589_contract_roundtrips_without_private_profiles"],
+        &mut failures,
+    );
 
     let expected_surfaces = REQUIRED_SURFACES.iter().copied().collect::<BTreeSet<_>>();
     let actual_surfaces = evidence.keys().copied().collect::<BTreeSet<_>>();
@@ -142,6 +157,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "protocol_snapshots",
                     vec![
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_pin.rs",
+                            &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
+                        ),
+                        evidence(
                             "apps/kernel/src/local/api/tests/protocol_shapes/native_spawn_slice.rs",
                             &["LOCAL_DAEMON_PROTOCOL_VERSION", "RequestNativeProviderTurnInteraction"],
                         ),
@@ -232,6 +251,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "protocol_snapshots",
                     vec![
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_pin.rs",
+                            &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
+                        ),
+                        evidence(
                             "apps/kernel/src/transport/relay_client/tests/subscriptions.rs",
                             &["resume_from_event_id", "transport_resumed", "replay_gap"],
                         ),
@@ -293,6 +316,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                 (
                     "protocol_snapshots",
                     vec![
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_pin.rs",
+                            &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
+                        ),
                         evidence(
                             "apps/kernel/tests/kernel_websocket_integration/replay_resume.rs",
                             &[
@@ -421,6 +448,10 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                     "protocol_snapshots",
                     vec![
                         evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_pin.rs",
+                            &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
+                        ),
+                        evidence(
                             "docs/PROTOCOL.md",
                             &["Native TUI permissions:", "Native TUI Agents"],
                         ),
@@ -472,7 +503,11 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
             BTreeMap::from([
                 (
                     "protocol_snapshots",
-                    vec![evidence(
+                    vec![
+                        evidence(
+                            "apps/kernel/src/local/api/tests/protocol_shapes/room_pin.rs",
+                            &["mp11_room_pin_588_194_snapshot_and_hash", "LOCAL_DAEMON_PROTOCOL_VERSION", "RELAY_PEER_PROTOCOL_VERSION"],
+                        ),evidence(
                         "docs/PROTOCOL_CAPABILITY_SESSION_WORKFLOW.md",
                         &[
                             "Cross-Platform Terminal Conformance Profile",

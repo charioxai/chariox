@@ -166,6 +166,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -184,6 +190,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetAgentUsageSnapshot(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -199,6 +208,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentTabAccessibility(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::RoomTerminal(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -292,6 +304,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RecordPromptInputHistory(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::SetRoomPinned(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::PollRuntimeNotices(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -349,6 +364,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::MoveAgentToLocal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -361,7 +379,8 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::CycleAgentFocus(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
+        LocalDaemonRequest::ListArchivedAgents(request)
+        | LocalDaemonRequest::ListAgents(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::RegisterWorkflowNotificationSource(r) => {
@@ -583,6 +602,7 @@ pub(crate) fn request_session_scope(
         ),
         // MD-stack: user-domain admission lives in each authenticated service.
         LocalDaemonRequest::Notes(_)
+        | LocalDaemonRequest::Dictation(_)
         | LocalDaemonRequest::KernelBrowser(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
@@ -620,9 +640,24 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
+        | LocalDaemonRequest::SubscribeEvents(_)
+        | LocalDaemonRequest::UnsubscribeEvents(_)
+        | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListEvents(_)
+        | LocalDaemonRequest::WaitEvents(_)
+        | LocalDaemonRequest::AckEvents(_)
+        | LocalDaemonRequest::ListGatewayKernels(_)
+        | LocalDaemonRequest::HeartbeatAttachments(_)
+        | LocalDaemonRequest::JoinKernelLink(_)
+        | LocalDaemonRequest::ForgetGatewayKernel(_)
+        | LocalDaemonRequest::StatKernelFile(_)
+        | LocalDaemonRequest::ListKernelDirectory(_)
+        | LocalDaemonRequest::ReadKernelFile(_)
+        | LocalDaemonRequest::WriteKernelFile(_)
         | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
@@ -680,6 +715,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetClientCatalogSnapshot(_)
         | LocalDaemonRequest::GetClientCatalogRevisions(_)
         | LocalDaemonRequest::GetProviderCommandCatalogs(_)
+        | LocalDaemonRequest::GetProviderUsageSnapshot(_)
         | LocalDaemonRequest::ListProviderAccountProfiles(_)
         | LocalDaemonRequest::GetProviderAccountProfile(_)
         | LocalDaemonRequest::CreateProviderAccountProfile(_)
@@ -690,6 +726,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RefreshProviderAccountProfile(_)
         | LocalDaemonRequest::RemoveProviderAccountProfile(_)
         | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
+        | LocalDaemonRequest::CopyProviderAccountToKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)
@@ -790,6 +827,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetWaitingRoomInventory(_)
         | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+        | LocalDaemonRequest::ListWaitingRoomSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
         | LocalDaemonRequest::ImportExternalProviderSession(_)

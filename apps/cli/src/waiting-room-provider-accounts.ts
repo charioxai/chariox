@@ -101,10 +101,12 @@ export function selectedProviderAccountStartBlockReason(
   // MP-08 / MP-10 / MP-11: replicas and retained home aliases may be outside
   // this inventory. The kernel resolves their namespace and authentication.
   if (!profile && profileId && profileId !== "default") return null
+  // MP-08 / MP-10 / MP-11: first-prompt status checking belongs to the kernel.
+  if (profile?.auth_state === "unknown") return null
   // A Claude enrollment can be verified or recover through native login at
   // launch. Saved observations alone cannot decide whether it can run.
   if (providerAccountFamily(provider) === "claude"
-    && (profile?.auth_state === "unknown" || profile?.auth_state === "expired")) return null
+    && profile?.auth_state === "expired") return null
   if (profile?.auth_state === "authenticated") {
     if (!providerAccountAdmissionBlocked(profile, Date.now(), model)) return null
     const reset = providerAccountCapacityResetLabel(profile, Date.now(), model)
@@ -115,10 +117,7 @@ export function selectedProviderAccountStartBlockReason(
   const label = profile?.label ?? profileId ?? "default"
   const alternative = providerAccountsForProvider(profiles, provider)
     .find((candidate) => candidate.auth_state === "authenticated")
-  const requirement = profile?.auth_state === "unknown"
-    ? "sign-in not checked. Refresh its status through Provider Accounts"
-    : "needs sign-in. Sign in through Provider Accounts"
-  return `${label} ${requirement}${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
+  return `${label} needs sign-in. Sign in through Provider Accounts${alternative ? `, or select signed-in account ${alternative.label}` : ""}.`
 }
 
 export function providerAccountSignInCommand(profile: ProviderAccountProfile): string {

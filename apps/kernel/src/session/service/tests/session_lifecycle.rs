@@ -419,7 +419,7 @@ fn normalizes_aliases_and_resolves_ids_and_aliases() {
 #[test]
 fn rejects_duplicate_alias_in_same_workspace() {
     let mut service = SessionService::new(&test_config());
-    service
+    let first = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1").with_alias("main"))
         .expect("first session should be created");
 
@@ -431,9 +431,11 @@ fn rejects_duplicate_alias_in_same_workspace() {
         DaemonError::SessionAliasConflict {
             workspace_id,
             alias,
+            session_id,
         } => {
             assert_eq!(workspace_id, "workspace-1");
             assert_eq!(alias, "main");
+            assert_eq!(session_id, first.id());
         }
         other => panic!("unexpected error: {other}"),
     }
@@ -478,9 +480,11 @@ fn rejects_duplicate_session_alias_on_assignment() {
         DaemonError::SessionAliasConflict {
             workspace_id,
             alias,
+            session_id,
         } => {
             assert_eq!(workspace_id, "workspace-1");
             assert_eq!(alias, "main");
+            assert!(!session_id.is_empty());
         }
         other => panic!("unexpected error: {other}"),
     }

@@ -42,6 +42,7 @@ mod remote_extension_control_plane;
 mod script;
 mod skill_package_response;
 mod slice;
+mod terminal;
 pub(super) use slice::{
     capture_computer_secret_target, capture_room_environment_screenshot,
     execute_room_computer_observation, reset_room_computer_input,
@@ -236,6 +237,7 @@ impl KernelRuntimeState {
             if !self.room_agent_tools_enabled() {
                 specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
             }
+            specs.extend(crate::transport::runtime_tools::terminal_runtime_tool_specs());
             specs.extend(provider_runs.iter().flat_map(|run| {
                 run.remote_extension_manifest()
                     .home_proxy_runtime_tool_specs()
@@ -370,6 +372,9 @@ impl KernelRuntimeState {
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_slice_tool_name(tool_name)
+                    })
+                    .or_else(|| {
+                        crate::transport::runtime_tools::canonical_terminal_tool_name(tool_name)
                     })
                     .or_else(|| {
                         crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
@@ -560,6 +565,17 @@ impl KernelRuntimeState {
                     arguments,
                 ))
                 .await;
+            }
+            if crate::transport::runtime_tools::canonical_terminal_tool_name(canonical_tool_name)
+                .is_some()
+            {
+                return self
+                    .dispatch_terminal_runtime_tool_call(
+                        provider_run.expect("non-workflow tool should have provider run"),
+                        canonical_tool_name,
+                        arguments,
+                    )
+                    .await;
             }
             if matches!(
                 canonical_tool_name,

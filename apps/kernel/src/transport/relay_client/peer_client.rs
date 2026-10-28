@@ -87,6 +87,31 @@ impl RelayPeerRequestTrace {
     }
 }
 
+/// Removes a queued peer request from the pending map however its waiter ends, including
+/// a caller deadline that drops the waiter before the response deadline fires.
+struct PendingPeerRequest {
+    state: Arc<RwLock<RelayClientState>>,
+    request_id: String,
+}
+
+impl Drop for PendingPeerRequest {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.state.try_write() {
+            guard.pending_peer_requests.remove(&self.request_id);
+        } else if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let state = Arc::clone(&self.state);
+            let request_id = std::mem::take(&mut self.request_id);
+            runtime.spawn(async move {
+                state
+                    .write()
+                    .await
+                    .pending_peer_requests
+                    .remove(&request_id);
+            });
+        }
+    }
+}
+
 /// A peer request whose outbound envelope has been queued on the relay sender.
 /// The caller can release any ordering lane before waiting for the remote reply.
 #[must_use = "the peer response must be awaited or intentionally cancelled"]
@@ -308,6 +333,10 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     let response_deadline = tokio::time::Instant::now() + response_timeout;
     let private_key = config.relay_private_key.clone();
     let state = Arc::clone(state);
+    let pending = PendingPeerRequest {
+        state: Arc::clone(&state),
+        request_id: request_id.clone(),
+    };
     let authority = crate::runtime::relay_peer_authority::RelayPeerAuthority {
         kernel_id: expected_kernel_id.clone(),
         public_key: expected_public_key.clone(),
@@ -324,8 +353,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 });
             }
             Err(_) => {
-                let mut guard = state.write().await;
-                guard.pending_peer_requests.remove(&request_id);
+                drop(pending);
                 let message = format!(
                     "timed out waiting for relay peer response after {}ms",
                     response_timeout.as_millis()
@@ -535,8 +563,11 @@ pub(crate) async fn enqueue_peer_request_via_connected_relay_authorized(
             if stale_public_key.is_some() {
                 state.write().await.forget_peer_public_key(&target_ref);
             }
-            let discovery =
-                crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+            let discovery = crate::runtime::cloud_api_client::relay_metadata_discovery_config_for(
+                config,
+                &target_ref,
+            )
+            .await?;
             let kernel = relay_discovery::get_live_kernel(&discovery, &target_ref).await?;
             authorize()?;
             let public_key = kernel.public_key;
@@ -828,7 +859,8 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     // MP-08 / MP-10 / MP-11: temporary peer discovery must use a metadata
     // grant, while registration below retains the original kernel grant.
     let discovery_config =
-        crate::runtime::cloud_api_client::relay_metadata_discovery_config(config).await?;
+        crate::runtime::cloud_api_client::relay_metadata_discovery_config_for(config, target_ref)
+            .await?;
     #[cfg(test)]
     let kernel = {
         let peer_call_id = test_trace.peer_call_id();

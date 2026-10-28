@@ -644,6 +644,7 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
         Some(first.clone())
     );
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        no_subscribe: false,
         account_profile: None,
         session_id: session.clone(),
         alias: Some("person-worker".into()),
@@ -660,7 +661,7 @@ async fn a_persons_spawn_gets_the_foreground_app_and_a_meta_agents_spawn_does_no
     });
     let mut command = KernelCommand::from_local_request("person-spawn", None, None, &request);
     command.caller.user_id = Some("alice".into());
-    let LocalDaemonResponse::AgentSpawned { agent: spawned } =
+    let LocalDaemonResponse::AgentSpawned { agent: spawned, .. } =
         router.dispatch(command, request).await.unwrap()
     else {
         panic!("unexpected spawn response");

@@ -1,8 +1,18 @@
+use std::sync::Arc;
+
 use super::CommandRouter;
 use crate::error::DaemonError;
-use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse, OnBehalfOf};
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
+use crate::runtime::command_latency::{log_command_completed, log_command_received, CommandTrace};
 use crate::runtime::kernel_access::error;
+
+fn denied(message: &str) -> DaemonError {
+    DaemonError::MachineRequest {
+        code: "kernel_access_denied".into(),
+        message: message.into(),
+    }
+}
 
 impl CommandRouter {
     pub(super) fn authorize_external_request(
@@ -19,6 +29,7 @@ impl CommandRouter {
                 LocalDaemonRequest::KernelBrowser(_)
                     | LocalDaemonRequest::RespondToHandoff(_)
                     | LocalDaemonRequest::Notes(_)
+                    | LocalDaemonRequest::Dictation(_)
                     | LocalDaemonRequest::CaptureVisibleRegion(_)
                     | LocalDaemonRequest::OpenUserAppView(_)
                     | LocalDaemonRequest::ListUserAppViews(_)
@@ -76,6 +87,202 @@ impl CommandRouter {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn kernel_gateway(&self) -> &Arc<crate::runtime::kernel_gateway::KernelGateway> {
+        &self.kernel_gateway
+    }
+
+    pub(super) async fn list_gateway_machines(
+        &self,
+        command: &KernelCommand,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        if !matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) {
+            return Err(error(
+                "only a Chariox terminal or local grant holder can list kernels",
+            ));
+        }
+        let kernels = self
+            .kernel_gateway
+            .kernels()
+            .await
+            .map_err(|failure| error(format!("{}: {}", failure.code(), failure.message())))?;
+        Ok(LocalDaemonResponse::GatewayKernelsListed { kernels })
+    }
+
+    /// A sudo request another kernel's gateway forwarded for its agent, or that gateway
+    /// reporting its grant ended. Only a request that names its origin gets here; the
+    /// popup is this kernel's own, answered by this kernel's person with this kernel's passkey.
+    pub(crate) async fn dispatch_remote_sudo(
+        &self,
+        command: &KernelCommand,
+        on_behalf_of: &OnBehalfOf,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let trace = CommandTrace::from_command(command);
+        log_command_received(&trace);
+        let result = match crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+            &self.config_projection.snapshot(),
+            request,
+        ) {
+            Err(refused) => Err(refused),
+            Ok(()) => match request {
+                LocalDaemonRequest::RequestKernelSudo(sudo) => {
+                    self.runtime_state
+                        .request_remote_kernel_sudo(on_behalf_of, sudo.clone())
+                        .await
+                }
+                LocalDaemonRequest::RenewKernelSudoRequester(_) => {
+                    Ok(LocalDaemonResponse::KernelSudoRequesterRenewed {
+                        renewed: self.runtime_state.renew_remote_kernel_sudo(on_behalf_of),
+                    })
+                }
+                _ => Ok(LocalDaemonResponse::KernelAccessRevoked {
+                    revoked: self.runtime_state.end_remote_kernel_sudo(on_behalf_of),
+                }),
+            },
+        };
+        log_command_completed(&trace, &result);
+        result
+    }
+
+    /// The gateway's own requests: attachment heartbeats, kernel files and pairing.
+    /// They follow the same role policy and command log as every public request.
+    pub(super) async fn dispatch_machine_request(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+        if !matches!(
+            request,
+            LocalDaemonRequest::HeartbeatAttachments(_)
+                | LocalDaemonRequest::JoinKernelLink(_)
+                | LocalDaemonRequest::ForgetGatewayKernel(_)
+                | LocalDaemonRequest::StatKernelFile(_)
+                | LocalDaemonRequest::ListKernelDirectory(_)
+                | LocalDaemonRequest::ReadKernelFile(_)
+                | LocalDaemonRequest::WriteKernelFile(_)
+        ) {
+            return None;
+        }
+        let trace = CommandTrace::from_command(command);
+        log_command_received(&trace);
+        let result = match crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+            &self.config_projection.snapshot(),
+            request,
+        ) {
+            Err(refused) => Err(refused),
+            Ok(()) => match request {
+                LocalDaemonRequest::HeartbeatAttachments(heartbeat) => {
+                    self.heartbeat_attachments(command, heartbeat).await
+                }
+                LocalDaemonRequest::JoinKernelLink(_)
+                | LocalDaemonRequest::ForgetGatewayKernel(_) => {
+                    self.machine_pairing(command, request).await
+                }
+                _ => self.machine_file(command, request).await,
+            },
+        };
+        log_command_completed(&trace, &result);
+        Some(result)
+    }
+
+    /// Records the terminal heartbeat of the caller's own attachments; any that
+    /// is gone, in another session or owned by someone else is reported lapsed.
+    pub(super) async fn heartbeat_attachments(
+        &self,
+        command: &KernelCommand,
+        request: &crate::local::HeartbeatAttachmentsRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let owner = crate::runtime::command::command_caller_user_id(command);
+        let mut lapsed = Vec::new();
+        for attachment in &request.attachments {
+            let mine = self
+                .runtime_state
+                .attachment_owner_user_id(&attachment.attachment_id)
+                .await
+                .is_ok_and(|id| id == owner);
+            let alive = mine
+                && self
+                    .runtime_state
+                    .record_terminal_attachment_heartbeat(
+                        &attachment.session_id,
+                        &attachment.attachment_id,
+                        crate::session::unix_epoch_ms(),
+                    )
+                    .await
+                    .is_ok();
+            if !alive {
+                lapsed.push(attachment.attachment_id.clone());
+            }
+        }
+        Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
+    }
+
+    /// Pairing the gateway with a kernel, or forgetting one, is a person's act at
+    /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
+    async fn machine_pairing(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let owner = command.is_terminal_caller()
+            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Err(denied(
+                "only the kernel's owner at a Chariox terminal can pair or forget a kernel",
+            ));
+        }
+        let outcome = match request {
+            LocalDaemonRequest::JoinKernelLink(join) => self
+                .kernel_gateway
+                .join(join.clone())
+                .await
+                .map(|kernel| LocalDaemonResponse::GatewayKernelJoined { kernel }),
+            LocalDaemonRequest::ForgetGatewayKernel(forget) => self
+                .kernel_gateway
+                .forget(&forget.name)
+                .map(|kernel_id| LocalDaemonResponse::GatewayKernelForgotten { kernel_id }),
+            _ => unreachable!("filtered above"),
+        };
+        outcome.map_err(|failure| DaemonError::MachineRequest {
+            code: failure.code().into(),
+            message: failure.message(),
+        })
+    }
+
+    /// The kernel file requests belong to the kernel's owner, at a Chariox terminal
+    /// or as a local grant holder (or the gateway acting for one).
+    async fn machine_file(
+        &self,
+        command: &KernelCommand,
+        request: &LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        use crate::runtime::kernel_files as files;
+        let owner = matches!(
+            command.caller.connection_class,
+            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+        ) && command_caller_user_id(command)
+            == self.config_projection.local_owner_user_id();
+        if !owner {
+            return Err(denied(
+                "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
+            ));
+        }
+        let request = request.clone();
+        // Hashing and copying a large file must not stall the request loop.
+        let outcome = tokio::task::spawn_blocking(move || match &request {
+            LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
+            LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
+            LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
+            LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
+            _ => unreachable!("filtered above"),
+        })
+        .await;
+        outcome.unwrap_or_else(|join| Err(error(format!("kernel file task failed: {join}"))))
     }
 
     pub(super) fn dispatch_kernel_access(
@@ -179,5 +386,42 @@ mod user_domain_admission_tests {
             }
             router.runtime_state.shutdown_cleanup().await.unwrap();
         });
+    }
+
+    // The origin's lease renewal is answered from the target's own record: a requester this
+    // kernel does not know (or whose lease lapsed) is reported as unknown, so the origin can stop.
+    #[tokio::test]
+    async fn a_lease_renewal_for_an_unknown_requester_is_answered_not_renewed() {
+        let app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let router = CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let request = LocalDaemonRequest::RenewKernelSudoRequester(
+            crate::local::RenewKernelSudoRequesterRequest {},
+        );
+        let command = KernelCommand::from_local_request_with_source(
+            "renew-1",
+            KernelCommandSource::RelayClient,
+            None,
+            None,
+            &request,
+        );
+        let origin = crate::local::OnBehalfOf {
+            origin_kernel: "kernel-a".into(),
+            origin_name: None,
+            grant_id: "access-1".into(),
+            harness: "codex".into(),
+        };
+        let answer = router
+            .dispatch_remote_sudo(&command, &origin, &request)
+            .await
+            .unwrap();
+        assert!(matches!(
+            answer,
+            LocalDaemonResponse::KernelSudoRequesterRenewed { renewed: false }
+        ));
+        router.runtime_state.shutdown_cleanup().await.unwrap();
     }
 }

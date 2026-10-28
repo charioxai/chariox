@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod agent_deadline;
 mod agent_lifecycle;
 mod agent_prompt_schedule;
 mod agent_utility;
@@ -19,6 +20,7 @@ mod capability;
 mod cloud_relay;
 mod config_capabilities;
 mod daemon;
+mod dictation;
 mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
@@ -26,10 +28,13 @@ mod history;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
+mod kernel_files;
+mod kernel_gateway;
 mod managed_context;
 mod managed_environment;
 mod metaagent;
 mod notes;
+mod outside_events;
 mod project_environment_aggregate;
 mod project_environment_manifest;
 mod project_environment_setup;
@@ -41,18 +46,21 @@ mod request;
 mod resource_telemetry;
 mod response;
 mod room_environment;
+mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
 mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
+mod usage_snapshot;
 mod user_domain_access;
 mod waiting_room;
 mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use agent_deadline::*;
 pub use agent_lifecycle::*;
 pub use agent_prompt_schedule::*;
 pub use agent_utility::*;
@@ -62,6 +70,7 @@ pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
 pub use daemon::*;
+pub use dictation::*;
 pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
@@ -69,10 +78,13 @@ pub use history::*;
 pub use kernel_access::*;
 pub use kernel_browser::*;
 pub use kernel_computer::*;
+pub use kernel_files::*;
+pub use kernel_gateway::*;
 pub use managed_context::*;
 pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use outside_events::*;
 pub use project_environment_aggregate::*;
 pub use project_environment_manifest::*;
 pub use project_environment_setup::*;
@@ -84,12 +96,14 @@ pub use request::*;
 pub use resource_telemetry::*;
 pub use response::*;
 pub use room_environment::*;
+pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
 pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
+pub use usage_snapshot::*;
 pub use user_domain_access::*;
 pub use waiting_room::*;
 pub use workflow::*;
@@ -338,4 +352,27 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: allocated 556 adds `KernelBrowser` `state_wait`: a parked state read
 /// replacing the viewer's 250 ms poll.
 /// MP-08/MP-10/MP-11: allocated 567 adds the mirror v2 `fonts` op's `absent` (stack families the native machine lacks).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 567;
+/// MP-08/MP-10/MP-11: allocated 596 reads a session state's revision before the state, so a state is never
+/// older than its `agent_activity_revision`, and lets `AttachSessionView` ask for `latest_prompt_count` turns.
+/// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
+/// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
+/// Allocated 610 unions the staging features 588-603 with the new-UI contracts; 599 and 567 stay reciprocal predecessors.
+/// Agent-model line (537, relay peer 145) contracts were integrated in 570/178:
+/// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
+/// and owner-managed contexts.
+/// Room terminal service (`RoomTerminal`, formerly provisional 569) is retained.
+/// The event-core line (561, relay peer 169) is merged too: task/wake driver sources (`AgentWake.summary`/`detail`) and the
+/// `agent_task_updated` delta event.
+/// Allocated 573/181 binds leased assessment wire identities to the home check.
+/// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
+/// Allocated 591 adds the outside `steer` event.
+/// Allocated 609 adds explicit same-owner Vault-backed provider account copy.
+/// Allocated 614 unions the staging 610 line with the external agents 609 line; 610 and 609 are not admitted as separate kernels
+/// (609 never shipped), and 525 leaves the predecessor list to keep it within the 32-entry policy.
+/// MP-08/MP-10/MP-11: allocated 629 adds the shared browser viewport resize mutation, the mirror v2 viewport-first
+/// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`);
+/// 588 leaves the predecessor list to keep it within the 32-entry policy.
+/// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
+/// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
+/// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 636;

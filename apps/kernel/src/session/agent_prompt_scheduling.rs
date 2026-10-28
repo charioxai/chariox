@@ -102,6 +102,10 @@ impl AgentPromptSchedule {
         true
     }
 
+    pub(crate) fn release_dispatch_claim(&mut self) {
+        self.dispatch_in_flight = false;
+    }
+
     pub(crate) fn mark_dispatch_succeeded(&mut self, now_ms: u64) {
         self.dispatch_in_flight = false;
         self.runs_dispatched = self.runs_dispatched.saturating_add(1);

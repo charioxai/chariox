@@ -510,6 +510,7 @@ impl KernelRuntimeOwnedState {
         let agents = self.agent_store.get_session_agents(session_id);
         let agent_ids = agents
             .iter()
+            .filter(|agent| !agent.archived())
             .map(|agent| agent.id().to_string())
             .collect::<std::collections::BTreeSet<_>>();
         for node in workflow.nodes() {

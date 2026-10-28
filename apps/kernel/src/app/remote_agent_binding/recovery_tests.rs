@@ -263,6 +263,112 @@ impl Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn archive_remote_agent_ends_projection_only_runs_before_unarchive() {
+    use crate::local::{
+        ArchiveAgentRequest, GetSessionStateRequest, LocalDaemonRequest, LocalDaemonResponse,
+    };
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderRunState,
+        RuntimeProviderRun,
+    };
+    use crate::runtime::{command::KernelCommand, router::CommandRouter};
+
+    let fixture = Fixture::new().await;
+    let (session_id, projected, projection, activity) = {
+        let app = fixture.home.lock().await;
+        let agent = app.agents().get_agent(&fixture.agent_id).unwrap();
+        let session_id = agent.session_id().to_string();
+        let request =
+            LaunchProviderRequest::new(&session_id, "dev-stub", "dev-stub", "default", "default")
+                .with_agent_id(agent.id());
+        let mut run = RuntimeProviderRun::new(
+            crate::provider::projected_leased_provider_run_id(
+                &fixture.binding.leased_agent_id,
+                "old-worker-run",
+            ),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "archive-projection".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        let projection = app.provider_run_projection_store();
+        projection.mark_leased_provider_run(run.id());
+        projection.update_remote_snapshot(run.clone());
+        assert!(
+            app.providers().get_run(run.id()).is_err(),
+            "worker runs have no home provider-store entry"
+        );
+        app.sessions_mut()
+            .set_active_provider_run(&session_id, Some(run.id().to_string()))
+            .unwrap();
+        let activity = app.prompt_activity_store();
+        activity.write().insert(
+            run.id().to_string(),
+            crate::app::ActivePromptState {
+                last_output_at: None,
+                saw_response_content: false,
+                completion_recorded: false,
+                settlement_requested: false,
+                active_tool_ids: Default::default(),
+            },
+        );
+        (session_id, run, projection, activity)
+    };
+    let router = CommandRouter::with_interactive_capacity(fixture.home.clone(), 1);
+    for archived in [true, false] {
+        let request = LocalDaemonRequest::ArchiveAgent(ArchiveAgentRequest {
+            session_id: session_id.clone(),
+            agent_id: fixture.agent_id.clone(),
+            archived,
+        });
+        let command = KernelCommand::from_local_request("archive-projection", None, None, &request);
+        router.dispatch(command, request).await.unwrap();
+        assert_eq!(
+            projection.get(projected.id()).unwrap().state(),
+            ProviderRunState::Ended
+        );
+        assert!(
+            !activity.read().contains_key(projected.id()),
+            "archive must clear worker prompt activity"
+        );
+        projection.update_remote_snapshot(projected.clone());
+        assert_eq!(
+            projection.get(projected.id()).unwrap().state(),
+            ProviderRunState::Ended,
+            "delayed worker snapshots cannot revive an archived run"
+        );
+        assert!(projection
+            .get_for_agent(&session_id, &fixture.agent_id)
+            .is_none());
+        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let command =
+            KernelCommand::from_local_request("archive-projection-state", None, None, &request);
+        let LocalDaemonResponse::SessionState { session, .. } =
+            router.dispatch(command, request).await.unwrap()
+        else {
+            panic!("session state")
+        };
+        assert_ne!(
+            session.active_provider_run_id(),
+            Some(projected.id()),
+            "the destroyed worker run must stay unselected"
+        );
+    }
+    fixture.assert_foreign_worker_untouched().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn slice_recovery_off_lock_keeps_recorded_worker_when_other_room_is_less_loaded() {
     let fixture = Fixture::new().await;
     let plan = fixture

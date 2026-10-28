@@ -9,3 +9,5 @@ mod prompt_lifecycle;
 mod prompt_routing;
 mod runtime_interactions;
 mod session_commands;
+
+mod room_pin;

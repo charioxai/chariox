@@ -253,12 +253,20 @@ impl KernelRuntimeState {
         permission_level: AgentPermissionLevel,
     ) -> Result<LeasedAgent, DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
-        self.with_app_side_effect(move |app| {
-            let mut runtime = RemoteLeaseRuntime::new(app);
-            runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.update_leased_agent_config(&leased_agent_id, execution_mode, permission_level)
-        })
-        .await
+        let leased_agent = self
+            .with_app_side_effect(move |app| {
+                let mut runtime = RemoteLeaseRuntime::new(app);
+                runtime.consume_leased_agent_authorization(&leased_agent_id)?;
+                runtime.update_leased_agent_config(
+                    &leased_agent_id,
+                    execution_mode,
+                    permission_level,
+                )
+            })
+            .await?;
+        self.claude_session_grants
+            .forget(&leased_agent.backing_agent_id);
+        Ok(leased_agent)
     }
 
     pub(crate) async fn update_relay_leased_agent_profile(
@@ -513,6 +521,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile,
+        provider_resume_state: Option<crate::provider::ProviderResumeState>,
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
@@ -667,6 +676,10 @@ impl KernelRuntimeState {
         let context_for_prepare = home_prompt_id.clone();
         let prepared = match self
             .with_app_side_effect(move |app| {
+                if let Some(resume) = provider_resume_state {
+                    RemoteLeaseRuntime::new(app)
+                        .seed_leased_agent_resume_state(&leased_agent_for_prepare, resume)?;
+                }
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_for_prepare,
                     &prompt_for_prepare,
@@ -1045,7 +1058,7 @@ impl KernelRuntimeState {
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
-            operation: "ensure remote provider account",
+            operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
             message: format!("provider-account provisioning task failed: {error}"),
         })??;
         // A lease may have been removed while its native utility was running.
@@ -1493,6 +1506,9 @@ impl KernelRuntimeState {
                     &completion.completed,
                     leased_agent_id,
                     &worker_provider_run_id,
+                    outcome
+                        .provider_failed
+                        .then_some("the provider run ended unexpectedly"),
                 )
                 .await;
             }

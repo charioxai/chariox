@@ -82,13 +82,17 @@ async fn protected_fixture(recovered: bool) -> (DerivedHandoffFixture, TestRoot)
         .room_secret_observations
         .require(&fixture.session_id, false)
         .unwrap();
-    fixture.user(1, "Retain amber fact");
-    fixture.output(
+    // Fresh records must be strictly after the restored registry's inclusive
+    // cutoff, even when fixture setup and history writes share a clock tick.
+    let fresh_ms = fixture.runtime.owned.room_secret_observations.epoch + 1;
+    fixture.user_at(1, "Retain amber fact", Some(fresh_ms));
+    fixture.output_at(
         2,
         "source",
         "codex",
         Some("source-thread"),
         "Amber retained",
+        Some(fresh_ms),
     );
     (fixture, root)
 }

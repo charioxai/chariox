@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { basename, join, posix, relative, sep } from "node:path"
+import { basename, dirname, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { once } from "node:events"
@@ -106,6 +106,10 @@ test("managed prebuilt slice runtime materializes its runtime output directory",
       await writeFile(path, `${name}\n`)
       await chmod(path, 0o755)
     }
+    // The glibc checker has its own test; these placeholder binaries are not ELF files.
+    const checker = join(fixture, "apps/kernel/slice-linux-docker/docker/check-prebuilt-glibc.sh")
+    await mkdir(dirname(checker), { recursive: true })
+    await writeFile(checker, "exit 0\n")
     const command = dockerfile
       .slice(start + "RUN ".length, end)
       .replaceAll("\\\n", " ")

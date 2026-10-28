@@ -92,7 +92,9 @@ const chromium = {
         ] };
       }
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
-      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX:0, pageY:0, clientWidth:1280, clientHeight:800, scale:1 } };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX:0, pageY:0, clientWidth:1280, clientHeight:800, scale:1, zoom:1 } };
+      // The canonical display measures its native window and content area before it applies a viewport.
+      case "Browser.getWindowForTarget": return { windowId: 1, bounds: { left: 0, top: 0, width: 1280, height: 800, windowState: "normal" } };
       case "Page.captureScreenshot": {
         if (!existsSync(join(dirname(pidFile), "large-browser-image"))) return { data: blackPng(1280, 800).toString("base64") };
         // MP-08/MP-10/MP-11: deterministic unprotected RGB pixels with low
@@ -156,7 +158,9 @@ const chromium = {
       case "Page.createIsolatedWorld": return {
         executionContextId: sessionId === "worker-popup-session" ? 8 : 7,
       };
-      case "Runtime.evaluate": return { result: { value:
+      case "Runtime.evaluate":
+        if (String(params.expression).includes("innerWidth")) return { result: { value: { width: 1280, height: 800 } } };
+        return { result: { value:
         state.focusedTarget === (sessionId === "worker-popup-session" ? "worker-popup" : "worker-tab")
       } };
       case "Page.bringToFront":
@@ -392,7 +396,9 @@ const chromium = {
       case "Runtime.enable":
       case "Network.enable":
       case "Inspector.enable":
-      case "Emulation.setDeviceMetricsOverride": return {};
+      case "Emulation.setDeviceMetricsOverride":
+      case "Emulation.clearDeviceMetricsOverride":
+      case "Emulation.setVisibleSize": return {};
       default: throw new Error(`Unexpected CDP command: ${method}`);
     }
   },

@@ -174,11 +174,50 @@ pair and records the binary hash and build mode. The operator must separately
 verify that the binary and image match the intended runtime source; protocol
 equality alone is not source provenance or production-release evidence.
 
+Binaries placed in `apps/kernel/slice-linux-docker/prebuilt/` (with a
+`.managed-release` marker) run in the Debian 12 slice, so a host build on a newer
+distribution (Ubuntu 24.04 links glibc 2.38/2.39) cannot start there. The image
+build rejects such binaries and names the glibc they need. Produce compatible
+ones with `docker buildx build --target managed-release-artifacts --output
+type=local,dest=DIR -f apps/kernel/slice-linux-docker/docker/Dockerfile .`, or
+leave the marker out so the image builds them itself.
+
 `CHARIOX_ROOM_DRILL_MEMORY_MB` accepts a positive u32 MiB value and defaults to
 2048. The actual initial and restored containers must retain that limit, no
 additional swap, and one CPU. Reducing a drill's cap does not bypass kernel
 admission checks. SIGINT and SIGTERM use the shared interruption lifecycle,
 allow in-flight provisioning to settle, and clean up before reporting failure.
+
+MP-08 / MP-09 / MP-10 / MP-11: ordinary new slices default to 4096 MiB for
+the shared browser, worker kernel and provider processes. The explicit 2048 MiB
+persistence drill remains a smaller-budget stress case. Existing slices retain
+their configured limit; stop and recreate them to adopt the new default.
+
+Room and native browsers use the same memory policy. Below 1024 MiB available,
+the controller asks Chromium to reclaim caches through its documented
+`Memory.simulatePressureNotification` command. Below 512 MiB, new browser
+launches, tabs, navigation, snapshots and artifacts return
+`browser_memory_pressure`; closing tabs and ordinary input remain available.
+This reserve covers transient rendering/capture allocations, not a hard cap
+on browser RSS. `process.availableMemory()` accounts for the process's cgroup,
+so healthy host RAM does not hide a full slice. Response-body retention is
+bounded to 8 MiB per CDP session and 4 MiB per resource, matching the body reader.
+
+A renderer crash leaves Chromium/CDP alive. The controller retires that page's
+observations, rejects pending page commands and reloads only the crashed tab
+after memory recovers, with bounded backoff. It never replays input. A complete
+browser exit still uses the owned browser supervisor and persistent tab/profile
+restore. Both cases require separate real-browser failure-injection evidence;
+a successful CDP health request alone does not prove a live renderer.
+
+The headed Room's X desktop has host scale 1. Its emulated view therefore uses
+the canonical device scale as its paint scale as well. After setting page
+metrics, set the headed visible area to the metrics width and height multiplied
+by that scale; otherwise Chromium clips the scaled page at its CSS dimensions.
+A source DPR2 page must
+fill its 2560×1600 physical desktop; a healthy CDP connection and a small page in
+one corner do not establish DPR2 display acceptance. Record source scale and
+physical canvas dimensions separately from the viewer's Retina setting.
 
 This deterministic drill uses production Computer input helpers directly. It
 does not establish provider-driven office work, vault injection, or Web/TUI

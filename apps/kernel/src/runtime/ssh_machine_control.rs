@@ -115,7 +115,7 @@ async fn ticket_request(
     let label = label.to_string();
     tokio::task::spawn_blocking(move || {
         let credential = profile.kernel_credential.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| error("source kernel must be independently enrolled"))?;
-        let response = ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(30)).build()
+        let response = crate::outbound_dial::agent_builder().redirects(0).timeout(std::time::Duration::from_secs(30)).build()
             .post(&format!("{}/v1/kernel-enrollment-tickets", profile.api_url.trim_end_matches('/')))
             .set("x-chariox-kernel-credential", credential)
             .set("content-type", "application/json")
@@ -175,7 +175,7 @@ fn revoke_blocking(
         .kernel_credential
         .as_deref()
         .ok_or_else(|| error("missing kernel credential"))?;
-    let response = ureq::AgentBuilder::new()
+    let response = crate::outbound_dial::agent_builder()
         .redirects(0)
         .timeout(std::time::Duration::from_secs(30))
         .build()

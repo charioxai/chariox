@@ -1,6 +1,13 @@
 // MP-08/MP-10/MP-11 M2: metadata for responses this exact renderer loaded.
 // Bodies stay in Chromium until requested. No new fetch, headers or credentials.
 const MAX = 4096;
+export const MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024;
+// Chromium's default response cache is much larger than our reader. Keep two
+// readable bodies per session; eviction already uses the ordinary resource path.
+export const responseBufferLimits = Object.freeze({
+  maxResourceBufferSize: MAX_RESPONSE_BODY_BYTES,
+  maxTotalBufferSize: 2 * MAX_RESPONSE_BODY_BYTES,
+});
 const key = (...parts) => JSON.stringify(parts);
 const url = value => typeof value === 'string' && value.length <= 8192 && /^https?:\/\//.test(value);
 export class BrowserResponseBodies {
@@ -32,7 +39,7 @@ export class BrowserResponseBodies {
       }
     } else if (method === 'Network.loadingFailed') this.requests.delete(id);
   }
-  async read(world, address, maxBytes = 4 * 1024 * 1024) {
+  async read(world, address, maxBytes = MAX_RESPONSE_BODY_BYTES) {
     const documentId = world.documentId ?? world.frame?.loaderId;
     if (!documentId) return null;
     const lookup = key(world.sessionId, world.frame.id, documentId, address), entry = this.loaded.get(lookup);

@@ -144,6 +144,7 @@ import {
   listRemoteMachines,
   renameRemoteMachine,
 } from "./remote-machine-api.js"
+import { forgetGatewayKernel, joinKernelLink, listGatewayKernels } from "./kernel-gateway-api.js"
 import {
   configureRelay,
   connectKernelCloudRelay,
@@ -202,10 +203,11 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
-  userAppViews?: { handle(args: string[]): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
+  userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
   appHostTerminal?: AppHostTerminal
+  roomTerminalScreen?: import("./room-terminal-slash.js").RoomTerminalScreen
   lastViewedAppHostOperationId?: () => string | undefined
   appFileInstaller?: AppFileInstaller
   appDevLoop?: AppDevLoop
@@ -227,7 +229,6 @@ export type CliCommandActionCompositionDeps = {
   providerRunState: AnyFn
   currentModelId: AnyFn
   currentVariantId: AnyFn
-  currentAccountProfileId?: AnyFn
   focusedAgentId: AnyFn
   multiAgentResponseLayout: AnyFn
   maxAgentsPerScreen: AnyFn
@@ -348,7 +349,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentAccountProfileId,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -482,7 +482,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentModelId,
     currentVariantId,
     currentProviderId: () => options.provider ?? "opencode",
-    currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
     submitGoalPrompt: async (text, targetAgentId) => {
@@ -519,6 +518,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       return true
     },
     openRoomViewer,
+    ...(deps.roomTerminalScreen ? { roomTerminalScreen: deps.roomTerminalScreen } : {}),
     captureRoomScreenshot: async () => {
       const attachment = attachmentState()
       if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
@@ -671,6 +671,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     approveRemoteMachine: (machineRef) => approveRemoteMachine(client, machineRef),
     forgetRemoteMachine: (machineRef) => forgetRemoteMachine(client, machineRef),
     renameRemoteMachine: (machineRef, alias) => renameRemoteMachine(client, machineRef, alias),
+    joinKernelLink: (link, relayToken) => joinKernelLink(client, link, relayToken),
+    listGatewayKernels: () => listGatewayKernels(client),
+    forgetGatewayKernel: (name) => forgetGatewayKernel(client, name),
     listSlices: async () => {
       const slices = await listSlices(client)
       setSlicesState(slices)
@@ -893,7 +896,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         client,
         sessionState().id,
         provider,
-        accountProfile || options.accountProfile || "default",
+        accountProfile || "default",
         model,
         variant,
         agentId,
@@ -952,7 +955,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         agentIds.map((agentId) => ({
           sessionId: sessionState().id,
           provider,
-          accountProfile: accountProfile || options.accountProfile || "default",
+          accountProfile: accountProfile || "default",
           model,
           effort: variant,
           agentId,

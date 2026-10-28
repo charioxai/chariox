@@ -46,6 +46,9 @@ pub struct ClaudeRuntimeState {
     pub(super) session_id: Option<String>,
     // Most recent API call input, independent of turn-wide billed usage.
     pub(super) last_context_tokens: Option<u64>,
+    pub(super) last_context_window: Option<u64>,
+    pub(super) observed_context_model: Option<String>,
+    pub(super) main_stream_has_context: bool,
     pub(super) active_stream_message_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
     pub(super) active_prompt_message: Option<Value>,

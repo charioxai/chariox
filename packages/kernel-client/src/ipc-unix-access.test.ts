@@ -38,3 +38,34 @@ for (const explicit of [true, false]) test(`${explicit ? "ws+unix" : "bare Unix 
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("a Unix client with kernel and commandId puts both on every request frame", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chx-unix-"))
+  await mkdir(join(root, "run"), { mode: 0o700 })
+  const path = join(root, "run", "k.sock")
+  const server = createServer()
+  const websocket = new WebSocketServer({ server })
+  const frames: Record<string, unknown>[] = []
+  websocket.on("connection", (socket) => {
+    socket.on("message", (bytes) => {
+      const frame = JSON.parse(String(bytes))
+      frames.push(frame)
+      socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response: { GatewayKernelsListed: { kernels: [] } }, error: null }))
+    })
+  })
+  await new Promise<void>(resolve => server.listen(path, resolve))
+  const client = new LocalIpcClient(`ws+unix://${path}`, { kernel: "b3", commandId: "cmd-1" })
+  try {
+    await client.send({ ListGatewayKernels: {} })
+    assert.equal(frames.length, 1)
+    assert.equal(frames[0]!.kernel, "b3")
+    assert.equal(frames[0]!.command_id, "cmd-1")
+    assert.notEqual(frames[0]!.request_id, "cmd-1")
+  } finally {
+    await client.close()
+    for (const socket of websocket.clients) socket.terminate()
+    await new Promise<void>(resolve => websocket.close(() => resolve()))
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await rm(root, { recursive: true, force: true })
+  }
+})

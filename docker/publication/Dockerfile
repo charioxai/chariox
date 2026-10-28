@@ -38,17 +38,20 @@ RUN pnpm --filter @chariox/tool-display run build \
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=567
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=636
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
+    cmake \
+    libclang-dev \
     libdbus-1-dev \
     pkg-config \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
@@ -74,7 +77,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.159.3
 ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.212
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=567
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=636
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

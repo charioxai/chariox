@@ -218,3 +218,13 @@ function pairingLink(): TerminalPairingLinkView {
     expires_at_ms: 2,
   }
 }
+
+test("project picker loads older Rooms before deciding the project is empty", async () => {
+  const harness = createHarness({ sessionCount: 0 })
+  let count = 0
+  const controller = createCliDialogOverlayController({ ...harness.deps, getSessionCount: () => count, loadSessions: async () => { count = 1 } })
+  controller.openSessionBrowser()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(harness.sessionBrowserOpen(), true)
+  assert.equal(harness.footerMessages().some(row => row.message === "no sessions available to join"), false)
+})

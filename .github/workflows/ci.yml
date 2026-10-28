@@ -250,7 +250,7 @@ jobs:
         # worker (unsafe FFI, sessions, C harnesses on a real Xvfb).
         run: |
           cargo test -p chariox-kernel --lib --features native-display display_native
-          node --test apps/browser-display/native-capture-*.test.mjs
+          node --test apps/browser-display/native-capture-*.test.mjs scripts/native-display-runtime.test.mjs scripts/native-codec-runtime.test.mjs
         env:
           CHARIOX_BROWSER_DISPLAY_SOFTWARE: '1'
           CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER: libx264

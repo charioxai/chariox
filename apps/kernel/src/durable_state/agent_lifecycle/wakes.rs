@@ -1,8 +1,11 @@
-//! MP-08 / MP-09 / MP-10 / MP-11 A03: durable timers and watched processes.
-//! Each wake is a task obligation with a live registration. Firing commits
-//! the inbox occurrence and the wake's receipts in one transaction.
+//! MP-08 / MP-09 / MP-10 / MP-11 A03: durable timers, watched processes and
+//! driver-owned wake sources. Each wake is a task obligation with a live
+//! registration. Firing commits the inbox occurrence and the wake's receipts
+//! in one transaction. The kernel timer fires inside the ledger, a watched
+//! process reports through its supervisor, and every other source reports
+//! through `WakeVerified` / `WakeOccurred`.
 use super::*;
-use types::AgentWake;
+use types::{AgentWake, WakeEnd};
 
 /// Per-agent bound on armed wakes; an agent cancels before arming more.
 pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
@@ -10,6 +13,17 @@ pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
 const FINISHED_WAKES_RETAINED: i64 = 64;
 const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
 const FINISHED: &str = "('fired','exited','lost','cancelled')";
+/// Kinds the ledger itself produces; a driver cannot report them.
+const LEDGER_KINDS: &[&str] = &[
+    "source_completed",
+    "source_lost",
+    "deadline_reached",
+    "wait_recheck",
+    "delivery_corrupt",
+    "timer_fired",
+];
+const SUMMARY_LIMIT: usize = 512;
+const DETAIL_LIMIT: usize = 8_192;
 
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     super::wake_receipts::initialize(db)?;
@@ -22,7 +36,9 @@ pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
 /// Keeps the newest finished wakes of one agent and drops older ones with
 /// their receipts, so wake history cannot grow without bound.
 fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), DaemonError> {
-    let expired = format!("SELECT id FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN {FINISHED} ORDER BY rowid DESC LIMIT -1 OFFSET ?3");
+    let expired = format!(
+        "SELECT id FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN {FINISHED} ORDER BY rowid DESC LIMIT -1 OFFSET ?3"
+    );
     tx.execute(
         &format!("DELETE FROM agent_wake_receipts WHERE wake_id IN ({expired})"),
         params![room, agent, FINISHED_WAKES_RETAINED],
@@ -48,6 +64,16 @@ impl DurableKernelStateStore {
             .query_map(params![room, agent], |r| r.get::<_, String>(0))
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
+    }
+    pub(crate) fn agent_wake(&self, id: &str) -> Result<Option<AgentWake>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.wake")?;
+        let payload: Option<String> = db
+            .query_row("SELECT payload FROM agent_wakes WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(sql)?;
+        payload.map(|payload| decode(&payload)).transpose()
     }
     /// The arm receipt belongs to the exact wake, including after it fires.
     pub(crate) fn agent_wake_verification(&self, id: &str) -> Result<Option<u64>, DaemonError> {
@@ -282,6 +308,136 @@ fn fire_one(
     Ok(Some(wake))
 }
 
+/// Commits the obligation, live registration and wake record of a new source
+/// in one transaction. `wake.state` is its first state: `scheduled`
+/// (time-driven) or `starting` (confirmed by a supervisor or driver receipt).
+fn arm(
+    tx: &Transaction<'_>,
+    task: &str,
+    prompt: &str,
+    mut wake: AgentWake,
+) -> Result<Outcome, DaemonError> {
+    let mut t = load(tx, task)?;
+    current(&t, prompt)?;
+    let timer = wake.kind == "timer";
+    if wake.task_id != t.task_id
+        || wake.room_id != t.room_id
+        || wake.agent_id != t.agent_id
+        || wake.registration_id != format!("completion-{}", wake.id)
+        || wake.kind.is_empty()
+        || wake.kind.len() > 32
+        || wake.summary.len() > SUMMARY_LIMIT
+        || timer != (wake.state == "scheduled")
+        || !matches!(wake.state.as_str(), "scheduled" | "starting")
+    {
+        return Err(error("wake binding invalid"));
+    }
+    if timer
+        && wake
+            .next_due_ms
+            .is_none_or(|due| due <= wake.created_at_ms || due > i64::MAX as u64)
+    {
+        return Err(error("timer requires a finite future due time"));
+    }
+    crate::secret_redaction::redact_json_secrets(&mut wake.detail);
+    wake.summary = crate::secret_redaction::redact_secrets(&wake.summary).into_owned();
+    if encode(&wake.detail)?.len() > DETAIL_LIMIT {
+        return Err(error("wake detail limit"));
+    }
+    let active: i64 = tx.query_row("SELECT count(*) FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')",params![t.room_id,t.agent_id],|r|r.get(0)).map_err(sql)?;
+    // Finished-but-unhandled sources still reserve capacity. Counting
+    // inbox attribution survives finished-wake/receipt retention.
+    let unhandled: i64 = tx.query_row("SELECT count(DISTINCT source_id) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') != 'message' AND (json_extract(payload,'$.payload.wake_id') IS NOT NULL OR json_extract(payload,'$.payload.public_answer.wake_id') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM agent_wakes w WHERE w.id=agent_inbox.source_id AND json_extract(w.payload,'$.state') IN ('scheduled','starting','running','cancelling'))", params![t.room_id,t.agent_id], |r| r.get(0)).map_err(sql)?;
+    if active + unhandled >= MAX_ACTIVE_WAKES {
+        return Err(error(
+            "wake limit reached; handle outstanding wake events or cancel an armed wake first",
+        ));
+    }
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1)",
+            [&wake.id],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if exists {
+        return Err(error("wake identity conflict"));
+    }
+    wake.verified_at_ms = None;
+    t.obligations.push(AgentObligation {
+        id: wake.id.clone(),
+        kind: wake.kind.clone(),
+        resource_id: Some(wake.id.clone()),
+        completion_task_id: None,
+        status: "open".into(),
+        // A supervised or driver-confirmed source is an intent until its receipt.
+        dispatch_state: if timer { "accepted" } else { "intent" }.into(),
+    });
+    let registration = Registration {
+        id: wake.registration_id.clone(),
+        task_id: t.task_id.clone(),
+        source_id: wake.id.clone(),
+        obligation_id: Some(wake.id.clone()),
+        source_cursor: 0,
+        live: true,
+    };
+    tx.execute(
+        "INSERT INTO agent_registrations VALUES(?1,?2,?3)",
+        params![
+            registration.id,
+            registration.task_id,
+            encode(&registration)?
+        ],
+    )
+    .map_err(sql)?;
+    t.revision += 1;
+    save(tx, &t)?;
+    save_wake(tx, &wake)?;
+    retain_finished(tx, &wake.room_id, &wake.agent_id)?;
+    Ok(Outcome::Wakes(vec![wake]))
+}
+
+/// Moves a `starting` source to `running` on its supervisor or driver
+/// receipt. A delayed receipt confirms an already authorized source retained
+/// by this exact wait, never a new one; a watched process qualifies only
+/// through its leased binding.
+fn confirm_start(
+    tx: &Transaction<'_>,
+    wake: &mut AgentWake,
+    leased_only: bool,
+    now: u64,
+) -> Result<(), DaemonError> {
+    if wake.state != "starting" {
+        return Err(error("wake start receipt does not match its intent"));
+    }
+    let mut t = load(tx, &wake.task_id)?;
+    let retained_wait = t.state == ExecutionState::Waiting
+        && t.wait
+            .as_ref()
+            .is_some_and(|wait| wait.registration_ids.contains(&wake.registration_id))
+        && (!leased_only
+            || tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_leased_wake_bindings WHERE id=?1)",
+                    [&wake.id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(sql)?);
+    if t.state != ExecutionState::Working && !retained_wait {
+        return Err(error(
+            "wake start authority ended; physical cancellation must settle",
+        ));
+    }
+    if let Some(o) = t.obligations.iter_mut().find(|o| o.id == wake.id) {
+        o.dispatch_state = "accepted".into();
+    }
+    t.revision += 1;
+    save(tx, &t)?;
+    wake.state = "running".into();
+    wake.verified_at_ms = Some(now);
+    save_wake(tx, wake)
+}
+
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     match op {
         Operation::CreateWake {
@@ -289,39 +445,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             prompt,
             mut wake,
         } => {
-            let mut t = load(tx, &task)?;
-            current(&t, &prompt)?;
-            if wake.task_id != t.task_id
-                || wake.room_id != t.room_id
-                || wake.agent_id != t.agent_id
-                || wake.registration_id != format!("completion-{}", wake.id)
-                || !matches!(wake.kind.as_str(), "timer" | "process")
-            {
+            if !matches!(wake.kind.as_str(), "timer" | "process") {
                 return Err(error("wake binding invalid"));
-            }
-            if wake.kind == "timer"
-                && wake
-                    .next_due_ms
-                    .is_none_or(|due| due <= wake.created_at_ms || due > i64::MAX as u64)
-            {
-                return Err(error("timer requires a finite future due time"));
-            }
-            let active: i64 = tx.query_row("SELECT count(*) FROM agent_wakes WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')",params![t.room_id,t.agent_id],|r|r.get(0)).map_err(sql)?;
-            // Finished-but-unhandled sources still reserve capacity. Counting
-            // inbox attribution survives finished-wake/receipt retention.
-            let unhandled: i64 = tx.query_row("SELECT count(DISTINCT source_id) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') != 'message' AND (json_extract(payload,'$.payload.wake_id') IS NOT NULL OR json_extract(payload,'$.payload.public_answer.wake_id') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM agent_wakes w WHERE w.id=agent_inbox.source_id AND json_extract(w.payload,'$.state') IN ('scheduled','starting','running','cancelling'))", params![t.room_id,t.agent_id], |r| r.get(0)).map_err(sql)?;
-            if active + unhandled >= MAX_ACTIVE_WAKES {
-                return Err(error("wake limit reached; handle outstanding wake events or cancel an armed wake first"));
-            }
-            let exists: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM agent_wakes WHERE id=?1)",
-                    [&wake.id],
-                    |r| r.get(0),
-                )
-                .map_err(sql)?;
-            if exists {
-                return Err(error("wake identity conflict"));
             }
             wake.state = if wake.kind == "timer" {
                 "scheduled"
@@ -329,44 +454,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 "starting"
             }
             .into();
-            wake.verified_at_ms = None;
-            t.obligations.push(AgentObligation {
-                id: wake.id.clone(),
-                kind: wake.kind.clone(),
-                resource_id: Some(wake.id.clone()),
-                completion_task_id: None,
-                status: "open".into(),
-                // A process launch is an intent until the supervisor's receipt.
-                dispatch_state: if wake.kind == "timer" {
-                    "accepted"
-                } else {
-                    "intent"
-                }
-                .into(),
-            });
-            let registration = Registration {
-                id: wake.registration_id.clone(),
-                task_id: t.task_id.clone(),
-                source_id: wake.id.clone(),
-                obligation_id: Some(wake.id.clone()),
-                source_cursor: 0,
-                live: true,
-            };
-            tx.execute(
-                "INSERT INTO agent_registrations VALUES(?1,?2,?3)",
-                params![
-                    registration.id,
-                    registration.task_id,
-                    encode(&registration)?
-                ],
-            )
-            .map_err(sql)?;
-            t.revision += 1;
-            save(tx, &t)?;
-            save_wake(tx, &wake)?;
-            retain_finished(tx, &wake.room_id, &wake.agent_id)?;
-            Ok(Outcome::Wakes(vec![wake]))
+            arm(tx, &task, &prompt, wake)
         }
+        Operation::ArmWake { task, prompt, wake } => arm(tx, &task, &prompt, *wake),
         Operation::VerifyWakes { now } => {
             let mut verified = vec![];
             for mut wake in wakes_in(tx, &["scheduled"])? {
@@ -405,39 +495,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Wakes(fired))
         }
+        Operation::WakeVerified { id, now } => {
+            let mut wake = load_wake(tx, &id)?;
+            confirm_start(tx, &mut wake, false, now)?;
+            Ok(Outcome::Wakes(vec![wake]))
+        }
         Operation::ProcessStarted { id, pid, now } => {
             let mut wake = load_wake(tx, &id)?;
-            if wake.state != "starting" || pid <= 1 {
+            if pid <= 1 {
                 return Err(error("process start receipt does not match its intent"));
             }
-            let mut t = load(tx, &wake.task_id)?;
-            // MP-08/MP-10/MP-11 A10: a delayed worker receipt confirms an
-            // already authorized launch retained by this exact wait, never a new launch.
-            let retained_leased_wait = t.state == ExecutionState::Waiting
-                && t.wait
-                    .as_ref()
-                    .is_some_and(|wait| wait.registration_ids.contains(&wake.registration_id))
-                && tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM agent_leased_wake_bindings WHERE id=?1)",
-                        [&id],
-                        |row| row.get::<_, bool>(0),
-                    )
-                    .map_err(sql)?;
-            if t.state != ExecutionState::Working && !retained_leased_wait {
-                return Err(error(
-                    "process start authority ended; physical cancellation must settle",
-                ));
-            }
-            if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
-                o.dispatch_state = "accepted".into();
-            }
-            t.revision += 1;
-            save(tx, &t)?;
-            wake.state = "running".into();
             wake.pid = Some(pid);
-            wake.verified_at_ms = Some(now);
-            save_wake(tx, &wake)?;
+            confirm_start(tx, &mut wake, true, now)?;
             Ok(Outcome::Wakes(vec![wake]))
         }
         Operation::ProcessMatched { id, line, now } => {
@@ -501,7 +570,97 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             )?;
             Ok(Outcome::Wakes(vec![wake]))
         }
-        Operation::CancelWake { id, task, prompt } => {
+        Operation::WakeOccurred {
+            id,
+            occurrence: occurrence_id,
+            kind,
+            payload,
+            summary,
+            end,
+            now,
+        } => {
+            let mut wake = load_wake(tx, &id)?;
+            if kind.is_empty() || LEDGER_KINDS.contains(&kind.as_str()) {
+                return Err(error("occurrence kind is reserved for the ledger"));
+            }
+            if terminal(&wake) {
+                return Ok(Outcome::Wakes(vec![]));
+            }
+            if let Some(summary) = summary {
+                if summary.len() > SUMMARY_LIMIT {
+                    return Err(error("wake summary limit"));
+                }
+                wake.summary = crate::secret_redaction::redact_secrets(&summary).into_owned();
+            }
+            let mut payload = match payload {
+                serde_json::Value::Object(fields) => fields,
+                other => serde_json::Map::from_iter([("detail".to_owned(), other)]),
+            };
+            payload.insert("task_id".into(), wake.task_id.clone().into());
+            payload.insert("wake_id".into(), wake.id.clone().into());
+            payload.insert("kind".into(), wake.kind.clone().into());
+            payload.insert("label".into(), wake.label.clone().into());
+            let payload = serde_json::Value::Object(payload);
+            let Some(end) = end else {
+                // A replayed occurrence is one admission.
+                let seen: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4)", params![wake.room_id,wake.agent_id,wake.id,occurrence_id], |r| r.get(0)).map_err(sql)?;
+                if wake.state != "running" || seen {
+                    return Ok(Outcome::Wakes(vec![]));
+                }
+                let e = event(
+                    tx,
+                    occurrence(
+                        &wake.room_id,
+                        &wake.agent_id,
+                        &wake.id,
+                        &occurrence_id,
+                        &kind,
+                        payload,
+                    ),
+                )?;
+                record_fire(tx, &mut wake, &e, now)?;
+                return Ok(Outcome::Wakes(vec![wake]));
+            };
+            if wake.state == "cancelling" && end != WakeEnd::Lost {
+                let mut t = load(tx, &wake.task_id)?;
+                if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
+                    o.status = "cancelled".into();
+                }
+                t.revision += 1;
+                save(tx, &t)?;
+                cancel_settle(tx, &mut wake, now)?;
+                return Ok(Outcome::Wakes(vec![wake]));
+            }
+            wake.state = if end == WakeEnd::Lost {
+                "lost"
+            } else {
+                "exited"
+            }
+            .into();
+            let mut payload = payload;
+            payload["end"] = match end {
+                WakeEnd::Succeeded => "succeeded",
+                WakeEnd::Failed => "failed",
+                WakeEnd::Lost => "lost",
+            }
+            .into();
+            settle_source(
+                tx,
+                &mut wake,
+                occurrence_id,
+                end == WakeEnd::Succeeded,
+                payload,
+                now,
+                true,
+            )?;
+            Ok(Outcome::Wakes(vec![wake]))
+        }
+        Operation::CancelWake {
+            id,
+            task,
+            prompt,
+            pending,
+        } => {
             let mut wake = load_wake(tx, &id)?;
             let caller = load(tx, &task)?;
             let mut t = load(tx, &wake.task_id)?;
@@ -524,10 +683,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             if terminal(&wake) {
+                // A02-S04: an ended source has nothing to stop, but task
+                // cancellation still settles an obligation left unresolved
+                // (a fire the task never handled).
+                if prompt.is_none() {
+                    if let Some(o) = t.obligations.iter_mut().find(|o| {
+                        o.id == id && matches!(o.status.as_str(), "open" | "settling" | "failed")
+                    }) {
+                        o.status = "cancelled".into();
+                        t.revision += 1;
+                        save(tx, &t)?;
+                    }
+                }
                 return Ok(Outcome::Wakes(vec![wake]));
             }
-            if wake.kind == "process" {
-                // A signal request cannot settle an executing resource.
+            // A watched process always settles on its physical exit.
+            if pending || wake.kind == "process" {
+                if wake.state == "scheduled" {
+                    return Err(error("a scheduled wake has nothing to stop physically"));
+                }
+                // A stop request cannot settle an executing resource.
                 wake.state = "cancelling".into();
                 if let Some(o) = t.obligations.iter_mut().find(|o| o.id == id) {
                     o.dispatch_state = "cancel_requested".into();
@@ -550,6 +725,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // outcome. Otherwise a successor cancels the clock while
                     // leaving the owning task asleep on its dead registration.
                     cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+                    // The owning turn asked for this cancellation, so its receipt
+                    // needs no handling (a successor turn's wake-up still does).
+                    if caller.task_id == t.task_id {
+                        tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed')",params![wake.room_id,wake.agent_id,wake.id,format!("{}-cancelled",wake.id)]).map_err(sql)?;
+                    }
                 }
                 None => {
                     if t.state != ExecutionState::Cancelled {
@@ -612,7 +792,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if !removed(&wake.room_id, &wake.agent_id) {
                     continue;
                 }
-                if wake.kind == "timer" {
+                if wake.state == "scheduled" {
                     cancel_settle(tx, &mut wake, now)?;
                 } else if wake.state != "cancelling" {
                     wake.state = "cancelling".into();
@@ -622,7 +802,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             // Settle unresolved deliveries, including in-flight attempts, before
             // the timeout sweep can create a Blocked task for a removed recipient.
-            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked')").map_err(sql)?;
+            let mut q = tx.prepare("SELECT agent_id,sequence FROM agent_inbox WHERE room_id=?1 AND (json_extract(payload,'$.state') IN ('pending','submitting','uncertain','blocked') OR json_extract(payload,'$.reply_requested')=1)").map_err(sql)?;
             let unsettled = q
                 .query_map([&room], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
@@ -634,9 +814,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             for (a, seq) in unsettled.into_iter().filter(|(a, _)| removed(&room, a)) {
                 let seq = u64::try_from(seq).map_err(|_| error("corrupt inbox sequence"))?;
                 let mut e = get_event(tx, &room, &a, seq)?;
-                e.state = "expired".into();
-                save_event(tx, &e)?;
-                record_delivery(tx, &e)?;
+                if matches!(
+                    e.state.as_str(),
+                    "pending" | "submitting" | "uncertain" | "blocked"
+                ) {
+                    e.state = "expired".into();
+                    save_event(tx, &e)?;
+                    record_delivery(tx, &e)?;
+                }
+                super::replies::recipient_removed(tx, &e, now)?;
             }
             Ok(Outcome::Wakes(retired))
         }

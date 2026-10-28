@@ -102,6 +102,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                 model: leased.model.clone(),
                 effort: leased.effort.clone(),
             },
+            None,
             "inspect the Room",
             "",
             Vec::new(),

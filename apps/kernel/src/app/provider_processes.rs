@@ -8,6 +8,8 @@ use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
 };
 
+mod dead_kernel_leftovers;
+
 use super::provider_liveness::{poll_provider_run_process_exit, ProviderProcessExit};
 
 pub(crate) struct ProviderLaunchProcessRuntime<'a> {
@@ -545,17 +547,38 @@ fn owned_orphan_provider_process_ids(
         Ok(output) => output,
         Err(_) => return Vec::new(),
     };
+    let ps_output = String::from_utf8_lossy(&output.stdout);
     let mcp_url = format!(
         "http://{}:{}/mcp",
         config.runtime_mcp_host, config.runtime_mcp_port
     );
-    owned_orphan_provider_process_ids_from_ps_output(
-        &String::from_utf8_lossy(&output.stdout),
+    let mut orphans = owned_orphan_provider_process_ids_from_ps_output(
+        &ps_output,
         std::process::id(),
         tracked_pids,
         orphan_ttl_ms,
         &mcp_url,
+    );
+    orphans.extend(processes_left_by_dead_kernels());
+    orphans
+}
+
+fn processes_left_by_dead_kernels() -> Vec<u32> {
+    dead_kernel_leftovers::left_by_dead_kernels(
+        dead_kernel_leftovers::launches_in_this_scope(&std::env::temp_dir()),
+        std::process::id(),
+        dead_kernel_leftovers::is_alive,
     )
+}
+
+/// Ends the provider runs a dead kernel left behind, with every process they started. A restored
+/// kernel calls this before it resumes an interrupted turn, so that the resumed provider cannot
+/// run a command that an earlier copy is still running.
+pub(crate) fn stop_processes_left_by_dead_kernels() -> usize {
+    processes_left_by_dead_kernels()
+        .into_iter()
+        .filter(|pid| crate::runtime::process_health::terminate_process_tree(*pid))
+        .count()
 }
 
 #[derive(Debug)]

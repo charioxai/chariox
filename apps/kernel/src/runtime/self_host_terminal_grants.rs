@@ -105,6 +105,19 @@ pub(crate) fn redeem(
         }
         return Ok(existing.clone()); // Retry by the same key, never takeover.
     }
+    // One grant per key: joining again with another link replaces the earlier
+    // grant instead of listing the same key twice, and revoking it revokes the key.
+    let replaced: Vec<String> = store
+        .grants
+        .iter()
+        .filter(|g| g.public_key_thumbprint == grant.public_key_thumbprint)
+        .map(|g| g.client_id.clone())
+        .collect();
+    store
+        .grants
+        .retain(|g| g.public_key_thumbprint != grant.public_key_thumbprint);
+    // The replaced grant's link was used up; it cannot bring the grant back.
+    store.pending.retain(|p| !replaced.contains(&p.terminal_id));
     store.grants.push(grant.clone());
     write(config, &store)?;
     Ok(grant)
@@ -261,7 +274,25 @@ mod tests {
                 0o600
             );
         }
-        revoke(&config, "terminal").unwrap();
+        // A second link for the same key replaces its grant: one entry, and
+        // revoking it stops the key.
+        let issued_at = crate::session::unix_epoch_ms() + 60_000;
+        register(&config, "second-link", "terminal-2", issued_at, "cli", None).unwrap();
+        let again = PersistedClientPairing {
+            client_id: "terminal-2".into(),
+            ..grant.clone()
+        };
+        redeem(&config, "second-link", again).unwrap();
+        let listed = entries(&config).unwrap();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|g| g.client_id.as_str())
+                .collect::<Vec<_>>(),
+            ["terminal-2"]
+        );
+        revoke(&config, "terminal-2").unwrap();
+        assert!(admit(&config, "terminal-key").is_err());
         assert!(redeem(&config, "synthetic-issued-link", grant).is_err());
         assert!(admit(&config, "terminal-key").is_err());
         std::fs::remove_dir_all(root).unwrap();

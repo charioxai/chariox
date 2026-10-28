@@ -4,6 +4,20 @@ use super::*;
 pub struct GetWaitingRoomInventoryRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListWaitingRoomSessionsRequest {
+    pub cursor: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaitingRoomSessionPage {
+    pub sessions: Vec<WaitingRoomPublicSessionSummary>,
+    pub total: usize,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetWaitingRoomPublicSnapshotRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +49,10 @@ pub struct WaitingRoomInventorySnapshot {
     pub activity_revision: String,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     #[serde(default)]
+    pub sessions_total: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_next_cursor: Option<String>,
+    #[serde(default)]
     pub projects: Vec<WaitingRoomPublicProjectSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
@@ -65,6 +83,10 @@ pub struct WaitingRoomPublicSnapshot {
     pub generated_at_ms: u64,
     pub sessions: Vec<WaitingRoomPublicSessionSummary>,
     #[serde(default)]
+    pub sessions_total: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions_next_cursor: Option<String>,
+    #[serde(default)]
     pub projects: Vec<WaitingRoomPublicProjectSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub external_provider_sessions: Vec<ExternalProviderSessionRecord>,
@@ -88,6 +110,8 @@ pub struct WaitingRoomPublicSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitingRoomPublicSessionSummary {
+    #[serde(default)]
+    pub pinned: bool,
     pub id: String,
     pub project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,6 +306,8 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             structural_version: snapshot.structural_version,
             activity_revision: snapshot.activity_revision,
             sessions: snapshot.sessions,
+            sessions_total: snapshot.sessions_total,
+            sessions_next_cursor: snapshot.sessions_next_cursor,
             projects: snapshot.projects,
             external_provider_sessions: snapshot.external_provider_sessions,
             external_provider_sessions_has_more: snapshot.external_provider_sessions_has_more,

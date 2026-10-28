@@ -4,6 +4,7 @@ export type KernelTransportRequest =
     request_id: string
     command_id: string
     request: unknown
+    kernel?: string
   }
   | {
     type: "subscribe"
@@ -12,6 +13,8 @@ export type KernelTransportRequest =
     attachment_id: string
     subscription_scope: string | null
     resume_from_event_id: number | null
+    heartbeat_interval_ms?: number
+    kernel?: string
   }
   | {
     type: "unsubscribe"
@@ -25,10 +28,13 @@ export type KernelTransportControlRequest =
     attachment_id: string
     subscription_scope?: string | null
     resume_from_event_id?: number | null
+    heartbeat_interval_ms?: number
   }
   | { type: "unsubscribe" }
 
-export function normalizeWebSocketRequest(requestId: string, request: unknown): KernelTransportRequest {
+export type KernelRequestRoute = { kernel?: string | undefined; commandId?: string | undefined }
+
+export function normalizeWebSocketRequest(requestId: string, request: unknown, route: KernelRequestRoute = {}): KernelTransportRequest {
   const transportRequest = extractTransportRequest(request)
   if (transportRequest?.type === "subscribe") {
     return {
@@ -38,6 +44,10 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
       attachment_id: transportRequest.attachment_id,
       subscription_scope: transportRequest.subscription_scope ?? null,
       resume_from_event_id: transportRequest.resume_from_event_id ?? null,
+      ...(transportRequest.heartbeat_interval_ms === undefined
+        ? {}
+        : { heartbeat_interval_ms: transportRequest.heartbeat_interval_ms }),
+      ...(route.kernel === undefined ? {} : { kernel: route.kernel }),
     }
   }
   if (transportRequest?.type === "unsubscribe") {
@@ -49,8 +59,9 @@ export function normalizeWebSocketRequest(requestId: string, request: unknown): 
   return {
     type: "request",
     request_id: requestId,
-    command_id: requestId,
+    command_id: route.commandId ?? requestId,
     request,
+    ...(route.kernel === undefined ? {} : { kernel: route.kernel }),
   }
 }
 
@@ -75,6 +86,9 @@ export function extractTransportRequest(request: unknown): KernelTransportContro
       subscription_scope: typeof transport.subscription_scope === "string" ? transport.subscription_scope : null,
       resume_from_event_id:
         typeof transport.resume_from_event_id === "number" ? transport.resume_from_event_id : null,
+      ...(typeof transport.heartbeat_interval_ms === "number"
+        ? { heartbeat_interval_ms: transport.heartbeat_interval_ms }
+        : {}),
     }
   }
   if (transport.type === "unsubscribe") {

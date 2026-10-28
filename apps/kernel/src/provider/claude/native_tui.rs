@@ -874,6 +874,8 @@ mod tests {
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS", "1")
+                    // A Chariox-run Claude worker exports "dispatched"; this test needs the fresh-response path.
+                    .env_remove("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
                     .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
                     .spawn().expect("official hook should start");
                 child.stdin.take().unwrap().write_all(

@@ -11,6 +11,7 @@ import type {
   SkillImportOutcome,
   ExtensionKind,
 } from "./cli-types.js"
+import { formatAgentLabel } from "./agent-label.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import {
@@ -254,14 +255,14 @@ export async function handleMcpSlashCommand(
     }
     if (explainActiveHomeProxySlashGrant(deps, command, action, "mcp", agentRef, name)) return
     const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "grants" || action === "agent") {
     const agent = resolveGrantTarget(deps, command.args[1], `usage: /mcp ${action} <agent-ref>`)
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, "mcp"))
-    deps.flashFooter(`showing MCP grants for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing MCP grants for ${formatAgentLabel(agent)}`, "info")
     return
   }
   deps.flashFooter("usage: /mcp list | /mcp show <name> | /mcp install ... | /mcp update ... | /mcp uninstall <name> | /mcp import <codex|opencode> [name] | /mcp grant <agent-ref> <name> | /mcp revoke <agent-ref> <name> | /mcp grants <agent-ref>", "error")
@@ -344,14 +345,14 @@ export async function handleSkillSlashCommand(
       return
     }
     const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "grants" || action === "agent") {
     const agent = resolveGrantTarget(deps, command.args[1], `usage: /skill ${action} <agent-ref>`)
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, "skill"))
-    deps.flashFooter(`showing skill grants for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing skill grants for ${formatAgentLabel(agent)}`, "info")
     return
   }
   deps.flashFooter("usage: /skill list | /skill show <name> | /skill install <path> | /skill update <path> | /skill uninstall <name> | /skill import <codex|opencode> [name] | /skill grant <agent-ref> <name> | /skill revoke <agent-ref> <name> | /skill grants <agent-ref>", "error")
@@ -438,19 +439,19 @@ export async function handleScriptSlashCommand(
       if (!agentRef || !name || !environment || !deps.grantAgentScript) return deps.flashFooter("usage: /script grant <agent-ref> <name> --env <environment>", "error")
       if (explainActiveHomeProxySlashGrant(deps, command, action, "script", agentRef, name)) return
       const agent = await deps.grantAgentScript(agentRef, name, environment)
-      deps.flashFooter(`granted script ${name} to ${agent.agent_ref}`, "info")
+      deps.flashFooter(`granted script ${name} to ${formatAgentLabel(agent)}`, "info")
       return
     }
     if (!agentRef || !name || !deps.revokeAgentScript) return deps.flashFooter("usage: /script revoke <agent-ref> <name>", "error")
     const agent = await deps.revokeAgentScript(agentRef, name)
-    deps.flashFooter(`revoked script ${name} from ${agent.agent_ref}`, "info")
+    deps.flashFooter(`revoked script ${name} from ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "grants" || action === "agent") {
     const agent = resolveGrantTarget(deps, command.args[1], `usage: /script ${action} <agent-ref>`)
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, "script"))
-    deps.flashFooter(`showing script grants for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing script grants for ${formatAgentLabel(agent)}`, "info")
     return
   }
   deps.flashFooter("usage: /script list | /script show <name> | /script validate <path> --env <environment> [--name <name>] | /script register <path> --env <environment> [--name <name>] | /script remove <name> | /script grant <agent-ref> <name> --env <environment> | /script revoke <agent-ref> <name>", "error")
@@ -646,19 +647,19 @@ export async function handleConnectorSlashCommand(
       if (!agentRef || !name || !deps.grantAgentConnector) return deps.flashFooter("usage: /connector grant <agent-ref> <name> [--credential <id>] [--allow read|write|destructive]", "error")
       if (explainActiveHomeProxySlashGrant(deps, command, action, "connector", agentRef, name)) return
       const agent = await deps.grantAgentConnector(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
-      deps.flashFooter(`granted connector ${name} to ${agent.agent_ref}`, "info")
+      deps.flashFooter(`granted connector ${name} to ${formatAgentLabel(agent)}`, "info")
       return
     }
     if (!agentRef || !name || !deps.revokeAgentConnector) return deps.flashFooter("usage: /connector revoke <agent-ref> <name>", "error")
     const agent = await deps.revokeAgentConnector(agentRef, name)
-    deps.flashFooter(`revoked connector ${name} from ${agent.agent_ref}`, "info")
+    deps.flashFooter(`revoked connector ${name} from ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "grants" || action === "agent") {
     const agent = resolveGrantTarget(deps, command.args[1], `usage: /connector ${action} <agent-ref>`)
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, "connector"))
-    deps.flashFooter(`showing connector grants for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing connector grants for ${formatAgentLabel(agent)}`, "info")
     return
   }
   deps.flashFooter("usage: /connector list | /connector show <name> | /connector register <file.yaml> | /connector adapter list|register|show|remove | /connector remove <name> | /connector doctor <name> [--credential <id>] | /connector test <name> <operation> --input '<json>' | /connector grant <agent-ref> <name> | /connector revoke <agent-ref> <name>", "error")
@@ -673,14 +674,14 @@ export async function handleExtensionSlashCommand(
     const agent = resolveGrantTarget(deps, kind, "usage: /extension sync-status <agent-ref>")
     if (!agent) return
     deps.appendNotice(formatRemoteExtensionSyncStatus(agent))
-    deps.flashFooter(`showing remote extension sync for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing remote extension sync for ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "sync-retry") {
     if (!kind || !deps.syncRemoteExtensionManifest) return deps.flashFooter("usage: /extension sync-retry <agent-ref>", "error")
     const agent = await deps.syncRemoteExtensionManifest(kind)
     deps.appendNotice(formatRemoteExtensionSyncStatus(agent))
-    deps.flashFooter(`retried remote extension sync for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`retried remote extension sync for ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "audit") {
@@ -699,7 +700,7 @@ export async function handleExtensionSlashCommand(
     const agent = resolveGrantTarget(deps, agentRef, "usage: /extension grants <mcp|skill|script|connector|app> <agent-ref>")
     if (!agent) return
     deps.appendNotice(formatAgentCapabilityGrants(agent, kind))
-    deps.flashFooter(`showing ${kind} grants for ${agent.agent_ref}`, "info")
+    deps.flashFooter(`showing ${kind} grants for ${formatAgentLabel(agent)}`, "info")
     return
   }
   const environment = readOption(command.args, "--env")
@@ -711,7 +712,7 @@ export async function handleExtensionSlashCommand(
     const handler = action === "grant" ? deps.grantAgentApp : deps.revokeAgentApp
     if (!handler) return deps.flashFooter(`App ${action} is not available`, "error")
     const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "bound" : "unbound"} App ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "bound" : "unbound"} App ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (kind === "mcp") {
@@ -719,14 +720,14 @@ export async function handleExtensionSlashCommand(
     if (!handler) return deps.flashFooter(`MCP ${action} is not available`, "error")
     if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} MCP ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (kind === "skill") {
     const handler = action === "grant" ? deps.grantAgentSkill : deps.revokeAgentSkill
     if (!handler) return deps.flashFooter(`skill ${action} is not available`, "error")
     const agent = await handler(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} skill ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (kind === "connector") {
@@ -736,19 +737,19 @@ export async function handleExtensionSlashCommand(
     const agent = action === "grant"
       ? await deps.grantAgentConnector!(agentRef, name, readOption(command.args, "--credential"), readOption(command.args, "--allow"))
       : await deps.revokeAgentConnector!(agentRef, name)
-    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} connector ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, "info")
+    deps.flashFooter(`${action === "grant" ? "granted" : "revoked"} connector ${name} ${action === "grant" ? "to" : "from"} ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (action === "grant") {
     if (!environment || !deps.grantAgentScript) return deps.flashFooter("usage: /extension grant script <agent-ref> <name> --env <environment>", "error")
     if (explainActiveHomeProxySlashGrant(deps, command, action, kind, agentRef, name)) return
     const agent = await deps.grantAgentScript(agentRef, name, environment)
-    deps.flashFooter(`granted script ${name} to ${agent.agent_ref}`, "info")
+    deps.flashFooter(`granted script ${name} to ${formatAgentLabel(agent)}`, "info")
     return
   }
   if (!deps.revokeAgentScript) return deps.flashFooter("script revoke is not available", "error")
   const agent = await deps.revokeAgentScript(agentRef, name)
-  deps.flashFooter(`revoked script ${name} from ${agent.agent_ref}`, "info")
+  deps.flashFooter(`revoked script ${name} from ${formatAgentLabel(agent)}`, "info")
 }
 
 function readNumberOption(args: string[], flag: string): number | null {
@@ -878,7 +879,7 @@ function explainActiveHomeProxySlashGrant(
   const agent = resolveGrantTarget(deps, agentRef, `usage: /${command.kind} grant <agent-ref> <name>`)
   if (!agent) return true
   if (agent.remote_execution && !command.args.includes("--confirm-home-proxy")) {
-    deps.appendNotice(`${kind} ${name} is exposed to remote agent ${agent.agent_ref}; home keeps credentials local and executes calls on this machine.`)
+    deps.appendNotice(`${kind} ${name} is exposed to remote agent ${formatAgentLabel(agent)}; home keeps credentials local and executes calls on this machine.`)
   }
   return false
 }

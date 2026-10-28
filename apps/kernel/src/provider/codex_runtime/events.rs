@@ -241,6 +241,7 @@ pub(super) fn apply_notification_with_manifest(
                 chunks.push(chunk);
             }
         }
+        CodexNotification::AccountRateLimitsUpdated { .. } => {}
         CodexNotification::TokenUsageUpdated { turn_id, usage, .. } => {
             if !turn_id.is_empty() && active_turn_id.as_deref() != Some(turn_id.as_str()) {
                 return;

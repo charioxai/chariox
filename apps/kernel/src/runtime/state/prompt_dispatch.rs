@@ -150,18 +150,14 @@ impl KernelRuntimeState {
                 prepared.prompt.id(),
                 target_home_prompt_id,
                 worker_kernel_id,
-                worker_provider_run_id
-                    .as_deref()
-                    .unwrap_or("unknown"),
+                worker_provider_run_id.as_deref().unwrap_or("unknown"),
             ),
             Err(persist_error) => format!(
                 "queued prompt `{}` remote steer outcome is uncertain for home prompt `{}` on worker `{}` run `{}`; durable hold could not be confirmed, so do not retry or advance this item: {persist_error}",
                 prepared.prompt.id(),
                 target_home_prompt_id,
                 worker_kernel_id,
-                worker_provider_run_id
-                    .as_deref()
-                    .unwrap_or("unknown"),
+                worker_provider_run_id.as_deref().unwrap_or("unknown"),
             ),
         };
         if persisted_ok {
@@ -559,7 +555,7 @@ impl KernelRuntimeState {
             }
             other => {
                 return Err(DaemonError::LocalTransport {
-                    operation: "steer agent message",
+                    operation: "read remote agent message steer response",
                     message: format!("unexpected remote message response: {other:?}"),
                 });
             }
@@ -669,6 +665,18 @@ impl KernelRuntimeState {
         };
         authorize()?;
         self.owned.require_publication_activation()?;
+        if self
+            .owned
+            .agent_store
+            .get_agent(prepared.prompt.target_agent_id())?
+            .archived()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "submit prompt",
+                message: "Unarchive this agent before sending it work.".into(),
+            });
+        }
+
         if self.owned.config_projection.snapshot().room_agent_tools {
             prepared
                 .prepare_task_prompt_identity(|| self.owned.session_store.reserve_prompt_id())?;
@@ -687,7 +695,17 @@ impl KernelRuntimeState {
                     remote_dispatch: None,
                 });
             }
+            owned.ensure_agent_before_deadline(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )?;
             owned.validate_goal_prompt(&prepared)?;
+            self.refresh_unknown_prompt_account(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )
+            .await?;
+            authorize()?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,
@@ -762,12 +780,22 @@ impl KernelRuntimeState {
                             return Ok(submission);
                         }
                     } else {
-                        self.with_app_side_effect(|app| {
-                            // The app mutex can outlive the grant. Reauthorize only
-                            // after acquiring it, before launching a cold provider.
-                            authorize()?;
-                            app.ensure_prompt_provider_run_for_agent(&session_id, &target_agent_id)
-                        })
+                        // A cold launch (first prompt after a restart) may need the
+                        // locked Vault, e.g. for a Claude token: ask the owner to unlock.
+                        self.with_project_prompt_environment(
+                            &session_id,
+                            &target_agent_id,
+                            |app| {
+                                // The app mutex can outlive the grant. Reauthorize only
+                                // after acquiring it, before launching a cold provider.
+                                authorize()?;
+                                app.ensure_prompt_provider_run_for_agent(
+                                    &session_id,
+                                    &target_agent_id,
+                                )
+                                .map(|_| ())
+                            },
+                        )
                         .await?;
                     };
                     authorize()?;

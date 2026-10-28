@@ -6,6 +6,7 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
   SessionConfigState,
+  TranscriptEntry,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { MultiAgentResponseLayout } from "./preferences.js"
@@ -60,6 +61,7 @@ import {
   handleRoomSlashCommand,
   type RoomCommandHandlerDeps,
 } from "./room-command-handler.js"
+import { handleRoomTerminalSlash, type RoomTerminalScreen } from "./room-terminal-slash.js"
 import {
   handleWorkspaceSlashCommand,
   handleWorktreeSlashCommand,
@@ -158,11 +160,12 @@ type CommandActionDeps =
   multiAgentResponseLayout: () => MultiAgentResponseLayout
   maxAgentsPerScreen: () => number
   flashFooter: (message: string, tone: FooterTone) => void
-  appendNotice: (message: string) => void
+  appendNotice: (message: string, emphasis?: TranscriptEntry["emphasis"], mergeKey?: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
   captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
+  roomTerminalScreen?: RoomTerminalScreen
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -340,6 +343,21 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
   ): Promise<void> => {
     if (!deps.sendRoomEnvironmentRequest) {
       deps.flashFooter("Room environment controls are unavailable in this daemon", "error")
+      return
+    }
+    if (command.args[0] === "terminal") {
+      if (!deps.roomTerminalScreen) {
+        deps.flashFooter("Room terminals need the full-screen client", "error")
+        return
+      }
+      await handleRoomTerminalSlash({
+        isAttached: deps.isAttached,
+        sessionId: () => deps.sessionState().id,
+        send: deps.sendRoomEnvironmentRequest,
+        screen: deps.roomTerminalScreen,
+        appendNotice: deps.appendNotice,
+        flashFooter: deps.flashFooter,
+      }, command.args.slice(1))
       return
     }
     await handleRoomSlashCommand({

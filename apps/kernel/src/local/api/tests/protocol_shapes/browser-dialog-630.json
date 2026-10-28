@@ -1,0 +1,41 @@
+{
+  "local_protocol": 630,
+  "peer_protocol": 233,
+  "request": {
+    "KernelBrowser": {
+      "command": {
+        "op": "dialog",
+        "tab_id": "tab-a",
+        "generation": 1,
+        "document_id": "doc-a",
+        "dialog_id": "dialog-a",
+        "action": "accept",
+        "prompt_text": ""
+      }
+    }
+  },
+  "state": {
+    "generation": 1,
+    "state": "ready",
+    "dialogs": [
+      {
+        "dialog_id": "dialog-a",
+        "tab_id": "tab-a",
+        "generation": 1,
+        "document_id": "doc-a",
+        "kind": "prompt",
+        "message": "Name?",
+        "origin": "https://example.com"
+      }
+    ]
+  },
+  "state_keys": [
+    "browser_lockdown",
+    "chrome_window",
+    "dialogs",
+    "generation",
+    "state",
+    "tabs",
+    "viewport"
+  ]
+}

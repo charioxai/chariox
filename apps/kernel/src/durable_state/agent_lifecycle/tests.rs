@@ -1,5 +1,38 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02 supplementary single-writer fault tests.
 use super::*;
+
+#[test]
+fn workflow_output_follow_up_keeps_the_task_and_helper_obligations() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    let original = f.task();
+    let next = format!(
+        "{}p",
+        crate::app::workflow_output_follow_up::FOLLOW_UP_PREFIX
+    );
+    let Outcome::Task(task) = f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 3,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(task.obligations, original.obligations);
+    assert_eq!(task.prompt_id, next);
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .len(),
+        1
+    );
+}
 pub(super) struct Fixture {
     pub(super) root: std::path::PathBuf,
     pub(super) store: DurableKernelStateStore,
@@ -214,6 +247,16 @@ fn a02_empty_or_tool_only_end_with_open_obligations_never_silently_done() {
     };
     assert!(correction);
     assert_ne!(task.state, ExecutionState::Done);
+}
+#[test]
+fn a02_plain_turn_without_obligation_or_wait_ends_done_without_correction() {
+    let f = Fixture::new();
+    f.begin("p");
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!()
+    };
+    assert!(!correction, "a plain answered turn is never corrected");
+    assert_eq!(task.state, ExecutionState::Done);
 }
 #[test]
 fn a02_yield_refuses_missing_dead_or_uncovered_sources() {
@@ -1491,16 +1534,16 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
 #[test]
 fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
     // Rejected before admission, and after admission but before provider I/O.
-    for admitted in [false, true] {
+    for admission in [None, Some(None), Some(Some("run"))] {
         let f = Fixture::new();
         let e = waiting_with_deadline_wake(&f);
-        if admitted {
+        if let Some(run) = admission {
             f.apply(Operation::Begin {
                 owner: "owner".into(),
                 room: "room".into(),
                 agent: "parent".into(),
                 prompt: "wake".into(),
-                run: None,
+                run: run.map(str::to_owned),
                 now: 5,
             });
         }
@@ -1512,7 +1555,7 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             now: 5,
         });
         let t = f.task();
-        assert_eq!(t.state, ExecutionState::Waiting, "admitted={admitted}");
+        assert_eq!(t.state, ExecutionState::Waiting, "admission={admission:?}");
         assert!(t.wait.is_some());
         assert_eq!(t.pending_prompt_id, None);
         assert_eq!(
@@ -1520,6 +1563,49 @@ fn a02_review_rejected_wake_returns_the_task_to_its_wait() {
             "a refused wake is not a no-progress strike"
         );
     }
+}
+
+#[test]
+fn a02_review_wake_wait_is_consumed_at_provider_io() {
+    let f = Fixture::new();
+    let event = waiting_with_deadline_wake(&f);
+    let wait = f.task().wait.unwrap();
+    f.begin("wake");
+    assert_eq!(f.task().wait.as_ref(), Some(&wait));
+    let bind = || Operation::BindSubmission {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        prompt: "wake".into(),
+        target: None,
+        run: "run".into(),
+        submit_epoch: 1,
+        now: 6,
+    };
+    f.apply(bind());
+    assert!(f.task().wait.is_none());
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 7,
+    });
+    f.apply(Operation::Yield {
+        task: "p".into(),
+        prompt: "wake".into(),
+        registrations: vec!["reg".into()],
+        cursor: event.sequence,
+        deadline: 80_000,
+        reason: "next result".into(),
+        now: 8,
+    });
+    // Reconciliation of the same submission cannot consume a new wait.
+    let next_wait = f.task().wait;
+    f.apply(bind());
+    assert_eq!(f.task().wait, next_wait);
+    f.settle("wake", true);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
 }
 
 #[test]
@@ -3125,4 +3211,343 @@ fn a12_expired_message_or_unhandled_ack_never_revives_delivery() {
         now: 7,
     });
     assert_eq!(f.task().obligations[0].status, "settling");
+}
+// MP-08 / MP-10 / MP-11: with every obligation resolved, an empty yield is told to
+// answer rather than to name live sources that cannot exist.
+#[test]
+fn yield_without_open_obligation_points_to_the_final_answer() {
+    let f = Fixture::new();
+    f.begin("p");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "nothing".into(),
+            now: 2,
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("final answer"), "{error}");
+}
+
+// MP-08/MP-09/MP-10/MP-11 F03: an accepted finite wait cannot disappear
+// because native turn settlement arrives after its deadline.
+#[test]
+fn a02_late_native_settlement_delivers_the_original_deadline_once() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: false,
+        cancelled: false,
+        now: 60_001,
+    }) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Waiting);
+    assert!(!correction);
+    for now in [60_002, 60_003] {
+        f.apply(Operation::Sweep {
+            now,
+            busy_recipients: vec![],
+            held_work: vec![],
+        });
+    }
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "deadline_reached");
+    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+}
+
+// MP-08/MP-09/MP-10/MP-11 F03: continued native polling cannot replace a
+// previously accepted deadline with a new one before native settlement.
+#[test]
+fn a02_accepted_wait_rejects_repeated_yield_without_extending_deadline() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    assert!(f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 120_000,
+            reason: "polling".into(),
+            now: 3,
+        })
+        .is_err());
+    assert_eq!(f.task().wait.unwrap().deadline_ms, 60_000);
+}
+
+// MP-08/MP-10/MP-11 F04: a delivered message remains satisfied while the
+// parent observes THIS child task, including completion-before-subscribe.
+#[test]
+fn a02_existing_child_subscription_uses_the_submitted_task_not_prior_agent_result() {
+    for fast in [false, true] {
+        let f = Fixture::new();
+        f.begin("p");
+        f.apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "parent".into(),
+            prompt: "p".into(),
+            run: Some("run".into()),
+            id: "message".into(),
+            kind: "message".into(),
+            resource: Some("child-prompt".into()),
+            now: 1,
+        });
+        f.apply(Operation::DispatchReceipt {
+            id: "message".into(),
+            accepted: true,
+            resource: Some("child-prompt".into()),
+        });
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: "child-prompt".into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+        f.apply(Operation::SourceOutcome {
+            room: "room".into(),
+            source: "child".into(),
+            occurrence: "old-task".into(),
+            success: true,
+            public_answer: None,
+            now: 3,
+        });
+        if fast {
+            f.apply(Operation::SourceOutcome {
+                room: "room".into(),
+                source: "child-prompt".into(),
+                occurrence: "this-task".into(),
+                success: true,
+                public_answer: None,
+                now: 4,
+            });
+        }
+        f.apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "this-task-subscription".into(),
+                task_id: "p".into(),
+                source_id: "child".into(),
+                obligation_id: Some("message".into()),
+                source_cursor: 0,
+                live: true,
+            },
+        });
+        let reg = f.store.agent_registrations("p").unwrap().remove(0);
+        assert_eq!(reg.source_id, "child-prompt");
+        assert_eq!(reg.obligation_id, None);
+        assert_eq!(reg.live, !fast);
+        let events = f.store.agent_inbox("room", "parent", 0).unwrap();
+        assert_eq!(events.len(), usize::from(fast));
+        if fast {
+            assert_eq!(events[0].occurrence_id, "this-task");
+        }
+        assert_eq!(f.task().obligations[0].status, "satisfied");
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![reg.id],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "child completion".into(),
+            now: 5,
+        });
+        let Outcome::Settled { task, correction } = f.settle("p", false) else {
+            panic!()
+        };
+        assert_eq!(task.state, ExecutionState::Waiting);
+        assert!(!correction);
+    }
+}
+
+// MP-08/MP-10/MP-11 F04: the same child task may have a pending
+// delegate completion and an already delivered message. Automatic binding
+// must cover the completion obligation instead of observing delivery alone.
+#[test]
+fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
+    for source in ["child", "child-prompt"] {
+        let f = Fixture::new();
+        f.begin("p");
+        for (id, kind, resource) in [
+            ("delegate", "delegate", "child"),
+            ("message", "message", "child-prompt"),
+        ] {
+            f.apply(Operation::RegisterObligation {
+                owner: "owner".into(),
+                room: "room".into(),
+                agent: "parent".into(),
+                prompt: "p".into(),
+                run: Some("run".into()),
+                id: id.into(),
+                kind: kind.into(),
+                resource: Some(resource.into()),
+                now: 1,
+            });
+            f.apply(Operation::DispatchReceipt {
+                id: id.into(),
+                accepted: true,
+                resource: Some(resource.into()),
+            });
+        }
+        f.apply(Operation::Begin {
+            owner: "owner".into(),
+            room: "room".into(),
+            agent: "child".into(),
+            prompt: "child-prompt".into(),
+            run: Some("child-run".into()),
+            now: 2,
+        });
+        f.apply(Operation::BindDelegate {
+            parent_task: "p".into(),
+            child_task: "child-prompt".into(),
+        });
+        f.apply(Operation::Subscribe {
+            task: "p".into(),
+            prompt: "p".into(),
+            registration: Registration {
+                id: "completion".into(),
+                task_id: "p".into(),
+                source_id: source.into(),
+                obligation_id: None,
+                source_cursor: 0,
+                live: true,
+            },
+        });
+        let reg = f
+            .store
+            .agent_registrations("p")
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == "completion")
+            .unwrap();
+        assert_eq!(reg.source_id, "child-prompt");
+        assert_eq!(reg.obligation_id.as_deref(), Some("delegate"));
+        assert_eq!(
+            f.task()
+                .obligations
+                .iter()
+                .find(|o| o.id == "message")
+                .unwrap()
+                .status,
+            "satisfied"
+        );
+        f.apply(Operation::Yield {
+            task: "p".into(),
+            prompt: "p".into(),
+            registrations: vec![reg.id],
+            cursor: 0,
+            deadline: 60_000,
+            reason: "actual child completion".into(),
+            now: 3,
+        });
+    }
+}
+
+// A model that reuses an earlier turn's ids is told which ids to use, not just refused.
+#[test]
+fn a_stale_origin_prompt_error_names_the_turn_context_to_use() {
+    let f = Fixture::new();
+    f.begin("p");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Unsubscribe {
+            task: "p".into(),
+            prompt: "older-turn".into(),
+            registration: "r".into(),
+        })
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("<chariox-task-context>"),
+        "{error}"
+    );
+}
+
+/// A02-S02 (accam r5, amcore r1 live): a message wakes a yielded agent in a
+/// new turn; yielding that turn on the earlier task's registration says the
+/// earlier wait continues and this turn only has to end.
+#[test]
+fn a02_message_turn_yielding_on_the_earlier_wait_is_told_to_finish() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.subscribe();
+    f.yield_now();
+    f.settle("p", false);
+    assert_eq!(f.task().state, ExecutionState::Waiting);
+    f.begin("message-turn");
+    let error = f
+        .store
+        .agent_lifecycle(Operation::Yield {
+            task: "message-turn".into(),
+            prompt: "message-turn".into(),
+            registrations: vec!["reg".into()],
+            cursor: 0,
+            deadline: 120_000,
+            reason: "back to the child result".into(),
+            now: 4,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("earlier task is still waiting"), "{error}");
+    assert_eq!(
+        f.task().state,
+        ExecutionState::Waiting,
+        "the earlier wait is untouched"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: dispatch failure before receiver admission must not strand the sender.
+#[test]
+fn deleted_child_settles_reply_without_an_admitted_receiver_task() {
+    let f = Fixture::new();
+    f.begin("p");
+    let mut message = occurrence(
+        "room",
+        "child",
+        "parent",
+        "reply-before-launch",
+        "message",
+        serde_json::json!({"message":"review"}),
+    );
+    message.reply_requested = true;
+    let Outcome::Event(event) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: message,
+    }) else {
+        panic!("message not admitted")
+    };
+    assert_eq!(f.task().obligations[0].status, "open");
+    f.apply(Operation::RetireWakes {
+        room: "room".into(),
+        agent: Some("child".into()),
+        now: 10,
+    });
+    assert_eq!(
+        f.task().obligations[0].status,
+        "failed",
+        "the deleted recipient cannot ever answer reply-{}",
+        event.sequence
+    );
+    assert!(!f.store.agent_registrations("p").unwrap()[0].live);
 }
