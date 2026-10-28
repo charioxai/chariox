@@ -336,11 +336,33 @@ async fn mk04_return_setup_failure_can_be_cancelled_and_corrected() {
 #[tokio::test(flavor = "multi_thread")]
 async fn mk04_move_restores_prepared_environment_after_worker_restart() {
     crate::test_support::isolated_env_test!();
+    prepared_environment_after_restart(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_move_restores_prepared_environment_after_lost_activation_ack() {
+    crate::test_support::isolated_env_test!();
+    prepared_environment_after_restart(true).await;
+}
+
+async fn prepared_environment_after_restart(unacknowledged: bool) {
     let _env = crate::env_lock::lock();
     std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
     let (mut fixture, session, _) = crash_fixture().await;
     install_move_setup_definition(&fixture, &session).await;
-    move_request(&fixture, &session, true).await;
+    if unacknowledged {
+        let journal = fixture.workers[0]
+            .lock()
+            .await
+            .config
+            .private_runtime_state_root()
+            .join("agent-moves");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(journal.join("crash-after-phase-for-test"), "target:active").unwrap();
+        dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToRemote": {"session_id": session, "agent_ref": fixture.agent_id, "machine_ref": fixture.presences[0].machine_id}})).await.expect_err("activation must lose its acknowledgement at the durable boundary");
+    } else {
+        move_request(&fixture, &session, true).await;
+    }
     let remote = fixture
         .home
         .lock()
@@ -352,6 +374,9 @@ async fn mk04_move_restores_prepared_environment_after_worker_restart() {
         .unwrap()
         .clone();
     reboot_worker(&mut fixture).await;
+    if unacknowledged {
+        move_request(&fixture, &session, true).await;
+    }
     let mut worker = fixture.workers[0].lock().await;
     let backing = worker
         .leased_agents
