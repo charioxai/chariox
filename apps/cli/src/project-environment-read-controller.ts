@@ -154,8 +154,15 @@ export function createProjectEnvironmentReadController(deps: {
       if (event.name === "w") { void controller.web(); return true }
       if (event.name === "v" && current) { showingDiff = !showingDiff; lines = showingDiff ? (diff ? [diffLabel, ...environmentDiffLines(diff)] : ["No revision diff from this client yet · review a proposal or open Web", ...viewLines(current)]) : viewLines(current); offset = 0; deps.render(); return true }
       if ((event.name === "left" || event.name === "right") && current) {
-        const titles = ["Project-wide", ...current.folders.map(f => f.label)]
-        const positions = titles.map(t => lines.indexOf(t)).filter(p => p >= 0)
+        const sections = [{ id: "project", title: "Project-wide" }, ...current.folders.map(f => ({ id: f.folder_id, title: f.label }))]
+        let sourceOffset = -1
+        const positions = sections.flatMap(section => {
+          // Search in section order so folders with the same label keep distinct headings.
+          const heading = lines.indexOf(section.title, sourceOffset + 1)
+          if (heading < 0) return []
+          sourceOffset = heading
+          return [{ id: section.id, offset: lines.slice(0, heading).reduce((rows, line) => rows + wrapLine(line, deps.textWidth()).length, 0) }]
+        }).map(section => section.offset)
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }

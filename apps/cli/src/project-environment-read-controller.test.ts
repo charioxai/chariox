@@ -165,3 +165,22 @@ test("P03 TUI inspects a Web-edited revision after Refresh", async () => {
   assert(controller.visibleLines().includes("Version constraint: 22"))
   assert(controller.visibleLines().includes("Version constraint: 24"))
 })
+
+test("R4 Environment section navigation uses wrapped heading rows and folder identities", async () => {
+  const environment: any = { schema_version: 1, local_project_id: "project", revision: 1, content_digest: "x".repeat(64), lineage: {}, folders: [
+    { folder_id: "one", label: "A folder heading that wraps", requirements: [] },
+    { folder_id: "two", label: "A folder heading that wraps", requirements: [] },
+  ], project_requirements: [], proposals: [], operations: [], delivered_capabilities: { enabled_environment_operations: ["get", "save"] } }
+  const controller = createProjectEnvironmentReadController({ send: async () => ({ ProjectEnvironment: { environment } }), render() {}, pageSize: () => 3, textWidth: () => 18 })
+  await controller.open("project")
+  controller.handleKey({ name: "right" })
+  assert.equal(controller.visibleLines()[0], "Project-wide")
+  controller.handleKey({ name: "right" })
+  assert.equal(controller.visibleLines()[0], "A folder heading")
+  controller.handleKey({ name: "right" })
+  assert.equal(controller.visibleLines()[0], "A folder heading")
+  controller.handleKey({ name: "left" })
+  assert.equal(controller.visibleLines()[0], "A folder heading")
+  controller.handleKey({ name: "left" })
+  assert.equal(controller.visibleLines()[0], "Project-wide")
+})
