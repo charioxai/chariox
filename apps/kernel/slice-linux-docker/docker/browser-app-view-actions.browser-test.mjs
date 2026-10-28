@@ -42,7 +42,7 @@ const script = `
     effect: 'approval', approvalReason: 'Deletes the list',
   }, async () => { throw Object.assign(new Error('refused by the app'), { code: 'APP_REFUSED' }); });
   chariox.view.state(() => ({ todos, title: document.getElementById('title').textContent }));
-  rename.addEventListener('submit', event => { event.preventDefault(); document.getElementById('title').textContent = rename.title.value + '|' + rename.sort.value + '|' + rename.pinned.checked; });
+  chariox.form(rename, async () => { document.getElementById('title').textContent = rename.title.value + '|' + rename.sort.value + '|' + rename.pinned.checked; });
   window.addTodo = add;`;
 
 async function openApp(label, files = { 'index.html': html, 'app.js': script }) {
@@ -79,7 +79,7 @@ test('A1: invoke runs the view function, publishes state and changes, and report
   assert.deepEqual(await app.agent(`invoke('nothing', {})`), { ok: false, code: 'unknown_action', message: 'the view has no action "nothing"' });
 });
 
-test('A1: a form action fills the real controls and submits through the real submit event', async () => {
+test('A1: a form action fills the real controls and awaits the registered handler', async () => {
   const app = await openApp('view-form');
   assert.deepEqual(await app.agent(`invoke('rename_list', { title: 'Groceries', sort: 'b', pinned: true })`), { ok: true, value: { submitted: true } });
   assert.equal(await app.evaluate('document.getElementById("title").textContent'), 'Groceries|b|true');
@@ -121,7 +121,7 @@ const controlledScript = `
   document.addEventListener('input', e => { if (changed(e.target)) onChange(e.target); });
   document.addEventListener('change', e => { if (e.target.tagName === 'SELECT' && changed(e.target)) onChange(e.target); });
   document.addEventListener('click', e => { if ((e.target.type === 'checkbox' || e.target.type === 'radio') && changed(e.target)) onChange(e.target); });
-  f.addEventListener('submit', e => { e.preventDefault(); document.getElementById('saved').textContent = JSON.stringify(state); });
+  chariox.form(f, async () => { document.getElementById('saved').textContent = JSON.stringify(state); });
   window.addTodo = () => {};`;
 
 test('A1: a form action reaches a controlled component: its state updates before the submit handler reads it', async () => {
