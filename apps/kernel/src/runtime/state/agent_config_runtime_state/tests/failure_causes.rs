@@ -189,6 +189,46 @@ async fn a_long_multiline_structured_error_stays_whole_in_events_history_and_tra
 }
 
 #[tokio::test]
+async fn a_long_multiline_native_hook_error_stays_whole_in_events_history_and_transcript() {
+    let turn = subscribed_failing_turn().await;
+    let native = format!(
+        "You've hit your session limit\n{}resets 4am (Europe/Madrid)",
+        "native diagnostic\n".repeat(60)
+    );
+    assert!(native.len() > 1000);
+    let frame = crate::provider::claude_native_stop_failure(&serde_json::json!({
+        "hook_event_name": "StopFailure",
+        "error": "rate_limit",
+        "last_assistant_message": native,
+    }))
+    .expect("StopFailure frame");
+
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(frame),
+                explicit_provider_error: true,
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    turn.assert_turn_failed();
+    let failure = followed_error_failure(&turn).expect("typed cause");
+    assert_eq!(failure.message, native);
+    assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
+    assert!(
+        provider_error_outputs(&turn).contains(&failure.notice()),
+        "the transcript entry carries the native error"
+    );
+}
+
+#[tokio::test]
 async fn a_long_auth_error_declined_at_login_recovery_stays_whole_in_events_history_and_transcript()
 {
     let turn = follow(failing_turn_on("codex").await);

@@ -174,8 +174,7 @@ pub(crate) fn claude_native_stop_failure(event: &serde_json::Value) -> Option<St
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
         })
-        .map(compact_provider_error_snippet)
-        .unwrap_or_else(|| "Provider ended the turn with an API error".to_string());
+        .unwrap_or("Provider ended the turn with an API error");
     Some(format!("Claude StopFailure [{error}]: {detail}"))
 }
 
