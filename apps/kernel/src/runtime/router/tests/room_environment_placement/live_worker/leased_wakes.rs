@@ -12,12 +12,20 @@ fn with_room_tools() -> HomePersistenceEnvironment {
 }
 
 async fn spawn_leased(fixture: &mut LiveWorker, room: &str) -> (String, String) {
+    spawn_leased_with_model(fixture, room, "terminal-echo-a").await
+}
+
+async fn spawn_leased_with_model(
+    fixture: &mut LiveWorker,
+    room: &str,
+    model: &str,
+) -> (String, String) {
     fixture.create_slice().await;
     let placement = fixture.placement();
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent":{
-            "session_id":room, "provider":"managed-dev-stub", "model":"terminal-echo-a",
+            "session_id":room, "provider":"managed-dev-stub", "model":model,
             "slice_ref":"desktop", "worktree_placement":placement
         }}),
     )
@@ -215,7 +223,19 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     let _tools = with_room_tools();
     let mut fixture = LiveWorker::start().await;
     let room = fixture.rooms[0].clone();
-    let (child, attachment) = spawn_leased(&mut fixture, &room).await;
+    let (child, attachment) =
+        spawn_leased_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    let ready = fixture
+        .worktrees
+        .last()
+        .unwrap()
+        .join("controlled-cancel-ready");
+    // Keep the manually completed turn active, with no echoed input competing
+    // with the synthetic answer in the home history.
+    eventually("the worker fixture disabling echo", || {
+        ready.exists().then_some(())
+    })
+    .await;
     let parent = local_agent(&fixture, &room, &child).await;
     let store = store(&fixture).await;
     delegator_waiting_on(&store, &room, &parent, &child);
@@ -234,27 +254,7 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     )
     .await
     .expect("submit the delegated turn through the real relay");
-    let run = leased_run(&fixture, &room, &child).await;
-    let history = fixture.home.app.lock().await.operational_history_store();
-    // Running is projected before the stub's input echo. Let that output reach
-    // home before appending the answer whose completion event we are checking.
-    eventually("the leased prompt echo in home history", || {
-        let output: String = history
-            .load_session_history_entries(&room, Some(&child))
-            .unwrap()
-            .into_iter()
-            .filter(|entry| {
-                entry.kind == crate::history::SessionHistoryEntryKind::ProviderOutput
-                    && entry.provider_run_id.as_deref() == Some(run.as_str())
-            })
-            .map(|entry| entry.text)
-            .collect();
-        output
-            .trim_end()
-            .ends_with("MP-10 A10 delegated leased work")
-            .then_some(())
-    })
-    .await;
+    leased_run(&fixture, &room, &child).await;
     fixture
         .home
         .runtime_state
@@ -300,8 +300,7 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     fixture.stop().await;
     assert_eq!(events.len(), 1, "one completion event: {events:?}");
     assert_eq!(events[0].kind, "source_completed", "{events:?}");
-    // The home history carries the leased turn under its projected run id; the
-    // managed stub echoes its input before the answer, a real provider does not.
+    // The home history carries the leased turn under its projected run id.
     let excerpt = events[0].payload["public_answer"]["excerpt"]
         .as_str()
         .unwrap_or_default();
