@@ -1385,6 +1385,22 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .ok_or_else(|| DaemonError::LeasedAgentNotFound {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
+        // Completion projection retires the active binding before the home can
+        // receive it. A cancellation crossing that projection still names the
+        // completed turn; acknowledge only its exact retained completion and
+        // leave any successor untouched.
+        if leased_agent
+            .replayable_completion
+            .as_ref()
+            .is_some_and(|completion| {
+                completion.home_prompt_id.as_deref() == Some(expected_home_prompt_id)
+                    && completion.provider_run_id == expected_worker_provider_run_id
+            })
+        {
+            return Err(DaemonError::NoActivePrompt {
+                session_id: leased_agent.backing_session_id.clone(),
+            });
+        }
         if leased_agent.active_home_prompt_id.as_deref() != Some(expected_home_prompt_id) {
             return Err(DaemonError::LocalTransport {
                 operation: "cancel leased prompt",
@@ -1695,6 +1711,90 @@ mod receipt_tests {
         assert_eq!(
             records[0].provider_run_id, run,
             "MP-08/MP-10 retired execution must retain the exact run on its completion record"
+        );
+    }
+
+    #[test]
+    fn cancellation_after_completion_projection_reports_exact_prompt_settled() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (leased, session, agent, home_prompt, run) =
+            submit_cancellable_prompt(&mut app, "cancel-after-projection");
+        RemoteLeaseRuntime::new(&mut app)
+            .complete_leased_prompt(&leased)
+            .unwrap();
+        let projection = RemoteLeaseRuntime::new(&mut app)
+            .drain_leased_runtime_projection_with_recovery(&leased, &run, false, true)
+            .unwrap()
+            .expect("completed prompt should project");
+        let crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+            completions,
+            ..
+        } = projection.1;
+        assert_eq!(completions.len(), 1);
+        assert_eq!(
+            completions[0].home_prompt_id.as_deref(),
+            Some(home_prompt.as_str())
+        );
+        assert!(app
+            .leased_agents
+            .get(&leased)
+            .unwrap()
+            .active_home_prompt_id
+            .is_none());
+        assert!(
+            matches!(
+                RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased, &home_prompt, &run),
+                Err(DaemonError::NoActivePrompt { .. })
+            ),
+            "MP-08/MP-09/MP-10/MP-11: exact completed cancellation must report settlement"
+        );
+        for (prompt, provider_run) in [
+            ("other-prompt", run.as_str()),
+            (home_prompt.as_str(), "other-run"),
+        ] {
+            assert!(matches!(
+                RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(
+                    &leased,
+                    prompt,
+                    provider_run
+                ),
+                Err(DaemonError::LocalTransport { .. })
+            ));
+        }
+        assert!(app
+            .prompt_owner_active_prompt_for_agent(&session, &agent)
+            .unwrap()
+            .is_none());
+        RemoteLeaseRuntime::new(&mut app)
+            .submit_leased_prompt(&leased, "successor prompt\n", Vec::new())
+            .unwrap();
+        let successor = app
+            .prompt_owner_active_prompt_for_agent(&session, &agent)
+            .unwrap()
+            .unwrap();
+        app.leased_agents
+            .get_mut(&leased)
+            .unwrap()
+            .active_home_prompt_id = Some("successor-home".into());
+        assert!(matches!(
+            RemoteLeaseRuntime::new(&mut app).cancel_leased_prompt(&leased, &home_prompt, &run),
+            Err(DaemonError::NoActivePrompt { .. })
+        ));
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(&session, &agent)
+                .unwrap()
+                .unwrap(),
+            successor
+        );
+        assert_eq!(
+            app.leased_agents
+                .get(&leased)
+                .unwrap()
+                .active_home_prompt_id
+                .as_deref(),
+            Some("successor-home")
         );
     }
 
