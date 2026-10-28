@@ -133,6 +133,9 @@ pub struct ProjectEnvironmentSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredProjectEnvironment {
+    /// Private Apply ownership; never part of the aggregate or transfer manifest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) apply_owned_bindings: Vec<ApplyOwnedBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ProjectEnvironmentSource>,
     pub manifest: ProjectEnvironmentManifest,
@@ -143,6 +146,14 @@ pub struct StoredProjectEnvironment {
     pub reviewed_manifest: Option<ProjectEnvironmentManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_review: Option<ProjectEnvironmentReview>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ApplyOwnedBinding {
+    pub requirement_id: String,
+    pub scope: RequirementScope,
+    pub entry: ProjectEnvironmentEntry,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +295,7 @@ impl ProjectEnvironmentStore {
             "detect.json",
             "detect-model.json",
             "checks.json",
+            "apply.json",
             "checks.wal",
         ] {
             match fs::remove_file(self.path(project).with_extension(extension)) {

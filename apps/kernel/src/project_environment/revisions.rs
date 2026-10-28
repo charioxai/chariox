@@ -192,6 +192,21 @@ fn validate_draft(
                     }
                 }
                 RequirementSpec::Variables { name, locator } => {
+                    // Old utility classifications remain editable, but cannot
+                    // authorize probing or binding a secret-like public source.
+                    // A new or changed source must instead use Secrets/Vault.
+                    if project_environment_public_source_protected(locator)
+                        && !requirements(&before).any(|old| {
+                            old.requirement_id == r.requirement_id
+                                && old.scope == r.scope
+                                && old.spec == r.spec
+                        })
+                    {
+                        return Err(environment_error(format!(
+                            "secret-like source for requirement `{}` requires Secrets/Vault",
+                            r.title
+                        )));
+                    }
                     if !environment_variable_name(name) {
                         return Err(environment_error("invalid variable name"));
                     }

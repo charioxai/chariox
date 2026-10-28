@@ -221,6 +221,18 @@ impl CommandRouter {
                     .await
                     .map(Some)
             })),
+            LocalDaemonRequest::PlanProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state.plan_project_environment(request.clone(), caller_user_id).await.map(Some)
+            })),
+            LocalDaemonRequest::ApplyProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state.apply_project_environment(request.clone(), caller_user_id).await.map(Some)
+            })),
+            LocalDaemonRequest::CancelEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state.cancel_environment_operation(request.clone(), caller_user_id).await.map(Some)
+            })),
+            LocalDaemonRequest::RetryEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state.retry_environment_operation(request.clone(), caller_user_id).await.map(Some)
+            })),
             request if request.unsupported_environment_capability().is_some() => {
                 Some(Box::pin(async move {
                     Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {

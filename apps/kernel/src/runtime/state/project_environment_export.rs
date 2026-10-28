@@ -285,6 +285,7 @@ impl KernelRuntimeState {
                 .map_or(ProjectEnvironmentEntryStatus::Found, |e| e.status);
         }
         let mut state = StoredProjectEnvironment {
+            apply_owned_bindings: previous.as_ref().map(|s| s.apply_owned_bindings.clone()).unwrap_or_default(),
             source: previous.as_ref().and_then(|state| state.source.clone()),
             manifest,
             evidence: index.evidence,

@@ -712,6 +712,7 @@ fn assert_leased_project_launch_and_refresh(imported_workspace: bool) {
         .unwrap();
     let evidence = ProjectEnvironmentEvidence::default();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         evidence: evidence.clone(),
         reported_missing: Default::default(),

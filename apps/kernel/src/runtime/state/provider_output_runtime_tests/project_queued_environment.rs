@@ -505,6 +505,7 @@ async fn wait_for_prompt_delivery(
 fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
     ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
         .save(&StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: ProjectEnvironmentManifest {
                 schema_version: 1,

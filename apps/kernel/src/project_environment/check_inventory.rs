@@ -19,7 +19,7 @@ pub(super) fn facts() -> EnvironmentMeasuredFacts {
         gpu: None,
     }
 }
-pub(super) fn machine(root: &Path) -> EnvironmentMeasuredFacts {
+pub(super) fn machine(root: Option<&Path>) -> EnvironmentMeasuredFacts {
     let mut f = facts();
     f.cpus = std::thread::available_parallelism()
         .ok()
@@ -31,15 +31,22 @@ pub(super) fn machine(root: &Path) -> EnvironmentMeasuredFacts {
         if pages > 0 && size > 0 {
             f.memory_bytes = (pages as u64).checked_mul(size as u64);
         }
-        use std::os::unix::ffi::OsStrExt;
-        if let Ok(p) = std::ffi::CString::new(root.as_os_str().as_bytes()) {
-            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-            if unsafe { libc::statvfs(p.as_ptr(), stat.as_mut_ptr()) } == 0 {
-                let stat = unsafe { stat.assume_init() };
-                // statvfs field widths differ between Unix platforms.
-                #[allow(clippy::unnecessary_cast)]
-                {
-                    f.free_disk_bytes = (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+        if let Some(root) = root {
+            #[cfg(test)]
+            if let Some(marker) = std::env::var_os("CHARIOX_MACHINE_CAPACITY_STALL_MARKER") {
+                std::fs::write(marker, std::process::id().to_string()).unwrap();
+                std::thread::sleep(Duration::from_secs(10));
+            }
+            use std::os::unix::ffi::OsStrExt;
+            if let Ok(p) = std::ffi::CString::new(root.as_os_str().as_bytes()) {
+                let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+                if unsafe { libc::statvfs(p.as_ptr(), stat.as_mut_ptr()) } == 0 {
+                    let stat = unsafe { stat.assume_init() };
+                    // statvfs field widths differ between Unix platforms.
+                    #[allow(clippy::unnecessary_cast)]
+                    {
+                        f.free_disk_bytes = (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+                    }
                 }
             }
         }

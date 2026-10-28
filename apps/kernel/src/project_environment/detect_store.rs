@@ -101,6 +101,10 @@ impl ProjectEnvironmentStore {
             EnvironmentCapability::Save,
             EnvironmentCapability::Check,
             EnvironmentCapability::GetOperation,
+            EnvironmentCapability::Plan,
+            EnvironmentCapability::Apply,
+            EnvironmentCapability::CancelOperation,
+            EnvironmentCapability::RetryOperation,
         ];
         refresh_environment_content_digest(snapshot);
         Ok(())

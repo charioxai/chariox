@@ -55,6 +55,11 @@ fn same_link(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
         && before.ctime_nsec() == after.ctime_nsec()
 }
 pub(super) fn installed_manifest(root: &Path, name: &str) -> Result<Zeroizing<String>, ()> {
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("CHARIOX_TYPED_CHECK_STALL_MARKER") {
+        std::fs::write(marker, std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
     // Keep the workspace anchor pinned across the link resolution and read.
     let root = EvidenceRoot::open(root).map_err(|_| ())?;
     let manifest = format!("node_modules/{name}/package.json");

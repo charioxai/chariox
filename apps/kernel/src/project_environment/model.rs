@@ -155,11 +155,13 @@ impl ProjectEnvironmentManifest {
             if entry.workspace_id.is_empty()
                 || entry.workspace_id.len() > 4096
                 || !identities.insert((&entry.workspace_id, &entry.name))
-                || entry.uses.is_empty()
                 || entry.uses.len() > 128
             {
                 return Err("invalid Project environment entry binding or evidence");
             }
+            // MP-08 / MP-10 / MP-11: manually reviewed P01 locators need no
+            // invented detected use site. Discovery separately requires exact
+            // kernel-indexed references; this metadata is not grant authority.
             match entry.kind {
                 ProjectEnvironmentEntryKind::Variable
                     if !environment_variable_name(&entry.name) =>
@@ -197,7 +199,7 @@ impl ProjectEnvironmentManifest {
                     }
                 }
                 (
-                    ProjectEnvironmentEntryKind::ConfigFile,
+                    ProjectEnvironmentEntryKind::Variable | ProjectEnvironmentEntryKind::ConfigFile,
                     ProjectEnvironmentLocator::ConfigFile { path },
                 ) => relative_environment_path(path)?,
                 (_, ProjectEnvironmentLocator::Vault { service, key })
@@ -264,4 +266,20 @@ pub fn project_environment_protected_name(name: &str) -> bool {
                 | "BASH_ENV"
                 | "ENV"
         )
+}
+
+// MP-08 / MP-10 / MP-11: a public alias cannot declassify its actual source.
+pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocator) -> Option<&str> {
+    match locator {
+        ProjectEnvironmentLocator::WorkspaceEnvironment { name } => Some(name),
+        ProjectEnvironmentLocator::EnvFile { key, .. } => Some(key),
+        _ => None,
+    }
+}
+pub(crate) fn project_environment_public_source_protected(
+    locator: &ProjectEnvironmentLocator,
+) -> bool {
+    project_environment_source_name(locator).is_some_and(|name| {
+        project_environment_protected_name(name) || crate::secret::secret_like_env_name(name)
+    })
 }

@@ -318,6 +318,12 @@ impl KernelRuntimeState {
         environment.operations = vec![operation];
         refresh_environment_content_digest(&mut environment);
         store.attach_revision(&mut environment)?;
+        // MP-08 / MP-10: Detect replies carry the same current target facts as Get.
+        store.attach_checks(
+            &mut environment,
+            &current_check_target(&self.owned.config_projection.snapshot()),
+            crate::session::unix_epoch_ms(),
+        )?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 }

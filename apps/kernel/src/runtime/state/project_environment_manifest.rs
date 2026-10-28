@@ -33,6 +33,11 @@ impl KernelRuntimeState {
                 &crate::project_environment::current_check_target(&config),
                 crate::session::unix_epoch_ms(),
             )?;
+            // MP-08 / MP-10 / MP-11: reconnect reads durable Apply and recovery facts.
+            store.attach_applies(
+                &mut environment,
+                &crate::project_environment::current_check_target(&config),
+            )?;
             let checks_us = checks_started.elapsed().as_micros() as u64;
             let projection_started = std::time::Instant::now();
             let compact = request.view.is_some();
@@ -71,6 +76,8 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Result<(), DaemonError> {
+        // MP-08 / MP-10 / MP-11: new agents recheck applied package references
+        // through the ordinary grant service before their next provider turn.
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some()
@@ -86,6 +93,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
+        self.apply_environment_agent_bindings(session_id, agent_id)?;
         let Some(run) = self
             .owned
             .provider_store
@@ -119,12 +127,14 @@ impl KernelRuntimeState {
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let config = self.owned.config_projection.snapshot();
-        let has_environment = crate::project_environment::ProjectEnvironmentStore::new(
+        let needs_vault = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
         )
         .load(session.project_id())?
-        .is_some();
-        let _vault = if has_environment {
+        .is_some_and(|state| {
+            crate::project_environment::project_environment_requires_vault(&state.manifest)
+        });
+        let _vault = if needs_vault {
             Some(
                 self.ensure_vault_unlocked_for_agent(
                     session_id,
@@ -431,6 +441,7 @@ mod tests {
             .unwrap();
         let evidence = ProjectEnvironmentEvidence::default();
         let state = StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             manifest: ProjectEnvironmentManifest {
                 schema_version: 1,

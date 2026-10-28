@@ -105,6 +105,8 @@ mod passkey_prompts;
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod native_catalog_refresh;
 mod owner_context_review;
+mod project_environment_apply;
+mod project_environment_apply_capabilities;
 mod project_environment_check;
 mod project_environment_detect;
 mod project_environment_export;
@@ -1450,3 +1452,8 @@ mod terminal_wake;
 mod terminal_wake_worker;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
+#[cfg(test)]
+mod project_environment_detect_observation_tests;
+
+#[cfg(test)]
+mod project_environment_apply_binding_deadline_tests;

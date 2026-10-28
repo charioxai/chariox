@@ -114,52 +114,43 @@ pub(super) fn check_assets(
             )
         }
         RequirementSpec::Variables { name, locator } => {
-            if project_environment_protected_name(name) {
+            if project_environment_protected_name(name)
+                || project_environment_source_name(locator)
+                    .is_some_and(project_environment_protected_name)
+            {
                 return outcome(
                     NeedsYourInput,
                     "protected_binding",
                     "Protected kernel/provider binding cannot be probed",
                 );
             }
-            let value = match locator {
-                ProjectEnvironmentLocator::WorkspaceEnvironment { name } => {
-                    std::env::var(name).ok().map(Zeroizing::new)
-                }
-                ProjectEnvironmentLocator::EnvFile { path, key } => workspace(env, r)
-                    .and_then(|root| super::resolver::read_environment_file(root, path).ok())
-                    .and_then(|text| {
-                        let values = text
-                            .lines()
-                            .filter_map(|l| {
-                                parse_environment_assignment(l, key)
-                                    .transpose()
-                                    .map(|v| v.map(Zeroizing::new))
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                            .ok()?;
-                        if values.len() == 1 {
-                            Some(values.into_iter().next()?)
-                        } else {
-                            None
-                        }
-                    }),
-                ProjectEnvironmentLocator::ConfigFile { path } => workspace(env, r)
-                    .and_then(|root| super::resolver::read_environment_file(root, path).ok()),
-                _ => None,
+            if project_environment_public_source_protected(locator) {
+                return outcome(
+                    NeedsYourInput,
+                    "vault_required",
+                    "Binding source requires Vault classification; no value or digest exposed",
+                );
+            }
+            let binding = match locator {
+                ProjectEnvironmentLocator::WorkspaceEnvironment { name } => super::check_binding::summarize(std::env::var(name).ok().map(Zeroizing::new)),
+                _ => match super::check_files::binding(&ctx.config, workspace(env, r), locator, deadline) {
+                    Ok(binding) => binding,
+                    Err(_) => return outcome(NeedsYourInput, "binding_unproven", "Binding could not be checked within the probe budget; retry when the folder is available"),
+                },
             };
-            let Some(value) = value.filter(|v| !v.is_empty() && !v.contains('\0')) else {
+            if binding.needs_vault {
+                return outcome(
+                    NeedsYourInput,
+                    "vault_required",
+                    "Binding requires Vault classification; no value or digest exposed",
+                );
+            }
+            if !binding.present {
                 facts.present = Some(false);
                 return outcome(
                     Missing,
                     "binding_absent",
                     "Named public binding is absent or ambiguous",
-                );
-            };
-            if super::detect_index::credential_content(&value) {
-                return outcome(
-                    NeedsYourInput,
-                    "vault_required",
-                    "Binding requires Vault classification; no value or digest exposed",
                 );
             }
             facts.present = Some(true);
@@ -167,7 +158,7 @@ pub(super) fn check_assets(
                 "{}:{}:{}",
                 env.content_digest, target.machine_id, r.requirement_id
             );
-            let hash = super::aggregate_projection::metadata_digest(&*value);
+            let hash = binding.digest.expect("present public binding has a digest");
             if baseline.get(&key).is_some_and(|b| b != &hash) {
                 return outcome(
                     Outdated,
