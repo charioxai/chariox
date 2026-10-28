@@ -1,7 +1,7 @@
 // MP-08 / MP-10: Shared Web/TUI projection; no client-owned observations.
 import type { ProjectEnvironment, Requirement, RequirementSpec, RequirementOrigin } from "./kernel-types-project-environment-aggregate.js"
 
-export const projectEnvironmentMinimumProtocolVersion = 487
+export const projectEnvironmentMinimumProtocolVersion = 660
 export function getProjectEnvironmentRequest(projectId: string) {
   return { GetProjectEnvironment: { projectId } } as const
 }
@@ -102,14 +102,22 @@ function observation(environment: ProjectEnvironment, id: string) {
   return (environment.observations ?? []).filter(o => o.requirement_id === id && o.environment_id === environment.lineage.environment_id).at(-1)
 }
 // MP-08 / MP-10: schedule expiry without a probe, repair or network request.
+export function environmentObservationNow(environment:ProjectEnvironment, now=Date.now()):number {
+  const view=environment.read_view
+  if(view && Number.isFinite(view.observed_at_ms) && Number.isFinite(view.received_at_monotonic_ms))
+    return view.observed_at_ms + Math.max(0,performance.now()-view.received_at_monotonic_ms!)
+  return view && Number.isFinite(view.observed_at_ms) && Number.isFinite(view.received_at_ms)
+    ? view.observed_at_ms + Math.max(0,now-view.received_at_ms!) : now
+}
 export function environmentObservationExpiry(environment: ProjectEnvironment, now = Date.now()): number | null {
-  const deadlines = (environment.observations ?? []).filter(o => !o.stale && o.environment_id === environment.lineage.environment_id && o.revision_digest === environment.content_digest && o.checked_at_ms != null && o.checked_at_ms <= now).map(o => o.checked_at_ms! + 5 * 60 * 1000 + 1).filter(deadline => deadline > now)
+  const kernelNow=environmentObservationNow(environment,now)
+  const deadlines = (environment.observations ?? []).filter(o => !o.stale && o.environment_id === environment.lineage.environment_id && o.revision_digest === environment.content_digest && o.checked_at_ms != null && o.checked_at_ms <= kernelNow).map(o => now + o.checked_at_ms! + 5 * 60 * 1000 + 1 - kernelNow).filter(deadline => deadline > now)
   return deadlines.length ? Math.min(...deadlines) : null
 }
 export function environmentObservationStatus(environment: ProjectEnvironment, id: string): string {
   const o = observation(environment,id)
   if (!o || o.checked_at_ms == null) return "Not checked"
-  const now = Date.now()
+  const now = environmentObservationNow(environment)
   if (!currentObservation(environment, o, now) || (o.status === "ready" && !currentPrerequisites(environment, id, o.target, now))) return "Last check stale · check again"
   return observationLabels[o.status]
 }
@@ -148,3 +156,5 @@ export function environmentObservationDetails(environment: ProjectEnvironment, i
 export function checkEnvironmentRequest(environment: ProjectEnvironment, target: ProjectEnvironment["observations"][number]["target"], operationId: string) {
   return {CheckProjectEnvironment:{projectId:environment.local_project_id,operationId,revisionDigest:environment.content_digest,target,selectedItems:[]}} as const
 }
+
+export * from "./project-environment-read-view.js"

@@ -125,6 +125,7 @@ pub(crate) mod provider_account_portability;
 pub(crate) mod provider_auth_control;
 pub(crate) mod provider_capability_import;
 pub(crate) mod provider_catalog_control;
+mod provider_catalog_read_view;
 pub mod provider_launch_executor;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;

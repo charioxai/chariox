@@ -20,6 +20,7 @@ pub enum LocalDaemonResponse {
     EnvironmentImportPreview { preview: crate::project_environment::EnvironmentImportPreview },
     EnvironmentImportCommitted { project: RuntimeProject, environment: crate::project_environment::ProjectEnvironment, operation: crate::project_environment::EnvironmentOperation },
     EnvironmentProviderAuthorizationLink { link: crate::project_environment::EnvironmentProviderAuthorizationLink },
+    ProjectEnvironmentView { view: crate::project_environment::EnvironmentReadView },
     ProjectEnvironment { environment: crate::project_environment::ProjectEnvironment },
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },

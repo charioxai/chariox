@@ -1076,6 +1076,9 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
             | "interaction.respond"
             | "native_provider.interaction.request"
             | "provider.catalog.get"
+            // MP-08 / MP-10 / MP-11: reads do not need a second durable authority.
+            | "project.environment.get"
+            | "project.environment.GetEnvironmentOperation"
             | "prompt_input_history.get"
             | "session.state.get"
             | "session.history.blob"

@@ -3,7 +3,7 @@ import type * as Environment from "./kernel-types-project-environment-aggregate.
 import type { RuntimeProject } from "./kernel-types-session.js"
 
 export type EnvironmentRequestPayloads = {
-  GetProjectEnvironment: { readonly projectId: string }
+  GetProjectEnvironment: { readonly projectId: string; readonly view?: import("./project-environment-read-view.js").EnvironmentViewRead }
   DetectProjectEnvironment: { readonly projectId: string; readonly operationId: string; readonly folderIds: readonly string[]; readonly target: Environment.EnvironmentTargetBinding; readonly provider: Environment.EnvironmentProvider | null; readonly allowModelFolders: readonly string[] }
   PreviewEnvironmentDiff: { readonly projectId: string; readonly expectedRevision: number; readonly draft: Environment.EnvironmentRevisionDraft }
   SaveProjectEnvironmentRevision: { readonly projectId: string; readonly expectedRevision: number; readonly expectedContentDigest: string; readonly draft: Environment.EnvironmentRevisionDraft; readonly acceptedProposalIds: readonly string[]; readonly excludedProposalIds: readonly string[] }
@@ -18,6 +18,7 @@ export type EnvironmentRequestPayloads = {
   CommitEnvironmentImport: { readonly operationId: string; readonly previewId: string; readonly previewDigest: string; readonly choice: Environment.EnvironmentImportChoice }
 }
 export type EnvironmentProtocolResponse =
+  | {readonly ProjectEnvironmentView:{readonly view:import("./project-environment-read-view.js").EnvironmentReadView}}
   | { readonly ProjectEnvironment: { readonly environment: Environment.ProjectEnvironment } }
   | { readonly EnvironmentUnsupportedFeature: { readonly feature: Environment.EnvironmentCapability; readonly supported_schema: number } }
   | { readonly ProjectEnvironmentDiff: { readonly diff: Environment.EnvironmentRevisionDiff } }
@@ -37,5 +38,6 @@ export function isProjectEnvironmentRequest(request: unknown): boolean {
   return request !== null && typeof request === "object" && names.some(name => name in request)
 }
 export function requireProjectEnvironmentProtocol(request: unknown, version: number | null | undefined): void {
-  if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < 487)) throw new Error(`Project Environment requires protocol 487 or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
+  const minimum = (request as {GetProjectEnvironment?:{view?:unknown}})?.GetProjectEnvironment?.view ? 660 : 487
+  if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < minimum)) throw new Error(`Project Environment requires protocol ${minimum} or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
 }

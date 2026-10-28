@@ -46,40 +46,29 @@ fn overlap(a: &EnvironmentPlatform, b: &EnvironmentPlatform) -> bool {
 // MP-08 / MP-10 / MP-11: platform selectors restrict applicability above;
 // compatibility compares the requested software on that intersection.
 fn compatible(a: &RequirementSpec, b: &RequirementSpec) -> bool {
-    if let (
-        RequirementSpec::Software {
-            version_constraint: a,
-            ..
-        },
-        RequirementSpec::Software {
-            version_constraint: b,
-            ..
-        },
-    ) = (a, b)
-    {
-        if !super::software_constraints::overlap(a.as_deref(), b.as_deref()) {
-            return false;
-        }
-    }
     let mut a = a.clone();
     let mut b = b.clone();
-    if let RequirementSpec::Software {
-        platform,
-        version_constraint,
-        ..
-    } = &mut a
+    if let (
+        RequirementSpec::Software {
+            platform: pa,
+            version_constraint: va,
+            ..
+        },
+        RequirementSpec::Software {
+            platform: pb,
+            version_constraint: vb,
+            ..
+        },
+    ) = (&mut a, &mut b)
     {
-        *platform = None;
-        *version_constraint = None;
-    }
-    if let RequirementSpec::Software {
-        platform,
-        version_constraint,
-        ..
-    } = &mut b
-    {
-        *platform = None;
-        *version_constraint = None;
+        *pa = None;
+        *pb = None;
+        let versions_overlap =
+            super::check_inventory::constraints_overlap(va.as_deref(), vb.as_deref())
+                != Some(false);
+        *va = None;
+        *vb = None;
+        return versions_overlap && a == b;
     }
     a == b
 }
@@ -117,4 +106,40 @@ pub(super) fn validate_scopes(draft: &EnvironmentRevisionDraft) -> Result<(), Da
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod review2148 {
+    use super::*;
+    fn software(id: &str, version: Option<&str>) -> Requirement {
+        serde_json::from_value(serde_json::json!({"requirement_id":id,"title":id,"scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":version,"platform":null,"install_scope":"project","install_source":"mise","detect_only":false},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap()
+    }
+    #[test]
+    fn review2148_compatible_manifest_constraints_can_be_saved() {
+        for (a, b) in [
+            (None, Some("22.3.1")),
+            (Some(">=22 <23"), Some("22.3.1")),
+            (Some("^22.1"), Some("~22.3")),
+        ] {
+            let draft = EnvironmentRevisionDraft {
+                project_requirements: vec![software("a", a), software("b", b)],
+                folders: vec![],
+            };
+            assert!(
+                validate_scopes(&draft).is_ok(),
+                "overlapping software declarations must be admitted: {a:?}, {b:?}"
+            );
+        }
+        let draft = EnvironmentRevisionDraft {
+            project_requirements: vec![
+                software("a", Some(">=22 <23")),
+                software("b", Some(">=24")),
+            ],
+            folders: vec![],
+        };
+        assert!(
+            validate_scopes(&draft).is_err(),
+            "disjoint declarations must still be rejected"
+        );
+    }
 }

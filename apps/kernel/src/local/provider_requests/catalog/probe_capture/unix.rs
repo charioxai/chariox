@@ -1,5 +1,8 @@
 use std::io;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::time::{Duration, Instant};
+#[path = "unix/reaper.rs"]
+mod reaper;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus};
 
@@ -26,7 +29,9 @@ pub(super) fn available(_pipe: &impl Pipe) -> io::Result<usize> {
 }
 
 pub(super) struct Process {
-    pub(super) child: Child,
+    child: Option<Child>,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
     stopped: bool,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     descendants: Vec<descendants::Descendant>,
@@ -46,7 +51,9 @@ impl Process {
             });
         }
         let process = Self {
-            child: command.spawn()?,
+            child: Some(command.spawn()?),
+            stdout: None,
+            stderr: None,
             stopped: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             descendants: Vec::new(),
@@ -61,14 +68,21 @@ impl Process {
         Ok(process)
     }
 
+    fn child(&self) -> &Child {
+        self.child.as_ref().expect("owned probe child")
+    }
+    pub(super) fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("owned probe child")
+    }
+
     fn pipe_fds(&self) -> [RawFd; 2] {
         [
-            self.child
+            self.child()
                 .stdout
                 .as_ref()
                 .expect("captured stdout")
                 .as_raw_fd(),
-            self.child
+            self.child()
                 .stderr
                 .as_ref()
                 .expect("captured stderr")
@@ -78,7 +92,7 @@ impl Process {
 
     pub(super) fn observe_descendants(&mut self) -> io::Result<()> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        descendants::observe(Some(self.child.id()), &mut self.descendants, false)?;
+        descendants::observe(Some(self.child().id()), &mut self.descendants, false)?;
         Ok(())
     }
 
@@ -87,7 +101,7 @@ impl Process {
     pub(super) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let pid = signal_pid(self.child.id().into())?;
+            let pid = signal_pid(self.child().id().into())?;
             let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
             if unsafe {
                 libc::waitid(
@@ -119,71 +133,88 @@ impl Process {
             )))
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        self.child.try_wait()
+        self.child_mut().try_wait()
     }
 
+    pub(super) fn stdout_mut(&mut self) -> &mut std::process::ChildStdout {
+        if self.stopped {
+            self.stdout.as_mut().expect("captured stdout")
+        } else {
+            self.child_mut().stdout.as_mut().expect("captured stdout")
+        }
+    }
+    pub(super) fn stderr_mut(&mut self) -> &mut std::process::ChildStderr {
+        if self.stopped {
+            self.stderr.as_mut().expect("captured stderr")
+        } else {
+            self.child_mut().stderr.as_mut().expect("captured stderr")
+        }
+    }
     pub(super) fn stop(&mut self) -> io::Result<()> {
+        self.stop_with_termination(|child| child.kill())
+    }
+    fn stop_with_termination(
+        &mut self,
+        terminate: impl FnOnce(&mut Child) -> io::Result<()>,
+    ) -> io::Result<()> {
         if self.stopped {
             return Ok(());
         }
-        signal_pid(self.child.id().into())?;
+        let pid = signal_pid(self.child().id().into())?;
         let running = self.try_wait()?.is_none();
-        // MP-08 / MP-10 / MP-11: retain descendants independently of their
-        // streams. Freeze verified owners before the last ancestry scans so
-        // cleanup cannot race new children from a running launcher.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let tracked = (|| {
-            if running {
-                let pid = signal_pid(self.child.id().into())?;
-                unsafe {
-                    libc::kill(pid, libc::SIGSTOP);
-                }
-            }
-            let mut result = Ok(());
-            for pass in 0..3 {
-                if let Err(error) =
-                    descendants::observe(Some(self.child.id()), &mut self.descendants, pass == 0)
-                {
-                    result = Err(error);
-                }
-                for child in &self.descendants {
-                    if let Err(error) = child.signal(libc::SIGSTOP) {
-                        result = Err(error);
-                    }
-                }
-            }
-            for child in &self.descendants {
-                if let Err(error) = child.signal(libc::SIGKILL) {
-                    result = Err(error);
-                }
-            }
-            result
-        })();
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let tracked = Ok(());
         if running {
-            signal_pid(self.child.id().into())?;
-            let _ = self.child.kill();
+            // Freeze the owned unreaped leader before deferred discovery. No
+            // unverified group signal is used, and no filesystem scan occurs.
+            unsafe {
+                libc::kill(pid, libc::SIGSTOP);
+            }
+            let _ = terminate(self.child_mut());
         }
-        // Exact pipe ownership still identifies escaped writers after setsid
-        // or reparenting. Names and parent PIDs alone cannot establish ownership.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let cleanup = if pipe_writers_open(&self.pipe_fds())? {
-            pipe_owners::terminate(&self.pipe_fds())
-        } else {
-            Ok(())
-        };
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let cleanup = Ok(());
-        // Pipe ownership pins escaped writers. Do not signal a numeric process
-        // group: an exited launcher may already have lost that group's ownership.
-        if self.child.id() <= 1 {
-            return Err(io::Error::other("refusing to signal a protected process"));
+        for child in &self.descendants {
+            let _ = child.signal(libc::SIGSTOP);
+            let _ = child.signal(libc::SIGKILL);
         }
-        let _ = self.child.kill();
-        let reaped = self.child.wait().map(|_| ());
+        let pipes = [
+            self.child()
+                .stdout
+                .as_ref()
+                .expect("captured stdout")
+                .as_fd()
+                .try_clone_to_owned(),
+            self.child()
+                .stderr
+                .as_ref()
+                .expect("captured stderr")
+                .as_fd()
+                .try_clone_to_owned(),
+        ]
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>();
         self.stopped = true;
-        tracked.and(cleanup).and(reaped)
+        let mut child = self.child.take().expect("owned probe child");
+        let (pipes, error) = match pipes {
+            Ok(pipes) => {
+                self.stdout = child.stdout.take();
+                self.stderr = child.stderr.take();
+                (pipes, None)
+            }
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        let done = reaper::defer(reaper::Pending {
+            child,
+            pipes,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            descendants: std::mem::take(&mut self.descendants),
+            cleaned: false,
+        });
+        // Discovery and pipe-owner scans can be slow on a busy host too.
+        // Keep them outside deadline settlement, alongside any delayed reap.
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while !done.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        error.map_or(Ok(()), Err)
     }
 }
 
@@ -238,4 +269,66 @@ fn pipe_writers_open(fds: &[RawFd]) -> io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    // MP-08 / MP-10 / MP-11: termination can be requested while a worker
+    // remains unreapable. An injected delayed termination acknowledgement
+    // models that seam; it is supplementary to real mounted-I/O acceptance.
+    #[test]
+    fn review0634_settlement_does_not_wait_for_termination_acknowledgement() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "exec sleep 1 >/dev/null 2>&1"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = Process::spawn(&mut command).unwrap();
+        let pid = process.child().id();
+        let close_deadline = Instant::now() + Duration::from_secs(1);
+        while pipe_writers_open(&process.pipe_fds()).unwrap() && Instant::now() < close_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!pipe_writers_open(&process.pipe_fds()).unwrap());
+        let began = Instant::now();
+        let mut requested = false;
+        process
+            .stop_with_termination(|child| {
+                requested = true;
+                // Resume the owned leader that cleanup froze; leave it alive
+                // until sleep finishes, as if SIGKILL cannot yet complete I/O.
+                let pid = signal_pid(child.id().into())?;
+                if unsafe { libc::kill(pid, libc::SIGCONT) } < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            })
+            .unwrap();
+        let elapsed = began.elapsed();
+        assert!(requested);
+        drop(process);
+        assert!(
+            reaper::owns_child(pid),
+            "kernel lost the unreaped worker's ownership"
+        );
+        // Ensure the fixture's outstanding child eventually exits on both
+        // sources, even when the settlement latency assertion is RED.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while reaper::owns_child(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !reaper::owns_child(pid),
+            "owned delayed worker was not reaped"
+        );
+        assert!(!crate::runtime::process_health::process_running(pid));
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "operation waited for reap: {elapsed:?}"
+        );
+    }
 }

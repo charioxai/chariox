@@ -171,22 +171,24 @@ pub(super) fn check_tool(
             // inherits its MCP initialization state.
             backing.name = owner.clone();
             let measured = (|| {
-                let initialized=crate::provider::dispatch_provider_mcp_proxy_request(&owner,&owner,&backing,serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"chariox-environment-check","version":"1"}}})).ok()?;
+                let initialized=crate::provider::dispatch_provider_mcp_proxy_request_with_excluded_roots(&owner,&owner,&backing,serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"chariox-environment-check","version":"1"}}}),roots).ok()?;
                 if initialized.get("error").is_some() || initialized.get("result").is_none() {
                     return None;
                 }
-                crate::provider::dispatch_provider_mcp_proxy_request(
+                crate::provider::dispatch_provider_mcp_proxy_request_with_excluded_roots(
                     &owner,
                     &owner,
                     &backing,
                     serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                    roots,
                 )
                 .ok()?;
-                let listed = crate::provider::dispatch_provider_mcp_proxy_request(
+                let listed = crate::provider::dispatch_provider_mcp_proxy_request_with_excluded_roots(
                     &owner,
                     &owner,
                     &backing,
                     serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+                    roots,
                 )
                 .ok()?;
                 listed.get("result")?.get("tools")?.as_array().map(|_| ())

@@ -9,6 +9,7 @@ fn envp01_aggregate_protocol_471_request_rejects_session_and_agent_context() {
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "project-1".into(),
+            view: None,
         });
     assert_eq!(
         serde_json::to_value(request).unwrap(),
@@ -28,10 +29,18 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
         crate::test_support::expected_local_protocol_version()
     );
     let contract = include_str!("../../../../project_environment/aggregate.rs");
+    let view = include_str!("../../../../project_environment/read_view.rs");
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(view.split("#[cfg(test)]").next().unwrap().as_bytes())
+        ),
+        "ee7fde1092a82995b81e141a9bc374a3bd888e7207d728528302b9c2b17ee20c"
+    );
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(
         format!("{:x}", Sha256::digest(requests.as_bytes())),
-        "7d24c7bf248c4f03a5226512377a334493940886ccd7823b459f00b72d7fbb06"
+        "68f03a45a0e2eeed99c5d72985cf6de3de99092d8c0a5b3478b586c4676e9674"
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(contract.as_bytes())),
@@ -70,5 +79,43 @@ fn envp01_get_response_snapshot_hash() {
     assert_eq!(
         format!("{:x}", Sha256::digest(encoded)),
         "84a4f39f64cba008a705b617e6cfefa86d84280431d6981a79bf832362d0d482"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: protocol 660 keeps the legacy full read and adds explicit bounded reads.
+#[test]
+fn environment_view_protocol_505_shapes_and_hash() {
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let value = serde_json::json!({"GetProjectEnvironment":{"projectId":"project-1","view":{"knownDigest":null,"proposals":{"snapshotDigest":"digest","offset":8,"limit":20}}}});
+    let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    let response = LocalDaemonResponse::ProjectEnvironmentView {
+        view: crate::project_environment::EnvironmentReadView {
+            observed_at_ms: 1234,
+            snapshot_digest: "digest".into(),
+            environment: None,
+            proposal_count: 42,
+            proposal_offset: 8,
+            next_proposal_offset: Some(28),
+            proposals: vec![],
+            operation_item_counts: vec![42],
+        },
+    };
+    let snapshot = serde_json::json!({"ProjectEnvironmentView":{"view":{"observed_at_ms":1234,"snapshot_digest":"digest","environment":null,"proposal_count":42,"proposal_offset":8,"next_proposal_offset":28,"proposals":[],"operation_item_counts":[42]}}});
+    assert_eq!(serde_json::to_value(&response).unwrap(), snapshot);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&response).unwrap())
+        ),
+        "42585c4c487e819f3b3cab90ce2577c556ea15f06e1d8473ae15b646e020ed48"
     );
 }

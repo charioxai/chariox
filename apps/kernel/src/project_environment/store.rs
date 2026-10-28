@@ -258,6 +258,23 @@ impl ProjectEnvironmentStore {
         result
     }
     pub fn remove(&self, project: &str) -> Result<(), DaemonError> {
+        // Delete only this Project's numeric immutable archive names.
+        let base = self.path(project);
+        let prefix = format!("{}.revision-", base.file_stem().unwrap().to_string_lossy());
+        for entry in fs::read_dir(&self.root).into_iter().flatten() {
+            let entry =
+                entry.map_err(|_| environment_error("revision archive inventory failed"))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name
+                .strip_prefix(&prefix)
+                .and_then(|suffix| suffix.strip_suffix(".json"))
+                .is_some_and(|number| number.parse::<u64>().is_ok())
+            {
+                fs::remove_file(entry.path())
+                    .map_err(|_| environment_error("revision archive removal failed"))?;
+            }
+        }
         match fs::remove_file(self.path(project).with_extension("revisions.json")) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -346,6 +363,36 @@ impl ProjectEnvironmentStore {
                     "Project environment is busy with Detect, export or adjustment; retry shortly",
                 )),
                 Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+    }
+    // MP-08 / MP-10 / MP-11: probe work cannot wait indefinitely behind Detect.
+    pub(super) fn lock_until(
+        &self,
+        project: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.lock_extension_until(project, "lock", deadline)
+    }
+    pub(super) fn lock_extension_until(
+        &self,
+        project: &str,
+        extension: &str,
+        deadline: std::time::Instant,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        let file = self.lock_file(project, extension)?;
+        loop {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(ProjectEnvironmentLock { _file: file }),
+                Err(error) if error.kind() != std::io::ErrorKind::WouldBlock => {
+                    return Err(environment_error("environment refresh lock failed"))
+                }
+                Err(_) if std::time::Instant::now() >= deadline => {
+                    return Err(environment_error(
+                        "Check budget exceeded while waiting for Project lock",
+                    ))
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
             }
         }
     }

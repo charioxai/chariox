@@ -69,7 +69,8 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
 
   if (options.mode === "environment") {
     const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
-    panel.add(dialogHeader(renderer, "Environment · Read-only", "↑/↓ scroll • Esc close"))
+    panel.add(dialogHeader(renderer, "Environment", "↑/↓ scroll • Esc close"))
+    panel.add(new TextRenderable(renderer, {content:"An Environment lists what this project needs on this machine.",fg:theme.text,wrapMode:"word"}))
     panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
     scrim.add(panel)
   } else if (options.mode === "managed-machine") {

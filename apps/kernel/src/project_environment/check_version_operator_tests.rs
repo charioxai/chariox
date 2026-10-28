@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: fail-first review regression.
 use super::*;
 #[test]
-fn review0821_wildcard_constraints_preserve_operators() {
+fn check_version_operator_constraints_preserve_operators() {
     for (version, constraint, expected) in [
         ("22.3.1", "<22.x", false),
         ("21.9.0", "<22.x", true),

@@ -5647,3 +5647,12 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
+
+### Compact Project Environment reads (local 660 / peer 255)
+
+`GetProjectEnvironment` accepts an optional `view` with a known specification
+digest and a bounded proposal page. Omitting it preserves the full legacy read.
+`ProjectEnvironmentView` returns the snapshot digest, kernel observation time,
+proposal count/cursor and operation item counts with the requested projection.
+The selected kernel retains Project and operation authority. Existing multiplexed
+relay framing, shared receipt credit and binary event transport remain unchanged.

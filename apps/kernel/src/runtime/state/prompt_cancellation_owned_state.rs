@@ -450,6 +450,9 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::NoActivePrompt {
                 session_id: session_id.to_string(),
             })?;
+        // MP-08 / MP-10 / MP-11: capture only this admitted turn's current
+        // upstream calls, before native abort and queued-prompt advancement.
+        crate::provider::cancel_provider_mcp_proxy_run(provider_run.id());
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&session, target_agent_id);
