@@ -2,13 +2,13 @@
 //! relative path; this API does not parse URLs or authorize a viewer/installation.
 use super::{Result, VerifiedReleaseLease};
 use crate::release_store::ReleaseStoreError;
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, ffi::OsStr, io::Read};
 
 pub(super) type Inventory = BTreeMap<String, (usize, [u8; 32])>;
 
-pub(super) fn inventory(package: &VerifiedPackage<'_>) -> Inventory {
+pub(super) fn inventory(package: &impl VerifiedApp) -> Inventory {
     package
         .files()
         .filter_map(|(path, bytes)| {

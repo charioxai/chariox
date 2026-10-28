@@ -2,7 +2,7 @@
 //! This lease conveys immutable package bytes, not user authorization to run.
 use super::unix::{digest_name, verify_tree, ExpectedTree, ReleaseStoreError, RootMode, MAGIC};
 use crate::private_fs::{same_entry, Dir};
-use chariox_app_package::{Declarations, Manifest, VerifiedPackage};
+use chariox_app_package::{Declarations, ReleaseManifest, VerifiedApp};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsStr,
@@ -76,15 +76,17 @@ pub struct VerifiedReleaseLease {
     _root: Dir,
     payload: Dir,
     package_digest: String,
-    manifest: Manifest,
+    manifest: ReleaseManifest,
     declarations: Declarations,
     ui_assets: ui_assets::Inventory,
+    component: Option<(String, usize, String)>,
+    migrations: std::collections::BTreeMap<String, (usize, String)>,
 }
 impl VerifiedReleaseLease {
     pub fn package_digest(&self) -> &str {
         &self.package_digest
     }
-    pub fn manifest(&self) -> &Manifest {
+    pub fn manifest(&self) -> &ReleaseManifest {
         &self.manifest
     }
     pub fn declarations(&self) -> &Declarations {
@@ -93,11 +95,72 @@ impl VerifiedReleaseLease {
     pub(crate) fn payload(&self) -> &File {
         &self.payload.0
     }
+
+    /// Re-read through the held directory and compare the exact signed bytes.
+    /// A lease never turns a pathname into continuing executable provenance.
+    pub fn verified_component(&self) -> Result<super::aot_cache::VerifiedComponent> {
+        let (path, size, digest) = self
+            .component
+            .as_ref()
+            .ok_or(ReleaseStoreError::InvalidExisting)?;
+        let manifest = self
+            .manifest
+            .wasm()
+            .ok_or(ReleaseStoreError::InvalidExisting)?;
+        self.read_component(path, *size, digest, &manifest.world)
+    }
+
+    /// Only signed migration entries retained by this verified lease qualify.
+    pub fn verified_migration(&self, path: &str) -> Result<super::aot_cache::VerifiedComponent> {
+        let (size, digest) = self
+            .migrations
+            .get(path)
+            .ok_or(ReleaseStoreError::InvalidExisting)?;
+        self.read_component(
+            path,
+            *size,
+            digest,
+            chariox_app_package::v2::MIGRATION_WORLD,
+        )
+    }
+
+    fn read_component(
+        &self,
+        path: &str,
+        size: usize,
+        digest: &str,
+        world: &str,
+    ) -> Result<super::aot_cache::VerifiedComponent> {
+        let mut directory = self.payload.child(OsStr::new("."))?;
+        let mut parts = path.split('/').peekable();
+        let name = loop {
+            let part = parts.next().ok_or(ReleaseStoreError::UnsafeEntry)?;
+            if parts.peek().is_none() {
+                break part;
+            }
+            directory = directory.child(OsStr::new(part))?;
+        };
+        let file = directory.read_file(OsStr::new(name), true)?;
+        if file.metadata()?.len() != size as u64 {
+            return Err(ReleaseStoreError::InvalidExisting);
+        }
+        let mut bytes = Vec::new();
+        file.take(size as u64 + 1).read_to_end(&mut bytes)?;
+        if bytes.len() != size || super::aot_cache::digest(&bytes) != digest {
+            return Err(ReleaseStoreError::InvalidExisting);
+        }
+        Ok(super::aot_cache::VerifiedComponent::new(
+            bytes,
+            digest.to_owned(),
+            self.package_digest.clone(),
+            world.to_owned(),
+        ))
+    }
 }
 
 pub(super) fn verified(
     store: &Dir,
-    package: &VerifiedPackage<'_>,
+    package: &impl VerifiedApp,
     archive: &[u8],
 ) -> Result<VerifiedReleaseLease> {
     let digest = package.package_digest();
@@ -119,12 +182,45 @@ pub(super) fn verified(
     if !same_entry(store, name, &root)? {
         return Err(ReleaseStoreError::UnsafeEntry);
     }
+    let manifest = package.release_manifest();
+    let component = manifest
+        .wasm()
+        .map(|manifest| {
+            let (path, bytes) = package
+                .files()
+                .find(|(path, _)| *path == manifest.runtime.component)
+                .ok_or(ReleaseStoreError::InvalidExisting)?;
+            Ok::<_, ReleaseStoreError>((
+                path.to_owned(),
+                bytes.len(),
+                super::aot_cache::digest(bytes),
+            ))
+        })
+        .transpose()?;
+    let migrations = manifest
+        .wasm()
+        .into_iter()
+        .flat_map(|m| &m.migrations)
+        .flat_map(|m| &m.steps)
+        .map(|step| {
+            let (_, bytes) = package
+                .files()
+                .find(|(path, _)| *path == step.entry)
+                .ok_or(ReleaseStoreError::InvalidExisting)?;
+            Ok((
+                step.entry.clone(),
+                (bytes.len(), super::aot_cache::digest(bytes)),
+            ))
+        })
+        .collect::<Result<_>>()?;
     Ok(VerifiedReleaseLease {
         _root: root,
         payload,
         package_digest: digest.into(),
-        manifest: package.manifest().clone(),
+        manifest,
         declarations: package.declarations().clone(),
         ui_assets: ui_assets::inventory(package),
+        component,
+        migrations,
     })
 }

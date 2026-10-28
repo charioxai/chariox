@@ -7,6 +7,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
+mod components;
+
 use super::*;
 use crate::{archive, read_inventory, signing_bytes_for, ErrorCode, Limits, TrustedPublisher};
 
@@ -54,17 +56,38 @@ fn policy() -> PolicyV2 {
             RequiredFeature::Connections,
             RequiredFeature::DirectedEvents,
         ]),
-        vec![SupportedWorld {
-            name: "chariox:app/app".to_owned(),
-            major: 1,
-            minor: 0,
-        }],
+        vec![
+            SupportedWorld {
+                name: "chariox:app/app".to_owned(),
+                major: 1,
+                minor: 0,
+            },
+            SupportedWorld {
+                name: "chariox:app/migration".to_owned(),
+                major: 1,
+                minor: 0,
+            },
+        ],
         vec![TrustedPublisher {
             publisher_id: "com.example".to_owned(),
             key_id: "developer-1".to_owned(),
             public_key: key().verifying_key(),
         }],
     )
+}
+
+#[test]
+fn generic_verifier_refuses_ui_actions_without_a_runtime() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    assert_eq!(
+        crate::verify_app(&bytes, &generic)
+            .err()
+            .expect("R4 has no UI-action runtime")
+            .code,
+        ErrorCode::UnsupportedFeature
+    );
 }
 
 struct Fixture {
@@ -80,7 +103,14 @@ fn fixture(shared: &Value) -> Fixture {
             .as_object()
             .unwrap()
             .iter()
-            .map(|(path, text)| (path.clone(), text.as_str().unwrap().as_bytes().to_vec()))
+            .map(|(path, text)| {
+                let text = text.as_str().unwrap();
+                let bytes = match text.strip_prefix("wit:") {
+                    Some(world) => components::build(world, false),
+                    None => text.as_bytes().to_vec(),
+                };
+                (path.clone(), bytes)
+            })
             .collect(),
         reviews: serde_json::from_value(shared["reviews"].clone()).unwrap(),
     }
@@ -594,4 +624,159 @@ fn a_mismatch_names_the_action_and_the_part_that_differs() {
         message.contains("add_todo") && message.contains("effect"),
         "{message}"
     );
+}
+
+#[test]
+fn signed_unknown_component_import_is_refused_before_install() {
+    let mut fixture = base();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        components::build(APP_WORLD, true),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("signed forbidden import was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("forbidden"), "{}", error.message);
+    assert!(
+        error.message.contains("runtime/app.wasm"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn signed_migration_world_cannot_be_used_as_the_app_backend() {
+    let mut fixture = base();
+    fixture.manifest.world = MIGRATION_WORLD.into();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        components::build(MIGRATION_WORLD, false),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("signed migration-only App backend was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    for expected in ["runtime/app.wasm", APP_WORLD, MIGRATION_WORLD] {
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+}
+
+#[test]
+fn signed_migrations_cannot_import_the_app_http_surface() {
+    let mut fixture = base();
+    fixture.files.insert(
+        "migrations/001.wasm".into(),
+        components::build(APP_WORLD, false),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("network-capable migration was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(
+        error.message.contains("migrations/001.wasm"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn signed_malformed_components_are_refused() {
+    let mut fixture = base();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        b"malformed component".to_vec(),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("malformed component was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+}
+
+#[test]
+fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
+    let mut fixture = base();
+    fixture.manifest.world = "chariox:app/app@1.0.1".into();
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let error = verify(&bytes, &policy).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("1.0.1"));
+    let bytes = packed(&base(), &[]);
+    let mut no_migration = policy;
+    no_migration
+        .worlds
+        .retain(|world| world.name != "chariox:app/migration");
+    let error = verify(&bytes, &no_migration).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("chariox:app/migration@1.0.0"));
+}
+
+#[test]
+fn kernel_verifier_admits_the_registered_signed_migration_world() {
+    let mut fixture = base();
+    if let Some(actions) = fixture.manifest.ui_actions.take() {
+        fixture.files.remove(&actions);
+    }
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    let bytes = packed(&fixture, &[]);
+    let policy = crate::VerificationPolicy::new(619, policy().trusted_publishers);
+    assert!(matches!(
+        crate::verify_app(&bytes, &policy),
+        Ok(crate::VerifiedAppPackage::Wasm(_))
+    ));
+}
+
+#[test]
+fn idempotent_tool_policy_is_signed_and_defaults_to_no_retries() {
+    let fixture = base();
+    let original = serde_json::to_value(&fixture.manifest).unwrap();
+    assert!(original.get("idempotentTools").is_none());
+    let mut declared = original;
+    declared["idempotentTools"] = json!(["list"]);
+    let manifest: ManifestV2 =
+        serde_json::from_value(declared).expect("v2 supports explicit retry declarations");
+    let serialized = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(serialized["idempotentTools"], json!(["list"]));
+}
+
+#[test]
+fn idempotent_tool_policy_rejects_undeclared_names_and_changes_signed_content() {
+    let mut fixture = base();
+    let original = packed(&fixture, &[]);
+    let original_digest = verify(&original, &policy())
+        .unwrap()
+        .digests()
+        .content
+        .clone();
+    fixture.manifest.idempotent_tools = vec!["create_todo".into()];
+    let declared = packed(&fixture, &[]);
+    let verified = verify(&declared, &policy()).unwrap();
+    assert_ne!(verified.digests().content, original_digest);
+    assert_eq!(verified.manifest().idempotent_tools, ["create_todo"]);
+    fixture.manifest.idempotent_tools = vec!["absent".into()];
+    assert!(pack(
+        &fixture.manifest,
+        &fixture.files,
+        &key(),
+        &[],
+        &Limits::default()
+    )
+    .is_err());
+    for names in [
+        vec!["create_todo", "create_todo"],
+        vec!["z", "a"],
+        vec!["Bad-Name"],
+    ] {
+        fixture.manifest.idempotent_tools = names.into_iter().map(String::from).collect();
+        assert!(fixture.manifest.validate(&Limits::default()).is_err());
+    }
 }

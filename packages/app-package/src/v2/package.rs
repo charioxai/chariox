@@ -108,6 +108,9 @@ impl<'a> VerifiedPackageV2<'a> {
     pub fn ui_actions(&self) -> &[UiActionDeclaration] {
         &self.ui_actions
     }
+    pub fn package_digest(&self) -> &str {
+        &self.digests.delivered
+    }
     pub fn digests(&self) -> &PackageDigests {
         &self.digests
     }
@@ -116,6 +119,11 @@ impl<'a> VerifiedPackageV2<'a> {
     }
     pub fn file(&self, path: &str) -> Option<&'a [u8]> {
         self.files.get(path).copied()
+    }
+    pub fn files(&self) -> impl Iterator<Item = (&str, &'a [u8])> + '_ {
+        self.files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), *bytes))
     }
 }
 
@@ -302,6 +310,35 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
         &files,
         limits,
     )?;
+    // Component parsing happens only after signature, inventory and policy
+    // checks: a trusted signature cannot grant an unlisted host import.
+    let check_component = |entry: &str, world: &str| {
+        chariox_app_wit::check_component(files[entry], world).map_err(|error| {
+            PackageError::new(
+                ErrorCode::IncompatibleContract,
+                format!("component `{entry}`: {error}"),
+            )
+        })
+    };
+    if manifest.world != super::APP_WORLD {
+        return Err(PackageError::new(
+            ErrorCode::IncompatibleContract,
+            format!(
+                "component `{}` requires supported App world `{}`, got `{}`",
+                manifest.runtime.component,
+                super::APP_WORLD,
+                manifest.world,
+            ),
+        ));
+    }
+    check_component(&manifest.runtime.component, &manifest.world)?;
+    if let Some(migrations) = &manifest.migrations {
+        let world = WorldId::parse(super::MIGRATION_WORLD)?;
+        check_world(&world, &policy.worlds).map_err(|refusal| refusal.into_error(&world))?;
+        for step in &migrations.steps {
+            check_component(&step.entry, super::MIGRATION_WORLD)?;
+        }
+    }
     let (declarations, ui_actions) = read_documents(&manifest, &files, limits)?;
     let mut publisher_entries: Vec<(&str, &[u8])> = entries[..3]
         .iter()
@@ -344,6 +381,14 @@ fn read_documents(
         files,
         limits,
     )?;
+    for name in &manifest.idempotent_tools {
+        if !declarations.tools.iter().any(|tool| &tool.name == name) {
+            return Err(PackageError::new(
+                ErrorCode::InvalidManifest,
+                format!("idempotentTools names undeclared tool `{name}`"),
+            ));
+        }
+    }
     let ui_actions = match &manifest.ui_actions {
         Some(path) => read_ui_actions(files[path.as_str()], limits)?,
         None => Vec::new(),

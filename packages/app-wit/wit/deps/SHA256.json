@@ -1,0 +1,15 @@
+{
+  "cli-0.2.0/package.wit": "c803f61bbf3c2d25247eb992a9446558d75f88ce88bbc1f7db2f3b225c751a06",
+  "cli-0.3.0/package.wit": "04b2de3bf344052c78080f3c5320442132b4e7c20b42633a92b8400b6d29ab0d",
+  "clocks-0.2.0/package.wit": "201ea420d305d2b82df1069d8cc0be368b77a97448367d2f29b2feb881f0c3bc",
+  "clocks-0.3.0/package.wit": "5b59398732d19f6e327b1693c851a690bdf30e86cbf755d5a53b2fe7d6f2775e",
+  "filesystem-0.2.0/package.wit": "22a5d089f36be41085246e221bd5cdb030d511c0b112397cdc772ec05dbed83f",
+  "filesystem-0.3.0/package.wit": "612729afb560f715c18de8787014f6b35ee7d3d12a8ef5566d93720ca463c9c9",
+  "http-0.2.0/package.wit": "3740377866d1f3e3e86fa69f76eab5e125bf3a272f699a7f5a8617a3e2931004",
+  "http-0.3.0/package.wit": "905f68152b4ba133db28ad1283f5ab5e67af1c64b9d306b770a607f6076b03be",
+  "io-0.2.0/package.wit": "8db72f52ce4ddc8212e0c6bc77a631d29db9a102b09157496ef0cd5404744336",
+  "random-0.2.0/package.wit": "ef52f5b5e6ca9e765e0fcd50b6f899a1803a2c247c2fd17235e808ff40dd8e0a",
+  "random-0.3.0/package.wit": "671234beada8dbdff53d10a6554bfbdc6ed9259d3093dfb8cc78c00b67fdf6e5",
+  "sockets-0.2.0/package.wit": "2171a4ddf55cca0975abbc873c662db95e227cf69c94604ea546a1b93c5b5888",
+  "sockets-0.3.0/package.wit": "9ea0d8bbd63773ee67ee58f4dbb1a4ad5ec250ed79487ed847715c0b87ee95cf"
+}

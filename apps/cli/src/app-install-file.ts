@@ -322,10 +322,20 @@ function operation(reply: Record<string, unknown>, request: string): AppInstallO
 }
 
 const installFailures: Record<string, string> = {
+  app_aot_busy: "The App cache is compiling this component. Retry starting the App shortly.",
+  app_aot_limit: "The compiled App exceeds this runtime's cache limit. Rebuild a smaller App.",
+  app_aot_store: "The App cache could not be read or written. Check disk space and permissions, then retry.",
+  app_aot_integrity: "The App cache failed verification and was removed. Start the App again to compile its retained component; your App data is retained.",
+  app_aot_incompatible: "The App cache does not match this runtime. Start the App again to compile its retained component.",
+  app_aot_compile: "The App could not be compiled with the current runtime. Retry after updating the runtime; your App data is retained.",
+  app_wasm_migration_snapshot: "The App migration could not save or restore its private files. Free disk space and check storage permissions, then retry the update.",
+  app_wasm_migration_unavailable: "This App needs migration support from a newer runtime. Your App data is retained.",
+  app_wasm_containment_pending: "Install the native App worker runtime with containment support before starting this App.",
   app_lifecycle_notification: "The App did not complete preparation for the update; the installed version is unchanged (app_lifecycle_notification).",
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
   app_install_publisher_revoked: "This publisher has been revoked in the kernel.",
   app_install_package_rejected: "The kernel rejected the package contents.",
+  app_install_node_package_requires_rebuild: "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp. Node private files are not migrated to v2; export and restore them separately.",
   // One message per stable package error code (V-PKG-03).
   app_install_package_invalid_arguments: "The package request was invalid.",
   app_install_package_io: "The kernel could not read the package.",

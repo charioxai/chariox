@@ -9,6 +9,11 @@ mod error;
 mod json;
 mod manifest;
 pub mod v2;
+mod verified_app;
+pub use verified_app::{
+    inspect_manifest, inspect_publisher, verify_app, ManifestRef, ReleaseManifest, VerifiedApp,
+    VerifiedAppPackage,
+};
 
 use std::collections::BTreeMap;
 

@@ -1,0 +1,13 @@
+// A future additive contract, deliberately NOT a production supported world.
+package chariox:app@1.1.0;
+
+@since(version = 1.1.0)
+interface diagnostics {
+  @since(version = 1.1.0)
+  health: async func() -> bool;
+}
+
+world app {
+  include chariox:app/app@1.0.0;
+  import diagnostics;
+}

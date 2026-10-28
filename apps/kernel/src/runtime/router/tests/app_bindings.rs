@@ -877,17 +877,22 @@ async fn uninstall_keeps_missing_binding_visible_without_tools_or_a_reinstall_re
     // Exercise the actual reinstall request and its approval boundary, rather
     // than invoking the helper directly: skipping the gate must fail this test.
     use base64::Engine;
+    use chariox_app_package::VerifiedApp;
     use sha2::Digest;
-    let (bytes, publisher) =
+    let (previous, publisher) =
         crate::durable_state::app_state::fixture_release_package("1.0.1", 0, false);
-    let verified = chariox_app_package::verify(
-        &bytes,
-        &chariox_app_package::VerificationPolicy::new(
-            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
-            vec![publisher],
-        ),
-    )
-    .unwrap();
+    let policy = chariox_app_package::VerificationPolicy::new(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        vec![publisher.clone()],
+    );
+    let previous = chariox_app_package::verify(&previous, &policy).unwrap();
+    let bytes = crate::runtime::app_package_preparation::test_package::archive_as(
+        71,
+        &previous.manifest().app_id,
+        "1.0.1",
+        &publisher.key_id,
+    );
+    let verified = chariox_app_package::verify_app(&bytes, &policy).unwrap();
     let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
     let dispatch = |request: LocalDaemonRequest, id: &str| {
         let mut command = KernelCommand::from_local_request(id.to_owned(), None, None, &request);

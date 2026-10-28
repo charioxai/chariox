@@ -8,7 +8,7 @@ Not part of the product build. Read [DECISION.md](DECISION.md) first, then
 | `wit/app.wit` | the spike's async world (`chariox:app@0.2.0`), built by every r2 App |
 | `wit-full/app.wit` | the proposed async world 1.0 on WASI 0.3 (`deps/`), validated with wasm-tools |
 | `wit-sync/app.wit` | r1's sync world, kept to rebuild the r1 Apps for comparison |
-| `worker-async/` | `chariox-wasm-worker-async`: one instance per App serving concurrent calls, on the existing FD3/FD4 IPC |
+| `worker-async/` | Historical binary alias for the [production async worker](../../packages/app-wasm-worker/README.md); the old spike engine has been removed |
 | `worker/` | r1 sync worker (comparison only) |
 | `harness/` | kernel side: real `WorkerPeer`, stand-in brokers, bubblewrap; r1 cells plus `cells.rs` |
 | `apps/` | `rust-async`, `qjs-app` (QuickJS), `py-app` (Python) on the async world; r1 `rust-app`, `js-app` (StarlingMonkey), `node-app` (today's SDK), `jco-app` |
@@ -62,3 +62,9 @@ wasm32-wasip2`, then `spike-async-host <guest.wasm> <calls>`; for jco,
 `jco transpile <guest.wasm> -o <dir> --name probe --instantiation async` and
 `node async-probe/run-jco.mjs <dir> <calls>` (run from a directory where
 `@bytecodealliance/preview2-shim` resolves).
+
+The async worker implementation now lives in `packages/app-wasm-worker` (R3).
+The `chariox-wasm-worker-async` name delegates to that same implementation and
+uses its strict R1 world and CLI. Earlier spike measurements and harness inputs
+in this directory are historical; they do not establish current worker acceptance.
+Use the production worker's source-App process drill for the current contract.

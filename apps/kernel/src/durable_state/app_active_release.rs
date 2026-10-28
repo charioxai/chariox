@@ -2,7 +2,9 @@
 //! re-verified against the owner's current publisher trust. A revoked
 //! publisher or inactive installation yields nothing. No worker is needed.
 use super::DurableKernelStateStore;
-use chariox_app_package::{verify, VerificationPolicy, VerifiedPackage};
+use chariox_app_package::{
+    verify_app as verify, VerificationPolicy, VerifiedApp, VerifiedAppPackage,
+};
 use chariox_app_runtime::{
     app_catalog::AppCatalog,
     app_inbox::IncomingCatalog,
@@ -58,7 +60,7 @@ impl ActiveRelease {
     }
     pub(crate) fn event_catalog(
         &self,
-        verified: &VerifiedPackage<'_>,
+        verified: &impl VerifiedApp,
     ) -> Result<Arc<EventCatalog>, ActiveReleaseError> {
         let catalog = AppCatalog::compile(verified, &self.binding, &self.trust)
             .map_err(|_| ActiveReleaseError::Untrusted)?;
@@ -66,7 +68,7 @@ impl ActiveRelease {
             .map(Arc::new)
             .map_err(|_| ActiveReleaseError::Invalid)
     }
-    pub(crate) fn verify(&self) -> Result<VerifiedPackage<'_>, ActiveReleaseError> {
+    pub(crate) fn verify(&self) -> Result<VerifiedAppPackage<'_>, ActiveReleaseError> {
         let verified = verify(
             &self.bytes,
             &VerificationPolicy::new(

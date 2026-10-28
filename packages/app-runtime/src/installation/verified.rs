@@ -8,13 +8,14 @@ use super::{
     InstallationError, InstallationRegistry, ReleaseMetadata, StageToken, UpdateRecord,
 };
 use crate::publisher_trust::{PublisherTrustError, TrustedPublisherSnapshot};
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 mod supervised;
+mod wasm_metadata;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifiedStageError {
@@ -44,7 +45,7 @@ pub struct VerifiedInstallCandidate {
 }
 impl VerifiedInstallCandidate {
     pub fn from_verified(
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         trust: &TrustedPublisherSnapshot,
     ) -> Result<Self> {
         let signer = package.signer();
@@ -67,6 +68,8 @@ impl VerifiedInstallCandidate {
         let catalog_digest = json_digest(&json!({
             "schema": "chariox.installation-catalog.v2", "declarations": declarations
         }))?;
+        let (capabilities_digest, catalog_digest) =
+            wasm_metadata::digests(package, capabilities_digest, catalog_digest)?;
         // A view can use shared/dynamic assets outside ui/. Until the serving
         // contract narrows that set, every signed payload file participates.
         // BTreeMap-backed files() supplies a deterministic path ordering.

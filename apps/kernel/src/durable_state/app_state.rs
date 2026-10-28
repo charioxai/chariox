@@ -452,6 +452,13 @@ pub(crate) fn fixture_inbox_package() -> (Vec<u8>, chariox_app_package::TrustedP
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_view_package(
+    total_bytes: usize,
+) -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
+    tests::view_package(total_bytes)
+}
+
+#[cfg(test)]
 pub(crate) fn fixture_event_package() -> (Vec<u8>, chariox_app_package::TrustedPublisher) {
     tests::package()
 }

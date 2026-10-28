@@ -2,9 +2,9 @@
   "cases": [
     {
       "expected": {
-        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
-        "deliveredDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
-        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "contentDigest": "sha256:68b2f4e081ead46eeb41a33a6dbabb2170796786ebd3c1bb411b5c093678820c",
+        "deliveredDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
+        "publisherArchiveDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
         "reviewKeyIds": []
       },
       "input": {
@@ -16,9 +16,9 @@
     },
     {
       "expected": {
-        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
-        "deliveredDigest": "sha256:ce232bdd959efa3c4800d7ed349f68054ed9362d7625745a2b920a36b2bd8f57",
-        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "contentDigest": "sha256:68b2f4e081ead46eeb41a33a6dbabb2170796786ebd3c1bb411b5c093678820c",
+        "deliveredDigest": "sha256:6a3f5c80ed4ef1d4d21e160febadfa8ac1b4e7025cef7e092ac48450100fff14",
+        "publisherArchiveDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
         "reviewKeyIds": [
           "reviewer-a"
         ]
@@ -34,9 +34,9 @@
     },
     {
       "expected": {
-        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
-        "deliveredDigest": "sha256:f7a1fcc83debbbe33cda4e45aea269bb560be8c6152094abba6cd0dbb28fb102",
-        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "contentDigest": "sha256:68b2f4e081ead46eeb41a33a6dbabb2170796786ebd3c1bb411b5c093678820c",
+        "deliveredDigest": "sha256:29117e957686fc2ae103010c93b5445468dc370b8442176be38eeca6cd4c0a01",
+        "publisherArchiveDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
         "reviewKeyIds": [
           "reviewer-a",
           "reviewer-b"
@@ -54,9 +54,9 @@
     },
     {
       "expected": {
-        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
-        "deliveredDigest": "sha256:f7a1fcc83debbbe33cda4e45aea269bb560be8c6152094abba6cd0dbb28fb102",
-        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "contentDigest": "sha256:68b2f4e081ead46eeb41a33a6dbabb2170796786ebd3c1bb411b5c093678820c",
+        "deliveredDigest": "sha256:29117e957686fc2ae103010c93b5445468dc370b8442176be38eeca6cd4c0a01",
+        "publisherArchiveDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
         "reviewKeyIds": [
           "reviewer-a",
           "reviewer-b"
@@ -74,9 +74,9 @@
     },
     {
       "expected": {
-        "contentDigest": "sha256:303d685bf1c3328065825b4276fc9a7fc01bc7b0ea4c5680bcb8a2b462120d5d",
-        "deliveredDigest": "sha256:ce232bdd959efa3c4800d7ed349f68054ed9362d7625745a2b920a36b2bd8f57",
-        "publisherArchiveDigest": "sha256:471ad33efc459a78f9eb6e45cf89ffc2aa3d7c63f36c2f9fa77204429a24af5a",
+        "contentDigest": "sha256:68b2f4e081ead46eeb41a33a6dbabb2170796786ebd3c1bb411b5c093678820c",
+        "deliveredDigest": "sha256:6a3f5c80ed4ef1d4d21e160febadfa8ac1b4e7025cef7e092ac48450100fff14",
+        "publisherArchiveDigest": "sha256:90b268a56a37eaf9c654f26a769a79edb3b5dacc330e933db6c7a89a5b5846d6",
         "reviewKeyIds": [
           "reviewer-a"
         ]
@@ -92,9 +92,9 @@
     },
     {
       "expected": {
-        "contentDigest": "sha256:34eb8c7d0ac3e2c10d5b78ff6e4aff93fcdb94d85dafb74e99935ae927cc438c",
-        "deliveredDigest": "sha256:5412bf3e0acab2a740c327f70e70fba4d364d9a7e918bdd8d771703564390d91",
-        "publisherArchiveDigest": "sha256:bdacdd9ce0810b1655e135b42a6dc0dc1ab53d1b61d6a5e32526a69bb82644c4",
+        "contentDigest": "sha256:d9002556fec49570dd18d42473eb3984a04bdd93e9ca603adca9ebbe490756c5",
+        "deliveredDigest": "sha256:20688ec78fdbc4f93554bfcc044aebd19d16e5eda3e13f92dd1c775506511793",
+        "publisherArchiveDigest": "sha256:a2db2bb12a757f7420addc96dd067752f8368bca833be69408348ce91a4ff536",
         "reviewKeyIds": [
           "reviewer-a"
         ]
@@ -112,8 +112,8 @@
   "contract": "docs/APPS_V2_CONTRACTS.md §1: reviews change only the delivered digest; changed UI changes the content digest",
   "shared": {
     "files": {
-      "migrations/001.wasm": "migration placeholder",
-      "runtime/app.wasm": "component placeholder",
+      "migrations/001.wasm": "wit:chariox:app/migration@1.0.0",
+      "runtime/app.wasm": "wit:chariox:app/app@1.0.0",
       "schemas/actions.json": "{\"actions\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"criticalValidation\": {\"reason\": \"Confirm creation\", \"userVerification\": true}, \"effectRoutes\": [{\"origin\": \"https://api.example.com\", \"method\": \"POST\", \"path\": \"/todos\", \"connection\": \"todo_account\"}]}]}",
       "schemas/events.json": "{\"events\": [{\"name\": \"todo_due\", \"schemaVersion\": 1, \"direction\": \"outgoing\", \"payloadSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}}]}",
       "schemas/tools.json": "{\"tools\": [{\"name\": \"create_todo\", \"inputSchema\": {\"type\": \"object\", \"properties\": {\"id\": {\"type\": \"string\"}}, \"required\": [\"id\"], \"additionalProperties\": false}, \"action\": \"create_todo\"}]}",
@@ -125,9 +125,9 @@
       "appContractVersion": 2,
       "appId": "com.example.todo",
       "build": {
-        "language": "rust",
+        "language": "wit-fixture",
         "sdkVersion": "1.0.0",
-        "toolchain": "rustc 1.90.0 wasm32-wasip2"
+        "toolchain": "wit-component 0.262.0 async callback"
       },
       "capabilities": {
         "network": [

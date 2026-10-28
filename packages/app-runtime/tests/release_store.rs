@@ -257,7 +257,7 @@ fn verified_worker_lease_retains_shared_publication_lock_until_last_consumer_dra
     let first = store.lease_verified(&package, &archive).unwrap();
     let second = store.lease_verified(&package, &archive).unwrap();
     assert_eq!(first.package_digest(), package.package_digest());
-    assert_eq!(first.manifest(), package.manifest());
+    assert_eq!(first.manifest().node().unwrap(), package.manifest());
     assert_eq!(first.declarations(), package.declarations());
     let observer = fs::File::open(&staged.path).unwrap();
     let exclusive = || unsafe { libc::flock(observer.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };

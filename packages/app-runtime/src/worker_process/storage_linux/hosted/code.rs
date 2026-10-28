@@ -174,14 +174,16 @@ fn hosted_prepared_worker_uses_only_enrolled_sources_and_reclaims_unstarted_doma
         Some(binding.token().generation),
     )
     .unwrap();
-    assert_eq!(prepared.record.installation, "factory-only");
-    assert_eq!(prepared.record.generation, "1");
+    assert_eq!(prepared.record.installation(), "factory-only");
+    assert_eq!(prepared.record.generation(), "1");
     assert_eq!(
-        prepared.record.roots,
+        prepared.record.node().unwrap().roots,
         ["/app/package", "/app/data", "/app/tmp", "/runtime"]
     );
     assert!(prepared
         .record
+        .node()
+        .unwrap()
         .bootstrap
         .contains("createRequire('/runtime/bootstrap.cjs')"));
     let program = PathBuf::from(prepared.program.to_str().unwrap());
@@ -227,8 +229,8 @@ fn hosted_fresh_first_install_prepares_without_a_committed_generation() {
     installs.quiesce(token, 4).unwrap();
     let prepared =
         PreparedWorker::prepare_linux(runtime, package, &binding, None, committed).unwrap();
-    assert_eq!(prepared.record.generation, "1");
-    assert_eq!(prepared.record.installation, "factory-only");
+    assert_eq!(prepared.record.generation(), "1");
+    assert_eq!(prepared.record.installation(), "factory-only");
     installs.mark_prepared(token, 5).unwrap();
     let snapshot = PublisherTrustRegistry::new(&mut connection)
         .trusted_publisher("hosted-owner", "com.example", "fixture")

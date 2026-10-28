@@ -20,6 +20,9 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   `ui-actions`, `agent-panel`, `connections`, `directed-events`), so a package
   cannot understate them. The kernel states which features it supports; no
   protocol number is copied into a package.
+- Optional `idempotentTools` names sorted, unique declared backend tools that
+  the worker may replay once after instance loss. Omission permits no automatic
+  replay; effects and action descriptions never imply idempotence.
 - `schemas/ui-actions.json` (`UiActionDeclaration`): name, description, input
   and optional output schema, `effect` `read | write | approval`, and an
   `approvalReason` for, and only for, `approval`. Backend `actions` keep their
@@ -92,8 +95,20 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   against `SupportedWorld {name, major, minor}`: older minor links, newer minor
   or unknown major is refused, patch is ignored; two entries for one name give
   the two-major deprecation window. `APP_WORLD` and `MIGRATION_WORLD` are the
-  fixed names; the import allowlist and window text are R1.
-- Compatibility for the Library is this same check plus `kernel_features`.
+  fixed names. R1's [`app-wit` contract](../packages/app-wit/README.md) supplies
+  the exact registered worlds, binary import/export and interface-member
+  allowlist, structural checks, compatibility vectors and deprecation window.
+  Its migration world exports `migration-handlers` to avoid a WIT namespace
+  collision with the world name.
+- `v2::verify` checks actual signed backend and migration components with that
+  same WIT checker after inventory verification. The generic `check_world`
+  generation query does not admit an unregistered exact world or import.
+  Library compatibility must additionally check kernel features, contract/resource
+  policy, worker availability and platform containment, as local install does.
+- The two package signature vectors use `wit:<exact-world>` payload sources
+  built by the pinned 0.262.0 test toolchain, rather than component placeholders.
+  Their signing rules are unchanged; inventory/signature/digest bytes change
+  because the fixture payloads are now real components.
 
 ## 6. AOT cache (`release_store::aot_key`)
 

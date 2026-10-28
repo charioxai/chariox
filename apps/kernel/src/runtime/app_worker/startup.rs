@@ -4,7 +4,7 @@
 use super::*;
 use crate::durable_state::app_activation::CommittedAppActivation;
 use crate::runtime::app_operation_budget::{AppOperationBudget, AppOperationStopped};
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use chariox_app_runtime::{
     wire::RemoteError,
     worker_peer::{
@@ -43,7 +43,7 @@ struct ReadyReport {
 impl AppWorkerOwner {
     pub(crate) fn start_blocking(
         process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
@@ -56,7 +56,7 @@ impl AppWorkerOwner {
     /// reports ready it may only read and write state and report steps.
     pub(crate) fn start_migrating_blocking(
         process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,
@@ -67,7 +67,7 @@ impl AppWorkerOwner {
 
     fn start_with(
         mut process: WorkerProcess,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         catalog: Arc<EventCatalog>,
         delegate: Arc<dyn Broker>,
         limits: PeerLimits,

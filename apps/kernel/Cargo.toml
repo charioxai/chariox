@@ -62,6 +62,9 @@ chariox-app-runtime = { path = "../../packages/app-runtime" }
 chariox-app-package = { path = "../../packages/app-package" }
 
 [dev-dependencies]
+wit-component = { version = "=0.262.0", features = ["dummy-module"] }
+wit-parser = "=0.262.0"
+chariox-app-wasm-worker = { path = "../../packages/app-wasm-worker" }
 chariox-aegs-sdk = { path = "../../packages/aegs-sdk" }
 tokio = { version = "1.44.2", features = ["test-util"] }
 # Fixed unsandboxed ABI fixtures; excluded from production dependency graphs.
