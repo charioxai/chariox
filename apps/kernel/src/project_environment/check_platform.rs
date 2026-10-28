@@ -82,9 +82,11 @@ pub(super) fn check_platform(
                         .map(|c| inventory::satisfies(&v, c))
                     {
                         Some(Some(false)) => {
-                            let owned = inventory::executable(identity).is_some_and(|p| {
-                                p.starts_with(ctx.config.private_runtime_state_root())
-                            });
+                            let owned = inventory::executable(identity)
+                                .and_then(|p| p.canonicalize().ok())
+                                .is_some_and(|p| {
+                                    p.starts_with(ctx.config.private_runtime_state_root())
+                                });
                             outcome(if owned{Outdated}else{Conflict},"version_mismatch","Installed version does not meet the requirement; Check never replaces or upgrades it")
                         }
                         Some(None) => outcome(

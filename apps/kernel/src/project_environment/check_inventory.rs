@@ -99,8 +99,9 @@ pub(super) fn executable(name: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .filter(|p| p.is_absolute())
         .find_map(|p| {
-            let p = p.join(name).canonicalize().ok()?;
-            let m = p.metadata().ok()?;
+            let invocation = p.join(name);
+            let canonical = invocation.canonicalize().ok()?;
+            let m = canonical.metadata().ok()?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -108,7 +109,7 @@ pub(super) fn executable(name: &str) -> Option<PathBuf> {
                     return None;
                 }
             }
-            m.is_file().then_some(p)
+            m.is_file().then_some(invocation)
         })
 }
 pub(super) fn remaining(deadline: Instant, cap: Duration) -> Result<Duration, &'static str> {
@@ -133,9 +134,6 @@ pub(super) fn version_until(
     let Some(path) = executable(name) else {
         return Ok(None);
     };
-    if roots.iter().any(|r| path.starts_with(r)) {
-        return Err("untrusted_executable");
-    }
     let mut command = super::check_executable::command(&path, roots)?;
     command.args(args);
     if matches!(name, "cargo" | "rustc") {
@@ -318,10 +316,7 @@ pub(super) fn software_version_until(
             let Some(path) = executable("fc-list") else {
                 return Err("font_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
+            let mut c = super::check_executable::command(&path, roots)?;
             c.args(["--format", "%{family}\n"])
                 .current_dir("/")
                 .env_clear()
@@ -355,10 +350,7 @@ pub(super) fn software_version_until(
             let Some(path) = executable("dpkg-query") else {
                 return Err("package_inventory_unavailable");
             };
-            if roots.iter().any(|r| path.starts_with(r)) {
-                return Err("untrusted_executable");
-            }
-            let mut c = std::process::Command::new(path);
+            let mut c = super::check_executable::command(&path, roots)?;
             c.args(["--show", "--showformat=${Status}\t${Version}", "--", name])
                 .current_dir("/")
                 .env_clear()

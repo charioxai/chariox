@@ -317,3 +317,57 @@ fn review1301_partial_check_dependency_expires_on_snapshot() {
         "dependent and transitive evidence must expire with their prerequisite"
     );
 }
+
+#[test]
+fn r4_multicall_fixture() {
+    if std::env::var_os("CHARIOX_MULTICALL_FIXTURE").is_some() {
+        let invocation = std::env::args_os().next().unwrap();
+        assert_eq!(
+            std::path::Path::new(&invocation).file_name().unwrap(),
+            "cargo"
+        );
+        println!("cargo fixture invocation preserved");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn r4_inventory_preserves_symlinked_multicall_invocation() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("r4-multicall-inventory");
+    let invocation = root.path().join("cargo");
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &invocation).unwrap();
+    std::env::set_var("PATH", root.path());
+    let selected = inventory::executable("cargo").unwrap();
+    let target_parent = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(
+        super::check_executable::command(&invocation, &[target_parent]).is_err(),
+        "canonical target trust checks must still reject a project executable"
+    );
+    for path in [&selected, &invocation] {
+        let mut command = super::check_executable::command(path, &[]).unwrap();
+        command.env("CHARIOX_MULTICALL_FIXTURE", "1").args([
+            "--exact",
+            "project_environment::check_tests::r4_multicall_fixture",
+            "--nocapture",
+        ]);
+        let output = crate::local::provider_requests::capture_inventory_probe(
+            command,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "multicall fixture must receive cargo argv[0]: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("cargo fixture invocation preserved")
+        );
+    }
+}

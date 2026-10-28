@@ -116,7 +116,9 @@ pub(super) fn health_until(
             let Some(p) = executable(name) else {
                 return Ok(false);
             };
-            if roots.iter().any(|r| p.starts_with(r)) {
+            if p.canonicalize()
+                .is_ok_and(|canonical| roots.iter().any(|r| canonical.starts_with(r)))
+            {
                 return Err("worker_required");
             }
             let mut c = super::check_executable::command(&p, roots)?;

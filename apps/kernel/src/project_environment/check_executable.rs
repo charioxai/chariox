@@ -24,6 +24,8 @@ pub(super) fn command(
     path: &Path,
     roots: &[PathBuf],
 ) -> Result<std::process::Command, &'static str> {
+    #[cfg(unix)]
+    let mut invocation = path.to_path_buf();
     let mut executable = trusted(path, roots)?;
     let mut arguments = Vec::<std::ffi::OsString>::new();
     let mut directories = Vec::new();
@@ -51,6 +53,11 @@ pub(super) fn command(
             .map_err(|_| "interpreter_unavailable")?;
         if !bytes.starts_with(b"#!") {
             let mut command = std::process::Command::new(executable);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.arg0(&invocation);
+            }
             directories.extend([
                 PathBuf::from("/usr/local/bin"),
                 PathBuf::from("/usr/bin"),
@@ -109,6 +116,10 @@ pub(super) fn command(
             }
             PathBuf::from(name)
         };
+        #[cfg(unix)]
+        {
+            invocation = interpreter.clone();
+        }
         let interpreter = trusted(&interpreter, roots)?;
         if let Some(directory) = interpreter.parent() {
             if !directories.iter().any(|path| path == directory) {
