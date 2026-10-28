@@ -623,7 +623,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
         }
-        LocalDaemonRequest::StopSessionProcesses(request) => LocalRequestMetadata::new("session_process.stop", Normal).session(&request.session_id),
+        LocalDaemonRequest::StopSessionProcesses(request) => {
+            LocalRequestMetadata::new("session_process.stop", Normal).session(&request.session_id)
+        }
         _ => LocalRequestMetadata::new(local_request_command_type(request), Normal),
     }
 }
