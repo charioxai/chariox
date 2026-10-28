@@ -129,7 +129,7 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       }
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        if (inputToken) {
+        if (inputToken && input.text) {
           await admitInput();
           const endDispatch = onDispatch?.();
           try {
