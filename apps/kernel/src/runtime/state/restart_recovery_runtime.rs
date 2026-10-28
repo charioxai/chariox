@@ -272,7 +272,7 @@ impl KernelRuntimeState {
                         None,
                         Some(&agent_id),
                         recipients,
-                        &PromptEnding::InterruptedByRestart(reason)
+                        PromptEnding::InterruptedByRestart(reason)
                             .outcome()
                             .notice(),
                     );
