@@ -4,7 +4,7 @@ use crate::terminal::TerminalOutputKind;
 
 // MP-08 / MP-09 / MP-10 / MP-11: exercise the common failure entry after the
 // provider's invocation has already reached a client and durable history.
-async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
+async fn process_end_settles_tools(provider: &str, memory_limit: bool, large_output: bool) {
     let worktree = crate::test_support::TestWorktree::new("process-tool-settlement");
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -44,12 +44,20 @@ async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
     } else {
         "commandExecution"
     };
+    let output = if large_output {
+        format!(
+            "old-leading-output{}latest-diagnostic-tail",
+            "x".repeat(20 * 1024)
+        )
+    } else {
+        "partial output".to_string()
+    };
     let chunk = |id: &str, status: &str| ProviderPromptChunk {
         kind: TerminalOutputKind::ProviderTool,
         merge_key: Some(format!("merge-{id}")),
         bytes: serde_json::to_vec(&serde_json::json!({
             "id": id, "tool": tool, "status": status,
-            "input": {"command":"sleep 30"}, "output":"partial output",
+            "input": {"command":"sleep 30"}, "output":output,
         }))
         .unwrap(),
     };
@@ -65,10 +73,20 @@ async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
         )
         .await
         .unwrap();
-    runtime
+    let live = runtime
         .owned
         .terminal_stream
         .drain_output_records(session.id(), attachment.id());
+    let live_tool = live
+        .iter()
+        .find(|r| r.merge_key.as_deref() == Some("merge-pending"))
+        .expect("retention must not suppress the live tool update");
+    let live_payload: serde_json::Value = serde_json::from_slice(&live_tool.bytes).unwrap();
+    if large_output {
+        let tail = live_payload["output"].as_str().unwrap();
+        assert!(tail.ends_with("latest-diagnostic-tail"));
+        assert!(!tail.contains("old-leading-output"));
+    }
     let termination = if memory_limit {
         ProviderRunTermination::memory_limit(33554432, crate::session::unix_epoch_ms())
     } else {
@@ -103,7 +121,10 @@ async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
     assert_eq!(payload["tool"], tool);
     assert_eq!(payload["status"], "error");
     assert_eq!(payload["error"], termination.reason);
-    assert_eq!(payload["output"], "partial output");
+    assert_eq!(
+        payload["output"], live_payload["output"],
+        "failure must retain the displayed tail"
+    );
     assert_eq!(payload["input"]["command"], "sleep 30");
     runtime.flush_provider_history(run.id()).await.unwrap();
     let entries = runtime
@@ -118,6 +139,20 @@ async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
                 && entry.text.contains(&termination.reason)),
         "the terminal update must survive reconnect"
     );
+    if large_output {
+        let failure = entries
+            .iter()
+            .find(|entry| {
+                entry.merge_key.as_deref() == Some("merge-pending")
+                    && entry.text.contains(&termination.reason)
+            })
+            .expect("failure snapshot must be durable");
+        let persisted: serde_json::Value = serde_json::from_str(&failure.text).unwrap();
+        assert_eq!(
+            persisted["output"], live_payload["output"],
+            "replay must retain the displayed tail"
+        );
+    }
     assert!(runtime
         .owned
         .session_store
@@ -129,17 +164,27 @@ async fn process_end_settles_tools(provider: &str, memory_limit: bool) {
 
 #[tokio::test]
 async fn claude_memory_limit_settles_pending_tool() {
-    process_end_settles_tools("claude", true).await;
+    process_end_settles_tools("claude", true, false).await;
 }
 #[tokio::test]
 async fn claude_outside_end_settles_pending_tool() {
-    process_end_settles_tools("claude", false).await;
+    process_end_settles_tools("claude", false, false).await;
 }
 #[tokio::test]
 async fn codex_memory_limit_settles_pending_tool() {
-    process_end_settles_tools("codex", true).await;
+    process_end_settles_tools("codex", true, false).await;
 }
 #[tokio::test]
 async fn codex_outside_end_settles_pending_tool() {
-    process_end_settles_tools("codex", false).await;
+    process_end_settles_tools("codex", false, false).await;
+}
+
+#[tokio::test]
+async fn process_tool_settlement_keeps_live_tail_after_memory_limit() {
+    process_end_settles_tools("codex", true, true).await;
+}
+
+#[tokio::test]
+async fn process_tool_settlement_keeps_live_tail_after_outside_end() {
+    process_end_settles_tools("claude", false, true).await;
 }

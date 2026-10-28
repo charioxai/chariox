@@ -64,8 +64,7 @@ impl ActivePromptState {
                     kind: crate::terminal::TerminalOutputKind::ProviderTool,
                     merge_key: merge_key.map(str::to_string),
                     bytes:
-                        crate::provider_output_policy::output_bounds::bounded_terminal_output_bytes(
-                            &crate::terminal::TerminalOutputKind::ProviderTool,
+                        crate::provider_output_policy::output_bounds::bounded_provider_tool_snapshot_bytes(
                             bytes,
                         ),
                 },

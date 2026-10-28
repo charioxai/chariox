@@ -51,6 +51,36 @@ pub(crate) fn bounded_terminal_output_bytes(kind: &TerminalOutputKind, bytes: &[
     bounded_text_bytes(bytes)
 }
 
+/// Retain the live output tail without observing or advancing the delta gate.
+pub(crate) fn bounded_provider_tool_snapshot_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut value = serde_json::from_slice::<Value>(bytes).expect("tool snapshot must be JSON");
+    if let Some(object) = value.as_object_mut() {
+        if let Some(field) = provider_tool_output_field(object) {
+            let text = object[&field]
+                .as_str()
+                .expect("tool output field must be text");
+            if text.len() > MAX_PROVIDER_TOOL_STRING_BYTES {
+                let original_len = text.len();
+                let tail = bounded_text_tail_string(
+                    text.as_bytes(),
+                    MAX_PROVIDER_TOOL_STRING_BYTES,
+                    original_len,
+                );
+                object.insert(field, Value::String(tail));
+                object.insert("chariox_truncated".to_string(), Value::Bool(true));
+                object.insert(
+                    "chariox_original_bytes".to_string(),
+                    Value::Number((original_len as u64).into()),
+                );
+            }
+        }
+    }
+    bounded_terminal_output_bytes(
+        &TerminalOutputKind::ProviderTool,
+        &serde_json::to_vec(&value).expect("tool snapshot must encode"),
+    )
+}
+
 pub(crate) fn terminal_output_delta_bytes(
     session_id: &str,
     provider_run_id: &str,
