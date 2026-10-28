@@ -175,7 +175,7 @@ export function setProviderAccountCredentialRequest(
   }
 }
 
-/** Requires local kernel protocol 601. This metadata never contains native history. */
+/** Requires local kernel protocol 637. This metadata never contains native history. */
 export type NativeProviderCheckpointBinding = {
   provider: "codex"
   session_id: string

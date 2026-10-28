@@ -50,9 +50,9 @@ configuration, bounded file reads and no-fresh-session safeguards still apply.
 A published checkpoint remains available for an explicit retry if the provider
 probe fails; import does not admit a user turn or change the committed route.
 
-Local protocol **601** adds optional `native_checkpoint_binding` to the existing
+Local protocol **637** adds optional `native_checkpoint_binding` to the existing
 provider-launch request. It carries safe checkpoint metadata, not native history.
-Callers must check protocol 601 before using it; older kernels ignore unknown
+Callers must check protocol 637 before using it; older kernels ignore unknown
 fields. The corresponding private `RequiredNativeSession` persists until the
 first accepted native turn. Launch rejects missing or mismatched native state,
 and resume failure neither clears that state nor substitutes another provider.

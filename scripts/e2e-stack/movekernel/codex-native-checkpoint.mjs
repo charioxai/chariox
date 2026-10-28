@@ -16,7 +16,7 @@ const kernel=required('CHARIOX_CHECKPOINT_KERNEL'),relay=required('CHARIOX_CHECK
 const root=required('CHARIOX_CHECKPOINT_STATE'),evidence=required('CHARIOX_CHECKPOINT_EVIDENCE'),profile=required('CHARIOX_CHECKPOINT_SOURCE_PROFILE');
 if(root===repo||root.startsWith(repo+path.sep)||evidence===repo||evidence.startsWith(repo+path.sep))throw Error('State and evidence must be outside the repository');
 const protocol=Number(execFileSync(kernel,['--print-local-daemon-protocol-version'],{encoding:'utf8'}).trim());
-if(protocol<601)throw Error('Required native resume needs kernel protocol 601');
+if(protocol<637)throw Error('Required native resume needs kernel protocol 637');
 const head=execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).trim();
 const summary={stateRoot:root,MP:['MP-08','MP-09','MP-10','MP-11'],head,protocol,scope:'Codex Chariox Linux/Linux native adapter; no Move orchestration',started:new Date().toISOString(),processes:[],steps:[]};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
