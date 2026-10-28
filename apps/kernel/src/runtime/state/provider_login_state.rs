@@ -46,6 +46,7 @@ struct ClaudeSetupTokenSecrets {
     hidden_inputs: Vec<Zeroizing<String>>,
     reader_finished: bool,
     retry_authorization_url: Option<String>,
+    last_authorization_url: Option<String>,
 }
 
 impl ClaudeSetupTokenSecrets {
@@ -94,12 +95,16 @@ impl ClaudeSetupTokenLogin {
             screen.process(bytes);
             *screen_text = screen.redacted_text_with_inputs(hidden_inputs);
         }
+        if let Some(current) = secrets
+            .screen
+            .as_ref()
+            .and_then(ClaudeSetupTokenScreen::authorization_url)
+        {
+            secrets.last_authorization_url = Some(current);
+        }
         if let Some(previous) = secrets.retry_authorization_url.as_deref() {
-            let current = secrets
-                .screen
-                .as_ref()
-                .and_then(ClaudeSetupTokenScreen::authorization_url);
-            if current
+            if secrets
+                .last_authorization_url
                 .as_deref()
                 .is_some_and(|current| current != previous)
             {
@@ -114,10 +119,7 @@ impl ClaudeSetupTokenLogin {
         if secrets.retry_authorization_url.is_some() {
             return None;
         }
-        secrets
-            .screen
-            .as_ref()
-            .and_then(ClaudeSetupTokenScreen::authorization_url)
+        secrets.last_authorization_url.clone()
     }
 
     pub fn expects_authorization_code(&self) -> bool {
@@ -142,13 +144,9 @@ impl ClaudeSetupTokenLogin {
 
     fn prepare_retry(&self) -> Result<(), DaemonError> {
         let mut secrets = self.secrets();
-        let previous = secrets
-            .screen
-            .as_ref()
-            .and_then(ClaudeSetupTokenScreen::authorization_url)
-            .ok_or_else(|| {
-                login_error("Claude did not provide a sign-in link. Cancel and try again.")
-            })?;
+        let previous = secrets.last_authorization_url.clone().ok_or_else(|| {
+            login_error("Claude did not provide a sign-in link. Cancel and try again.")
+        })?;
         secrets.retry_authorization_url = Some(previous);
         Ok(())
     }
@@ -215,6 +213,8 @@ impl ClaudeSetupTokenLogin {
     fn discard_secrets(&self) {
         let mut secrets = self.secrets();
         secrets.screen = None;
+        secrets.last_authorization_url = None;
+        secrets.retry_authorization_url = None;
         secrets.token = None;
         secrets.new_vault_passphrase = None;
         secrets.hidden_inputs.clear();
@@ -863,7 +863,7 @@ mod tests {
         assert!(login.expects_authorization_code());
         login.hide_input(b"abc123#def456\r").unwrap();
         login.read_private_output(
-            b"\r\nOAuth error: Request failed with status code 400\r\nPress Enter to retry.",
+            b"\x1b[2J\x1b[HOAuth error: Request failed with status code 400\r\nPress Enter to retry.",
         );
         assert!(login.expects_retry());
         assert!(!login.expects_authorization_code());

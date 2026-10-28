@@ -793,6 +793,11 @@ async fn refused_enrollment_keeps_using_native_after_the_vault_relocks() {
 }
 
 #[tokio::test]
+async fn setup_token_session_rejected_code_keeps_the_new_challenge_usable() {
+    first_use_fixture("enrollment-retry").await;
+}
+
+#[tokio::test]
 async fn setup_token_session_starts_reattach_without_cancelling_the_driver() {
     first_use_fixture("enrollment-reattach").await;
 }
@@ -853,6 +858,14 @@ printf 'Paste code here if prompted > '
 IFS= read -r response
 if [ '{mode}' = enrollment-reattach ]; then
   echo received > '{root}/received'
+  IFS= read -r response
+fi
+if [ '{mode}' = enrollment-retry ]; then
+  printf '\033[2J\033[HOAuth error: Request failed with status code 400\r\nPress Enter to retry.'
+  IFS= read -r response
+  printf '\r\nhttps://claude.com/cai/oauth/authorize?state=retry\r\nPaste code here if prompted > '
+  IFS= read -r response
+  echo received > '{root}/retried'
   IFS= read -r response
 fi
 exit 1
@@ -1168,6 +1181,83 @@ exit 1
                 .unlocked,
             "MP-11 operation lease must end before human OAuth consent"
         );
+    }
+    if mode == "enrollment-retry" {
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "provider-response",
+                Some("test-code#test-state"),
+            )
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            tokio::select! {
+                result = &mut prepared => panic!("driver stopped before the new challenge: {}", result.unwrap_err()),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if current.active_interactions().iter().any(|item| {
+                item.message().contains("That code was not accepted")
+                    && item.provider_login().is_some_and(|login| {
+                        login
+                            .login
+                            .auth_url
+                            .as_deref()
+                            .is_some_and(|url| url.contains("state=retry"))
+                    })
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "new authorization challenge was not projected"
+            );
+        }
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "provider-response",
+                Some("second-code#new-state"),
+            )
+            .await
+            .unwrap();
+        loop {
+            tokio::select! {
+                result = &mut prepared => panic!("driver stopped before the new code reached Claude: {}", result.unwrap_err()),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if root.join("retried").exists()
+                && current
+                    .active_interactions()
+                    .iter()
+                    .any(|item| item.id() == interaction.id())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the new challenge did not accept another code"
+            );
+        }
     }
     if mode == "enrollment-reattach" {
         let start = |adapter: bool| {

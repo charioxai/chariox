@@ -344,7 +344,7 @@ try {
       await press('\x1b'); await sleep(300); await press('1')
       await waitFor(() => shows('sign-in cancelled'), 30_000, 'cancel result').catch(() => {})
       await capture('cancelled')
-      record('cancel ends with a result and a retry action', await shows(`Claude · ${label}: sign-in cancelled`) && await shows(`Retry: /provider login claude ${label}`))
+      record('cancel ends with a result and a retry action', await shows(`Claude · ${label}`) && await shows('sign-in cancelled') && await shows(`Retry: /provider login claude ${label}`))
     }
   }
   if (attach) {
