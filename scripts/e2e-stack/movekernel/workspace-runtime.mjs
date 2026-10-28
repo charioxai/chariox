@@ -10,6 +10,10 @@ import { openTui } from '../context-switch/tui.mjs';
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedPid, descendants, processSnapshot } from '../context-switch/owned.mjs';
 import { registerTerminationCleanup } from '../context-switch/termination.mjs';
 import { checkpointDiagnostics } from './workspace-diagnostics.mjs';
+if (process.argv.includes('--help')) {
+    console.log('Run with absolute CHARIOX_WORKSPACE_KERNEL, CHARIOX_WORKSPACE_TUI, CHARIOX_WORKSPACE_PROFILE, CHARIOX_WORKSPACE_STATE and CHARIOX_WORKSPACE_EVIDENCE paths.');
+    process.exit(0);
+}
 const required = name => {
     const value = process.env[name];
     if (!value?.startsWith('/'))
