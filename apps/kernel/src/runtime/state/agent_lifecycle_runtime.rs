@@ -68,25 +68,28 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         run: Option<&str>,
     ) -> Result<(), DaemonError> {
-        if self
+        let existing = self
             .durable_state_store
             .agent_tasks(Some(room), Some(agent))?
-            .iter()
-            .any(|t| t.prompt_id == prompt.id())
-        {
-            return Ok(());
-        }
+            .into_iter()
+            .find(|task| task.prompt_id == prompt.id());
         let session = self.session_store.get_session(room)?;
-        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
-            owner: session.owner_user_id().into(),
-            room: room.into(),
-            agent: agent.into(),
-            prompt: prompt.id().into(),
-            run: run.map(str::to_owned),
-            now: crate::session::unix_epoch_ms(),
-        })?
-        else {
-            unreachable!()
+        let task = if let Some(task) = existing {
+            task
+        } else {
+            let Outcome::Task(task) =
+                self.durable_state_store.agent_lifecycle(Operation::Begin {
+                    owner: session.owner_user_id().into(),
+                    room: room.into(),
+                    agent: agent.into(),
+                    prompt: prompt.id().into(),
+                    run: run.map(str::to_owned),
+                    now: crate::session::unix_epoch_ms(),
+                })?
+            else {
+                unreachable!()
+            };
+            task
         };
         // A workflow node turn dispatched before an upgrade keeps its live node, so
         // the run stays supervised and its continuation stays in the invocation.
@@ -835,6 +838,21 @@ impl KernelRuntimeState {
             "Check whether the original task is complete.".to_string()
         } else {
             text
+        };
+        let (text, hidden_system_context) = match workflow.as_ref() {
+            Some((run, node)) => {
+                let session = self.owned.session_store.get_session(&task.room_id)?;
+                let refresh = |text: &str| {
+                    crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                        &session, run, node, text,
+                    )
+                };
+                (
+                    refresh(&text),
+                    hidden_system_context.map(|context| refresh(&context)),
+                )
+            }
+            None => (text, hidden_system_context),
         };
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),

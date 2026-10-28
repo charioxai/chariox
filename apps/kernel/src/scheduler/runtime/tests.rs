@@ -1137,10 +1137,10 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
 
     assert!(prompt.contains("<outgoing-edge-contracts>"));
     assert!(prompt.contains(&format!(
-        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
+        "- edge_id: \"{analyst_edge_id}\", to_node_id: \"{analyst_node_id}\" (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
     )));
     assert!(prompt.contains(&format!(
-        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
+        "- edge_id: \"{reviewer_edge_id}\", to_node_id: \"{reviewer_node_id}\" (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
     )));
     assert!(!prompt.contains("Analyze quantitative evidence and route only analysis tasks here."));
     assert!(
@@ -1152,6 +1152,35 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     assert!(prompt.contains("to_node_id"));
     assert!(prompt.contains("validate only the routed message inside each selected edge entry"));
     assert!(prompt.contains("do not validate the outer routing wrapper"));
+    let legacy = prompt
+        .replace(
+            &format!("- edge_id: \"{analyst_edge_id}\", to_node_id: \"{analyst_node_id}\""),
+            &format!("- edge {analyst_edge_id} -> {analyst_node_id}"),
+        )
+        .replace(
+            &format!("- edge_id: \"{reviewer_edge_id}\", to_node_id: \"{reviewer_node_id}\""),
+            &format!("- edge {reviewer_edge_id} -> {reviewer_node_id}"),
+        );
+    let outside_contract = format!("- edge {analyst_edge_id} -> {analyst_node_id}\n");
+    let cached = format!("{outside_contract}{legacy}");
+    let snapshot = app.sessions().get_session(session.id()).unwrap();
+    let recovered = crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+        &snapshot,
+        workflow_run.id(),
+        &node_run_id,
+        &cached,
+    );
+    assert_eq!(recovered, format!("{outside_contract}{prompt}"));
+    assert_eq!(cached, format!("{outside_contract}{legacy}"));
+    assert_eq!(
+        crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+            &snapshot,
+            workflow_run.id(),
+            &node_run_id,
+            &format!("{cached}\n{cached}"),
+        ),
+        format!("{recovered}\n{recovered}"),
+    );
     if let Some(previous_chariox_home) = previous_chariox_home {
         std::env::set_var("CHARIOX_HOME", previous_chariox_home);
     } else {

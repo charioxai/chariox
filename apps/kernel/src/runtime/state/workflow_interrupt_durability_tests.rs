@@ -211,6 +211,121 @@ async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
     );
 }
 
+#[tokio::test]
+async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("legacy-catalog-context"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    let Outcome::Task(original) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("legacy-provider-run".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    assert!(owned
+        .durable_state_store
+        .agent_task_workflow(&original.task_id)
+        .unwrap()
+        .is_none());
+    let mut agent = owned
+        .agent_store
+        .get_agent(&fixture.target_agent_id)
+        .unwrap();
+    // Only the catalog decision needs a provider that caches tools. Keep the
+    // fixture's running dev-stub endpoint for the shared continuation path.
+    agent.set_provider("codex");
+    assert!(
+        fixture
+            .runtime
+            .runtime_catalog_loader_result(
+                &agent,
+                &[],
+                false,
+                serde_json::json!({"loaded": "tools"})
+            )
+            .ok
+    );
+    let (task, _) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "legacy-provider-run",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(
+        task.pending_prompt_id,
+        Some(format!("task-catalog:{}", prompt.id()))
+    );
+    assert_eq!(
+        owned.agent_workflow_task_context(&task).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone())),
+        "catalog reload must retain the existing invocation"
+    );
+    fixture
+        .runtime
+        .dispatch_task_continuation(&task, prompt.source_attachment_id(), "Continue".into())
+        .await
+        .unwrap();
+    let mut projected = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    owned
+        .prompt_state_owner
+        .project_into_session(&mut projected);
+    let continuation = projected
+        .queued_prompts_for_agent(&fixture.target_agent_id)
+        .unwrap()
+        .iter()
+        .find(|queued| Some(queued.id()) == task.pending_prompt_id.as_deref())
+        .unwrap();
+    assert_eq!(
+        continuation.workflow_run_id(),
+        Some(fixture.workflow_run_id.as_str())
+    );
+    assert_eq!(
+        continuation.workflow_node_run_id(),
+        Some(fixture.node_run_id.as_str())
+    );
+    assert_eq!(
+        continuation.source_attachment_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&fixture.workflow_run_id)
+    );
+    let runs = owned.provider_store.list_runs();
+    assert_eq!(
+        runs.len(),
+        1,
+        "continuation must queue behind the active turn"
+    );
+    assert_eq!(runs[0].id(), "interrupt-provider-run");
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]
@@ -2549,4 +2664,243 @@ async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
         "the removed queued prompt never reached the provider: {event:?}"
     );
     assert!(event.prompt_id.is_none(), "{event:?}");
+}
+
+#[tokio::test]
+async fn legacy_goal_offered_for_adoption_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered, false).await;
+}
+
+#[tokio::test]
+async fn adopted_legacy_goal_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Adopted, false).await;
+}
+
+#[tokio::test]
+async fn unrelated_workflow_without_provider_prompts_is_still_reconciled() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Unrelated, false).await;
+}
+
+#[tokio::test]
+async fn legacy_goal_without_adoption_offer_releases_orphaned_endpoint() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::BeforeOffer, false).await;
+}
+
+#[tokio::test]
+async fn legacy_goal_with_live_provider_prompt_keeps_draining() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered, true).await;
+}
+
+#[derive(Clone, Copy)]
+enum LegacyGoalRecovery {
+    BeforeOffer,
+    Offered,
+    Adopted,
+    Unrelated,
+}
+
+async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery, keep_prompt: bool) {
+    let adopted = matches!(recovery, LegacyGoalRecovery::Adopted);
+    let offered = matches!(
+        recovery,
+        LegacyGoalRecovery::BeforeOffer | LegacyGoalRecovery::Offered
+    );
+    use crate::durable_state::agent_lifecycle::Operation;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("legacy-goal-reconciliation"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    if !keep_prompt {
+        owned
+            .prompt_state_owner
+            .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+        owned
+            .reserve_local_workflow_prompt_completion_if_matches(
+                session.id(),
+                &fixture.target_agent_id,
+                "interrupt-active",
+            )
+            .unwrap()
+            .expect("legacy provider prompt");
+        for agent in owned.agent_store.get_session_agents(session.id()) {
+            let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+            owned
+                .session_store
+                .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+                .unwrap();
+        }
+    }
+    // Losing a prompt must not let an adoption offer hold the endpoint forever.
+    // Old timestamps put the run beyond the live reconciliation grace period.
+    let session = owned.session_store.get_session(session.id()).unwrap();
+    let mut snapshot = serde_json::to_value(&session).unwrap();
+    if offered {
+        snapshot["workflows"][0]["alias"] = serde_json::json!("planner-worker-reviewer");
+    }
+    // Production admission binds the run to the endpoint instance it holds.
+    snapshot["workflows"][0]["endpoints"][0]["max_instances"] = serde_json::json!(1);
+    let definition = &session.workflows()[0];
+    let node_agents = definition
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let mut instance = crate::session::WorkflowEndpointRuntimeInstance::new(
+        "orphan-runtime-instance",
+        definition.id(),
+        definition.endpoints()[0].id(),
+        definition.revision(),
+        1,
+        true,
+        node_agents.clone(),
+        session.worktree_id(),
+    );
+    assert!(instance.claim(fixture.workflow_run_id.as_str()));
+    snapshot["workflow_runtime_instances"] = serde_json::json!([instance]);
+    for run in snapshot["workflow_runs"].as_array_mut().unwrap() {
+        run["workflow_revision"] = serde_json::json!(definition.revision());
+        run["runtime_instance_id"] = serde_json::json!("orphan-runtime-instance");
+        run["runtime_agent_ids_by_node"] = serde_json::json!(node_agents);
+        for node in run["node_runs"].as_array_mut().unwrap() {
+            node["created_at_ms"] = serde_json::json!(1);
+            node["started_at_ms"] = serde_json::json!(1);
+        }
+    }
+    owned
+        .session_store
+        .write()
+        .restore_session(serde_json::from_value(snapshot).unwrap());
+    if matches!(recovery, LegacyGoalRecovery::Offered) {
+        fixture.runtime.offer_legacy_goal_adoption().unwrap();
+        fixture.runtime.offer_legacy_goal_adoption().unwrap();
+        assert_eq!(
+            owned
+                .durable_state_store
+                .load_subject_events_by_kind(
+                    &fixture.workflow_run_id,
+                    "goal.legacy_adoption_offered",
+                    10,
+                )
+                .unwrap()
+                .len(),
+            1,
+            "adoption is offered once without changing the objective"
+        );
+    }
+    if adopted {
+        let run = owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session.id(), &fixture.workflow_run_id)
+            .unwrap();
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::AdoptGoal {
+                owner: session.owner_user_id().into(),
+                room: session.id().into(),
+                agent: fixture.target_agent_id.clone(),
+                run: run.id().into(),
+                nodes: run
+                    .node_runs()
+                    .iter()
+                    .map(|node| node.node_id().into())
+                    .collect(),
+                objective: "Finish the existing implementation without repeating it".into(),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    assert!(
+        owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), None)
+            .unwrap()
+            .iter()
+            .all(|task| owned
+                .durable_state_store
+                .agent_task_workflow(&task.task_id)
+                .unwrap()
+                .is_none()),
+        "no admitted node task may mask legacy supervision"
+    );
+    if matches!(recovery, LegacyGoalRecovery::BeforeOffer) {
+        assert!(owned
+            .durable_state_store
+            .load_subject_events_by_kind(
+                &fixture.workflow_run_id,
+                "goal.legacy_adoption_offered",
+                1,
+            )
+            .unwrap()
+            .is_empty());
+    }
+    assert!(owned
+        .workflow_pending_entry(session.id())
+        .unwrap()
+        .is_none());
+    let workflow = &session.workflows()[0];
+    let queued = owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt_by_agent(
+            session.id(),
+            workflow.id(),
+            workflow.endpoints()[0].id(),
+            Some("Complete the next invocation".into()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    owned
+        .persist_workflow_runtime_session(session.id(), "queued_after_lost_prompt")
+        .unwrap();
+    let dispatches = owned.workflow_maybe_start_next_queued_prompt(session.id());
+    let run = owned
+        .agent_workflow_source(&session, &fixture.workflow_run_id)
+        .unwrap()
+        .expect("reconciled run remains addressable");
+    assert_eq!(
+        run.status(),
+        if keep_prompt {
+            crate::session::WorkflowRunStatus::Running
+        } else {
+            crate::session::WorkflowRunStatus::Stopped
+        }
+    );
+    let current = owned.session_store.get_session(session.id()).unwrap();
+    let next = current
+        .workflow_runs()
+        .iter()
+        .find(|run| run.queue_item_id() == Some(queued.id()));
+    if keep_prompt {
+        assert!(next.is_none(), "a live invocation keeps the endpoint");
+        assert!(dispatches.is_empty());
+        assert!(current
+            .workflow_queued_prompts()
+            .iter()
+            .any(|item| item.id() == queued.id()));
+    } else {
+        assert!(dispatches.admitted_workflow_prompt);
+        let next_run = next.expect("the queued successor must be admitted after orphan cleanup");
+        assert_eq!(
+            next_run.status(),
+            crate::session::WorkflowRunStatus::Created
+        );
+        assert_ne!(next_run.id(), fixture.workflow_run_id);
+        assert_eq!(
+            next_run.runtime_instance_id(),
+            Some("orphan-runtime-instance")
+        );
+    }
 }

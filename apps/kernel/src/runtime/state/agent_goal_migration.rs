@@ -2,6 +2,12 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome};
 
+pub(super) fn is_legacy_goal_template(workflow: &crate::session::WorkflowDefinition) -> bool {
+    workflow.alias().is_some_and(|alias| {
+        alias == "planner-worker-reviewer" || alias.starts_with("planner-worker-reviewer-")
+    })
+}
+
 impl KernelRuntimeState {
     /// Old snapshots cannot prove whether the registry template was invoked
     /// through `/goal` or manually. Offer adoption without changing its work.
@@ -19,9 +25,7 @@ impl KernelRuntimeState {
                 else {
                     continue;
                 };
-                if !workflow.alias().is_some_and(|a| {
-                    a == "planner-worker-reviewer" || a.starts_with("planner-worker-reviewer-")
-                }) {
+                if !is_legacy_goal_template(workflow) {
                     continue;
                 }
                 if self

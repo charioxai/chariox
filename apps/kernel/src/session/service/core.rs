@@ -27,7 +27,6 @@ impl SessionService {
             next_workflow_endpoint_number: 0,
             next_workflow_node_number: 0,
             next_workflow_edge_number: 0,
-            next_workflow_node_run_number: 0,
             next_workflow_message_number: 0,
             next_workflow_watchdog_number: 0,
             next_workflow_publication_number: 0,

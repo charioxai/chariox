@@ -128,7 +128,7 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
     let mut context = test_context();
     context.instruction_ref = Some("/tmp/node.md".to_string());
     context.handoff_payloads_json = Some("[{\"message\":\"upstream\"}]".to_string());
-    context.outgoing_edge_contracts = "- edge edge-1 -> node-2".to_string();
+    context.outgoing_edge_contracts = "- edge_id: \"edge-1\", to_node_id: \"node-2\"".to_string();
     context.control_mailbox = Some("Revise the invalid payload.".to_string());
     context.node_turn = Some(WorkflowNodeTurnPromptContext {
         turn_index: 2,
@@ -347,7 +347,7 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
     let home = temp_chariox_home("routing-contract");
     let previous_home = set_chariox_home(&home);
     let mut context = test_context();
-    context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt\n\n".to_string();
+    context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge_id: \"edge-1\", to_node_id: \"node-2\" (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt\n\n".to_string();
 
     let assembly = build_workflow_turn_prompt_assembly(context);
     restore_chariox_home(previous_home);
@@ -375,7 +375,7 @@ fn workflow_prompt_teaches_selected_edge_routing_contract() {
     ));
     assert!(assembly
         .hidden_system_context
-        .contains("edge edge-1 -> node-2 (Reviewer)"));
+        .contains("edge_id: \"edge-1\", to_node_id: \"node-2\" (Reviewer)"));
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
     let home = temp_chariox_home("intermediate-output-contract");
     let previous_home = set_chariox_home(&home);
     let mut context = test_context();
-    context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json, validation_policy: halt\n\n".to_string();
+    context.outgoing_edge_contracts = "Outgoing edge contracts:\n- edge_id: \"edge-1\", to_node_id: \"node-2\" (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json, validation_policy: halt\n\n".to_string();
     context.node_turn = Some(WorkflowNodeTurnPromptContext {
         turn_index: 1,
         max_turns: None,
@@ -411,7 +411,7 @@ fn workflow_prompt_separates_user_visible_intermediate_outputs_from_handoffs() {
         .hidden_system_context
         .contains("same node-level intermediate output schema"));
     assert!(assembly.hidden_system_context.contains(
-        "edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"
+        "edge_id: \"edge-1\", to_node_id: \"node-2\" (Reviewer), handoff_schema_ref: /tmp/handoff.schema.json"
     ));
     assert!(assembly
         .hidden_system_context
@@ -442,7 +442,7 @@ fn workflow_outgoing_edge_contract_line_excludes_private_target_instructions() {
 
     assert_eq!(
         line,
-        "- edge edge-1 -> node-2 (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
+        "- edge_id: \"edge-1\", to_node_id: \"node-2\" (Reviewer), handoff_schema_ref: /tmp/review.schema.json, validation_policy: halt"
     );
     assert!(!line.contains("Review legal and policy risk"));
     assert!(!line.contains("target_instructions"));
