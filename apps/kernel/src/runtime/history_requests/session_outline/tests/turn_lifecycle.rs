@@ -128,11 +128,15 @@ async fn failed_turn_saved_before_the_turn_outcome_keeps_its_failure_after_store
     );
 }
 
-/// History written before the turn outcome saved nothing about how a completed or cancelled
-/// turn ended beyond its settlement status.
+/// History written before the turn outcome saved nothing about how a turn ended beyond its
+/// settlement status, and a failed turn did not save its failure either.
 #[tokio::test]
-async fn completed_and_cancelled_turns_saved_before_the_turn_outcome_keep_their_outcome() {
-    for (status, kind) in [("completed", "completed"), ("cancelled", "cancelled")] {
+async fn turns_saved_with_only_a_settlement_status_keep_their_outcome() {
+    for (status, kind) in [
+        ("completed", "completed"),
+        ("cancelled", "cancelled"),
+        ("failed", "other"),
+    ] {
         let turn = settled_turn_after_store_reopen(status, None).await;
         assert_eq!(turn["lifecycle"], status);
         assert_eq!(

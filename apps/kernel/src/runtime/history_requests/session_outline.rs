@@ -922,12 +922,13 @@ fn outline_turn_lifecycle(
     SessionHistoryOutlineTurnLifecycle::Completed
 }
 
-/// How a closed turn ended. History saved before the turn outcome has none for a completed
-/// or cancelled turn, so the lifecycle says it.
+/// How a closed turn ended. History saved before the turn outcome has none, and a failed turn
+/// saved before the typed failure has no failure either, so the lifecycle says it.
 fn outline_turn_outcome(
     lifecycle: SessionHistoryOutlineTurnLifecycle,
     events: &[HistoryEvent],
 ) -> Option<crate::provider::TurnOutcome> {
+    use crate::git_observer::CompletedTurnSettlementStatus;
     use SessionHistoryOutlineTurnLifecycle as Lifecycle;
     if lifecycle == Lifecycle::Open {
         return None;
@@ -958,10 +959,14 @@ fn outline_turn_outcome(
             &failure.message,
         ))
     });
-    saved.or_else(|| match lifecycle {
-        Lifecycle::Completed => Some(crate::provider::TurnOutcome::completed()),
-        Lifecycle::Cancelled => Some(crate::provider::TurnOutcome::cancelled()),
-        Lifecycle::Open | Lifecycle::Failed => None,
+    saved.or_else(|| {
+        let status = match lifecycle {
+            Lifecycle::Open => return None,
+            Lifecycle::Completed => CompletedTurnSettlementStatus::Completed,
+            Lifecycle::Cancelled => CompletedTurnSettlementStatus::Cancelled,
+            Lifecycle::Failed => CompletedTurnSettlementStatus::Failed,
+        };
+        Some(crate::provider::TurnOutcome::settled(status, None))
     })
 }
 
