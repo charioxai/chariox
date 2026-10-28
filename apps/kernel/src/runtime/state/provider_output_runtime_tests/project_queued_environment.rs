@@ -83,7 +83,11 @@ async fn run_case(case: Case) {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    save_manifest(&app, &session);
+    save_manifest(
+        &app,
+        &session,
+        matches!(case, Case::VaultCancellation | Case::PromotionRetry),
+    );
     std::fs::write(workspace.path().join(".env"), "APP_LABEL=before\n").unwrap();
     app.launch_provider(
         crate::provider::LaunchProviderRequest::new(
@@ -502,7 +506,48 @@ async fn wait_for_prompt_delivery(
     .expect("provider must acknowledge delivery of the matching native turn");
 }
 
-fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
+fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession, needs_vault: bool) {
+    let mut entries = vec![ProjectEnvironmentEntry {
+        name: "APP_LABEL".into(),
+        workspace_id: session.workspace_id().into(),
+        kind: ProjectEnvironmentEntryKind::Variable,
+        classification: ProjectEnvironmentClassification::NonSecret,
+        excluded: false,
+        uses: vec![ProjectEnvironmentUse {
+            path: "app.ts".into(),
+            line: 1,
+        }],
+        locator: ProjectEnvironmentLocator::EnvFile {
+            path: ".env".into(),
+            key: "APP_LABEL".into(),
+        },
+        status: ProjectEnvironmentEntryStatus::Found,
+    }];
+    if needs_vault {
+        // Cancellation needs a protected input; public file bindings never ask to unlock.
+        entries.push(ProjectEnvironmentEntry {
+            name: "APP_API_KEY".into(),
+            workspace_id: session.workspace_id().into(),
+            kind: ProjectEnvironmentEntryKind::Variable,
+            classification: ProjectEnvironmentClassification::Secret,
+            excluded: false,
+            uses: vec![],
+            locator: ProjectEnvironmentLocator::Vault {
+                service: "project-queue-fixture".into(),
+                key: "api-key".into(),
+            },
+            status: ProjectEnvironmentEntryStatus::Found,
+        });
+        crate::secret::project_environment_vault(app.config())
+            .unwrap()
+            .set_secret(
+                "project-queue-fixture",
+                "api-key",
+                "synthetic-fixture-value",
+            )
+            .unwrap();
+    }
+
     ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
         .save(&StoredProjectEnvironment {
             apply_owned_bindings: Default::default(),
@@ -511,22 +556,7 @@ fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
                 schema_version: 1,
                 project_id: session.project_id().into(),
                 evidence_digest: ProjectEnvironmentEvidence::default().digest(),
-                entries: vec![ProjectEnvironmentEntry {
-                    name: "APP_LABEL".into(),
-                    workspace_id: session.workspace_id().into(),
-                    kind: ProjectEnvironmentEntryKind::Variable,
-                    classification: ProjectEnvironmentClassification::NonSecret,
-                    excluded: false,
-                    uses: vec![ProjectEnvironmentUse {
-                        path: "app.ts".into(),
-                        line: 1,
-                    }],
-                    locator: ProjectEnvironmentLocator::EnvFile {
-                        path: ".env".into(),
-                        key: "APP_LABEL".into(),
-                    },
-                    status: ProjectEnvironmentEntryStatus::Found,
-                }],
+                entries,
                 private_files: vec![],
                 toolchain_hints: vec![],
                 package_hints: vec![],
