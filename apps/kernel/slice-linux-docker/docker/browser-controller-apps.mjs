@@ -64,8 +64,8 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = documentNonce + ":" + ++next;
+  const request = (method, params, token) => new Promise((resolve, reject) => {
+    const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
@@ -156,26 +156,6 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
-  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
-  // the kernel dispatched into that Tab, never from the page: App code can
-  // rewrite anything in its realm, and its timers, browser-generated events
-  // (scroll, focus, load) and own navigations can outlive the input that
-  // caused them by any delay. So once an agent drove the Tab, through any of
-  // its documents, no call from it is the person's: with one such agent every
-  // call runs as that agent (a person's own click there acts with no more than
-  // the agent's grants), with several the call is refused. A Tab no agent
-  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
-  noteAgent(targetId, agent) {
-    const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    app?.agents.add(agent);
-  }
-
-  // undefined: the person; null: unknown, refused.
-  callActor(app) {
-    if (!app.agents.size) return undefined;
-    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
-  }
-
   async inspect(params) {
     const entry = [...this.apps].find(([, app]) => app.targetId === params?.target_id);
     if (!entry || !entry[1].ready || !entry[1].document) throw new BrowserControllerError('app_view_not_ready', 'Reload the App view before inspecting it');
@@ -240,7 +220,7 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    const opening = { ...app, targetId, document: null, pending: new Set(), ready: false };
     this.apps.set(sessionId, opening);
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
@@ -380,16 +360,14 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
-    // Attribute at binding time, before any await can admit other input.
-    const actor = this.callActor(app);
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
-    if (actor === null) {
-      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
-        message: "More than one agent drove this App Tab: close the App view and open it again" });
+    if (call.id.startsWith("invocation:")) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_INVOCATION_EXPIRED",
+        message: "The action invocation is unknown or has finished" });
       return;
     }
     if (this.calls.length >= MAX_PENDING_CALLS) {
@@ -402,7 +380,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
+      method: call.method, params: call.params ?? {} });
     this.wakeCalls();
   }
 

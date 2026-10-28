@@ -131,3 +131,10 @@ test('A1: a form action reaches a controlled component: its state updates before
   assert.deepEqual(JSON.parse(await app.evaluate('document.getElementById("saved").textContent')),
     { nick: 'Ada', bio: 'maths', lang: 'es', news: true, tier: 'pro', pin: '1234' });
 });
+
+
+test('an unknown scoped caller is refused instead of becoming a human backend call', async () => {
+  const app = await openApp('unknown-caller');
+  await app.evaluate(`chariox.action({name:'backend',description:'Backend',effect:'write',inputSchema:{type:'object'}}, async (input, caller) => caller.call('save', input))`);
+  assert.equal((await app.agent(`invoke('backend', {}, 'unknown-token')`)).code, 'APP_INVOCATION_EXPIRED');
+});
