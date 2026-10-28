@@ -223,9 +223,18 @@ impl KernelRuntimeState {
         kernel: &str,
         request: Request,
     ) -> Result<Response, DaemonError> {
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(config,
-            ClientTarget { daemon_id: Some(kernel.into()), daemon_alias: None },
-            RelayPeerRequest::AgentMove { request }, Duration::from_secs(1800)).await?;
+        let response =
+            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                config,
+                ClientTarget {
+                    daemon_id: Some(kernel.into()),
+                    daemon_alias: None,
+                },
+                RelayPeerRequest::AgentMove { request },
+                Duration::from_secs(1800),
+                || self.authorize_current_external_command(),
+            )
+            .await?;
         match response {
             RelayPeerResponse::AgentMove { response } => Ok(response),
             _ => Err(move_error(
