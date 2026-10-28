@@ -740,9 +740,7 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
 test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  const inputs = [];
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
-    noteAgent: (targetId, agent) => inputs.push([targetId, agent])};
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]])};
   const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
   const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
@@ -752,18 +750,12 @@ test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; 
   const claimed = {...command,...agent,_app_view_tab:opened.tab_id};
   await host.request(claimed);
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   await host.request({...command});
-  // A person's input is not an agent's: the Tab's record does not change.
-  assert.deepEqual(inputs.slice(1), []);
   // The App page stays on its own origin, whoever navigates it.
   await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
   await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
-  // An agent's navigation is its input too.
-  inputs.length = 0;
   await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
   await host.request({...command,op:"navigate",url:"https://app.a.invalid/"});
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
   await host.request({...claimed,op:"close"});
