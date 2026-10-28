@@ -513,3 +513,62 @@ async fn dropping_early_response_cancels_pending_upload_while_handler_lives() {
     worker.echo("after-early").await;
     println!("DRILL early response drop cancels upload and releases stream exactly once while handler lives: PASS");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
+async fn cancelled_guest_gets_cleanup_grace_after_a_broker_wait() {
+    let mut worker = Worker::start(vec![]).await;
+    worker.call("peer", "shared", 5000).await;
+    let Message::Request {
+        id: peer, method, ..
+    } = worker.next().await
+    else {
+        panic!("peer gate expected")
+    };
+    assert_eq!(method, "state.get");
+    worker.call("grace", "grace", 5000).await;
+    let Message::Request { method, .. } = worker.next().await else {
+        panic!("grace wait expected")
+    };
+    assert_eq!(method, "state.get");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    worker.cancel("grace").await;
+    let (mut cleaned, mut cancelled) = (false, false);
+    while !cleaned || !cancelled {
+        match worker.next().await {
+            Message::Request {
+                id, method, params, ..
+            } => {
+                assert_eq!(method, "log.write");
+                assert_eq!(params["message"], "grace-cleanup");
+                assert!(!cleaned);
+                cleaned = true;
+                worker.answer(id, Value::Null).await;
+            }
+            Message::Cancel { .. } => {}
+            Message::Response { id, outcome, .. } => {
+                assert_eq!(
+                    id, "grace",
+                    "cancellation must not replace the peer's instance"
+                );
+                assert_eq!(code(outcome), "CANCELLED");
+                cancelled = true;
+            }
+            other => panic!("unexpected grace result {other:?}"),
+        }
+    }
+    worker.answer(peer, Value::Null).await;
+    assert!(
+        matches!(worker.response("peer").await,Outcome::Success(s) if s.result==json!({"count":1}))
+    );
+    worker.call("same-instance", "shared", 2000).await;
+    let Message::Request { id, method, .. } = worker.next().await else {
+        panic!("shared gate expected")
+    };
+    assert_eq!(method, "state.get");
+    worker.answer(id, Value::Null).await;
+    assert!(
+        matches!(worker.response("same-instance").await,Outcome::Success(s) if s.result==json!({"count":2}))
+    );
+    println!("DRILL cancellation permits guest cleanup after broker wait without replacing peers or shared state: PASS");
+}

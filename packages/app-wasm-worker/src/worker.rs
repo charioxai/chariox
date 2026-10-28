@@ -5,9 +5,8 @@ use crate::{
     bindings::Worker,
     host::{Host, Registration},
     ipc::{error, Ipc},
-    limits::{Limits, Memory, MemoryLimit, Stop},
+    limits::{Limits, MemoryLimit, Stop},
     scope::Scope,
-    streams::Subscriptions,
 };
 use chariox_app_runtime::wire::Message;
 use std::{
@@ -21,7 +20,7 @@ use std::{
 use tokio::sync::mpsc;
 use wasmtime::{
     component::{Component, HasSelf, InstancePre, Linker},
-    Engine, Store, UpdateDeadline,
+    Engine, Store,
 };
 
 mod dispatch;
@@ -89,6 +88,7 @@ pub struct AppWorker {
     pre: InstancePre<Host>,
     limits: Limits,
     retry: RetryPolicy,
+    directories: Option<crate::wasi::InstallationDirectories>,
 }
 impl AppWorker {
     pub fn new(
@@ -98,8 +98,7 @@ impl AppWorker {
         retry: RetryPolicy,
     ) -> wasmtime::Result<Self> {
         limits.validate()?;
-        let mut linker = Linker::new(engine.engine());
-        Worker::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+        let linker = Self::linker(engine.engine())?;
         Self::with_linker(engine, component, linker, limits, retry)
     }
     pub fn with_linker(
@@ -116,25 +115,25 @@ impl AppWorker {
             pre,
             limits,
             retry,
+            directories: None,
         })
     }
-    /// R6 supplies its broker-backed WASI bindings through this same linker.
+    /// Provide only the installation directories admitted by the supervisor.
+    /// Without this call the worker exposes no filesystem preopens.
+    pub fn with_directories(mut self, directories: crate::wasi::InstallationDirectories) -> Self {
+        self.directories = Some(directories);
+        self
+    }
+    /// The same allowlisted WASI/broker linker is used by CLI and library users.
     pub fn linker(engine: &Engine) -> wasmtime::Result<Linker<Host>> {
         let mut linker = Linker::new(engine);
         Worker::add_to_linker::<Host, HasSelf<Host>>(&mut linker, |host| host)?;
+        crate::wasi::add_to_linker(&mut linker)?;
         Ok(linker)
     }
     async fn instantiate(&self, ipc: Ipc) -> wasmtime::Result<(Store<Host>, Worker, Attribution)> {
-        let attribution = Attribution::default();
-        let host = Host {
-            ipc,
-            attribution: attribution.clone(),
-            memory: Memory::new(self.limits.memory_bytes),
-            registration: Registration::default(),
-            sealed: false,
-            subscriptions: Subscriptions::default(),
-            stream_slots: Arc::new(tokio::sync::Semaphore::new(128)),
-        };
+        let host = Host::new(ipc, self.limits.memory_bytes, self.directories.as_ref())?;
+        let attribution = host.attribution.clone();
         let mut store = Store::new(self.engine.engine(), host);
         store.limiter(|host| &mut host.memory);
         store.task_group_hook(attribution.clone());
@@ -155,29 +154,7 @@ impl AppWorker {
                 wasmtime::Error::msg(format!("App register failed: {}", error.code))
             })?;
         store.data_mut().sealed = true;
-        let slice = Duration::from_millis(self.limits.slice_ms);
-        store.epoch_deadline_callback(move |store| {
-            let attribution = &store.data().attribution;
-            if let Some(scope) = attribution.current() {
-                if let Some(reason) = scope
-                    .reason()
-                    .filter(|reason| *reason != "APP_CALL_FINISHED")
-                {
-                    return Err(Stop(reason).into());
-                }
-                if tokio::time::Instant::now() >= scope.deadline() {
-                    return Err(Stop("DEADLINE_EXCEEDED").into());
-                }
-            }
-            if attribution
-                .slice_started()
-                .is_some_and(|started| started.elapsed() >= slice)
-            {
-                return Err(Stop("APP_CPU_SLICE").into());
-            }
-            Ok(UpdateDeadline::Yield(1))
-        });
-        store.set_epoch_deadline(1);
+        crate::limits::invocation_limits(&mut store, self.limits);
         Ok((store, worker, attribution))
     }
     pub async fn run(

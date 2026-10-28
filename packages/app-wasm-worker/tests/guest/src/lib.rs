@@ -8,6 +8,7 @@ wit_bindgen::generate!({
             import chariox:app/state@1.0.0;
             import chariox:app/http@1.0.0;
             import chariox:app/events@1.0.0;
+            import chariox:app/log@1.0.0;
             export chariox:app/handlers@1.0.0;
         }
     "#,
@@ -16,7 +17,7 @@ wit_bindgen::generate!({
 });
 use chariox::app::{
     app_types::{AppError, InvocationContext, Wake},
-    events, http, registry, state,
+    events, http, log, registry, state,
 };
 use exports::chariox::app::handlers::Guest;
 use futures::future::{select, Either};
@@ -47,6 +48,7 @@ impl Guest for App {
             "subscribe",
             "upload",
             "early_response",
+            "grace",
         ] {
             registry::tool(name);
         }
@@ -112,6 +114,17 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
             });
             state::get("gate".into()).await?;
             Ok(json!({"count":count}).to_string())
+        }
+        "grace" => {
+            struct Cleanup;
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    log::write(log::Level::Info, "grace-cleanup", "{}");
+                }
+            }
+            let _cleanup = Cleanup;
+            state::get("hold".into()).await?;
+            Ok("null".into())
         }
         "wait" => {
             state::get("hold".into()).await?;

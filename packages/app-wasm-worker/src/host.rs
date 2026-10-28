@@ -15,6 +15,7 @@ pub struct Registration {
     pub lifecycle: BTreeSet<String>,
 }
 pub struct Host {
+    pub wasi: crate::wasi::Context,
     pub ipc: Ipc,
     pub attribution: Attribution,
     pub memory: Memory,
@@ -24,6 +25,31 @@ pub struct Host {
     pub stream_slots: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl Host {
+    pub(crate) fn new(
+        ipc: Ipc,
+        memory_bytes: usize,
+        directories: Option<&crate::wasi::InstallationDirectories>,
+    ) -> wasmtime::Result<Self> {
+        let attribution = Attribution::default();
+        let stream_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(128));
+        let wasi = crate::wasi::Context::new(
+            ipc.clone(),
+            attribution.clone(),
+            stream_slots.clone(),
+            directories,
+        )?;
+        Ok(Self {
+            ipc,
+            attribution,
+            memory: Memory::new(memory_bytes),
+            registration: Registration::default(),
+            sealed: false,
+            subscriptions: crate::streams::Subscriptions::default(),
+            stream_slots,
+            wasi,
+        })
+    }
+
     pub fn scope(&self) -> Result<Scope, AppError> {
         self.attribution.current().ok_or_else(|| {
             app_error(error(

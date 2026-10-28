@@ -16,3 +16,6 @@ mod streams;
 pub mod worker;
 pub use host::Host;
 pub mod cli;
+
+pub mod migration;
+pub mod wasi;
