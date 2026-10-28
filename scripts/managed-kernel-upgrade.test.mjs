@@ -146,8 +146,8 @@ test("repository release policy admits only the previous release and matches the
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   // MP-08/MP-09/MP-10/MP-11: current and previous releases are reciprocal.
-  assert.deepEqual(admittedPredecessorProtocols, [629])
-  const admittedProtocols = [629, runtimeProtocol]
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  const admittedProtocols = [629, 636, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
     protocol: runtimeProtocol,
@@ -1280,12 +1280,12 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 
 // MP-07/MP-10/MP-11: use the shipped policy verbatim so normalization cannot
 // hide stale release metadata. This fixture does not prove live state migration.
-test("MP-08/MP-09/MP-10/MP-11 signed predecessor 629 to current runtime upgrade and rollback use the shipped policy", async (context) => {
+for (const predecessor of [629, 636]) test(`MP-08/MP-09/MP-10/MP-11 signed predecessor ${predecessor} to current runtime upgrade and rollback use the shipped policy`, async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   const harness = await makeHarness(context, {
-    currentProtocol: 629,
+    currentProtocol: predecessor,
     targetProtocol: runtimeProtocol,
     targetTransitionPolicy: repositoryPolicy,
   })

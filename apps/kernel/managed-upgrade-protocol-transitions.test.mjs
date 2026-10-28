@@ -20,7 +20,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the current and previo
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   assert.equal(policy.protocol, runtimeProtocol)
   assert.equal(policy.protocol, localProtocolVersion)
-  assert.deepEqual(admittedPredecessorProtocols, [629])
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
   const publication = await readFile(join(REPOSITORY_ROOT, "docker/publication/Dockerfile"), "utf8")
   const publicationPins = [...publication.matchAll(/^ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=(\d+)$/gm)].map(match => Number(match[1]))
   assert.deepEqual(publicationPins, [runtimeProtocol, runtimeProtocol], "builder and runtime publication pins must match the binary")
@@ -28,7 +28,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the current and previo
     assert.ok(Array.isArray(list) && list.length > 0 && list.length <= 32, "older managed validators refuse a policy over 32 entries")
     assert.ok(list.every((version, index) => Number.isSafeInteger(version)
       && version > 0 && (index === 0 || list[index - 1] < version)))
-    assert.deepEqual(list, [629, localProtocolVersion])
+    assert.deepEqual(list, [629, 636, localProtocolVersion])
   }
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, localProtocolVersion])
   assert.deepEqual(policy.rollbackTo, [...admittedPredecessorProtocols, localProtocolVersion])
@@ -49,7 +49,7 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the current and previo
     ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
 
     // Policy fixtures do not prove real-binary persisted-state migration.
-    for (const version of [629, localProtocolVersion]) {
+    for (const version of [629, 636, localProtocolVersion]) {
       const oldRoot = join(scratch, `protocol-${version}`)
       assert.equal(transition(oldRoot, version, newRoot, localProtocolVersion), "")
       assert.equal(transition(newRoot, localProtocolVersion, oldRoot, version), "")

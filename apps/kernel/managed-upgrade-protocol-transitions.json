@@ -3,10 +3,12 @@
   "protocol": 720,
   "upgradeFrom": [
     629,
+    636,
     720
   ],
   "rollbackTo": [
     629,
+    636,
     720
   ]
 }
