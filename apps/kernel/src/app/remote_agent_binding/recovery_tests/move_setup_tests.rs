@@ -358,8 +358,46 @@ async fn prepared_environment_after_restart(unacknowledged: bool) {
             .private_runtime_state_root()
             .join("agent-moves");
         std::fs::create_dir_all(&journal).unwrap();
-        std::fs::write(journal.join("crash-after-phase-for-test"), "target:active").unwrap();
-        dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToRemote": {"session_id": session, "agent_ref": fixture.agent_id, "machine_ref": fixture.presences[0].machine_id}})).await.expect_err("activation must lose its acknowledgement at the durable boundary");
+        let marker = journal.join("crash-after-phase-for-test");
+        std::fs::write(&marker, "target:active").unwrap();
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id: session.clone(),
+                agent_ref: fixture.agent_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
+            },
+        );
+        let home = fixture.home.clone();
+        let task = tokio::spawn(async move {
+            let command = crate::runtime::command::KernelCommand::from_local_request(
+                "move-activation-restart",
+                None,
+                None,
+                &request,
+            );
+            crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+                .dispatch(command, request)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while marker.exists() {
+                assert!(!task.is_finished(), "Move must reach target activation");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Move must reach its durable activation boundary");
+        // A crashed worker cannot acknowledge activation. Restart the waiting
+        // home request as well, just as the ordinary role-boundary drill does.
+        task.abort();
+        assert!(!matches!(task.await, Ok(Ok(_))));
+        reboot_app(&fixture.home).await;
+        fixture
+            .home
+            .lock()
+            .await
+            .remote_relay_inventory_projection_store()
+            .update(Vec::new(), fixture.presences.clone());
     } else {
         move_request(&fixture, &session, true).await;
     }
