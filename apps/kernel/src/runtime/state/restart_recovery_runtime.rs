@@ -330,7 +330,7 @@ impl KernelRuntimeState {
                     .filter(|(_, prompt_state)| prompt_state.active_prompt().is_none())
                     .filter_map(|(agent_id, prompt_state)| {
                         let prompt = prompt_state.queued_prompts().front()?;
-                        recoverable_queued_publication_prompt(&session, prompt).then(|| {
+                        recoverable_queued_workflow_prompt(&session, prompt).then(|| {
                             (
                                 session.id().to_string(),
                                 agent_id.to_string(),
@@ -383,9 +383,10 @@ impl KernelRuntimeState {
             return summary;
         }
         let sessions = self.owned.session_store.list_all_sessions();
-        // Publication work is autonomous and already durably admitted. Resume it before
-        // transcript reconciliation for unrelated interactive sessions, which may require slow
-        // provider scans or retries.
+        // Queued workflow work (published, or started by a user) was durably admitted but never
+        // delivered to a provider, so it can start without repeating any effects. Resume it
+        // before transcript reconciliation for unrelated interactive sessions, which may require
+        // slow provider scans or retries.
         for (session_id, agent_id, prompt_id) in queued_recovery_targets {
             match self
                 .recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id, true)
@@ -693,7 +694,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: &str,
-        require_publication: bool,
+        require_workflow_run: bool,
     ) -> Result<Option<WorkflowPromptDispatches>, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         if self
@@ -717,7 +718,7 @@ impl KernelRuntimeState {
         if prompt.id() != expected_prompt_id {
             return Ok(None);
         }
-        if require_publication && !recoverable_queued_publication_prompt(&session, &prompt) {
+        if require_workflow_run && !recoverable_queued_workflow_prompt(&session, &prompt) {
             return Ok(None);
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -1236,7 +1237,7 @@ fn join_restart_recovery_context(existing: &str, recovery: &str) -> String {
     }
 }
 
-fn recoverable_queued_publication_prompt(
+fn recoverable_queued_workflow_prompt(
     session: &crate::session::RuntimeSession,
     prompt: &crate::session::PromptQueueItem,
 ) -> bool {
@@ -1253,7 +1254,7 @@ fn recoverable_queued_publication_prompt(
         .iter()
         .find(|run| run.id() == workflow_run_id)
         .is_some_and(|run| {
-            run.publication_invocation().is_some_and(|invocation| {
+            run.publication_invocation().is_none_or(|invocation| {
                 session.workflow_publications().iter().any(|publication| {
                     publication.id() == invocation.publication_id && publication.enabled()
                 })
@@ -1559,6 +1560,14 @@ mod tests {
     }
 
     fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
+        runtime_with_queued_workflow_prompt(true)
+    }
+
+    /// A workflow prompt that was queued but never delivered: published (autonomous) or
+    /// started by a user (`/workflow start`).
+    fn runtime_with_queued_workflow_prompt(
+        published: bool,
+    ) -> (KernelRuntimeState, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let workspace = std::env::current_dir().expect("test workspace should resolve");
         let (session, agent) = KernelSessionService::new(&mut app)
@@ -1594,49 +1603,59 @@ mod tests {
                 Some("entry".to_string()),
             )
             .expect("workflow endpoint should create");
-        let publication = app
-            .sessions_mut()
-            .create_workflow_publication(
-                session.id(),
-                workflow.id(),
-                endpoint.id(),
-                Some("default".to_string()),
-                Some("restart-publication".to_string()),
-                Some(crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()),
-                Some("/restart".to_string()),
-                vec!["POST".to_string()],
-                None,
-                None,
-                None,
-                None,
-                Some("async".to_string()),
-                None,
-                None,
-                "local".to_string(),
-            )
-            .expect("workflow publication should create");
-        let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
-            publication_id: publication.id().to_string(),
-            hook_id: None,
-            invocation_id: "invocation-restart".to_string(),
-            transport: "event".to_string(),
-            endpoint_id: endpoint.id().to_string(),
-            queue_ref: Some("default".to_string()),
-            input: serde_json::json!({"prompt": "resume queued work"}),
-            artifacts: Vec::new(),
-            mode: None,
-            caller: serde_json::json!({"type": "event"}),
+        let workflow_run = if published {
+            let publication = app
+                .sessions_mut()
+                .create_workflow_publication(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("default".to_string()),
+                    Some("restart-publication".to_string()),
+                    Some(crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()),
+                    Some("/restart".to_string()),
+                    vec!["POST".to_string()],
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("async".to_string()),
+                    None,
+                    None,
+                    "local".to_string(),
+                )
+                .expect("workflow publication should create");
+            let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+                publication_id: publication.id().to_string(),
+                hook_id: None,
+                invocation_id: "invocation-restart".to_string(),
+                transport: "event".to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                queue_ref: Some("default".to_string()),
+                input: serde_json::json!({"prompt": "resume queued work"}),
+                artifacts: Vec::new(),
+                mode: None,
+                caller: serde_json::json!({"type": "event"}),
+            };
+            app.sessions_mut()
+                .invoke_workflow_endpoint_with_publication_invocation(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("resume queued work".to_string()),
+                    Some(publication_invocation),
+                )
+                .expect("published workflow run should create")
+        } else {
+            app.sessions_mut()
+                .invoke_workflow_endpoint(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("resume queued work".to_string()),
+                )
+                .expect("manual workflow run should create")
         };
-        let workflow_run = app
-            .sessions_mut()
-            .invoke_workflow_endpoint_with_publication_invocation(
-                session.id(),
-                workflow.id(),
-                endpoint.id(),
-                Some("resume queued work".to_string()),
-                Some(publication_invocation),
-            )
-            .expect("published workflow run should create");
         let node_run_id = workflow_run.node_runs()[0].id().to_string();
         app.sessions_mut()
             .prepare_workflow_turn(
@@ -1700,6 +1719,23 @@ mod tests {
         })
         .await
         .expect("queued Meta task should restart");
+    }
+
+    #[tokio::test]
+    async fn queued_user_started_workflow_prompt_starts_provider_after_restart() {
+        // MP-08/MP-10/MP-11: a kernel killed between creating a user-started workflow run and
+        // delivering its prompt left the run Created and the prompt Queued forever.
+        let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(false);
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.queued_local_prompts_started, 1);
+        assert_eq!(summary.failed_reconciliations, 0);
+        runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("queued workflow prompt recovery should launch its provider");
     }
 
     #[tokio::test]
