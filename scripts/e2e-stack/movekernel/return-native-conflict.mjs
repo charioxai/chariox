@@ -77,7 +77,7 @@ try {
     await source.client.send({MoveAgentToLocal: {session_id: sessionId, agent_ref: agentId, abort_pending: true}});
     assert.equal((await journal(source, 2)).phase.phase, 'rolled_back');
     const restored = (await state(source, sessionId)).session.agents.find(a => a.id === agentId);
-    assert.deepEqual(restored.remote_execution, original.remote_execution);
+    assert.ok(JSON.stringify(restored.remote_execution) === JSON.stringify(original.remote_execution), 'Cancellation must restore the source route');
     assert.equal(restored.workspace_id, original.workspace_id);
     assert.equal(restored.worktree_id, original.worktree_id);
     assert.ok((await readFile(homePath)).equals(homeHistory), 'Cancellation must preserve divergent home history');

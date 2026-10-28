@@ -46,4 +46,4 @@ by the fixture, and attempts Return through the public request. The import must
 refuse the divergent history at Bound. Explicit cancellation must preserve both
 native files, restore the source route and workspace, and allow another remote
 turn in the same native thread. Evidence retains hashes and TUI captures; native
-payloads stay outside tool output and are removed with disposable state.
+payloads stay outside tool output; disposable kernel state is cleaned up.
