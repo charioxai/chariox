@@ -2550,3 +2550,168 @@ async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
     );
     assert!(event.prompt_id.is_none(), "{event:?}");
 }
+
+#[tokio::test]
+async fn legacy_goal_offered_for_adoption_keeps_draining_without_provider_prompts() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Offered).await;
+}
+
+#[tokio::test]
+async fn adopted_legacy_goal_keeps_draining_before_node_task_admission() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Adopted).await;
+}
+
+#[tokio::test]
+async fn unrelated_workflow_without_provider_prompts_is_still_reconciled() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::Unrelated).await;
+}
+
+#[tokio::test]
+async fn legacy_goal_keeps_draining_before_adoption_offer_is_persisted() {
+    legacy_goal_orphan_reconciliation(LegacyGoalRecovery::BeforeOffer).await;
+}
+
+#[derive(Clone, Copy)]
+enum LegacyGoalRecovery {
+    BeforeOffer,
+    Offered,
+    Adopted,
+    Unrelated,
+}
+
+async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery) {
+    let adopted = matches!(recovery, LegacyGoalRecovery::Adopted);
+    let offered = matches!(
+        recovery,
+        LegacyGoalRecovery::BeforeOffer | LegacyGoalRecovery::Offered
+    );
+    use crate::durable_state::agent_lifecycle::Operation;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("legacy-goal-reconciliation"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    owned
+        .prompt_state_owner
+        .remove_queued_prompts_by_workflow_run(&session, &fixture.workflow_run_id);
+    owned
+        .reserve_local_workflow_prompt_completion_if_matches(
+            session.id(),
+            &fixture.target_agent_id,
+            "interrupt-active",
+        )
+        .unwrap()
+        .expect("legacy provider prompt");
+    for agent in owned.agent_store.get_session_agents(session.id()) {
+        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent.id());
+        owned
+            .session_store
+            .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+            .unwrap();
+    }
+    // Recovery can leave a running predecessor between provider admissions.
+    // Restore its old timestamps so the real sweep must decide supervision.
+    let session = owned.session_store.get_session(session.id()).unwrap();
+    let mut snapshot = serde_json::to_value(&session).unwrap();
+    if offered {
+        snapshot["workflows"][0]["alias"] = serde_json::json!("planner-worker-reviewer");
+    }
+    for run in snapshot["workflow_runs"].as_array_mut().unwrap() {
+        for node in run["node_runs"].as_array_mut().unwrap() {
+            node["created_at_ms"] = serde_json::json!(1);
+            node["started_at_ms"] = serde_json::json!(1);
+        }
+    }
+    owned
+        .session_store
+        .write()
+        .restore_session(serde_json::from_value(snapshot).unwrap());
+    if matches!(recovery, LegacyGoalRecovery::Offered) {
+        fixture.runtime.offer_legacy_goal_adoption().unwrap();
+        fixture.runtime.offer_legacy_goal_adoption().unwrap();
+        assert_eq!(
+            owned
+                .durable_state_store
+                .load_subject_events_by_kind(
+                    &fixture.workflow_run_id,
+                    "goal.legacy_adoption_offered",
+                    10,
+                )
+                .unwrap()
+                .len(),
+            1,
+            "adoption is offered once without changing the objective"
+        );
+    }
+    if adopted {
+        let run = owned
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session.id(), &fixture.workflow_run_id)
+            .unwrap();
+        owned
+            .durable_state_store
+            .agent_lifecycle(Operation::AdoptGoal {
+                owner: session.owner_user_id().into(),
+                room: session.id().into(),
+                agent: fixture.target_agent_id.clone(),
+                run: run.id().into(),
+                nodes: run
+                    .node_runs()
+                    .iter()
+                    .map(|node| node.node_id().into())
+                    .collect(),
+                objective: "Finish the existing implementation without repeating it".into(),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    assert!(
+        owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), None)
+            .unwrap()
+            .iter()
+            .all(|task| owned
+                .durable_state_store
+                .agent_task_workflow(&task.task_id)
+                .unwrap()
+                .is_none()),
+        "no admitted node task may mask legacy supervision"
+    );
+    if matches!(recovery, LegacyGoalRecovery::BeforeOffer) {
+        assert!(owned
+            .durable_state_store
+            .load_subject_events_by_kind(
+                &fixture.workflow_run_id,
+                "goal.legacy_adoption_offered",
+                1,
+            )
+            .unwrap()
+            .is_empty());
+    }
+    assert!(owned
+        .workflow_pending_entry(session.id())
+        .unwrap()
+        .is_none());
+    owned.workflow_maybe_start_next_queued_prompt(session.id());
+    let run = owned
+        .agent_workflow_source(&session, &fixture.workflow_run_id)
+        .unwrap()
+        .expect("reconciled run remains addressable");
+    assert_eq!(
+        run.status(),
+        if offered || adopted {
+            crate::session::WorkflowRunStatus::Running
+        } else {
+            crate::session::WorkflowRunStatus::Stopped
+        }
+    );
+}
