@@ -6,7 +6,9 @@ impl KernelRuntimeOwnedState {
         session: &mut crate::session::RuntimeSession,
         timestamp_ms: u64,
     ) -> Result<(), DaemonError> {
-        if timestamp_ms <= session.last_activity_at_ms() {
+        if session.status() == crate::session::SessionStatus::Ended
+            || timestamp_ms <= session.last_activity_at_ms()
+        {
             return Ok(());
         }
         self.durable_state_store.append_event(
@@ -26,6 +28,9 @@ impl KernelRuntimeOwnedState {
         {
             let mut sessions = self.session_store.write();
             let mut session = sessions.get_session(session_id)?;
+            if session.status() == crate::session::SessionStatus::Ended {
+                return Ok(());
+            }
             self.persist_session_activity(&mut session, timestamp_ms)?;
             sessions.restore_session(session);
         }

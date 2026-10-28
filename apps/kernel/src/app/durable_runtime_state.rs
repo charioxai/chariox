@@ -1285,7 +1285,9 @@ impl DaemonApp {
                     .and_modify(|previous| *previous = (*previous).max(timestamp_ms))
                     .or_insert(timestamp_ms);
                 if let Ok(session) = self.sessions.get_session(session_id) {
-                    if self.session_belongs_to_current_kernel(&session) {
+                    if self.session_belongs_to_current_kernel(&session)
+                        && session.status() != crate::session::SessionStatus::Ended
+                    {
                         let session = self
                             .sessions
                             .note_session_activity(session_id, timestamp_ms)?;
