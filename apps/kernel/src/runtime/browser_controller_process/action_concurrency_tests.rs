@@ -68,7 +68,8 @@ done
                 "first",
                 "doc",
                 "backend:1",
-                &BrowserLocatorAction::Click, None,
+                &BrowserLocatorAction::Click,
+                None,
                 100,
             )
         });
@@ -97,7 +98,8 @@ fn cancelling_one_tab_preserves_other_tab_result_and_exact_execution_receipt() {
         "second",
         "doc",
         "backend:2",
-        &BrowserLocatorAction::Click, None,
+        &BrowserLocatorAction::Click,
+        None,
         100,
     );
     // The second physical completion must precede cancellation of the first.
@@ -148,7 +150,8 @@ fn cancelling_one_tab_preserves_other_tab_result_and_exact_execution_receipt() {
                 "first",
                 "doc",
                 "backend:1",
-                &BrowserLocatorAction::Click, None,
+                &BrowserLocatorAction::Click,
+                None,
                 100
             )
             .unwrap(),
@@ -165,7 +168,8 @@ fn cancelling_one_tab_preserves_other_tab_result_and_exact_execution_receipt() {
                 "first",
                 "doc",
                 "backend:1",
-                &BrowserLocatorAction::Click, None,
+                &BrowserLocatorAction::Click,
+                None,
                 100
             )
             .unwrap(),
@@ -208,7 +212,8 @@ fn unacknowledged_concurrent_action_cancellation_reaps_original_controller() {
             "second",
             "doc",
             "backend:2",
-            &BrowserLocatorAction::Click, None,
+            &BrowserLocatorAction::Click,
+            None,
             100
         )
         .unwrap_err()
@@ -263,7 +268,8 @@ done
             "first",
             "doc",
             "backend:1",
-            &BrowserLocatorAction::Click, None,
+            &BrowserLocatorAction::Click,
+            None,
             1000,
         )
     });
@@ -281,7 +287,8 @@ done
             "second",
             "doc",
             "backend:2",
-            &BrowserLocatorAction::Click, None,
+            &BrowserLocatorAction::Click,
+            None,
             1000,
         )
     });
