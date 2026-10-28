@@ -35,14 +35,17 @@ impl KernelRuntimeState {
         if matches!(operation.phase, HomeMovePhase::Cancelling) {
             return self.finish_agent_move_abort(operation).await;
         }
-        if !matches!(
-            operation.phase,
-            HomeMovePhase::Fenced
-                | HomeMovePhase::SourceStopped
-                | HomeMovePhase::Captured { .. }
-                | HomeMovePhase::Materialized { .. }
-                | HomeMovePhase::Bound { remote: None, .. }
-        ) {
+        let local_target_bound = operation.target_ref.is_none()
+            && matches!(operation.phase, HomeMovePhase::Bound { remote: None, .. });
+        if !local_target_bound
+            && !matches!(
+                operation.phase,
+                HomeMovePhase::Fenced
+                    | HomeMovePhase::SourceStopped
+                    | HomeMovePhase::Captured { .. }
+                    | HomeMovePhase::Materialized { .. }
+            )
+        {
             return Err(move_error("This Move may already own a target lease. Finish the operation, then Return through a new generation"));
         }
         let current = self.owned.agent_store.get_agent(agent.id())?;
