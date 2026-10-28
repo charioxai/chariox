@@ -1,6 +1,7 @@
 // MP-08: Protocol shapes exist before behaviour; only Get is delivered in P01.
 import type * as Environment from "./kernel-types-project-environment-aggregate.js"
 import type { RuntimeProject } from "./kernel-types-session.js"
+import { projectEnvironmentMinimumProtocolVersion } from "./project-environment-aggregate.js"
 
 export type EnvironmentRequestPayloads = {
   GetProjectEnvironment: { readonly projectId: string; readonly view?: import("./project-environment-read-view.js").EnvironmentViewRead }
@@ -38,6 +39,6 @@ export function isProjectEnvironmentRequest(request: unknown): boolean {
   return request !== null && typeof request === "object" && names.some(name => name in request)
 }
 export function requireProjectEnvironmentProtocol(request: unknown, version: number | null | undefined): void {
-  const minimum = (request as {GetProjectEnvironment?:{view?:unknown}})?.GetProjectEnvironment?.view ? 660 : 487
+  const minimum = projectEnvironmentMinimumProtocolVersion
   if (isProjectEnvironmentRequest(request) && (version == null || !Number.isInteger(version) || version < minimum)) throw new Error(`Project Environment requires protocol ${minimum} or newer (this kernel: ${version ?? "unknown"}). Upgrade the kernel and reconnect.`)
 }
