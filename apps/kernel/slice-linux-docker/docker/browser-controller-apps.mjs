@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { installAppDrafts } from "./browser-app-drafts.mjs";
 import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
@@ -69,8 +70,8 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params) => new Promise((resolve, reject) => {
-    const id = documentNonce + ":" + ++next;
+  const request = (method, params, token) => new Promise((resolve, reject) => {
+    const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
     pending.set(id, { resolve, reject });
     call(JSON.stringify({ id, method, params }));
   });
@@ -133,7 +134,7 @@ function assets(raw, entry) {
 
 // One `__charioxViewAgent` call as a page expression. Every value is JSON, so
 // nothing the kernel sends is ever code.
-function agentCall(params) {
+function agentCall(params, token) {
   if (typeof params.agent !== "string" || !AGENT_ID.test(params.agent)) throw invalid("invalid acting agent");
   const deadline = params.deadline_ms ?? AGENT_DEADLINE_MS;
   if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > AGENT_MAX_DEADLINE_MS) throw invalid("invalid deadline");
@@ -152,7 +153,7 @@ function agentCall(params) {
     const input = params.input ?? {};
     if (typeof input !== "object" || input === null || Array.isArray(input)
       || Buffer.byteLength(JSON.stringify(input)) > MAX_CALL_BYTES) throw invalid("invalid action input");
-    expression = call("invoke", [params.name, input]);
+    expression = call("invoke", [params.name, input, token]);
   } else if (params.call === "changes") {
     const since = params.since ?? 0;
     const wait = params.wait_ms ?? 0;
@@ -196,46 +197,27 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
-  // MP-08/MP-10/MP-11: who an App Tab's calls run as comes only from input
-  // the kernel dispatched into that Tab, never from the page: App code can
-  // rewrite anything in its realm, and its timers, browser-generated events
-  // (scroll, focus, load) and own navigations can outlive the input that
-  // caused them by any delay. So once an agent drove the Tab, through any of
-  // its documents, no call from it is the person's: with one such agent every
-  // call runs as that agent (a person's own click there acts with no more than
-  // the agent's grants), with several the call is refused. A Tab no agent
-  // drove is the person's. Closing the App view ends this; a new Tab starts clean.
-  noteAgent(targetId, agent) {
-    const app = [...this.apps.values()].find(open => open.targetId === targetId);
-    app?.agents.add(agent);
-  }
-
-  // Apps v2 A2: the kernel's agent reads and drives the page through
-  // `__charioxViewAgent` and nothing else. The call is the agent's input to the
-  // Tab, recorded before the page can run: whatever the handler asks of the
-  // kernel (`chariox.call`) is attributed to that agent, like its clicks. The
-  // kernel queues calls per view and checks the agent's grant and the signed
-  // declarations first. A handler that outlives its deadline keeps running
-  // (a page cannot be interrupted from here), so the view refuses new calls
-  // until it settles instead of letting two handlers interleave.
+  // One agent handler runs per view. Deadlines return to the caller while the
+  // page keeps running, so its invocation remains active until CDP settles.
   async agent(params) {
     await this.reconcile();
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
     if (!entry) throw invalid("unknown App tab");
     const [sessionId, app] = entry;
-    const { agent, expression, deadline, runsAppCode } = agentCall(params);
+    const token = randomUUID();
+    const { agent, expression, deadline, runsAppCode } = agentCall(params, token);
     // Reading the change log or the registrations runs no App code: it neither
     // attributes the Tab to the agent nor waits for a running handler.
     if (runsAppCode && app.agentRunning) {
       return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
     }
-    if (runsAppCode) app.agentActor = { kind: "agent", id: agent };
+    if (params.call === "invoke") app.invocation = { token, actor: { kind: "agent", id: agent }, document: app.document };
     const connection = this.connection;
     const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
       .finally(() => {
         if (app.agentRunning === running) {
           app.agentRunning = null;
-          app.agentActor = undefined;
+          app.invocation = null;
         }
       });
     if (runsAppCode) app.agentRunning = running;
@@ -257,15 +239,6 @@ export class AppTabs {
     } finally {
       clearTimeout(timer);
     }
-  }
-
-  // undefined: the person; null: unknown, refused.
-  callActor(app) {
-    // The serialized bridge call owns backend calls until its handler settles,
-    // including after its deadline. Catalog reads leave no lasting Tab actor.
-    if (app.agentActor) return app.agentActor;
-    if (!app.agents.size) return undefined;
-    return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
   }
 
   async open(params) {
@@ -313,7 +286,7 @@ export class AppTabs {
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
-    const opening = { ...app, targetId, document: null, pending: new Set(), agents: new Set(), ready: false };
+    const opening = { ...app, targetId, document: null, pending: new Set(), invocation: null, ready: false };
     this.apps.set(sessionId, opening);
     try {
       if (restored) await connection.send("Target.activateTarget", { targetId });
@@ -416,7 +389,7 @@ export class AppTabs {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
       app.agentRunning = null;
-      app.agentActor = undefined;
+      app.invocation = null;
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {
@@ -456,15 +429,18 @@ export class AppTabs {
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
     // Attribute at binding time, before any await can admit other input.
-    const actor = this.callActor(app);
+    const scoped = call.id.startsWith("invocation:");
+    const invocation = app.invocation;
+    const valid = invocation && call.id.split(":")[1] === invocation.token && invocation.document === app.document;
+    const actor = scoped && valid ? invocation.actor : undefined;
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
-    if (actor === null) {
-      await this.resolve(sessionId, call.id, false, { code: "APP_ACTOR_UNKNOWN",
-        message: "More than one agent drove this App Tab: close the App view and open it again" });
+    if (scoped && !valid) {
+      await this.resolve(sessionId, call.id, false, { code: "APP_INVOCATION_EXPIRED",
+        message: "The action invocation is unknown or has finished" });
       return;
     }
     if (this.calls.length >= MAX_PENDING_CALLS) {

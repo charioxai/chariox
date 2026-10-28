@@ -131,7 +131,7 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   action and the differing part. Schemas compare in RFC 8785 form, so key order
   and number spelling are not differences. Vectors: `ui-action-agreement.json`.
 - A2 reads the page only through `__charioxViewAgent` (non-writable global):
-  `registrations()`, `invoke(name, params)`, `state()`, `changes(since, waitMs)`.
+  `registrations()`, `invoke(name, params, invocationToken)`, `state()`, `changes(since, waitMs)`.
   Answers are `{ok, value}` or `{ok:false, code, message}`; bounds are 64 KiB
   state, 256 KiB result, 16 KiB per change, 256 buffered changes.
 - Form markup derives its schema from simple controls (text-like, number,
