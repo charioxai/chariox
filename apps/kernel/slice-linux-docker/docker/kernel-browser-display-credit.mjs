@@ -15,9 +15,13 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
-// MP-08/MP-10: a lossless patch retires the video in hand for a key (~100 KB at 1920); while video work is queued
-// or encoding, small damage continues its chain instead and the exact repair settles it.
-export function nativePatchable(stream,sample,producer=stream.producer){return !producer?.holdsVideo&&stream.canPatchNative(sample);}
+// MP-08/MP-10: a lossless patch retires the video in hand for a key (~100 KB at 1920). While a page settles after
+// its key, small damage continues that chain instead and the exact repair settles it. Only then: on a page that
+// never stops changing (an animation) video is always in hand, and the canvas would never become exact again.
+const SETTLING_MS=1000;
+export function nativePatchable(stream,sample,producer=stream.producer,now=performance.now()){
+ return !(producer?.holdsVideo&&now-(stream.keyAt??-Infinity)<SETTLING_MS)&&stream.canPatchNative(sample);
+}
 export async function displayCredit(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
@@ -179,6 +183,7 @@ export async function displayCredit(host, stream, command, signal) {
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
     damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,key:frame.key?1:0,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
   // Diagnostics (labels only): what forced this key.
+  if(frame?.key)stream.keyAt=performance.now();
   if(frame?.key){host.timing?.(`display_key ${stream.keyReason??stream.encoder?.keyCause??stream.producer?.keyCause??'encoder'}`,timestamp());stream.keyReason=undefined;if(stream.producer)stream.producer.keyCause=undefined;if(stream.encoder)stream.encoder.keyCause=undefined;}
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');

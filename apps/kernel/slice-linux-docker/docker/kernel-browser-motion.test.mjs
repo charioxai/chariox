@@ -271,7 +271,7 @@ test('MP-08/MP-10 a Chrome UI stream drops queued deltas for the newest sample, 
 });
 // A settling page's small damage after an exact frame was patched losslessly, which retired the video in hand: a
 // ~100 KB key at 1920 per patch, 80 ms of wire each, before the page reached its settled picture.
-test('MP-08/MP-10 small damage continues the video chain in hand instead of a patch that retires it for a key',async()=>{
+test('MP-08/MP-10 small damage of a settling page continues the video chain in hand instead of a patch that retires it for a key',async()=>{
  const {DisplayStream}=await import('./kernel-browser-display.mjs');
  const {nativePatchable}=await import('./kernel-browser-display-credit.mjs');
  const raw={nativeExact:async()=>{},format:'bgr0',width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4),damage:[0,0,32,32],base_serial:10,serial:11,adjacent_damage_tiles:[[0,0,32,32]]};
@@ -281,8 +281,11 @@ test('MP-08/MP-10 small damage continues the video chain in hand instead of a pa
  try{
   assert.equal(nativePatchable(stream,{serial:11,raw}),true,'an idle encoder lets small damage patch the exact canvas');
   f.offer(11);await f.m.active;
-  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),false,'queued video work keeps the chain');
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),true,'no key yet: nothing settles, the patch wins');
+  stream.keyAt=performance.now();
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),false,'queued video work of a settling page keeps the chain');
   assert.equal(nativePatchable(stream,{serial:11,raw},{holdsVideo:false}),true);
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}},f.m,stream.keyAt+1001),true,'a second after the key an animated page patches again: its canvas becomes exact');
   f.hold();f.offer(12);assert.equal(f.m.holdsVideo,true,'an encode in flight holds video too');f.release();await f.m.active;
  }finally{await stream.close()}
 });
