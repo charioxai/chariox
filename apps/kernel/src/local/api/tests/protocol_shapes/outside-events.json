@@ -1,6 +1,6 @@
 {
-  "local_protocol": 640,
-  "peer_protocol": 242,
+  "local_protocol": 642,
+  "peer_protocol": 243,
   "requests": [
     {
       "SubscribeEvents": {
@@ -210,10 +210,12 @@
             "type": "agent",
             "value": {
               "run_state": "error",
-              "failure": {
-                "cause": "overloaded",
+              "prompt_id": "prompt-1",
+              "turn_id": "prompt-1",
+              "outcome": {
+                "kind": "overloaded",
                 "retryable": true,
-                "message": "Selected model is at capacity. Please try a different model."
+                "reason": "Selected model is at capacity. Please try a different model."
               }
             }
           }

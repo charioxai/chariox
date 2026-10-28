@@ -374,6 +374,7 @@ pub use workspace::*;
 /// 588 leaves the predecessor list to keep it within the 32-entry policy.
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 640 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
-/// health events), 632 (binary Room exec), 636 (archived-agent discovery) and 640 (the typed cause, retryable flag and
-/// reset time of a failed turn on its outside event and history); every earlier contract is retained.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 640;
+/// health events), 632 (binary Room exec), 636 (archived-agent discovery), 640 (the typed cause, retryable flag and
+/// reset time of a failed turn on its outside event and history) and 642 (the turn outcome: one typed `kind`, `retryable`
+/// and `reason` for every turn that ends, with the prompt and turn id on the outside event); every earlier contract is retained.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 642;
