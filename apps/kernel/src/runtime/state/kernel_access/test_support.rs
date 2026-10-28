@@ -396,8 +396,8 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
                 .unwrap();
         }
         let inbox = state.outside_subscription_response("kept").unwrap();
-        // Stopping releases a waiting holder with an empty answer, not with
-        // the end of its subscription.
+        // A retained subscription stays live, but shutdown must explain why
+        // a wait stopped before its deadline.
         state.end_kernel_access_for_shutdown().unwrap();
         let released = state
             .outside_wait(
@@ -410,15 +410,13 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
                 Some("kept"),
                 None,
             )
-            .await
-            .unwrap();
+            .await;
         assert!(
             matches!(
-                released,
-                LocalDaemonResponse::EventsListed {
-                    timed_out: true,
-                    ..
-                }
+                &released,
+                Err(DaemonError::MachineRequest { code, message })
+                    if code == "events_refused"
+                        && message == "kernel is shutting down; retry event wait after restart"
             ),
             "{released:?}"
         );

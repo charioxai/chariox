@@ -4938,8 +4938,9 @@ grants only; an extension adds minutes and refuses it). An unrecognised reply is
 `until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
 holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
 or on passkey rotation. It survives a kernel restart under the same grant id and event inbox while
-the same holder process lives: the stopping kernel answers a waiting holder with an empty,
-`timed_out` list (not `subscription_ended`), and the next start restores the grant after checking
+the same holder process lives: the stopping kernel returns unread events to a waiting holder, or an `events_refused` error
+with the reason `kernel is shutting down; retry event wait after restart` when none are ready
+(not an empty `timed_out` list or `subscription_ended`). The next start restores the grant after checking
 the holder again (a holder gone by then ends the grant as `process_exit`). Descendants of the holder
 are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
 grants or draw the popup need 568.

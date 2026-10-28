@@ -154,8 +154,8 @@ impl KernelRuntimeState {
         self.revoke_access(owner, id, reason, false)
     }
 
-    /// The kernel stops. Holders waiting on events are released with an empty
-    /// answer; sudo windows and timed grants end as always, but a grant that
+    /// The kernel stops. Holders waiting on events receive a shutdown
+    /// reason; sudo windows and timed grants end as always, but a grant that
     /// lasts until its holder exits is kept for the next start. Returns how
     /// many grants and windows it ended or released.
     pub(crate) fn end_kernel_access_for_shutdown(&self) -> Result<usize, DaemonError> {
