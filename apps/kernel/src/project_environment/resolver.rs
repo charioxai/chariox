@@ -209,7 +209,7 @@ pub(super) fn resolve_project_environment_with_reader(
     workspaces: &BTreeMap<String, PathBuf>,
     workspace_environment: &BTreeMap<String, BTreeMap<String, Zeroizing<String>>>,
     vault: &dyn CredentialVaultStore,
-    read: &mut dyn FnMut(&Path, &str) -> Result<Zeroizing<String>, DaemonError>,
+    read: &mut impl FnMut(&Path, &str) -> Result<Zeroizing<String>, DaemonError>,
 ) -> Result<ResolvedProjectEnvironment, DaemonError> {
     manifest.validate().map_err(environment_error)?;
     let service = project_environment_vault_service(&manifest.project_id);
