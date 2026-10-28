@@ -392,3 +392,10 @@ test('MP-11 ordinary page input applies a retired visible crop guard before any 
  await assert.rejects(inputHostTab(browser,{target_id:'t',document_id:'d'},{kind:'click',x:12,y:700},{inputGuard:async()=>{throw Error('retired visible crop');}}),/retired visible crop/);
  assert(!sent.some(m=>m.startsWith('Input.')),'a retired crop must dispatch no button press');
 });
+
+test('MP-08/MP-11: an empty claimed text insertion leaves the focused value alone', async () => {
+  const {browser,sent} = fixture();
+  await inputHostTab(browser,tab,{kind:'text',text:''},{inputToken:'caller'});
+  assert.equal(sent.filter(item => item.method === 'Input.insertText').length,1);
+  assert.equal(sent.some(item => item.method === 'Runtime.evaluate' && item.params.expression?.includes('__charioxViewInput.edit')),false);
+});
