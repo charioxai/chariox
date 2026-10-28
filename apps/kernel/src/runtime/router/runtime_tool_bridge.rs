@@ -212,7 +212,7 @@ impl CommandRouter {
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         self.runtime_state
-            .runtime_tool_specs_for_auth_token(auth_token)
+            .runtime_tool_specs_for_current_grants(auth_token)
     }
 
     pub(crate) fn runtime_catalog_signature(

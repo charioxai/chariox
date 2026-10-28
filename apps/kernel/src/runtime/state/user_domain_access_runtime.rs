@@ -205,3 +205,103 @@ impl KernelRuntimeState {
         serde_json::json!({"kernel_id":kernel,"kernel_name":kernel,"focused_agent_kernel_id":focused_kernel,"reachable_by_focused_agent":focused_kernel.as_deref()==Some(kernel.as_str())})
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use tokio::sync::Mutex;
+
+    use crate::runtime::router::CommandRouter;
+    use crate::session::CreateSessionRequest;
+    use crate::{DaemonApp, DaemonConfig};
+
+    // Detecting a catalog change visits every running provider. With one
+    // focused agent per attached session, each visit must not reconcile every
+    // grant holder again: on a busy kernel that made an idle monitor spend one
+    // full session snapshot per (provider, holder) pair and saturate a core.
+    // Listing the catalogs of 24 providers while 24 agents hold grants must cost
+    // about the same as listing them with no holder.
+    #[tokio::test]
+    async fn catalog_signatures_do_not_reconcile_every_grant_holder_per_provider() {
+        crate::test_support::isolated_env_test!();
+        const SESSIONS: usize = 24;
+        let root = std::env::temp_dir().join(format!(
+            "catalog-signature-grants-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("workspace");
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap");
+        let mut agents = Vec::new();
+        for _ in 0..SESSIONS {
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                ))
+                .expect("session");
+            app.launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("provider run");
+            for _ in 0..6 {
+                crate::app::KernelSessionService::new(&mut app)
+                    .spawn_agent(crate::agent::CreateAgentRequest::new(
+                        session.id(),
+                        "dev-stub",
+                    ))
+                    .expect("extra agent");
+            }
+            agents.push(agent);
+        }
+        let runtime =
+            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 8).runtime_state();
+        for agent in &agents {
+            let owner = runtime.provider_account_authority_owner_user_id(agent.owner_user_id());
+            runtime
+                .owned
+                .kernel_browser_host
+                .set_focus(&owner, Some(agent.id()));
+        }
+        assert_eq!(
+            runtime.owned.kernel_browser_host.grant_holders().len(),
+            SESSIONS
+        );
+        let tokens = runtime.runtime_tool_catalog_auth_tokens();
+        assert_eq!(tokens.len(), SESSIONS);
+
+        let time_signatures = || {
+            (0..3)
+                .map(|_| {
+                    let started = Instant::now();
+                    for token in &tokens {
+                        runtime.runtime_catalog_signature(token);
+                    }
+                    started.elapsed()
+                })
+                .min()
+                .expect("timed signatures")
+        };
+        let with_holders = time_signatures();
+        for agent in &agents {
+            runtime.owned.kernel_browser_host.revoke_agent(agent.id());
+        }
+        assert!(runtime.owned.kernel_browser_host.grant_holders().is_empty());
+        let without_holders = time_signatures();
+
+        assert!(
+            with_holders < without_holders * 2,
+            "signatures for {SESSIONS} providers took {with_holders:?} with {SESSIONS} grant holders and {without_holders:?} with none"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
