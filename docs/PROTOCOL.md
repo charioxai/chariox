@@ -5683,8 +5683,8 @@ that receipt and durably records a separate commit receipt before replying.
 Repeating activation queries the same recorded result rather than starting a
 second execution. Account transfer retains the existing no-overwrite/native
 validation and rollback behavior; no Vault or provider profile tree is copied.
-These private peer carriers require237. Existing public Move requests retain
-their shapes; protocol634 binds the integrated contract.
+These private peer carriers require peer protocol 241. Existing public Move requests retain
+their shapes; local protocol 639 binds the integrated contract.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: kernel-owned deferred Move (639)
 

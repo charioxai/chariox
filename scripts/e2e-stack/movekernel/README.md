@@ -9,8 +9,8 @@ CHARIOX_WORKSPACE_TUI=/absolute/path/to/built/chariox \
 CHARIOX_WORKSPACE_PROFILE=/absolute/path/to/product-linked/codex-profile \
 CHARIOX_WORKSPACE_STATE=/absolute/path/to/unused/disposable-root \
 CHARIOX_WORKSPACE_EVIDENCE=/absolute/path/to/evidence \
-CHARIOX_WORKSPACE_ORIGIN=https://lane.val.51-255-87-178.sslip.io \
-CHARIOX_WORKSPACE_RELAY=wss://lanerelay.val.51-255-87-178.sslip.io \
+CHARIOX_WORKSPACE_ORIGIN=https://stack.val.51-255-87-178.sslip.io \
+CHARIOX_WORKSPACE_RELAY=wss://stackrelay.val.51-255-87-178.sslip.io \
 systemd-run --scope -p MemoryMax=4G node scripts/e2e-stack/movekernel/workspace-transfer.mjs
 ```
 
@@ -32,7 +32,7 @@ removes the disposable state. Hosted Web captures prove existing Room visibility
 at DPR 1 and 2; they do not prove the separately scoped Move route picker or
 `via <target>` label.
 
-MP-08 / MP-09 / MP-10 / MP-11: local protocol625 adds cancellation through
+MP-08 / MP-09 / MP-10 / MP-11: local protocol638 adds cancellation through
 `MoveAgentToLocal: {session_id, agent_ref, abort_pending: true}`. This restores
 the existing source route and returns `AgentMoveAborted`; it does not Return a
 remote agent. Cancellation is refused once the move may hold a target lease.
@@ -40,7 +40,7 @@ Preflight checks source eligibility and native provider/interface/platform/CLI
 compatibility before fencing. Return also checks its original home account.
 
 MP-08 / MP-09 / MP-10 / MP-11: `composed-move.mjs` exercises PR4 with
-local634/peer237. It starts with no target account, transfers the selected
+local639/peer241. It starts with no target account, transfers the selected
 profile through ordinary account materialization, runs the stored Project
 setup on the target, and verifies matching home/target readiness and commit
 receipts. One real source turn and one gpt-6-luna/low target turn prove the

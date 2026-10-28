@@ -76,7 +76,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "MoveAgentToLocal" && payload?.abort_pending === true) {
     // An older kernel ignores the flag and would Return the agent instead of cancelling its Move.
-    feature = { feature: "Move cancellation", minimum: 625 }
+    feature = { feature: "Move cancellation", minimum: 638 }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab

@@ -300,7 +300,7 @@ fn required_native_session_blocks_durable_clearing_until_a_real_resume_ack() {
 }
 
 #[test]
-fn native_checkpoint_launch_601_round_trip_and_hash_preserve_the_constraint() {
+fn native_checkpoint_launch_637_round_trip_and_hash_preserve_the_constraint() {
     use sha2::Digest;
     let binding = serde_json::to_value(checkpoint().binding).unwrap();
     let wire = serde_json::json!({"LaunchProviderRun": {
