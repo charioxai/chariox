@@ -36,6 +36,30 @@
         "value": "/workflow from-agent "
       },
       {
+        "id": "workflow-notifications",
+        "label": "notifications",
+        "description": "Enable or disable private workflow completion notifications",
+        "value": "/workflow notifications ",
+        "searchAliases": [
+          "outbound notifications",
+          "send workflow notifications"
+        ],
+        "children": [
+          {
+            "id": "workflow-notifications-on",
+            "label": "on",
+            "description": "Send completion notifications; append workflow reference and optional --fields",
+            "value": "/workflow notifications on "
+          },
+          {
+            "id": "workflow-notifications-off",
+            "label": "off",
+            "description": "Stop sending completion notifications; append workflow reference",
+            "value": "/workflow notifications off "
+          }
+        ]
+      },
+      {
         "id": "workflow-delete",
         "label": "delete",
         "description": "Delete a workflow by id or alias",
@@ -166,6 +190,12 @@
             "label": "flush",
             "description": "Alias for clearing a workflow prompt queue",
             "value": "/workflow queue flush "
+          },
+          {
+            "id": "workflow-queue-retry",
+            "label": "retry",
+            "description": "Send a held notification again now; it may arrive twice",
+            "value": "/workflow queue retry "
           },
           {
             "id": "workflow-queue-remove",
@@ -608,6 +638,32 @@
             "label": "list",
             "description": "List workflow triggers in the current session",
             "value": "/workflow trigger list"
+          },
+          {
+            "id": "workflow-trigger-notification",
+            "label": "notification",
+            "description": "Attach private workflow completion notifications to an event-based trigger",
+            "value": "/workflow trigger notification ",
+            "children": [
+              {
+                "id": "workflow-trigger-notification-list",
+                "label": "list",
+                "description": "List available private workflow sources and subscriptions",
+                "value": "/workflow trigger notification list"
+              },
+              {
+                "id": "workflow-trigger-notification-attach",
+                "label": "attach",
+                "description": "Attach a source; append source reference and --publication trigger-reference",
+                "value": "/workflow trigger notification attach "
+              },
+              {
+                "id": "workflow-trigger-notification-detach",
+                "label": "detach",
+                "description": "Detach a completion subscription; append subscription id",
+                "value": "/workflow trigger notification detach "
+              }
+            ]
           },
           {
             "id": "workflow-trigger-create",

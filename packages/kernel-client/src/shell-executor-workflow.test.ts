@@ -606,6 +606,12 @@ test("executeShellCommand manages workflow triggers", async () => {
   const publication = makeWorkflowPublication({ queue_ref: "priority" })
   const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
   const fake = fakeClient((request) => {
+    if ("ResolveWorkflow" in request) {
+      throw new Error("workflow not found: endpoint-1")
+    }
+    if ("ListWorkflows" in request) {
+      return { WorkflowsListed: { workflows: session.workflows } }
+    }
     if ("CreateWorkflowPublication" in request) {
       return { WorkflowPublicationCreated: { publication, session } }
     }
@@ -643,6 +649,7 @@ test("executeShellCommand manages workflow triggers", async () => {
   assert.equal(disableResult.ok, true)
   assert.match(disableResult.message ?? "", /disabled workflow trigger publication-1/)
   assert.deepEqual(fake.requests, [
+    { ListWorkflows: { session_id: "session-1" } },
     {
       CreateWorkflowPublication: {
         session_id: "session-1",
@@ -938,3 +945,105 @@ test("executeShellCommand creates workflow schedules with explicit workflow ref"
     { CreateWorkflowSchedule: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: null, trigger: { kind: "cron", expression: "15 30 14 * * *", timezone: "Europe/Berlin" }, invocation_prompt: "Run it", overlap_policy: "skip", max_runs_configured: false, max_runs: null } },
   ])
 })
+
+
+for (const workflowId of [undefined, "workflow-1"]) {
+  for (const kind of ["event_based", "ingress"]) {
+    test(`MP-08 / MP-10 generated trigger guidance accepts explicit workflow/endpoint without alias (${kind}, context=${workflowId ?? "none"})`, async () => {
+      const requests: Record<string, unknown>[] = []
+      const publication = makeWorkflowPublication({ kind, alias: null })
+      const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
+      const fake = fakeClient((request) => { requests.push(request); return { WorkflowPublicationCreated: { publication, session } } })
+      const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId })
+      const command = kind === "event_based"
+        ? "workflow trigger create workflow-1 endpoint-1 --kind event_based"
+        : "workflow trigger create workflow-1 endpoint-1 --route /"
+      const result = await executeShellCommand(parseShellCommand(command), context, { client: fake.client })
+      assert.equal(result.ok, true, result.message)
+      const request = requests[0] as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null; kind?: string | null } }
+      assert.equal(request.CreateWorkflowPublication.workflow_ref, "workflow-1")
+      assert.equal(request.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
+      assert.equal(request.CreateWorkflowPublication.alias, null)
+      if (kind === "event_based") assert.equal(request.CreateWorkflowPublication.kind, kind)
+    })
+  }
+}
+
+for (const workflowRef of ["workflow-1", "review", "REVIEW", "WORKFLOW-1"]) {
+  test(`MP-08 / MP-10 trigger create resolves ${workflowRef} with a different selected workflow`, async () => {
+    const requests: Record<string, unknown>[] = []
+    const workflow = makeWorkflow({ alias: "review" })
+    const publication = makeWorkflowPublication({ kind: "event_based", alias: null })
+    const session = makeSession({ workflows: [workflow], workflow_publications: [publication] })
+    const fake = fakeClient((request) => {
+      requests.push(request)
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: session.workflows } }
+      return { WorkflowPublicationCreated: { publication, session } }
+    })
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-other" })
+    const result = await executeShellCommand(parseShellCommand(`workflow trigger create ${workflowRef} endpoint-1 --kind event_based`), context, { client: fake.client })
+    assert.equal(result.ok, true)
+    const create = requests.find((request) => "CreateWorkflowPublication" in request) as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null } }
+    assert.equal(create.CreateWorkflowPublication.workflow_ref, workflowRef)
+    assert.equal(create.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
+    assert.equal(create.CreateWorkflowPublication.alias, null)
+  })
+}
+
+for (const failingVariant of ["ListWorkflows", "CreateWorkflowPublication"]) {
+  test(`MP-08 / MP-10 trigger create reports ${failingVariant} request failures`, async () => {
+    const fake = fakeClient((request) => {
+      if (failingVariant in request) throw new Error(`${failingVariant} unavailable`)
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: [makeWorkflow()] } }
+      throw new Error("unexpected request")
+    })
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-1" })
+    await assert.rejects(
+      executeShellCommand(parseShellCommand("workflow trigger create endpoint-1 public_qa"), context, { client: fake.client }),
+      new RegExp(`${failingVariant} unavailable`),
+    )
+  })
+}
+
+// MP-08 / MP-10: two operands under a selection may be endpoint + alias.
+for (const endpointRef of ["rev", "workflow-", "endpoint-1"]) {
+  test(`MP-08 / MP-10 trigger create preserves endpoint ${endpointRef} instead of guessing a workflow prefix`, async () => {
+    const workflow = makeWorkflow({ alias: "review" })
+    const publication = makeWorkflowPublication({ alias: "public_qa", endpoint_id: endpointRef })
+    const session = makeSession({ workflows: [workflow], workflow_publications: [publication] })
+    const fake = fakeClient((request) => {
+      if ("ListWorkflows" in request) return { WorkflowsListed: { workflows: session.workflows } }
+      if ("ResolveWorkflow" in request) {
+        if (endpointRef === "endpoint-1") throw new Error("workflow not found: endpoint-1")
+        return { WorkflowResolved: { workflow } }
+      }
+      return { WorkflowPublicationCreated: { publication, session } }
+    })
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId: "workflow-1" })
+    const result = await executeShellCommand(parseShellCommand(`workflow trigger create ${endpointRef} public_qa --kind event_based`), context, { client: fake.client })
+    assert.equal(result.ok, true, result.message)
+    const create = fake.requests.find((request) => "CreateWorkflowPublication" in request) as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null } }
+    assert.equal(create.CreateWorkflowPublication.workflow_ref, "workflow-1")
+    assert.equal(create.CreateWorkflowPublication.endpoint_ref, endpointRef)
+    assert.equal(create.CreateWorkflowPublication.alias, "public_qa")
+  })
+}
+
+for (const workflowId of [undefined, "workflow-other"]) {
+  test(`MP-08 / MP-10 unambiguous explicit trigger create retains workflow prefixes (context=${workflowId ?? "none"})`, async () => {
+    const publication = makeWorkflowPublication()
+    const session = makeSession({ workflows: [makeWorkflow()], workflow_publications: [publication] })
+    const fake = fakeClient(() => ({ WorkflowPublicationCreated: { publication, session } }))
+    const context = createDefaultShellContext({ sessionId: "session-1", workflowId })
+    const command = workflowId
+      ? "workflow trigger create workflow- endpoint-1 public_qa"
+      : "workflow trigger create workflow- endpoint-1"
+    const result = await executeShellCommand(parseShellCommand(command), context, { client: fake.client })
+    assert.equal(result.ok, true)
+    const create = fake.requests[0] as { CreateWorkflowPublication: { workflow_ref: string; endpoint_ref: string; alias: string | null } }
+    assert.equal(create.CreateWorkflowPublication.workflow_ref, "workflow-")
+    assert.equal(create.CreateWorkflowPublication.endpoint_ref, "endpoint-1")
+    assert.equal(create.CreateWorkflowPublication.alias, workflowId ? "public_qa" : null)
+    assert.equal(fake.requests.length, 1)
+  })
+}

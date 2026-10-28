@@ -374,4 +374,7 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 641;
+/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
+/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
+/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 670;

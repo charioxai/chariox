@@ -76,6 +76,14 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
+test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 670", () => {
+  const request = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true } }
+  assert.throws(() => requireKernelFeatureProtocol(request, 669), /Held notification retry needs protocol ≥670/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 670))
+  const edit = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null } }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
+})
+
 // MP-08 / MP-10: VERSION(P01).
 test("standalone and reserved Project Environment operations require protocol 487", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
