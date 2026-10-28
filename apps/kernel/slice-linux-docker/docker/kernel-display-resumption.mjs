@@ -54,6 +54,8 @@ export class DisplaySessions {
     this.host.displays.set(next,stream);this.host.armDisplayExpiry(stream);
     return {generation,subscription_id:next,codec:stream.codec,bitrate:stream.bitrate,
       device_scale_factor:stream.device_scale_factor,resumed:true,
+      // P1 (protocol 720): the resumed producer is still the Tab display; the viewer's new binding must say so.
+      ...(stream.tabDisplay?{tab_display:true}:{}),
       ...(stream.source_kind==='desktop'?{source:{kind:'desktop',surface_id:source.surface_id,
         generation:source.generation,width:source.width,height:source.height}}:{}),
       ...(stream.source_kind==='region'?{source_kind:'region',binding_id:stream.binding_id,
