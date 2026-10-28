@@ -7,3 +7,4 @@ for guest in wasi migration; do
     cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/chariox_app_${guest}_drill.wasm" "$CHARIOX_WORKER_DRILL_DIR/$guest.core.wasm"
 done
 cargo test -p chariox-app-wasm-worker --test wasi -- --ignored --nocapture
+cargo test -p chariox-app-wasm-worker --lib worker::migration_tests -- --ignored --nocapture

@@ -328,3 +328,7 @@ impl AppWorker {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "worker/migration_tests.rs"]
+mod migration_tests;
