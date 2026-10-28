@@ -44,11 +44,15 @@ impl Domain {
             .collect())
     }
     pub fn owns(&self, pid: u32) -> bool {
-        let expected = self.path.strip_prefix("/sys/fs/cgroup").ok();
+        let expected = self
+            .path
+            .strip_prefix("/sys/fs/cgroup")
+            .ok()
+            .map(|path| Path::new("/").join(path));
         std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|text| {
             text.lines().any(|line| {
                 line.strip_prefix("0::")
-                    .is_some_and(|path| Some(Path::new(path)) == expected)
+                    .is_some_and(|path| Some(Path::new(path)) == expected.as_deref())
             })
         })
     }
