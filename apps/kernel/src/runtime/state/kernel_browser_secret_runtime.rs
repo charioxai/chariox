@@ -280,6 +280,7 @@ impl KernelRuntimeState {
         };
         let command =
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
+                agent_id: None,
                 execution_id: "kernel-browser-secret".into(),
                 target_id: target.into(),
                 document_id: args.document_id.clone(),

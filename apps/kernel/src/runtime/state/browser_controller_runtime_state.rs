@@ -637,6 +637,7 @@ impl KernelRuntimeState {
         element_ref: &str,
         execution_id: &str,
         action: crate::runtime::browser_controller_action::BrowserLocatorAction,
+        agent_id: Option<&str>,
         timeout_ms: u64,
     ) -> Result<crate::runtime::browser_controller_action::RoomBrowserActionResult, DaemonError>
     {
@@ -674,6 +675,7 @@ impl KernelRuntimeState {
             .room_browser_controller_command(
                 session_id,
                 RoomBrowserControllerCommand::Action {
+                    agent_id: agent_id.map(str::to_owned),
                     execution_id: execution_id.to_string(),
                     target_id: binding.runtime_target_id.clone(),
                     document_id: binding.document_id.clone(),
@@ -825,6 +827,7 @@ impl KernelRuntimeState {
                 element_ref,
                 &execution_id,
                 action,
+                Some(agent_id),
                 timeout_ms,
             ),
         )
