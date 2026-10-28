@@ -697,6 +697,16 @@ test("ambient calls stay human while a scoped invocation waits and after it sett
   assert.deepEqual(await takeActors(tabs), [null]);
 });
 
+
+test('ambient backend calls always act as the human, including after navigation', async () => {
+  const {tabs,connection}=await opened();
+  for (const id of ['agent-one','agent-two']) await bindingCall(tabs,connection,{id,method:'save',actor:{kind:'agent',id}});
+  assert.deepEqual(await takeActors(tabs),[null,null]);
+  await navigated(connection,'document-two');
+  await bindingCall(tabs,connection,{id:'startup',method:'load'});
+  assert.deepEqual(await takeActors(tabs),[null]);
+});
+
 // MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
 test("a held second open retains its load-time call until its binding is published", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -841,6 +851,11 @@ test('a token that retires while document lookup waits cannot admit a backend ca
   await documentStarted;
   finishAction(); await running;
   finishDocument(); await sending;
+});
+
+test('an unknown invocation token is refused before the action bridge is available', async () => {
+  const {tabs,connection}=await opened();
+  await bindingCall(tabs,connection,{id:'invocation:unknown:document:1',method:'save'});
   assert.deepEqual(tabs.calls,[]);
   assert.match(connection.sent.at(-1).params.expression,/APP_INVOCATION_EXPIRED/);
 });
