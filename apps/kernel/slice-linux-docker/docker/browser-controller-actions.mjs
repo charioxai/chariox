@@ -411,7 +411,15 @@ async function executeAction(
   }
   await focusElement(connection, sessionId, objectId, !action.append);
   assertNotCancelled(signal);
-  if (action.text) {
+  if (inputToken && (action.text || !action.append)) {
+    const edited = await connection.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: `function(text, token) { this.ownerDocument.defaultView.__charioxViewInput.edit(this, text, token); }`,
+      arguments: [{value:action.text},{value:inputToken}],
+      returnByValue:true,
+    }, sessionId);
+    if (edited.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App text edit failed");
+  } else if (action.text) {
     await connection.send("Input.insertText", { text: action.text }, sessionId);
   } else if (!action.append) {
     await dispatchBackspace(connection, sessionId);
@@ -514,9 +522,13 @@ async function secureFillElement(connection, sessionId, objectId, action, inputT
           }
           setter.call(this, nextValue);
         }
-        this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
+        const inputEvent = new ownerWindow.Event("input", { bubbles: true, composed: true });
+        if (inputToken) ownerWindow.__charioxViewInput.dispatch(this, inputEvent, inputToken);
+        else this.dispatchEvent(inputEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
-        this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
+        const changeEvent = new ownerWindow.Event("change", { bubbles: true });
+        if (inputToken) ownerWindow.__charioxViewInput.dispatch(this, changeEvent, inputToken);
+        else this.dispatchEvent(changeEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
