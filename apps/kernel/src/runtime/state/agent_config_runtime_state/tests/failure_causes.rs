@@ -220,7 +220,7 @@ async fn a_long_multiline_native_hook_error_stays_whole_in_events_history_and_tr
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.message, native);
+    assert_eq!(failure.reason, native);
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
