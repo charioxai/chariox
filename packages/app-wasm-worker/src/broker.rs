@@ -307,8 +307,14 @@ impl<T: Send> host::HostWithStore<T> for HasSelf<Host> {
                     return serde_json::from_value(value["grantIds"].clone()).map_err(|_| invalid())
                 }
                 Some("pending") => {}
-                Some("cancelled") => {
+                Some("declined") => {
                     return Err(app_error(error("CANCELLED", "file selection cancelled")))
+                }
+                Some("expired") => {
+                    return Err(app_error(error(
+                        "FILE_PICK_EXPIRED",
+                        "file selection expired; pick again",
+                    )))
                 }
                 _ => return Err(invalid()),
             }
