@@ -46,13 +46,40 @@ fn overlap(a: &EnvironmentPlatform, b: &EnvironmentPlatform) -> bool {
 // MP-08 / MP-10 / MP-11: platform selectors restrict applicability above;
 // compatibility compares the requested software on that intersection.
 fn compatible(a: &RequirementSpec, b: &RequirementSpec) -> bool {
+    if let (
+        RequirementSpec::Software {
+            version_constraint: a,
+            ..
+        },
+        RequirementSpec::Software {
+            version_constraint: b,
+            ..
+        },
+    ) = (a, b)
+    {
+        if !super::software_constraints::overlap(a.as_deref(), b.as_deref()) {
+            return false;
+        }
+    }
     let mut a = a.clone();
     let mut b = b.clone();
-    if let RequirementSpec::Software { platform, .. } = &mut a {
+    if let RequirementSpec::Software {
+        platform,
+        version_constraint,
+        ..
+    } = &mut a
+    {
         *platform = None;
+        *version_constraint = None;
     }
-    if let RequirementSpec::Software { platform, .. } = &mut b {
+    if let RequirementSpec::Software {
+        platform,
+        version_constraint,
+        ..
+    } = &mut b
+    {
         *platform = None;
+        *version_constraint = None;
     }
     a == b
 }

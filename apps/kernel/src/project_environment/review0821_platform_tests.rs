@@ -52,3 +52,63 @@ fn review0821_broad_and_narrow_software_selectors_are_compatible() {
         "incompatible versions still conflict"
     );
 }
+
+#[test]
+fn r4_software_constraints_accept_narrowing_and_reject_contradictions() {
+    for (broad_version, narrow_version, compatible) in [
+        (None, Some("22"), true),
+        (Some(">=20"), Some(">=22"), true),
+        (Some(">=20 <24"), Some(">=22 <26"), true),
+        (Some("^22"), Some("22.1"), true),
+        (Some("~22.1"), Some("22.1.3"), true),
+        (Some("20 || 22"), Some("22.*"), true),
+        (Some("22"), Some("24"), false),
+        (Some(">=22"), Some("<20"), false),
+        (Some("~22.1"), Some("22.2"), false),
+        (Some(">22.0.0.0"), Some("<22.0.0.1"), false),
+    ] {
+        let root = crate::test_support::TestWorktree::new("r4-version-scope");
+        let project = RuntimeProject::new(
+            "versions",
+            "owner",
+            root.path().to_str().unwrap(),
+            "Versions",
+            RuntimeProjectKind::Named,
+        );
+        let store = ProjectEnvironmentStore::new(root.path());
+        let current = store.snapshot(&project).unwrap();
+        let mut draft = environment_draft(&current);
+        let broad: Requirement = serde_json::from_value(serde_json::json!({"requirement_id":"broad","title":"Node","scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":broad_version,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap();
+        let mut narrow = broad.clone();
+        narrow.requirement_id = "narrow".into();
+        narrow.scope = RequirementScope::Folder {
+            folder_id: draft.folders[0].folder_id.clone(),
+        };
+        if let RequirementSpec::Software {
+            version_constraint, ..
+        } = &mut narrow.spec
+        {
+            *version_constraint = narrow_version.map(str::to_owned)
+        }
+        draft.project_requirements = vec![broad];
+        draft.folders[0].requirements = vec![narrow];
+        assert_eq!(
+            environment_revision_diff(&current, &draft).is_ok(),
+            compatible,
+            "Preview {broad_version:?} / {narrow_version:?}"
+        );
+        let save = crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(),
+            expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(),
+            draft,
+            accepted_proposal_ids: vec![],
+            excluded_proposal_ids: vec![],
+        };
+        assert_eq!(
+            store.save_revision_locked(&current, &save, "owner").is_ok(),
+            compatible,
+            "Save {broad_version:?} / {narrow_version:?}"
+        );
+    }
+}
