@@ -969,8 +969,6 @@ export class KernelBrowserHost {
       return state;
     }
     if (command.op === "navigate") {
-      // MP-08/MP-11: an agent's navigation is its input to the App Tab too.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
       // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
       // Retire native claims before physical focus can show a different page.
       if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
@@ -1020,8 +1018,6 @@ export class KernelBrowserHost {
         this.inputEpochs.set(tab.tab_id, (this.inputEpochs.get(tab.tab_id) ?? 0) + 1);
         (nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
       };
-      // MP-08/MP-11: before the page can see it, so every call it causes runs as the agent.
-      if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
       try {
         // MP-08/MP-10/MP-11: agent and ordinary input must await CDP's ack,
         // including the lifetime of hidden-target focus emulation. Only an
@@ -1126,7 +1122,6 @@ export class KernelBrowserHost {
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
         const { app, agent } = this.appAgent(tab, request.params, true);
-        if (app && agent) this.browser.appTabs.noteAgent(tab.target_id, agent);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
