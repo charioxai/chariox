@@ -2,7 +2,7 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(crate) fn get_project_environment(
+    pub(crate) async fn get_project_environment(
         &self,
         request: crate::local::GetProjectEnvironmentRequest,
         caller_user_id: &str,
@@ -15,10 +15,10 @@ impl KernelRuntimeState {
             });
         }
         let config = self.owned.config_projection.snapshot();
-        let environment = crate::project_environment::ProjectEnvironmentStore::new(
+        let store = crate::project_environment::ProjectEnvironmentStore::new(
             &config.private_runtime_state_root(),
-        )
-        .snapshot(&project)?;
+        );
+        let environment = store.snapshot(&project)?;
         Ok(LocalDaemonResponse::ProjectEnvironment { environment })
     }
 

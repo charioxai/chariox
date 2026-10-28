@@ -320,7 +320,7 @@ pub fn refresh_environment_content_digest(snapshot: &mut ProjectEnvironment) {
 }
 
 // MP-08/MP-10: allowlist specification fields; keep legacy readiness in the response only.
-fn requirement_specification(requirement: &Requirement) -> serde_json::Value {
+pub(crate) fn requirement_specification(requirement: &Requirement) -> serde_json::Value {
     serde_json::json!({
         "requirement_id": requirement.requirement_id,
         "title": requirement.title,
