@@ -313,10 +313,12 @@ impl ProviderLoginProcessRecord {
             .and_then(ClaudeSetupTokenLogin::authorization_url);
         let message = if self.setup_token.is_some() {
             "Open the Claude authorization link to sign in. If Claude gives you a code, paste it below."
+        } else if self.provider == "claude" {
+            "Open the sign-in link, then paste the whole code here."
         } else if self.backend == ProviderLoginProcessBackend::Terminal {
-            "Complete the provider-native terminal workflow. Its output is projected separately and responses are treated as secrets."
+            "Choose the sign-in option shown by the provider."
         } else {
-            "Complete the provider-native browser authorization flow."
+            "Open the sign-in link in your browser."
         };
         let mut interaction = crate::session::RuntimeInteraction::new(
             &self.login_id,
@@ -337,8 +339,19 @@ impl ProviderLoginProcessRecord {
             (self.backend == ProviderLoginProcessBackend::Terminal).then(|| {
                 crate::session::RuntimeInteractionCustomChoice::secret(
                     "provider-response",
-                    "Send response",
-                    Some("Enter the response requested by the provider CLI".to_string()),
+                    if self.provider == "claude" {
+                        "Sign-in code"
+                    } else {
+                        "Send response"
+                    },
+                    Some(
+                        if self.provider == "claude" {
+                            "Paste the whole code"
+                        } else {
+                            "Enter your response"
+                        }
+                        .to_string(),
+                    ),
                     Some(1),
                     Some(8 * 1024),
                 )
@@ -927,6 +940,16 @@ mod tests {
             interaction.custom_choice().unwrap().input_kind(),
             crate::session::RuntimeInteractionInputKind::Secret
         );
+    }
+
+    #[test]
+    fn claude_login_prompts_name_the_code_without_terminal_details() {
+        let status = record("owner-a", "code-prompt").status();
+        let interaction = status.interaction.unwrap();
+        let input = interaction.custom_choice().unwrap();
+        assert_eq!(input.label(), "Sign-in code");
+        assert_eq!(input.placeholder(), Some("Paste the whole code"));
+        assert!(!interaction.message().contains("terminal"));
     }
 
     #[test]
