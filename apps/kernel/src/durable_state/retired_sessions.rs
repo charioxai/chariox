@@ -1,4 +1,7 @@
 //! Ended session records remain durable without occupying runtime stores.
+mod migration;
+pub(super) use migration::commit_backfill;
+
 use super::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::session::{RuntimeSession, SessionStatus};

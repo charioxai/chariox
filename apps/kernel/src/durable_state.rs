@@ -240,6 +240,10 @@ enum DurableWriterRequest {
 enum DurableWriteOperation {
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
+    RetiredSessionBackfill {
+        owner_id: String,
+        records: Vec<(String, String, String)>,
+    },
     Event {
         event_id: String,
         kind: String,
@@ -1792,6 +1796,9 @@ fn commit_durable_write_batch(
             break;
         }
         let result = match &request.operation {
+            DurableWriteOperation::RetiredSessionBackfill { owner_id, records } => {
+                retired_sessions::commit_backfill(&transaction, owner_id, records)
+            }
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }

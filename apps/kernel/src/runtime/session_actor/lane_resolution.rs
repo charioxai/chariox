@@ -23,7 +23,9 @@ pub(super) async fn resolve_session_lane_key(
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::AttachToSession(request) => {
-            resolve_direct_session_lane_key(session_projection, &request.session_id)
+            // The live projection omits retired Rooms; attachment reopens
+            // them through the canonical indexed lookup.
+            Ok(request.session_id.clone())
         }
         LocalDaemonRequest::FocusAgent(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)

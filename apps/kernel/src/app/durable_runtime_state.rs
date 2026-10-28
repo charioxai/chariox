@@ -281,10 +281,14 @@ impl DaemonApp {
     pub(super) fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
         let restore_started = Instant::now();
         let snapshot_started = Instant::now();
-        let replay_after_sequence = match self
+        let snapshot = self
             .durable_state
-            .latest_snapshot_for_owner(&self.config.daemon_id)?
-        {
+            .latest_snapshot_for_owner(&self.config.daemon_id)?;
+        // Populate historical Room lookup before the live-only restore drops
+        // ended checkpoint records. Replay ordering is part of the migration.
+        self.durable_state
+            .backfill_retired_sessions(&self.config.daemon_id, snapshot.as_ref())?;
+        let replay_after_sequence = match snapshot {
             Some(snapshot) => {
                 if self.restore_durable_state_snapshot(snapshot.payload)? {
                     snapshot.sequence
@@ -793,6 +797,7 @@ impl DaemonApp {
             .sessions
             .iter()
             .filter(|session| self.session_belongs_to_current_kernel(session))
+            .filter(|session| session.status() != crate::session::SessionStatus::Ended)
             .map(|session| session.id().to_string())
             .collect();
         let mut prompt_private_states_by_session =
