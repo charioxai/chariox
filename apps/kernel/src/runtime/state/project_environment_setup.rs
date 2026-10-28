@@ -781,7 +781,7 @@ impl KernelRuntimeState {
             self,
             &execution.execution_session_id,
             &execution.execution_agent_id,
-            AgentUtilityKind::ProjectEnvironmentSetup,
+            &AgentUtilityKind::ProjectEnvironmentSetup,
         )
         .await
         {
