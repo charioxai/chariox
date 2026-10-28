@@ -16,6 +16,7 @@ export type CommandCenterContext = {
   providerCatalog: ProviderCatalog
   providerCommandCatalogs: ProviderCommandCatalogs
   currentProvider: BackendProviderId
+  providerAccountCopyOffers?: readonly import("@chariox/kernel-client").ProviderAccountCopyOffer[]
   providerAccounts?: readonly ProviderAccountProfile[]
   currentAccount?: string
   focusedProvider: BackendProviderId | null
@@ -27,7 +28,7 @@ export type CommandCenterContext = {
 
 export type CommandCenterDynamicContext = Pick<
   CommandCenterContext,
-  "providerCatalog" | "providerAccounts" | "currentProvider" | "currentAccount" | "currentModel" | "currentVariant"
+  "providerCatalog" | "providerAccountCopyOffers" | "providerAccounts" | "currentProvider" | "currentAccount" | "currentModel" | "currentVariant"
 >
 
 export type CommandCenterProviderNamespaceContext = Pick<

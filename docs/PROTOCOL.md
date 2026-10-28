@@ -5681,3 +5681,13 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
+
+MP-08 / MP-09 / MP-10 / MP-11: local v710 exposes metadata-only
+`ListProviderAccountCopyOffers` and recipient-initiated
+`CopyProviderAccountFromKernel`. Recipient consent is an existing detached
+kernel operation interaction, answered through `AnswerUserDomainInteraction`.
+Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
+same-owner recipient's kernel identity and key. It reuses the independent
+Vault-backed account transfer and `ProviderAccountCopyReceipt`; it does not
+create a worker lease or enable synchronization. See
+[provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).

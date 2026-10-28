@@ -8,6 +8,8 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  ListProviderAccountCopyOffers: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
+  CopyProviderAccountFromKernel: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
   AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   GetClientCatalogRevisions: { feature: "Catalog revisions", minimum: requests.clientCatalogRevisionsMinimumProtocolVersion },

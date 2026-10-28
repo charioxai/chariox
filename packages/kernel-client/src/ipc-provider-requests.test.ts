@@ -73,3 +73,11 @@ test("MP-08 / MP-10 conditional catalogs carry known revisions and the ordinary 
   assert.deepEqual(getClientCatalogSnapshotRequest(scope, known), {GetClientCatalogSnapshot: {scope: getProviderCatalogRequest(scope).GetProviderCatalog, known}})
   assert.equal(getClientCatalogSnapshotRequest().GetClientCatalogSnapshot.known, null)
 })
+
+test("recipient account copy carries metadata and an exact operation only", async () => {
+  const { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest } = await import("./provider-account-copy.js")
+  assert.deepEqual(listProviderAccountCopyOffersRequest(), { ListProviderAccountCopyOffers: {} })
+  assert.deepEqual(copyProviderAccountFromKernelRequest({ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }, "op"), {
+    CopyProviderAccountFromKernel: { provider: "claude", account_profile: "work", source_kernel_id: "a", source_key_thumbprint: "pin", operation_id: "op", replace: false },
+  })
+})

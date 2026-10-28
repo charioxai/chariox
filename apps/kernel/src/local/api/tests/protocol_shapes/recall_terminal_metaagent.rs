@@ -687,6 +687,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     );
 
     let account = RelayProviderAccountSummary {
+        copyable: false,
         provider: "codex".to_string(),
         state: "configured".to_string(),
         auth_type: Some("chatgpt".to_string()),

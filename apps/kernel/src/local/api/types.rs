@@ -377,4 +377,5 @@ pub use workspace::*;
 /// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
 /// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
 /// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
+/// Recipient account offers and kernel-owned copy consent.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 770;

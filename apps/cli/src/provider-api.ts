@@ -1,3 +1,4 @@
+import { listProviderAccountCopyOffersRequest, copyProviderAccountFromKernelRequest, type ProviderAccountCopyOffer, type ProviderAccountCopyReceipt } from "@chariox/kernel-client"
 import {
   normalizeRuntimeSession,
   type ProviderAuthStatus,
@@ -360,4 +361,17 @@ export { sameProviderRun } from "@chariox/kernel-client/session-runtime-lookup"
 
 export function providerRunUsesNativeTui(run: RuntimeProviderRun | null | undefined): boolean {
   return run?.client_interface === "native_tui"
+}
+
+export async function listProviderAccountCopyOffers(client: LocalIpcClient): Promise<ProviderAccountCopyOffer[]> {
+  const response = await client.send<Record<string, unknown>>(listProviderAccountCopyOffersRequest())
+  return expectVariant<{ offers: ProviderAccountCopyOffer[] }>(response, "ProviderAccountCopyOffers").offers
+}
+export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt> {
+  const status = expectVariant<{status: {daemon_id: string}}>(await client.send<Record<string, unknown>>({RelayStatus: null}), "RelayStatus").status
+  if (status.daemon_id !== offer.target_kernel_id) throw new Error("This login copy belongs to the previous machine. Open Account again.")
+  const response = await client.send<Record<string, unknown>>(copyProviderAccountFromKernelRequest(offer, operationId))
+  const receipt = expectVariant<{ receipt: ProviderAccountCopyReceipt }>(response, "ProviderAccountCopied").receipt
+  if (receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile) throw new Error("The kernel did not confirm this login copy")
+  return receipt
 }
