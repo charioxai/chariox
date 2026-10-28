@@ -49,7 +49,11 @@ type TrackedLogin = {
   /** Output and problem when the last code was sent; a new problem answers it. */
   sentOutput: string | null
   sentProblem: string | null
+  sentMessage: string | null
+  sentInteractionAt: number | null
   problem: string | null
+  submission: number
+  initialMessage: string | null
   projectionOnly: boolean
 }
 
@@ -81,7 +85,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     } else {
       const message = status.state === "cancelled"
         ? `${subject(ref)}: sign-in cancelled`
-        : `${subject(ref)}: sign-in failed — ${providerLoginProblem(status.terminal_output_base64, true)
+        : `${subject(ref)}: sign-in failed — ${status.message ?? providerLoginProblem(status.terminal_output_base64, true)
           ?? "the provider did not report a reason"}`
       deps.appendNotice(`${message}\nRetry: /provider login ${ref.provider} ${label}`, "warning")
       deps.flashFooter(message, "error")
@@ -89,10 +93,12 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     deps.render()
   }
 
-  const updateProblem = (login: TrackedLogin, output: string) => {
-    const problem = providerLoginProblem(output)
+  const updateProblem = (login: TrackedLogin, output: string, message: string | null | undefined, freshMessage = false) => {
+    const problem = message?.trim() || providerLoginProblem(output)
     if (login.sentOutput !== null) {
-      if (output === login.sentOutput || !problem || problem === login.sentProblem) return false
+      const messageChanged = Boolean(message && (freshMessage || message !== login.sentMessage))
+      const outputChanged = output !== login.sentOutput && Boolean(problem && problem !== login.sentProblem)
+      if (!messageChanged && !outputChanged) return false
       login.sentOutput = null
     }
     const changed = login.problem !== problem
@@ -103,6 +109,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
   const poll = async (login: TrackedLogin) => {
     if (tracked.get(keyOf(login.ref)) !== login) return
     let status: ProviderLoginStatus
+    const submission = login.submission
     try {
       if (login.ref.kernel_id && login.ref.kernel_id !== await deps.getKernelId()) {
         login.projectionOnly = true
@@ -123,7 +130,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       await finish(login, status)
       return
     }
-    if (updateProblem(login, status.terminal_output_base64)) {
+    if (submission === login.submission && updateProblem(login, status.terminal_output_base64, status.message, true)) {
       deps.flashFooter(`${subject(login.ref)}: ${login.problem}`, "error")
     }
     // Every poll also advances the visible countdown.
@@ -144,7 +151,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       tracked.set(key, started)
       return
     }
-    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, problem: null, projectionOnly: false }
+    const login: TrackedLogin = { ref, status: null, timer: null, sentOutput: null, sentProblem: null, sentMessage: null, sentInteractionAt: null, problem: null, submission: 0, initialMessage: null, projectionOnly: false }
     tracked.set(key, login)
     login.timer = setTimer(() => { void poll(login) }, 0)
   }
@@ -174,8 +181,12 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     // A code prompt shows its steps before the provider prints the link.
     if (!view.url && !view.takesCode) return null
     const login = ref ? tracked.get(keyOf(ref)) : undefined
-    if (login && (login.projectionOnly || !login.status)) {
-      updateProblem(login, projection.terminal_output_base64)
+    if (login) {
+      login.initialMessage ??= interaction.message
+      const newRequest = login.sentOutput !== null && login.sentInteractionAt !== interaction.requested_at_ms
+      if (login.projectionOnly || !login.status || newRequest) {
+        updateProblem(login, projection.terminal_output_base64, interaction.message !== login.initialMessage ? interaction.message : null, newRequest)
+      }
     }
     const startedAt = login?.status?.started_at_ms
     return {
@@ -199,8 +210,11 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
       track(ref)
       const login = tracked.get(keyOf(ref))
       if (login) {
+        login.submission++
         login.sentOutput = login.status?.terminal_output_base64 ?? interaction.provider_login?.terminal_output_base64 ?? ""
-        login.sentProblem = providerLoginProblem(login.sentOutput)
+        login.sentInteractionAt = interaction.requested_at_ms
+        login.sentMessage = login.status?.message ?? interaction.message
+        login.sentProblem = login.sentMessage?.trim() || providerLoginProblem(login.sentOutput)
         login.problem = null
       }
       deps.flashFooter(`${subject(ref)}: checking the code…`, "info")

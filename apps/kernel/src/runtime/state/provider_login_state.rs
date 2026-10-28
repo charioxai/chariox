@@ -272,8 +272,10 @@ impl ProviderLoginProcessRecord {
         self.updated_at_ms = now_ms;
         if state != ProviderLoginProcessState::Running {
             if let Some(login) = self.setup_token.as_mut() {
+                if login.vault_prompt.take().is_some() {
+                    self.message = None;
+                }
                 login.discard_secrets();
-                login.vault_prompt = None;
             }
         }
     }
@@ -389,18 +391,7 @@ impl ProviderLoginProcessRecord {
                 "Enter the new Chariox Vault passphrase again.",
             ),
         };
-        let retry_note = self.setup_token.as_ref().and_then(|login| {
-            login
-                .secrets()
-                .notes
-                .lines()
-                .last()
-                .filter(|note| note.starts_with("Chariox Vault unlock failed:"))
-                .map(str::to_string)
-        });
-        let message = retry_note
-            .map(|note| format!("{message}\n{note}"))
-            .unwrap_or_else(|| message.to_string());
+        let message = self.message.as_deref().unwrap_or(message);
         let label = if prompt == ClaudeSetupTokenVaultPrompt::ConfirmCreate {
             "Confirm vault passphrase"
         } else {
@@ -713,6 +704,7 @@ impl ProviderLoginProcessStore {
             .as_mut()
             .expect("setup-token login was checked")
             .vault_prompt = Some(prompt);
+        record.message = Some(note.to_string());
         record.output.clear();
         record.append_projected_output(&projection);
         record.updated_at_ms = now_ms;

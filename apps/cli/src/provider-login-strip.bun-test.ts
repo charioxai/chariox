@@ -84,5 +84,20 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     const after = harness.captureCharFrame()
     assert.match(after, / {2}Code: \*{10} +> 1\.Cancel +Enter sends/)
     assert.doesNotMatch(after, /code#state/)
+
+    for (const message of [
+      "The code looks incomplete. Copy the whole code and try again.",
+      "That code was not accepted. Open the new sign-in link and copy a new code.",
+    ]) {
+      logins.codeSent(interaction)
+      interaction.message = message
+      interaction.requested_at_ms += 1
+      render()
+      await harness.renderOnce()
+      const retry = harness.captureCharFrame()
+      assert.ok(retry.includes(message))
+      assert.match(retry, /Code:/)
+      assert.doesNotMatch(retry, /Checking the code/)
+    }
   } finally { harness.renderer.destroy() }
 })

@@ -13,6 +13,11 @@ use crate::local::{
 use crate::provider::ProviderLoginStart;
 use crate::runtime::state::KernelRuntimeState;
 
+pub(super) struct ProviderAuthStart {
+    pub response: LocalDaemonResponse,
+    pub new_process: bool,
+}
+
 const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(1_500);
 use crate::runtime::claude_setup_token_login::{self, CLAUDE_SETUP_TOKEN_METHOD};
@@ -54,13 +59,18 @@ pub(crate) async fn execute_provider_auth_request(
                 } else {
                     None
                 };
-                let response =
-                    execute_start_provider_login_request(runtime_state, &owner_user_id, request)
-                        .await?;
+                let started = execute_start_provider_login_with_overwrite(
+                    runtime_state,
+                    &owner_user_id,
+                    request,
+                    true,
+                )
+                .await?;
                 if let (
+                    true,
                     Some((session_id, agent_id)),
                     LocalDaemonResponse::ProviderLoginStarted { login },
-                ) = (target, &response)
+                ) = (started.new_process, target, &started.response)
                 {
                     runtime_state.spawn_provider_login_workflow(
                         session_id,
@@ -69,7 +79,7 @@ pub(crate) async fn execute_provider_auth_request(
                         login.clone(),
                     );
                 }
-                Ok(response)
+                Ok(started.response)
             }
             LocalDaemonRequest::GetProviderLoginStatus(request) => {
                 execute_get_provider_login_status_request(runtime_state, &owner_user_id, request)
@@ -166,7 +176,7 @@ async fn start_terminal_provider_auth(
     operation: crate::runtime::state::ProviderAuthProcessOperation,
     method: Option<String>,
     overwrite: bool,
-) -> Result<LocalDaemonResponse, DaemonError> {
+) -> Result<ProviderAuthStart, DaemonError> {
     let provider = crate::provider::canonical_provider_family(&provider)
         .ok_or_else(|| provider_login_error("unsupported provider"))?;
     if operation == crate::runtime::state::ProviderAuthProcessOperation::Login
@@ -215,8 +225,11 @@ async fn start_terminal_provider_auth(
             {
                 return Err(provider_login_error("A sign-in with a different replacement choice is already running. Finish or cancel it first."));
             }
-            return Ok(LocalDaemonResponse::ProviderLoginStarted {
-                login: existing.start,
+            return Ok(ProviderAuthStart {
+                response: LocalDaemonResponse::ProviderLoginStarted {
+                    login: existing.start,
+                },
+                new_process: false,
             });
         }
     }
@@ -296,13 +309,14 @@ async fn start_terminal_provider_auth(
         return Err(error);
     }
     spawn_provider_login_monitor(runtime_state, owner_user_id, &login_id);
-    Ok(
-        if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
+    Ok(ProviderAuthStart {
+        new_process: true,
+        response: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
             LocalDaemonResponse::ProviderLoginStarted { login: workflow }
         } else {
             LocalDaemonResponse::ProviderLogoutStarted { logout: workflow }
         },
-    )
+    })
 }
 
 pub(super) fn terminal_provider_auth_args(
@@ -870,7 +884,9 @@ pub(crate) async fn execute_start_provider_login_request(
     owner_user_id: &str,
     request: StartProviderLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    execute_start_provider_login_with_overwrite(runtime_state, owner_user_id, request, true).await
+    execute_start_provider_login_with_overwrite(runtime_state, owner_user_id, request, true)
+        .await
+        .map(|started| started.response)
 }
 
 pub(super) async fn execute_start_provider_login_with_overwrite(
@@ -878,7 +894,7 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
     owner_user_id: &str,
     mut request: StartProviderLoginRequest,
     overwrite: bool,
-) -> Result<LocalDaemonResponse, DaemonError> {
+) -> Result<ProviderAuthStart, DaemonError> {
     if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
         && request.method.is_none()
     {
@@ -906,7 +922,10 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
         .provider_login_process_store()
         .running_start_for_profile(owner_user_id, "codex", &profile.profile_id)
     {
-        return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
+        return Ok(ProviderAuthStart {
+            response: LocalDaemonResponse::ProviderLoginStarted { login },
+            new_process: false,
+        });
     }
     let owner = owner_user_id.to_string();
     let response = tokio::task::spawn_blocking(move || {
@@ -941,7 +960,10 @@ pub(super) async fn execute_start_provider_login_with_overwrite(
             spawn_provider_login_monitor(runtime_state, owner_user_id, login_id);
         }
     }
-    Ok(response)
+    Ok(ProviderAuthStart {
+        response,
+        new_process: true,
+    })
 }
 
 fn spawn_provider_login_monitor(
@@ -1018,7 +1040,8 @@ pub(crate) async fn execute_logout_provider_request(
             None,
             true,
         )
-        .await;
+        .await
+        .map(|started| started.response);
     }
     let response = tokio::task::spawn_blocking(move || {
         let provider = request.provider.clone();

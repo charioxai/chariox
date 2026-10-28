@@ -253,3 +253,54 @@ test("MP-08 / MP-11 completion identity uses only the saved profile RPC", async 
   assert.deepEqual(requests, [{GetProviderAccountProfile: {provider: "claude", account_profile: "disposable-claude-ggpinwmx"}}])
   assert.match(h.notices[0]!, /as saved identity/)
 })
+
+for (const message of [
+  "That code looks incomplete. Copy the whole code, including the part after #.",
+  "That code was not accepted. Open the new sign-in link and copy a new code.",
+]) {
+  test(`MP-08/MP-11 structured retry restores the code field: ${message}`, async () => {
+    const next = { ...status("running"), message }
+    const h = harness([status("running"), next])
+    h.controller.stripState(interaction)
+    await h.tick()
+    h.controller.codeSent(interaction)
+    await h.tick()
+    const state = h.controller.stripState(interaction)!
+    assert.equal(state.checking, false)
+    assert.equal(state.problem, message)
+    // Resubmitting while the previous retry is still projected waits again.
+    h.controller.codeSent({ ...interaction, message })
+    assert.equal(h.controller.stripState({ ...interaction, message })!.checking, true)
+    await h.tick()
+    assert.equal(h.controller.stripState({ ...interaction, message })!.checking, false, "another identical rejection answers the next submission")
+    h.controller.dispose()
+  })
+
+  test(`MP-08/MP-11 a forwarded interaction answers the sent code: ${message}`, async () => {
+    const h = harness([], { getKernelId: async () => "home" })
+    h.controller.stripState(interaction)
+    await h.tick()
+    h.controller.codeSent(interaction)
+    const state = h.controller.stripState({ ...interaction, message })!
+    assert.equal(state.checking, false)
+    assert.equal(state.problem, message)
+    h.controller.dispose()
+  })
+}
+
+
+test("MP-08/MP-11 a status read started before submission cannot answer the new code", async () => {
+  const retry = { ...status("running"), message: "That code was not accepted. Open the new sign-in link and copy a new code." }
+  let complete!: (value: ProviderLoginStatus) => void
+  let reads = 0
+  const h = harness([], { getLoginStatus: () => ++reads === 1 ? new Promise(resolve => { complete = resolve }) : Promise.resolve(retry) })
+  h.controller.stripState(interaction)
+  await h.tick()
+  h.controller.codeSent(interaction)
+  complete(retry)
+  for (let index = 0; index < 5; index++) await Promise.resolve()
+  assert.equal(h.controller.stripState(interaction)!.checking, true)
+  await h.tick()
+  assert.equal(h.controller.stripState(interaction)!.checking, false)
+  h.controller.dispose()
+})
