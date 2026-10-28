@@ -68,8 +68,10 @@ fn check_projection_waits_for_the_durable_writer() {
 fn check_journal_updates_do_not_grow_the_durable_inode() {
     let root = crate::test_support::TestWorktree::new("envp04-check-fixed-size");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "first".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "first".into(),
+        ..Default::default()
+    };
     store.save_checks("project", &checks).unwrap();
     let file = store.path("project").with_extension("checks.wal");
     let before = std::fs::metadata(&file).unwrap().len();
@@ -86,8 +88,10 @@ fn check_journal_retains_last_complete_durable_snapshot() {
     use std::io::{Seek, SeekFrom, Write};
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "first".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "first".into(),
+        ..Default::default()
+    };
     store.save_checks("project", &checks).unwrap();
     checks.folder_binding_digest = "second".into();
     store.save_checks("project", &checks).unwrap();
@@ -121,8 +125,10 @@ fn check_journal_grows_atomically_and_imports_append_snapshots() {
     let root = crate::test_support::TestWorktree::new("envp04-check-resize");
     let store = ProjectEnvironmentStore::new(root.path());
     let path = store.path("project").with_extension("checks.wal");
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "legacy append".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "legacy append".into(),
+        ..Default::default()
+    };
     let mut legacy = serde_json::to_vec(&checks).unwrap();
     legacy.push(b'\n');
     crate::config::write_private_file(&path, &legacy).unwrap();
@@ -152,8 +158,10 @@ fn check_journal_grows_atomically_and_imports_append_snapshots() {
 fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "legacy".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "legacy".into(),
+        ..Default::default()
+    };
     let legacy = store.path("project").with_extension("checks.json");
     crate::config::write_private_file(&legacy, &serde_json::to_vec(&checks).unwrap()).unwrap();
     assert_eq!(

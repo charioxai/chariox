@@ -13,15 +13,22 @@ fn result(
 }
 pub(super) fn check_tool(
     ctx: &EnvironmentCheckContext,
-    kind: &AgentToolKind,
-    name: &str,
-    digest: &Option<String>,
-    runtimes: &[String],
-    vault_refs: &[EnvironmentVaultReference],
+    requirement: &Requirement,
     roots: &[PathBuf],
     operation: &str,
     deadline: std::time::Instant,
 ) -> (EnvironmentObservationStatus, String, String) {
+    let RequirementSpec::AgentTools {
+        tool_kind: kind,
+        registry_ref: name,
+        package_digest: digest,
+        runtime_requirements: runtimes,
+        vault_refs,
+        ..
+    } = &requirement.spec
+    else {
+        unreachable!("named Check dispatch");
+    };
     for runtime in runtimes {
         match inventory::version_until(runtime, roots, deadline) {
             Ok(Some(_)) => {}

@@ -36,7 +36,11 @@ pub(super) fn machine(root: &Path) -> EnvironmentMeasuredFacts {
             let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
             if unsafe { libc::statvfs(p.as_ptr(), stat.as_mut_ptr()) } == 0 {
                 let stat = unsafe { stat.assume_init() };
-                f.free_disk_bytes = (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+                // statvfs field widths differ between Unix platforms.
+                #[allow(clippy::unnecessary_cast)]
+                {
+                    f.free_disk_bytes = (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+                }
             }
         }
     }
@@ -237,7 +241,7 @@ pub(super) fn satisfies(version: &str, constraint: &str) -> Option<bool> {
             "<=" => !cmp.is_gt(),
             ">" => cmp.is_gt(),
             "<" => cmp.is_lt(),
-            "~" => !cmp.is_lt() && v.get(0) == e.get(0) && (e.len() < 2 || v.get(1) == e.get(1)),
+            "~" => !cmp.is_lt() && v.first() == e.first() && (e.len() < 2 || v.get(1) == e.get(1)),
             "^" => {
                 let i = e.iter().position(|n| *n != 0).unwrap_or(e.len() - 1);
                 !cmp.is_lt() && v.get(..=i) == e.get(..=i)

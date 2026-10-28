@@ -4,7 +4,7 @@ use super::*;
 pub(crate) enum CheckStart {
     Replay(EnvironmentOperation),
     New {
-        environment: ProjectEnvironment,
+        environment: Box<ProjectEnvironment>,
         operation: EnvironmentOperation,
         workspace_ids: Vec<String>,
     },
@@ -141,7 +141,7 @@ impl ProjectEnvironmentStore {
         drop(lock);
         let workspaces = project.workspace_ids().to_vec();
         Ok(CheckStart::New {
-            environment: env,
+            environment: Box::new(env),
             operation,
             workspace_ids: workspaces,
         })

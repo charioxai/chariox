@@ -50,8 +50,10 @@ fn envp04_observations_are_stale_for_revision_target_bindings_and_clock() {
         target_instance_generation: "boot-one".into(),
         slice_ref: None,
     };
-    let mut checks = super::check_store::EnvironmentChecks::default();
-    checks.folder_binding_digest = folder_bindings_digest(&env);
+    let mut checks = super::check_store::EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        ..Default::default()
+    };
     checks.observations = vec![observation(&env, "file", &target, 1000)];
     store.save_checks(&env.local_project_id, &checks).unwrap();
     store.attach_checks(&mut env, &target, 1001).unwrap();
@@ -227,8 +229,10 @@ fn envp04_new_check_replaces_obsolete_generation_but_preserves_other_targets() {
         slice_ref: Some("other-slice".into()),
         ..old.clone()
     };
-    let mut checks = super::check_store::EnvironmentChecks::default();
-    checks.folder_binding_digest = folder_bindings_digest(&env);
+    let mut checks = super::check_store::EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        ..Default::default()
+    };
     for (id, binding) in [
         ("file", &old),
         ("file", &other_machine),
@@ -292,8 +296,10 @@ fn review1301_partial_check_dependency_expires_on_snapshot() {
         target_instance_generation: "boot".into(),
         slice_ref: None,
     };
-    let mut checks = super::check_store::EnvironmentChecks::default();
-    checks.folder_binding_digest = folder_bindings_digest(&env);
+    let mut checks = super::check_store::EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        ..Default::default()
+    };
     checks.observations = vec![
         observation(&env, "base", &target, 1000),
         observation(&env, "dependent", &target, 241000),

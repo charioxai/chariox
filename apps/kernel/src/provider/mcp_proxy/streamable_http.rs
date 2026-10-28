@@ -251,7 +251,7 @@ fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, Da
                     .map(|ip| std::net::SocketAddr::new(ip, port))
                     .collect()
             })
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "MCP DNS unavailable"))
+            .map_err(|_| std::io::Error::other("MCP DNS unavailable"))
     })
     .timeout(timeout)
     .try_proxy_from_env(false);

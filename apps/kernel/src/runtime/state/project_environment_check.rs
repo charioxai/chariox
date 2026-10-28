@@ -57,7 +57,7 @@ impl KernelRuntimeState {
                 environment,
                 operation,
                 workspace_ids,
-            } => (environment, operation, workspace_ids),
+            } => (*environment, operation, workspace_ids),
         };
         let ctx = EnvironmentCheckContext {
             config,

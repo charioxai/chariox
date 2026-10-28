@@ -147,24 +147,9 @@ pub(crate) fn check_requirement(
             RequirementSpec::Accounts { .. } => {
                 super::check_admission::check_admission(ctx, r, deadline)
             }
-            RequirementSpec::AgentTools {
-                tool_kind,
-                registry_ref,
-                package_digest,
-                runtime_requirements,
-                vault_refs,
-                ..
-            } => super::check_tools::check_tool(
-                ctx,
-                tool_kind,
-                registry_ref,
-                package_digest,
-                runtime_requirements,
-                vault_refs,
-                &roots,
-                operation,
-                deadline,
-            ),
+            RequirementSpec::AgentTools { .. } => {
+                super::check_tools::check_tool(ctx, r, &roots, operation, deadline)
+            }
             RequirementSpec::CharioxApps { .. } => {
                 super::check_admission::check_admission(ctx, r, deadline)
             }
