@@ -238,6 +238,7 @@ impl PtyProcessState {
 }
 
 struct PtyProcess {
+    resources: crate::runtime::process_resources::ProcessDomain,
     discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -552,8 +553,16 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        let mut command = CommandBuilder::new(request.program);
-        for arg in request.args {
+        let prepared =
+            crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
+                DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        let (program, args) = prepared.command(request.program, request.args);
+        let mut command = CommandBuilder::new(program);
+        for arg in args {
             command.arg(arg);
         }
         for (name, _) in std::env::vars() {
@@ -588,6 +597,23 @@ impl PtyManager {
             }
         })?;
 
+        let resources = match child
+            .process_id()
+            .ok_or_else(|| std::io::Error::other("PTY child PID unavailable"))
+            .and_then(|pid| prepared.start(pid))
+        {
+            Ok(resources) => resources,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        resources.bind_key(&request.provider_run_id);
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -699,6 +725,7 @@ impl PtyManager {
             PtyProcess {
                 discovery_config: None,
                 child,
+                resources,
                 master: pair.master,
                 process_group,
                 input_writer,
@@ -1000,6 +1027,11 @@ impl PtyManager {
 
     pub fn process_key(&self, provider_run_id: &str) -> Result<String, DaemonError> {
         self.resolve_process_key(provider_run_id)
+    }
+
+    pub(crate) fn memory_limit_bytes(&self, provider_run_id: &str) -> Option<u64> {
+        let key = self.process_aliases.get(provider_run_id)?;
+        self.processes.get(key)?.resources.memory_limit_bytes()
     }
 
     pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
@@ -2350,5 +2382,58 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn memory_limit_ends_only_the_overweight_pty_tree() {
+        let _environment = crate::env_lock::lock();
+        let previous = std::env::var_os("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "32");
+        let mut pty = PtyManager::new();
+        for (run, program, args) in [
+            (
+                "memory-regression",
+                "python3",
+                vec![
+                    "-c",
+                    "import time; x=bytearray(64*1024*1024); time.sleep(30)",
+                ],
+            ),
+            ("memory-sibling", "/bin/sleep", vec!["30"]),
+        ] {
+            pty.spawn(PtySpawnRequest {
+                process_key: run.into(),
+                provider_run_id: run.into(),
+                program: program.into(),
+                args: args.into_iter().map(str::to_string).collect(),
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut state = PtyProcessState::Running;
+        while std::time::Instant::now() < deadline {
+            state = pty.poll_process_state("memory-regression").unwrap();
+            if state.is_exited() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let sibling = pty.poll_process_state("memory-sibling").unwrap();
+        pty.remove_process("memory-regression").unwrap();
+        pty.remove_process("memory-sibling").unwrap();
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", value),
+            None => std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB"),
+        }
+        assert!(
+            state.is_exited(),
+            "the memory limit did not stop its PTY tree"
+        );
+        assert_eq!(sibling, PtyProcessState::Running);
     }
 }

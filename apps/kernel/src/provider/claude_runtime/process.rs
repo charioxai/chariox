@@ -29,7 +29,22 @@ pub(super) fn spawn_claude_child(
     working_directory: Option<&PathBuf>,
     operation: &'static str,
     output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
-) -> Result<(Child, ChildStdin, Receiver<ClaudeRuntimeMessage>), DaemonError> {
+) -> Result<
+    (
+        Child,
+        ChildStdin,
+        Receiver<ClaudeRuntimeMessage>,
+        crate::runtime::process_resources::ProcessDomain,
+    ),
+    DaemonError,
+> {
+    let prepared = crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
+        DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        }
+    })?;
+    let (program, args) = prepared.command(program.to_string(), args.to_vec());
     let mut command = Command::new(program);
     command
         .args(args)
@@ -74,6 +89,17 @@ pub(super) fn spawn_claude_child(
             message: format!("failed to start Claude Code for `{provider_run_id}`: {error}"),
         }
     })?;
+    let resources = match prepared.start(child.id()) {
+        Ok(resources) => resources,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: error.to_string(),
+            });
+        }
+    };
+    resources.bind_key(provider_run_id);
     let stdin = child
         .stdin
         .take()
@@ -142,7 +168,7 @@ pub(super) fn spawn_claude_child(
         }
     });
 
-    Ok((child, stdin, receiver))
+    Ok((child, stdin, receiver, resources))
 }
 
 pub(super) fn stop_child(child: &mut Child) {

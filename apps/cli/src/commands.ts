@@ -132,6 +132,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       value: args.join(" ").trim(),
     }
   }
+  if (trimmed === "/processes") return { kind: "provider", raw: trimmed, value: "session-processes" }
   if (trimmed.startsWith("/provider")) {
     return {
       kind: "provider",

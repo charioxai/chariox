@@ -10,6 +10,7 @@ import type {
 } from "./kernel-types.js"
 
 export type KernelEvent =
+  | { event: "session_processes_changed"; session_id: string; processes: SessionProcess[] }
   | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
   | {
@@ -190,3 +191,14 @@ export type KernelEvent =
     closed?: PasskeyPromptClosure[]
     prompts: PasskeyPrompt[]
   }
+
+export type SessionProcess = {
+  process_id: string
+  owner: { kind: "agent" | "terminal"; id: string }
+  pid: number
+  command: string
+  resident_set_bytes: number
+  cpu_millis: number
+  age_ms: number
+  sampled_at_ms: number
+}

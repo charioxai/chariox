@@ -24,6 +24,8 @@ pub struct ProviderPromptSignalBatch {
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
     pub terminal_failure: Option<String>,
+    pub process_memory_limit_bytes: Option<u64>,
+    pub process_outside_ended: bool,
     // Only provider-protocol error frames may become durable explicit-provider
     // termination evidence. PTY/stderr classifiers keep terminal_failure for
     // prompt settlement but must not be promoted across that trust boundary.

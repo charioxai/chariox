@@ -218,6 +218,7 @@ export type CliInputRoutingCompositionDeps = {
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
   openProjectEnvironment: AnyFn
+  handleSessionProcessesKey?: AnyFn
   handleProjectEnvironmentKey: AnyFn
   handleManagedMachineDialogKey: AnyFn
   openManagedMachineDialog: AnyFn
@@ -774,6 +775,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     createStdinParser: (onTimeoutFlush) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    ...(deps.handleSessionProcessesKey ? { handleSessionProcessesKey: deps.handleSessionProcessesKey } : {}),
     handleProjectEnvironmentKey: deps.handleProjectEnvironmentKey,
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,

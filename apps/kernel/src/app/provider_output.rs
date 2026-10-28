@@ -895,6 +895,32 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 self.mark_prompt_completion_recorded(provider_run_id);
             }
         }
+        if let Some(termination) = poll_result
+            .process_memory_limit_bytes
+            .map(|limit| {
+                crate::provider::ProviderRunTermination::memory_limit(
+                    limit,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .or_else(|| {
+                poll_result.process_outside_ended.then(|| {
+                    crate::provider::ProviderRunTermination::outside_end(
+                        crate::session::unix_epoch_ms(),
+                    )
+                })
+            })
+        {
+            self.prompt_settlement()
+                .fail_for_terminal_failure_if_matches(
+                    session_id,
+                    provider_run_id,
+                    None,
+                    Some(termination.clone()),
+                    &termination.reason,
+                )?;
+            return Ok(records);
+        }
         let exited = self.reconcile_provider_run_exit(session_id, provider_run_id)?;
         if exited {
             self.trace_prompt_state(

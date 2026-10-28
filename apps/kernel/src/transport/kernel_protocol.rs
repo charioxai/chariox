@@ -142,6 +142,10 @@ pub(crate) enum KernelEvent {
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
+    SessionProcessesChanged {
+        session_id: String,
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    },
     SessionSnapshot {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: Box<RuntimeSession>,
@@ -707,6 +711,12 @@ pub(crate) fn session_projection_changed_events(
     previous: Option<&SessionSnapshotProjection>,
 ) -> Vec<KernelEvent> {
     [
+        (previous.is_none_or(|previous| previous.processes != snapshot.processes)
+            && (previous.is_some() || !snapshot.processes.is_empty()))
+        .then(|| KernelEvent::SessionProcessesChanged {
+            session_id: snapshot.session.id().to_string(),
+            processes: snapshot.processes.clone(),
+        }),
         agent_activity_changed_event(snapshot, previous),
         provider_run_changed_event(snapshot, previous),
         session_metadata_changed_event(snapshot, previous),
@@ -858,6 +868,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
         KernelEvent::HomeExtensionAuditLagged { .. } => "home_extension_audit_lagged",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
+        KernelEvent::SessionProcessesChanged { .. } => "session_processes_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
@@ -895,6 +906,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::HomeExtensionAuditAppended { session_id, .. }
         | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
+        KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
@@ -962,6 +974,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::HomeExtensionAuditAppended { .. }
         | KernelEvent::HomeExtensionAuditLagged { .. }
         | KernelEvent::RoomWorkflowsChanged { .. }
+        | KernelEvent::SessionProcessesChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }

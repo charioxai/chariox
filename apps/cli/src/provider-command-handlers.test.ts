@@ -786,3 +786,9 @@ for (const provider of ["claude", "claude-p", "claude-headless"]) {
     assert.deepEqual(errors, [])
   })
 }
+
+test("session process command opens the live read-only view", async () => {
+  let opened = false
+  await handleProviderSlashCommand({ currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: () => {}, openSessionProcesses: () => { opened = true } }, { kind: "provider", raw: "/processes", value: "session-processes" })
+  assert.equal(opened, true)
+})

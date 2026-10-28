@@ -546,6 +546,7 @@ mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod session_process_control;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;

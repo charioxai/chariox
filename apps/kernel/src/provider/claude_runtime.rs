@@ -82,7 +82,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &program,
         &args,
@@ -117,6 +117,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                     .map(|(identity, _)| identity),
             )),
             child,
+            resources: Some(resources),
             stdin,
             receiver,
             output_notifier,
@@ -259,6 +260,29 @@ pub(crate) fn drain_claude_events(
     }
     apply_claude_usage_capture(run, state, &mut batch);
 
+    if let Some(limit) = state
+        .resources
+        .as_ref()
+        .and_then(|domain| domain.memory_limit_bytes())
+    {
+        batch.process_memory_limit_bytes = Some(limit);
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::memory_limit(limit, crate::session::unix_epoch_ms())
+                .reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
+    if crate::runtime::process_resources::outside_ended_for_key(run.id()) && !state.exit_reported {
+        batch.process_outside_ended = true;
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::outside_end(crate::session::unix_epoch_ms()).reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
             Ok(Some(status)) => {
@@ -500,7 +524,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &state.program,
         &args,
@@ -519,6 +543,7 @@ fn restart_claude_runtime(
             .ok()
             .map(|(identity, _)| identity);
     state.child = child;
+    state.resources = Some(resources);
     state.stdin = stdin;
     state.receiver = receiver;
     state.args = base_args;
@@ -668,6 +693,7 @@ mod tests {
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
+                resources: None,
                 stdin,
                 receiver,
                 output_notifier: Default::default(),

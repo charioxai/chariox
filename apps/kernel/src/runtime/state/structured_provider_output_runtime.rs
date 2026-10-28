@@ -618,14 +618,31 @@ impl KernelRuntimeState {
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
         let provider_termination = poll_result
-            .explicit_provider_error
-            .then_some(terminal_failure.as_deref())
-            .flatten()
-            .map(|message| {
-                crate::provider::ProviderRunTermination::explicit_provider_error(
-                    message,
+            .process_memory_limit_bytes
+            .map(|limit| {
+                crate::provider::ProviderRunTermination::memory_limit(
+                    limit,
                     crate::session::unix_epoch_ms(),
                 )
+            })
+            .or_else(|| {
+                poll_result.process_outside_ended.then(|| {
+                    crate::provider::ProviderRunTermination::outside_end(
+                        crate::session::unix_epoch_ms(),
+                    )
+                })
+            })
+            .or_else(|| {
+                poll_result
+                    .explicit_provider_error
+                    .then_some(terminal_failure.as_deref())
+                    .flatten()
+                    .map(|message| {
+                        crate::provider::ProviderRunTermination::explicit_provider_error(
+                            message,
+                            crate::session::unix_epoch_ms(),
+                        )
+                    })
             });
         project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();

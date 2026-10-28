@@ -404,3 +404,9 @@ pub struct CopyProviderAccountToKernelRequest {
     #[serde(default)]
     pub replace: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopSessionProcessesRequest {
+    pub session_id: String,
+    pub target: crate::runtime::process_resources::ProcessControlTarget,
+}

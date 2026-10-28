@@ -100,6 +100,32 @@ pub(super) struct State {
 }
 
 impl RoomTerminalService {
+    pub(crate) fn process_keys(
+        &self,
+        session_id: &str,
+    ) -> Vec<(
+        crate::runtime::process_resources::SessionProcessOwner,
+        String,
+    )> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .terminals
+            .values()
+            .filter(|terminal| terminal.record.session_id == session_id)
+            .filter_map(|terminal| {
+                terminal.run_id.as_ref().map(|run| {
+                    (
+                        crate::runtime::process_resources::SessionProcessOwner::Terminal(
+                            terminal.record.terminal_id.clone(),
+                        ),
+                        run.clone(),
+                    )
+                })
+            })
+            .collect()
+    }
     /// Terminals that ran when the kernel last stopped come back as ended by
     /// the restart, scrollback kept.
     pub fn new(store_root: PathBuf) -> Self {
@@ -905,7 +931,15 @@ fn ended_wait_result(terminal: &mut Terminal, pty: &PtyManager) -> RoomTerminalW
     wait_result(
         terminal,
         pty,
-        Some(RoomTerminalEventKind::Finished { exit_code, signal }),
+        Some(match &terminal.record.ended {
+            Some(RoomTerminalOutcome::MemoryLimit { limit_bytes }) => {
+                RoomTerminalEventKind::MemoryLimit {
+                    limit_bytes: *limit_bytes,
+                }
+            }
+            Some(RoomTerminalOutcome::OutsideEnd) => RoomTerminalEventKind::OutsideEnd,
+            _ => RoomTerminalEventKind::Finished { exit_code, signal },
+        }),
     )
 }
 

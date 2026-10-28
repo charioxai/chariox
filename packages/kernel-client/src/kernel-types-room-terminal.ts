@@ -10,6 +10,8 @@ export type RoomTerminalDriver =
   | { readonly state: "busy"; readonly driven_by: TerminalActor }
 
 export type RoomTerminalOutcome =
+  | { readonly reason: "outside_end" }
+  | { readonly reason: "memory_limit"; readonly limit_bytes: number }
   | { readonly reason: "program_exited"; readonly exit_code: number | null; readonly signal: string | null }
   | { readonly reason: "kernel_restarted" }
 
@@ -66,6 +68,8 @@ export type RoomTerminalWatch =
   | { readonly kind: "waiting_for_input" }
 
 export type RoomTerminalEventKind =
+  | { readonly kind: "outside_end" }
+  | { readonly kind: "memory_limit"; readonly limit_bytes: number }
   | { readonly kind: "finished"; readonly exit_code: number | null; readonly signal: string | null }
   | { readonly kind: "output_matched"; readonly text: string }
   | { readonly kind: "waiting_for_input" }

@@ -185,12 +185,14 @@ impl KernelRuntimeState {
                         agent_id: "provider run has no agent".to_string(),
                     }
                 })?;
-                let termination = termination_for_process_exit(
-                    process_exit
-                        .as_ref()
-                        .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-                    crate::session::unix_epoch_ms(),
-                );
+                let termination = process_exit
+                    .as_ref()
+                    .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+                    .unwrap_or_else(|| {
+                        crate::provider::ProviderRunTermination::unknown_process_exit(
+                            crate::session::unix_epoch_ms(),
+                        )
+                    });
                 self.settle_unexpected_provider_run_exit_with_diagnostic(
                     session_id,
                     provider_run_id,
@@ -226,12 +228,14 @@ impl KernelRuntimeState {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
-        let termination = termination_for_process_exit(
-            process_exit
-                .as_ref()
-                .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-            crate::session::unix_epoch_ms(),
-        );
+        let termination = process_exit
+            .as_ref()
+            .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+            .unwrap_or_else(|| {
+                crate::provider::ProviderRunTermination::unknown_process_exit(
+                    crate::session::unix_epoch_ms(),
+                )
+            });
         let session_outcome = self
             .settle_unexpected_provider_run_exit_with_diagnostic(
                 session_id,
@@ -383,6 +387,7 @@ impl KernelRuntimeState {
     }
 }
 
+#[cfg(test)]
 fn termination_for_process_exit(
     process_exit: Option<(Option<u32>, Option<&str>)>,
     occurred_at_ms: u64,

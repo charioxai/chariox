@@ -623,6 +623,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .workflow_run(&request.workflow_run_ref)
         }
+        LocalDaemonRequest::StopSessionProcesses(request) => LocalRequestMetadata::new("session_process.stop", Normal).session(&request.session_id),
         _ => LocalRequestMetadata::new(local_request_command_type(request), Normal),
     }
 }
@@ -975,6 +976,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SendProviderLoginInput(_) => "provider.login.input",
         LocalDaemonRequest::CancelProviderLogin(_) => "provider.login.cancel",
         LocalDaemonRequest::LogoutProvider(_) => "provider.logout",
+        LocalDaemonRequest::StopSessionProcesses(_) => "session_process.stop",
         LocalDaemonRequest::ListProviderProcesses(_) => "provider_process.list",
         LocalDaemonRequest::TeardownProviderProcesses(_) => "provider_process.teardown",
         LocalDaemonRequest::QueryRecall(_) => "recall.query",

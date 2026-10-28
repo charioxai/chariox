@@ -8,6 +8,8 @@ const REDACTED_DIAGNOSTIC_VALUE: &str = "[redacted]";
 #[serde(rename_all = "snake_case")]
 pub enum ProviderRunTerminationCategory {
     ProcessExit,
+    MemoryLimit,
+    OutsideEnd,
     Signal,
     ExplicitProviderError,
     RuntimeFailure,
@@ -23,6 +25,24 @@ pub struct ProviderRunTermination {
 }
 
 impl ProviderRunTermination {
+    pub fn outside_end(timestamp_ms: u64) -> Self {
+        Self {
+            category: ProviderRunTerminationCategory::OutsideEnd,
+            reason: "provider process tree stopped by a session controller".into(),
+            timestamp_ms,
+        }
+    }
+
+    pub fn memory_limit(limit_bytes: u64, timestamp_ms: u64) -> Self {
+        Self {
+            category: ProviderRunTerminationCategory::MemoryLimit,
+            reason: format!(
+                "provider process tree exceeded its memory limit of {limit_bytes} bytes"
+            ),
+            timestamp_ms,
+        }
+    }
+
     pub fn process_exit(exit_code: u32, timestamp_ms: u64) -> Self {
         Self {
             category: ProviderRunTerminationCategory::ProcessExit,

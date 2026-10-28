@@ -650,6 +650,14 @@ impl CommandRouter {
                 )
                 .await
             }),
+            LocalDaemonRequest::StopSessionProcesses(request) => boxed_handler(|| async move {
+                let caller = command_caller_user_id(&command);
+                let result = self
+                    .runtime_state
+                    .stop_session_processes(&request.session_id, &caller, request.target)
+                    .await?;
+                Ok(LocalDaemonResponse::SessionProcessesStopped { result })
+            }),
             request @ (LocalDaemonRequest::ListProviderProcesses(_)
             | LocalDaemonRequest::TeardownProviderProcesses(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);

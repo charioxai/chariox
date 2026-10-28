@@ -694,6 +694,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         },
     );
     SessionSnapshotProjection {
+        processes: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -727,6 +728,7 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     workflow_run.set_status(status);
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
+        processes: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,

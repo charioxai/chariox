@@ -79,6 +79,8 @@ export type AgentRuntimeCompletedTurnActionProjection = {
 export type AgentRuntimeProviderTerminationProjection = {
   readonly category:
     | "process_exit"
+    | "memory_limit"
+    | "outside_end"
     | "signal"
     | "explicit_provider_error"
     | "runtime_failure"
@@ -359,6 +361,8 @@ function readProviderRunTermination(
   const timestampMs = readNonNegativeIntegerField(termination, "timestamp_ms")
   if (
     (category !== "process_exit"
+      && category !== "memory_limit"
+      && category !== "outside_end"
       && category !== "signal"
       && category !== "explicit_provider_error"
       && category !== "runtime_failure"
