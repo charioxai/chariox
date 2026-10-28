@@ -191,30 +191,80 @@ fn linux_refresh(
     if root <= 1 || root > i32::MAX as u32 {
         return None;
     }
-    let current = std::fs::read_dir("/proc")
-        .ok()?
-        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
-        .collect::<BTreeSet<_>>();
-    let mut processes = BTreeMap::new();
+    let current = proc_pids()?;
     // Enumerate every PID, but read identity only for new PIDs and recorded
     // group members. Never cache a signal decision: signal() still scans ALL
     // current identities, rejecting foreign/reused members before any kill.
-    for &pid in current
-        .iter()
-        .filter(|pid| **pid == root || !seen.contains(pid) || known.contains_key(pid))
-    {
-        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+    let processes = linux_members(
+        root,
+        current
+            .iter()
+            .copied()
+            .filter(|pid| *pid == root || !seen.contains(pid) || known.contains_key(pid)),
+        read_proc_stat,
+    )?;
+    *seen = current;
+    Some(processes)
+}
+
+#[cfg(target_os = "linux")]
+fn proc_pids() -> Option<BTreeSet<u32>> {
+    let mut pids = BTreeSet::new();
+    for entry in std::fs::read_dir("/proc").ok()? {
+        if let Some(pid) = entry
+            .ok()?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        {
+            pids.insert(pid);
+        }
+    }
+    Some(pids)
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_stat(pid: u32) -> std::io::Result<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+}
+
+/// Members of group `root` among `pids`. A process that exits while it is read
+/// is gone, not a reason to discard the whole scan and leave the group
+/// unsignaled: it reports ENOENT, ESRCH when the open or read was already in
+/// flight, or state X with parent 0 and group -1 once past exit.
+#[cfg(target_os = "linux")]
+fn linux_members(
+    root: u32,
+    pids: impl Iterator<Item = u32>,
+    read_stat: impl Fn(u32) -> std::io::Result<String>,
+) -> Option<BTreeMap<u32, Process>> {
+    let mut processes = BTreeMap::new();
+    for pid in pids {
+        let stat = match read_stat(pid) {
             Ok(stat) => stat,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue
+            }
             Err(_) => return None,
         };
+        if exited(&stat) {
+            continue;
+        }
         let process = linux_identity(&stat)?;
         if process.group == root {
             processes.insert(pid, process);
         }
     }
-    *seen = current;
     Some(processes)
+}
+
+#[cfg(target_os = "linux")]
+fn exited(stat: &str) -> bool {
+    stat.rsplit_once(')')
+        .is_some_and(|(_, tail)| tail.trim_start().starts_with(['X', 'x']))
 }
 
 fn snapshot(root: u32) -> Option<BTreeMap<u32, Process>> {
@@ -226,27 +276,7 @@ fn snapshot(root: u32) -> Option<BTreeMap<u32, Process>> {
         // MD-DISPLAY-02/04: no ps subprocess on every controller RPC. Read only
         // public numeric identity fields; signaling still takes a fresh, full
         // membership snapshot and rejects foreign/reused group members.
-        let mut processes = BTreeMap::new();
-        for entry in std::fs::read_dir("/proc").ok()? {
-            let entry = entry.ok()?;
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            let stat = match std::fs::read_to_string(entry.path().join("stat")) {
-                Ok(stat) => stat,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => return None,
-            };
-            let process = linux_identity(&stat)?;
-            if process.group == root {
-                processes.insert(pid, process);
-            }
-        }
-        Some(processes)
+        linux_members(root, proc_pids()?.into_iter(), read_proc_stat)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -356,6 +386,42 @@ mod tests {
         group.root = 1;
         group.remember(&processes);
         assert!(!group.owns(1, &processes));
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn md4_scan_skips_a_process_that_exits_while_it_is_read() {
+        let stat =
+            |group: u32| format!("1 (x) S 1 {group} {group} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 7 0");
+        // A task past exit: state X, parent 0, group -1 (not a valid group id).
+        let exiting = "1 (x y)) X 0 -1 -1 0 -1 4227084 83 0 0 0 0 0 0 0 20 0 0 0 7 0";
+        let members = linux_members(42, [42, 43].into_iter(), |pid| match pid {
+            43 => Ok(exiting.to_string()),
+            _ => Ok(stat(42)),
+        });
+        assert_eq!(
+            members.map(|members| members.into_keys().collect::<Vec<_>>()),
+            Some(vec![42]),
+            "a process past exit must not abort the scan"
+        );
+        for vanished in [libc::ENOENT, libc::ESRCH] {
+            let members = linux_members(42, [42, 43, 44].into_iter(), |pid| match pid {
+                43 => Err(std::io::Error::from_raw_os_error(vanished)),
+                44 => Ok(stat(99)),
+                _ => Ok(stat(42)),
+            });
+            assert_eq!(
+                members.map(|members| members.into_keys().collect::<Vec<_>>()),
+                Some(vec![42]),
+                "a process reaped mid-read (errno {vanished}) must not abort the scan"
+            );
+        }
+        assert!(
+            linux_members(42, [43].into_iter(), |_| Err(
+                std::io::Error::from_raw_os_error(libc::EACCES)
+            ))
+            .is_none(),
+            "an unreadable member still fails closed"
+        );
     }
     #[test]
     #[cfg(target_os = "linux")]
