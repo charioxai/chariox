@@ -114,7 +114,6 @@ impl KernelRuntimeState {
             provider_run: &provider_run,
             agent_id: &agent_id,
             message,
-            safe_message: &safe_message,
             failure: &failure,
             project_failure_output,
             record_diagnostic: expected_prompt_id.is_some(),
@@ -623,7 +622,6 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) provider_run: &'a crate::provider::RuntimeProviderRun,
     pub(super) agent_id: &'a str,
     pub(super) message: &'a str,
-    pub(super) safe_message: &'a str,
     /// The failure the turn settles with; the transcript entry renders this one.
     pub(super) failure: &'a crate::provider::ProviderFailure,
     pub(super) project_failure_output: bool,
