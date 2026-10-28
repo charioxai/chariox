@@ -316,7 +316,57 @@ fn validate_draft(
             return Err(environment_error("invalid requirement dependency"));
         }
     }
+    validate_dependency_cycles(draft)?;
     super::scope_conflicts::validate_scopes(draft)?;
+    Ok(())
+}
+
+// Both dependency fields participate in the same graph. Iterative traversal also
+// bounds stack use for a long, otherwise valid chain of requirements.
+fn validate_dependency_cycles(draft: &EnvironmentRevisionDraft) -> Result<(), DaemonError> {
+    let mut counts = BTreeMap::new();
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for requirement in requirements(draft) {
+        let services = match &requirement.spec {
+            RequirementSpec::Services { depends_on, .. } => depends_on.as_slice(),
+            _ => &[],
+        };
+        let dependencies: BTreeSet<_> = requirement
+            .depends_on
+            .iter()
+            .chain(services)
+            .map(String::as_str)
+            .collect();
+        counts.insert(requirement.requirement_id.as_str(), dependencies.len());
+        for dependency in dependencies {
+            dependents
+                .entry(dependency)
+                .or_default()
+                .push(&requirement.requirement_id);
+        }
+    }
+    let mut ready: Vec<_> = counts
+        .iter()
+        .filter_map(|(id, count)| (*count == 0).then_some(*id))
+        .collect();
+    let mut visited = 0;
+    while let Some(id) = ready.pop() {
+        visited += 1;
+        for dependent in dependents.get(id).into_iter().flatten() {
+            let count = counts
+                .get_mut(dependent)
+                .expect("validated dependency identity");
+            *count -= 1;
+            if *count == 0 {
+                ready.push(dependent);
+            }
+        }
+    }
+    if visited != counts.len() {
+        return Err(environment_error(
+            "requirement dependency cycle; remove a circular dependency before Save",
+        ));
+    }
     Ok(())
 }
 

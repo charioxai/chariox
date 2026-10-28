@@ -248,3 +248,82 @@ fn review0212_files_check_does_not_launch_path_git_or_inherit_probe_environment(
     );
     assert!(elapsed < std::time::Duration::from_secs(1));
 }
+
+#[test]
+fn r4_save_rejects_requirement_and_service_cycles_before_check() {
+    for mixed in [false, true] {
+        let root = crate::test_support::TestWorktree::new("r4-dependency-cycle");
+        let store = ProjectEnvironmentStore::new(root.path());
+        let project = project(root.path(), "cycles");
+        let current = store.snapshot(&project).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut a = requirement("a");
+        a.spec = RequirementSpec::Services {
+            identity: "service-a".into(),
+            target_binding: None,
+            probe: Some(EnvironmentProbe::Tcp {
+                host: "127.0.0.1".into(),
+                port: listener.local_addr().unwrap().port(),
+                timeout_ms: 1000,
+            }),
+            health_expectation: None,
+            depends_on: vec![],
+        };
+        let mut b = a.clone();
+        b.requirement_id = "b".into();
+        if let RequirementSpec::Services { identity, .. } = &mut b.spec {
+            *identity = "service-b".into()
+        }
+        a.depends_on = vec!["b".into()];
+        if mixed {
+            if let RequirementSpec::Services { depends_on, .. } = &mut b.spec {
+                *depends_on = vec!["a".into()]
+            }
+        } else {
+            b.depends_on = vec!["a".into()]
+        }
+        let mut draft = environment_draft(&current);
+        draft.project_requirements = vec![a, b];
+        let mut save = crate::local::SaveProjectEnvironmentRevisionRequest {
+            project_id: project.id().into(),
+            expected_revision: current.revision,
+            expected_content_digest: current.content_digest.clone(),
+            draft,
+            accepted_proposal_ids: vec![],
+            excluded_proposal_ids: vec![],
+        };
+        let error = store
+            .save_revision_locked(&current, &save, "owner")
+            .expect_err("Save must reject the dependency cycle before Check can publish Ready");
+        assert!(error.to_string().contains("dependency cycle"));
+        assert_eq!(store.snapshot(&project).unwrap().revision, 0);
+        save.draft.project_requirements[1].depends_on.clear();
+        if let RequirementSpec::Services { depends_on, .. } =
+            &mut save.draft.project_requirements[1].spec
+        {
+            depends_on.clear()
+        }
+        let env = store
+            .save_revision_locked(&current, &save, "owner")
+            .unwrap()
+            .0;
+        let target = EnvironmentTargetBinding {
+            machine_id: "machine".into(),
+            target_instance_generation: "boot".into(),
+            slice_ref: None,
+        };
+        let op = operation(&env, &target, vec![]);
+        let mut journal = EnvironmentChecks::default();
+        journal.operations.push(op.clone());
+        store.save_checks(project.id(), &journal).unwrap();
+        store
+            .run_check(context(root.path()), env, op, || Ok(project.clone()))
+            .unwrap();
+        let checked = store.load_checks(project.id()).unwrap();
+        assert_eq!(checked.observations.len(), 2);
+        assert!(checked
+            .observations
+            .iter()
+            .all(|o| o.status == EnvironmentObservationStatus::Ready && !o.stale));
+    }
+}
