@@ -42,6 +42,8 @@ const DEFLATE_MIN_BYTES = 512;
 // first snapshot waits for its first contentful paint (bounded), so viewers keep the
 // previous page instead of a white, half-parsed one.
 const PAINT_HOLD_MS = 2500;
+// A previewed document that has not painted by then gets its mirror anyway (the native preview still covers it).
+const PREVIEW_PAINT_WAIT_MS = 1000;
 // A page parsing a huge document answers renderer calls only between its tasks. The first snapshot's calls wait for it
 // (the native preview covers the viewer meanwhile) instead of timing out, re-queueing and restarting.
 // The kernel gives the controller 20 s per request (kernel_browser_host.rs, queue wait included): a credit that outlasts it
@@ -430,6 +432,11 @@ export class Mirror2 {
     // MP-08/MP-10: native preview and mirror preparation run concurrently.
     // An optional producer that never starts must not delay the usable mirror.
     const browser = this.host.browser;
+    // The world's install and the snapshot run on the renderer's main thread: while the native preview covers a new
+    // document, Chrome paints it first (a followed link painted 40-55 ms later than Selkies' while they ran).
+    if (!kept && stream.previewDocument === tab.document_id && stream.document_id !== tab.document_id && browser.whenPainted) {
+      await browser.whenPainted(tab.target_id, tab.document_id, PREVIEW_PAINT_WAIT_MS); mark('preview_paint'); assertNotCancelled(signal);
+    }
     const world = kept?.world ?? await this.world(tab, stream, patience), policy = this.host.protection;
     stream.world = world;
     if (world.cssFailed) throw new Error('MP-11: mirror CSS observation unavailable');

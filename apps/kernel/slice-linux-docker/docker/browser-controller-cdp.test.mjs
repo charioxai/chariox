@@ -1887,6 +1887,25 @@ test('ordinary tab reconciliation survives more than64 unrelated advertising fra
 })
 
 
+test('MP-08/MP-10 a committed document reports its first paint from CDP or from its pixels, bounded', async () => {
+ const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
+ try{
+  await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
+  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-a'}}});
+  const painted=browser.whenPainted('target-a','doc-a',5000);
+  browser.recordConnectionEvent({method:'Page.lifecycleEvent',sessionId,params:{frameId:'frame-a',loaderId:'doc-old',name:'firstPaint'}});
+  browser.recordConnectionEvent({method:'Page.lifecycleEvent',sessionId,params:{frameId:'frame-a',loaderId:'doc-a',name:'firstContentfulPaint'}});
+  assert.equal(await painted,true);assert.equal(await browser.whenPainted('target-a','doc-a',0),true,'a painted document answers at once');
+  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-b'}}});
+  const native=browser.whenPainted('target-a','doc-b',5000);browser.documentPainted('target-a','doc-b');assert.equal(await native,true,'the Tab display saw the paint first');
+  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-c'}}});
+  const replaced=browser.whenPainted('target-a','doc-c',5000);
+  browser.recordConnectionEvent({method:'Page.frameNavigated',sessionId,params:{frame:{id:'frame-a',loaderId:'doc-d'}}});
+  assert.equal(await replaced,false,'a document replaced before it painted never will');
+  assert.equal(await browser.whenPainted('target-a','doc-d',5),false,'the wait is bounded');
+ }finally{await browser.close()}
+});
+
 test('MP-08/MP-10/MP-11 cached mirror frames follow navigation and retire with their session', async () => {
  const connection=new FakeConnection(),browser=new BrowserCdpClient({connectionFactory:async()=>connection});
  await browser.ensureConnection();const sessionId=await browser.ensureTargetSession(connection,'target-a');
