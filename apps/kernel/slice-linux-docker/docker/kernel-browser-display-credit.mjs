@@ -89,7 +89,7 @@ export async function displayCredit(host, stream, command, signal) {
     // post-fence capture proves the same masks and an exact source base.
     // Unsent old frames still retire; unknown/new geometry takes a key.
     const stable=nativeRegionBaseCurrent(stream,compositor,tab.document_id,host.protection);
-    if(stable){stream.producer.retireUnsent();stream.refiner?.invalidate();}else stream.invalidate();
+    if(stable){stream.producer.retireUnsent();stream.refiner?.invalidate();}else stream.invalidate(true,'region_revision');
     stream.compositorRegionRevision=regionRevision;
   }
   const sample=compositor?.sample();
@@ -100,11 +100,11 @@ export async function displayCredit(host, stream, command, signal) {
   if(compositor&&sample&&stream.codec!=='png'){
     // Serials are source-local. Retiring a source also retires its exact
     // base, even when a newly navigated document starts at the same serial.
-    if(stream.producer?.source!==compositor){stream.invalidate();stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
+    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
     // Admit recovery before selecting a native patch or taking an encoded
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
-    if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate();
+    if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate(true,stream.document_id!==tab.document_id?'document':'credit_lag');
     if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
     const policy=host.protection;
     const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
@@ -174,7 +174,9 @@ export async function displayCredit(host, stream, command, signal) {
     return !compositor?.closed&&compositor?.regionRevision===regionRevision&&(source.motion || ((host.inputEpochs.get(tab.tab_id) ?? 0) === epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder))));
   },()=>(region?region.isAlive()&&stream.regionWindow.isCurrent():!native||host.displayDocuments.current(tab))&&!compositor?.closed&&compositor?.regionRevision===regionRevision&&host.protection===capturePolicy&&(source.motion||((host.inputEpochs.get(tab.tab_id)??0)===epoch&&((source.refinement_serial===undefined||compositor?.sample()?.serial===source.refinement_serial)&&nativeRevisionCurrent(source,stream.encoder)))));
   if(frame)host.timing.event?.('frame_out',{at:source.captured_ms,source_kind:{browser_chrome:1,region:2,browser_auxiliary:3,visible_page:4,browser_window:5}[stream.regionTarget?.kind]??0,width:stream.css_width*stream.device_scale_factor,height:stream.css_height*stream.device_scale_factor,sequence:frame.sequence,kind:frameKinds[frame.kind]??0,input_triggered:source.input_triggered?1:0,input_epoch:epoch,
-    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
+    damage_ready_ms:source.raw?.damage_ready_ms,input_wake_ms:source.raw?.input_wake_ms,published_ms:source.published_ms,encode_offered_ms:Number.isFinite(source.offeredAt)?performance.timeOrigin+source.offeredAt:undefined,encode_started_ms:source.encode_started_ms,encoded_ms:source.encoded_ms,native_serial:source.raw?.serial,key:frame.key?1:0,get payload_bytes(){return egressBytes(frame,stream.relay_binary)}});
+  // Diagnostics (labels only): what forced this key.
+  if(frame?.key){host.timing?.(`display_key ${stream.keyReason??stream.encoder?.keyCause??'encoder'}`,timestamp());stream.keyReason=undefined;if(stream.encoder)stream.encoder.keyCause=undefined;}
   if(frame){stream.compositorMasks=JSON.stringify(source.raw?.[displayMaskRegions]??[]);stream.compositorSerial=source.refinement_serial ?? source.serial;if(source.input_triggered)stream.deliveredInputEpoch=epoch;if(stream.exact&&source.raw?.nativeCommit){source.raw.nativeCommit(stream.encoder.nativeSession,!source.moves);stream.compositorCommittedSerial=stream.compositorSerial;}}
   compositor?.plans?.(stream.exact&&!stream.shiftHold&&stream.compositorMasks==='[]');
   return { generation: host.generation, frame_sent: frame !== null, display_frame: frame };

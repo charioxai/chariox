@@ -59,7 +59,7 @@ export class PortableEncoder {
       const auto=mine?raw.auto.take():null;let reply,fromAuto=false;
       if(auto){
         if(!stripes&&reset===false&&unprotected){const {generation,value}=await auto;if(generation===raw.auto.generation&&value.busy!==true){reply=value;fromAuto=true;this.timing?.('native_auto_encode',performance.timeOrigin+performance.now());}}
-        else{raw.nativeRetireState(this.nativeSession);auto.then(({value})=>discardPacket(value.packet),()=>{});reset=true;this.timing?.('native_auto_retired',performance.timeOrigin+performance.now());}
+        else{raw.nativeRetireState(this.nativeSession);auto.then(({value})=>discardPacket(value.packet),()=>{});reset=true;this.keyCause='auto_retired';this.timing?.('native_auto_retired',performance.timeOrigin+performance.now());}
       }
       reply??=await raw.nativeEncode({encoder:this.nativeSession,bitrate,reset,...(!stripes?{stripes:false}:{}),...(reduced?{reduced:true}:{}),regions:raw[displayMaskRegions]??[],...(unprotected?{unprotected:true}:{})});
       if(!['native-openh264','native-x264','native-vaapi'].includes(reply.backend)||!Array.isArray(reply.stripes)&&reply.dropped!==true)throw Error('MP-11: native codec reply');
@@ -75,7 +75,7 @@ export class PortableEncoder {
         // L3: a delta must follow the last packet this encoder returned; an
         // encode nobody received in between skips this sample for a key.
         const row=reply.stripes[0];
-        if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());
+        if(!row.key&&row.reference_sequence!==this.chainSequence){discardPacket(reply.packet);this.packets.delete(reply.packet.name);this.chainSequence=undefined;this.keyCause='chain_gap';this.timing?.('native_chain_gap',performance.timeOrigin+performance.now());
           // Skipping the sample would hold its pixels until the next damage (a typed glyph after a quiet moment): encode this readback again as a key under a retired record.
           if(!rekeyed){raw.nativeRetireState?.(this.nativeSession);return this.nativeEncode(raw,bitrate,true,stripes,true);}
           throw Object.assign(Error('MD-DISPLAY: native chain gap'),{busy:true});}
@@ -277,7 +277,7 @@ export class DisplayStream {
   acceptsCredit(after) { return Number.isSafeInteger(after) && after >= Math.max(0,this.sequence-8) && after <= this.sequence; }
   resetForDelivery() {
     const prepared=this.resumed&&this.producer?.independentFrameReady;
-    this.resumed=false;if(!prepared)this.invalidate();
+    this.resumed=false;if(!prepared)this.invalidate(true,'resume');
   }
   // MP-11: every per-frame check of a leased frame becomes this retire; the
   // record is renewed only while the frame's synchronous binding still holds.
@@ -292,11 +292,12 @@ export class DisplayStream {
     if(!this.leased)return 0;
     this.endLease();this.leased=false;this.streak=0;
     if(!Number.isSafeInteger(afterSequence)||afterSequence<=this.sequence)return 0;
-    const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate();return frames;
+    const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate(true,'lease');return frames;
   }
-  endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
+  endLease(){if(this.leased||this.leaseTimer)this.keyReason='lease_end';clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
   // `reencode` false: the frame in hand is itself an independent key, so the producer's chain already restarts with it.
-  invalidate(reencode=true) { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();if(reencode)this.producer?.invalidate(); }
+  // `reason` labels the key this forces (frame_out timing).
+  invalidate(reencode=true,reason='invalidated') { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();if(reencode){this.producer?.invalidate();this.keyReason=reason;} }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     const codec={};
     const epoch=this.deliveryEpoch??0;
@@ -304,7 +305,7 @@ export class DisplayStream {
     try{return await this.buildFrame(source,documentId,afterSequence,async()=>active()&&await validate(),()=>active()&&currentBinding(),codec)}
     // MP-11: a taken or fresh codec packet advanced the reference chain that
     // the client never receives; the next video frame must be independent.
-    catch(error){if(source.encoded||codec.used)this.invalidate();this.discardSource(source);throw error}
+    catch(error){if(source.encoded||codec.used)this.invalidate(true,'error');this.discardSource(source);throw error}
   }
   async buildFrame(source, documentId, afterSequence, validate, currentBinding, codec) {
     let at = timestamp();
@@ -317,7 +318,7 @@ export class DisplayStream {
     const bound = documentId === this.document_id && this.acceptsCredit(afterSequence);
     // MP-11: tile-only native work belongs to an existing compositor base.
     // Its serial is a scheduling hint and can never become a full PNG.
-    if(source.native_repair&&(!bound||!this.previous)){this.invalidate();return null;}
+    if(source.native_repair&&(!bound||!this.previous)){this.invalidate(true,'repair_unbound');return null;}
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
@@ -325,7 +326,7 @@ export class DisplayStream {
       // only future work cannot make that packet independently decodable.
       // A taken key ships: encoding its raster again would send the same IDR twice (every new document's first frame).
       const delta=source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key);
-      this.invalidate(!source.encoded||delta);
+      this.invalidate(!source.encoded||delta,documentId!==this.document_id?'document':'credit_lag');
       if (delta) {this.discardSource(source);return null;}
     }
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
@@ -429,7 +430,7 @@ export class DisplayStream {
     if(deadline<=this.now()&&!video)await this.wait(0);
     while(this.now()<deadline){
       if(!currentBinding()){
-        if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
+        if(['video','stripes'].includes(payload.kind))this.invalidate(true,'superseded');else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}
         this.discardSource(source);return null;
       }
       const before=this.now(),slice=Math.min(deadline-before,8);await this.wait(slice);
@@ -439,7 +440,7 @@ export class DisplayStream {
     this.tokens = Math.min(16*1024, this.tokens + Math.max(0,this.now()-this.refillAt)*this.bitrate/8000)-(unpaced?0:bytes);
     this.tokens = Math.max(urgent?-32768:0,this.tokens); this.refillAt = this.now();
     this.timing('pacing', at);
-    if (!await validate() || !currentBinding()) { if(['video','stripes'].includes(payload.kind))this.invalidate();else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
+    if (!await validate() || !currentBinding()) { if(['video','stripes'].includes(payload.kind))this.invalidate(true,'refused');else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
     if(bootstrap){
       this.producer?.retireUnsent();this.refiner?.invalidate();
       this.encoder.retire?.();
@@ -477,7 +478,7 @@ export class DisplayStream {
   park(parked) {
     parked = Boolean(parked);
     if (parked === Boolean(this.parked)) return;
-    this.parked = parked; this.invalidate(); this.regionSource?.park?.(parked);
+    this.parked = parked; this.invalidate(true,'park'); this.regionSource?.park?.(parked);
     if (!parked) { for (const wake of this.unparkWaiters ?? []) wake(); this.unparkWaiters = null; }
   }
   waitUnparked(ms) {

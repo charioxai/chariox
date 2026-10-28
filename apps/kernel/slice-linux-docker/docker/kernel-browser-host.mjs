@@ -155,7 +155,7 @@ export class KernelBrowserHost {
     this.nativeAccessibility.clear();
     this.mirror.invalidate();
     await this.closeCompositors();
-    for (const stream of this.displays.values()) stream.invalidate();
+    for (const stream of this.displays.values()) stream.invalidate(true, 'protection');
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
