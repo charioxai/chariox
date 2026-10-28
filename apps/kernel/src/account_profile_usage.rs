@@ -144,6 +144,7 @@ mod tests {
         let b = ProviderAccountProfileRegistry::open(root.path().join("b.json")).unwrap();
         let scope = root.path().join("opencode");
         fs::create_dir_all(&scope).unwrap();
+        set_private_dir_permissions(&scope).unwrap();
         for registry in [&a, &b] {
             registry
                 .link_existing("local", "opencode", "Work", &scope)
