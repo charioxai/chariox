@@ -173,6 +173,25 @@ try {
     await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   }
+  const large = Array.from({ length: 100 }, (_, row) =>
+    Array.from({ length: 10 }, () => String(100 - row).padStart(3, '0') + 'x'.repeat(297)));
+  for (let row = 0; row < large.length; row += 10) {
+    assert.deepEqual(await invoke('set_range', { range: `A${row + 1}:J${row + 10}`, values: large.slice(row, row + 10) }), { updated: true });
+  }
+  assert.deepEqual(await invoke('sort_range', { range: 'A1:J100', column: 0, ascending: true }), { updated: true });
+  let text = '', offset, pages = 0, rangeRevision;
+  do {
+    const page = await invoke('read_range', { range: 'A1:J100', ...(offset === undefined ? {} : { offset }) });
+    assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 256 * 1024);
+    assert.equal(typeof page.text, 'string');
+    rangeRevision ??= page.revision;
+    assert.equal(page.revision, rangeRevision);
+    text += page.text; pages++;
+    offset = page.done ? undefined : page.next;
+  } while (offset !== undefined);
+  assert.ok(pages > 1);
+  assert.deepEqual(JSON.parse(text).values, [...large].reverse());
+  log.push({ largeRange: { cells: 1000, charactersPerCell: 300, pages, bytes: Buffer.byteLength(text) } });
   await writeFile(path.join(evidence, 'view-results.json'), JSON.stringify({ kind: 'supplementary-A2-browser-fixture', browser: await connection.send('Browser.getVersion'), log, errors }, null, 2));
   assert.deepEqual(errors, []);
   console.log('PASS: real Univer canvas, A2 declarations, CSV/formulas/sort/save/export/reopen; backend fixture only');
