@@ -26,10 +26,12 @@ async function nativePath(run) {
     }
     try {
         await new Promise((resolve, reject) => {
-            socket.addEventListener('open', resolve, {once: true});
-            socket.addEventListener('error', () => reject(Error('Native metadata connection failed')), {once: true});
+            const timer = setTimeout(() => reject(Error('Native metadata connection deadline')), 15000);
+            socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, {once: true});
+            socket.addEventListener('error', () => { clearTimeout(timer); reject(Error('Native metadata connection failed')); }, {once: true});
         });
-        await request(1, 'initialize', {clientInfo: {name: 'return-continuity', version: '1'}});
+        await request(1, 'initialize', {clientInfo: {name: 'return-continuity', version: '1'}, capabilities: {experimentalApi: true}});
+        socket.send(JSON.stringify({method: 'initialized', params: {}}));
         const result = await request(2, 'thread/read', {threadId: run.provider_session_id, includeTurns: false});
         assert.equal(result.thread.id, run.provider_session_id);
         const path = result.thread.path;
