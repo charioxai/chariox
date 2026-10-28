@@ -664,53 +664,17 @@ test("user-domain instances of one App have independent targets and do not adopt
   }
 });
 
-// MP-08/MP-10/MP-11: who an App Tab's calls run as comes from the controller's
-// own record of the input it dispatched there, never from the page.
 const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
   params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
-const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
-const agentOf = (id) => ({ kind: "agent", id });
+const takeActors = async tabs => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
 
-test("a Tab no agent drove runs its calls as the person; one an agent drove, as that agent", async () => {
-  const { tabs, connection } = await opened();
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [null]);
-  tabs.noteAgent("t1", "agent-7");
-  // Timers, browser-generated events and the person's own clicks look alike to
-  // the controller: after the agent, none of them is the person's.
-  await bindingCall(tabs, connection, { id: "c2", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-  tabs.noteAgent("unknown", "agent-7");
-});
-
-test("the page cannot name who a call runs as", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  for (const origin of ["", null, "agent-8", "*"]) await bindingCall(tabs, connection, { id: `c-${origin}`, method: "poll", origin, actor: null });
-  assert.deepEqual(await takeActors(tabs), Array(4).fill(agentOf("agent-7")));
-});
-
-test("a new document of the Tab keeps the agents that drove it", async () => {
-  const { tabs, connection } = await opened();
-  tabs.noteAgent("t1", "agent-7");
-  await navigated(connection, "doc-2");
-  await bindingCall(tabs, connection, { id: "c1", method: "startup" });
-  assert.deepEqual(await takeActors(tabs), [agentOf("agent-7")]);
-});
-
-test("a Tab two agents drove refuses every call with APP_ACTOR_UNKNOWN", async () => {
-  const { tabs, connection } = await opened();
-  const answers = [];
-  const send = connection.send.bind(connection);
-  connection.send = async (method, params, id) => {
-    if (method === "Runtime.evaluate") answers.push(params.expression);
-    return send(method, params, id);
-  };
-  tabs.noteAgent("t1", "agent-7");
-  tabs.noteAgent("t1", "agent-8");
-  await bindingCall(tabs, connection, { id: "c1", method: "poll" });
-  assert.deepEqual(await takeActors(tabs), []);
-  assert.match(answers.at(-1), /__charioxAppResolve\("c1", false, .*APP_ACTOR_UNKNOWN/);
+test('ambient backend calls always act as the human, including after navigation', async () => {
+  const {tabs,connection}=await opened();
+  for (const id of ['agent-one','agent-two']) await bindingCall(tabs,connection,{id,method:'save',actor:{kind:'agent',id}});
+  assert.deepEqual(await takeActors(tabs),[null,null]);
+  await navigated(connection,'document-two');
+  await bindingCall(tabs,connection,{id:'startup',method:'load'});
+  assert.deepEqual(await takeActors(tabs),[null]);
 });
 
 // MP-08/MP-10/MP-11: a second App calls during navigation, before the kernel binds it.
@@ -831,4 +795,11 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert.deepEqual(again,result);assert(connection.sent.some(x=>x.method==='Target.activateTarget'));
  assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
  assert.equal([...tabs.apps.values()][0].ready,true);
+});
+
+test('an unknown invocation token is refused before the action bridge is available', async () => {
+  const {tabs,connection}=await opened();
+  await bindingCall(tabs,connection,{id:'invocation:unknown:document:1',method:'save'});
+  assert.deepEqual(tabs.calls,[]);
+  assert.match(connection.sent.at(-1).params.expression,/APP_INVOCATION_EXPIRED/);
 });
