@@ -45,7 +45,8 @@ pub(super) fn machine(root: Option<&Path>) -> EnvironmentMeasuredFacts {
                     // statvfs field widths differ between Unix platforms.
                     #[allow(clippy::unnecessary_cast)]
                     {
-                        f.free_disk_bytes = (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
+                        f.free_disk_bytes =
+                            (stat.f_bavail as u64).checked_mul(stat.f_frsize as u64);
                     }
                 }
             }

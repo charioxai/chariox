@@ -104,26 +104,31 @@ fn run_apply(
         let r = environment_requirements(env)
             .find(|r| r.requirement_id == id)
             .expect("validated selection");
-        let lock = store.lock(project.id())?;
-        validate_project(state, project, &ctx.owner, env, store)?;
-        if current_check_target(&state.owned.config_projection.snapshot()) != op.target {
-            return Err(environment_error("Apply target generation changed"));
-        }
-        let mut journal = store.load_applies(project.id())?;
-        let a = current_attempt(&mut journal, op)
-            .ok_or_else(|| environment_error("Apply attempt displaced"))?;
-        if a.operation.cancellation.is_some() {
-            drop(lock);
-            break;
-        }
-        a.operation.phase = EnvironmentOperationPhase::Running;
-        let uncertain = a.uncertain_requirements.contains(&id);
-        let previous_receipt = a
-            .operation
-            .receipts
-            .iter()
-            .find(|receipt| receipt.requirement_id.as_deref() == Some(&id))
-            .cloned();
+        let (uncertain, previous_receipt) = {
+            let _lock = store.lock(project.id())?;
+            validate_project(state, project, &ctx.owner, env, store)?;
+            if current_check_target(&state.owned.config_projection.snapshot()) != op.target {
+                return Err(environment_error("Apply target generation changed"));
+            }
+            let mut journal = store.load_applies(project.id())?;
+            let a = current_attempt(&mut journal, op)
+                .ok_or_else(|| environment_error("Apply attempt displaced"))?;
+            if a.operation.cancellation.is_some() || !apply_active(&a.operation) {
+                break;
+            }
+            a.operation.phase = EnvironmentOperationPhase::Running;
+            let uncertain = a.uncertain_requirements.contains(&id);
+            let previous_receipt = a
+                .operation
+                .receipts
+                .iter()
+                .find(|receipt| receipt.requirement_id.as_deref() == Some(&id))
+                .cloned();
+            store.save_applies(project.id(), &journal)?;
+            (uncertain, previous_receipt)
+        };
+        // Probes may wait on a mounted file or a remote service. They own no
+        // Project lock, and their facts cannot authorize effects until revalidation.
         let mut checks = store.load_checks(project.id())?;
         let mut observation = check_requirement_in_workspace(
             ctx,
@@ -135,13 +140,52 @@ fn run_apply(
             std::time::Instant::now() + std::time::Duration::from_secs(60),
             &mut workspace,
         );
+        let deps_ready = environment_dependencies(r).iter().all(|d| good.contains(d));
+        let setup_probe = if deps_ready
+            && observation.status != EnvironmentObservationStatus::Conflict
+            && matches!(&r.spec, RequirementSpec::SetupChecks { commands, .. } if !commands.is_empty())
+        {
+            let mut probe = r.clone();
+            if let RequirementSpec::SetupChecks {
+                commands, legacy, ..
+            } = &mut probe.spec
+            {
+                commands.clear();
+                *legacy = None;
+            }
+            Some(check_requirement_in_workspace(
+                ctx,
+                env,
+                &probe,
+                &op.target,
+                &op.operation_id,
+                &mut checks.public_bindings,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                &mut workspace,
+            ))
+        } else {
+            None
+        };
+        let lock = store.lock(project.id())?;
+        validate_project(state, project, &ctx.owner, env, store)?;
+        if current_check_target(&state.owned.config_projection.snapshot()) != op.target {
+            return Err(environment_error(
+                "Apply target generation changed during probe",
+            ));
+        }
+        let mut journal = store.load_applies(project.id())?;
+        let a = current_attempt(&mut journal, op)
+            .ok_or_else(|| environment_error("Apply attempt displaced during probe"))?;
+        if a.operation.cancellation.is_some() || !apply_active(&a.operation) {
+            drop(lock);
+            break;
+        }
         let mut result = apply_item_result(
             r,
             observation.status.clone(),
             &observation.reason_code,
             &observation.safe_summary,
         );
-        let deps_ready = environment_dependencies(r).iter().all(|d| good.contains(d));
         let opt_in = op
             .per_item_opt_ins
             .iter()
@@ -170,24 +214,8 @@ fn run_apply(
                 RequirementSpec::SetupChecks {
                     commands, probes, ..
                 } if !commands.is_empty() => {
-                    let mut probe = r.clone();
-                    if let RequirementSpec::SetupChecks {
-                        commands, legacy, ..
-                    } = &mut probe.spec
-                    {
-                        commands.clear();
-                        *legacy = None;
-                    }
-                    let checked = check_requirement_in_workspace(
-                        ctx,
-                        env,
-                        &probe,
-                        &op.target,
-                        &op.operation_id,
-                        &mut checks.public_bindings,
-                        std::time::Instant::now() + std::time::Duration::from_secs(60),
-                        &mut workspace,
-                    );
+                    let checked = setup_probe
+                        .expect("Setup commands received their probe outside the Project lock");
                     // Applicability and probe-admission failures cannot authorize side effects.
                     // Only a measured readiness failure can be repaired by opted-in Setup.
                     if !matches!(checked.reason_code.as_str(), "checks_passed" | "check_failed") {

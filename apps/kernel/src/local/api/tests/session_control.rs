@@ -1337,9 +1337,17 @@ fn envp01_delivered_operations_authorize_and_future_operations_remain_unsupporte
         serde_json::json!({"CommitEnvironmentImport":{"operationId":"op","previewId":"absent","previewDigest":"digest","choice":{"kind":"new"}}}),
     ];
     for value in future {
-        let delivered = value.as_object().unwrap().keys().any(|name| matches!(name.as_str(),
-            "PlanProjectEnvironment" | "ApplyProjectEnvironment" | "CheckProjectEnvironment"
-            | "GetEnvironmentOperation" | "CancelEnvironmentOperation" | "RetryEnvironmentOperation"));
+        let delivered = value.as_object().unwrap().keys().any(|name| {
+            matches!(
+                name.as_str(),
+                "PlanProjectEnvironment"
+                    | "ApplyProjectEnvironment"
+                    | "CheckProjectEnvironment"
+                    | "GetEnvironmentOperation"
+                    | "CancelEnvironmentOperation"
+                    | "RetryEnvironmentOperation"
+            )
+        });
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         if delivered {
             // MP-08 / MP-10 / MP-11: P04/P05a are delivered, but an absent
