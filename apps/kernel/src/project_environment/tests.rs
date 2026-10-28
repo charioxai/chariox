@@ -352,6 +352,7 @@ fn mp08_store_persists_the_evidence_of_a_workspace_with_tens_of_thousands_of_fil
     let mut manifest = fixture_manifest(vec![]);
     manifest.evidence_digest = evidence.digest();
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest,
         evidence,
