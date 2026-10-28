@@ -1124,7 +1124,8 @@ mod tests {
                         name: "SYNTHETIC_PRIVATE_INPUT".into(),
                         workspace_id: session.clone(),
                         kind: crate::project_environment::ProjectEnvironmentEntryKind::Variable,
-                        classification: crate::project_environment::ProjectEnvironmentClassification::Secret,
+                        classification:
+                            crate::project_environment::ProjectEnvironmentClassification::Secret,
                         excluded: false,
                         uses: vec![],
                         locator: crate::project_environment::ProjectEnvironmentLocator::Vault {

@@ -7,8 +7,12 @@ use std::{collections::BTreeMap, path::Path};
 // Vault. Public file/environment bindings require no protected authorization.
 pub(crate) fn project_environment_requires_vault(manifest: &ProjectEnvironmentManifest) -> bool {
     manifest.entries.iter().any(|entry| {
-        !entry.excluded && (entry.classification == ProjectEnvironmentClassification::Secret
-            || matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. } | ProjectEnvironmentLocator::Missing))
+        !entry.excluded
+            && (entry.classification == ProjectEnvironmentClassification::Secret
+                || matches!(
+                    entry.locator,
+                    ProjectEnvironmentLocator::Vault { .. } | ProjectEnvironmentLocator::Missing
+                ))
     })
 }
 
@@ -33,30 +37,57 @@ pub(crate) fn project_public_setup_environment(
     // Cross-folder prerequisites cannot be substituted by equal names here.
     let mut permitted = BTreeMap::new();
     for dependency in dependencies {
-        let RequirementSpec::Variables { name, locator } = &dependency.spec else { continue };
+        let RequirementSpec::Variables { name, locator } = &dependency.spec else {
+            continue;
+        };
         if dependency.scope != RequirementScope::Project
-            && dependency.scope != (RequirementScope::Folder { folder_id: folder.folder_id.clone() })
+            && dependency.scope
+                != (RequirementScope::Folder {
+                    folder_id: folder.folder_id.clone(),
+                })
         {
-            return Err(super::resolver::environment_error("Setup public prerequisite scope does not match its execution folder"));
+            return Err(super::resolver::environment_error(
+                "Setup public prerequisite scope does not match its execution folder",
+            ));
         }
         if permitted.insert(name.as_str(), locator).is_some() {
-            return Err(super::resolver::environment_error("Setup public prerequisites are ambiguous"));
+            return Err(super::resolver::environment_error(
+                "Setup public prerequisites are ambiguous",
+            ));
         }
     }
-    let environment = project_launch_environment_selected(config, project_id, &folder.local_workspace_binding, directory, |entry| {
-        permitted.get(entry.name.as_str()).is_some_and(|locator| *locator == &entry.locator)
-            && entry.classification == ProjectEnvironmentClassification::NonSecret
-            && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
-            && !crate::secret::secret_like_env_name(&entry.name)
-    })?;
+    let environment = project_launch_environment_selected(
+        config,
+        project_id,
+        &folder.local_workspace_binding,
+        directory,
+        |entry| {
+            permitted
+                .get(entry.name.as_str())
+                .is_some_and(|locator| *locator == &entry.locator)
+                && entry.classification == ProjectEnvironmentClassification::NonSecret
+                && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
+                && !crate::secret::secret_like_env_name(&entry.name)
+        },
+    )?;
     // MP-08 / MP-10 / MP-11: a missing required public input is preparation,
     // never permission to execute the command with a silently reduced environment.
-    if permitted.keys().any(|name| !environment.iter().any(|(binding, _)| binding == *name)) {
-        return Err(super::resolver::environment_error("Setup public prerequisites unavailable"));
+    if permitted
+        .keys()
+        .any(|name| !environment.iter().any(|(binding, _)| binding == *name))
+    {
+        return Err(super::resolver::environment_error(
+            "Setup public prerequisites unavailable",
+        ));
     }
     // MP-11: saved classification cannot authorize freshly changed credential content.
-    if environment.iter().any(|(_, value)| super::detect_index::credential_content(value)) {
-        return Err(super::resolver::environment_error("Setup public input requires Vault classification"));
+    if environment
+        .iter()
+        .any(|(_, value)| super::detect_index::credential_content(value))
+    {
+        return Err(super::resolver::environment_error(
+            "Setup public input requires Vault classification",
+        ));
     }
     Ok(environment)
 }
@@ -82,9 +113,10 @@ fn project_launch_environment_selected(
         !entry.excluded
             && entry.classification == ProjectEnvironmentClassification::NonSecret
             && project_environment_public_source_protected(&entry.locator)
-    })
-    {
-        return Err(super::resolver::environment_error("Protected public source binding"));
+    }) {
+        return Err(super::resolver::environment_error(
+            "Protected public source binding",
+        ));
     }
     let roots = BTreeMap::from([(workspace_id.to_string(), directory.to_path_buf())]);
     let names = manifest

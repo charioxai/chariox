@@ -714,11 +714,28 @@ fn worker_validation_environment_allowed(name: &str, removed: &BTreeSet<String>)
 
 // MP-08 / MP-10 / MP-11: Project-owned Apply uses the same stripping policy
 // without manufacturing a provider run or inheriting a linked account.
-pub(super) fn worker_validation_environment_without_provider(home: &Path) -> BTreeMap<String, String> {
-    let removed = crate::provider::managed_provider_isolation_env_remove().into_iter().collect();
-    let mut environment: BTreeMap<_, _> = std::env::vars().filter(|(name, _)| worker_validation_environment_allowed(name, &removed)).collect();
+pub(super) fn worker_validation_environment_without_provider(
+    home: &Path,
+) -> BTreeMap<String, String> {
+    let removed = crate::provider::managed_provider_isolation_env_remove()
+        .into_iter()
+        .collect();
+    let mut environment: BTreeMap<_, _> = std::env::vars()
+        .filter(|(name, _)| worker_validation_environment_allowed(name, &removed))
+        .collect();
     environment.insert("HOME".into(), home.to_string_lossy().into_owned());
-    environment.insert("PATH".into(), worker_preparation_path(home, None, environment.get("PATH").map(String::as_str).unwrap_or_default(), None));
+    environment.insert(
+        "PATH".into(),
+        worker_preparation_path(
+            home,
+            None,
+            environment
+                .get("PATH")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            None,
+        ),
+    );
     environment
 }
 

@@ -379,7 +379,7 @@ pub(in crate::runtime::state) fn apply_setup_requirement(
             &command_id,
             command_attempt,
             index,
-            &should_stop,
+            should_stop,
             Some(command_deadline),
         );
         match result {

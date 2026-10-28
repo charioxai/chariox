@@ -68,6 +68,8 @@ pub(crate) fn check_requirement(
         &mut super::check_workspace::CheckWorkspace::default(),
     )
 }
+// Keep the operation identity, deadline and mutable probe state explicit.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_requirement_in_workspace(
     ctx: &EnvironmentCheckContext,
     env: &ProjectEnvironment,

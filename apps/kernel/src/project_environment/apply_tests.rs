@@ -324,7 +324,10 @@ fn envp05a_removed_apply_binding_is_absent_from_next_provider_launch() {
 // MP-08 / MP-10 / MP-11: refresh changes measured status, not binding authority.
 #[test]
 fn envp05a_status_refresh_preserves_retirement_ownership() {
-    for status in [ProjectEnvironmentEntryStatus::Missing, ProjectEnvironmentEntryStatus::Problem] {
+    for status in [
+        ProjectEnvironmentEntryStatus::Missing,
+        ProjectEnvironmentEntryStatus::Problem,
+    ] {
         removed_binding_after_status_refresh(status);
     }
 }
@@ -358,7 +361,13 @@ fn removed_binding_after_status_refresh(status: ProjectEnvironmentEntryStatus) {
     apply_scoped_binding(&store, &config, &env, &removed).unwrap();
     apply_scoped_binding(&store, &config, &env, &remaining).unwrap();
     let mut refreshed = store.load(project.id()).unwrap().unwrap();
-    refreshed.manifest.entries.iter_mut().find(|entry| entry.name == "RETIRED_PUBLIC_INPUT").unwrap().status = status;
+    refreshed
+        .manifest
+        .entries
+        .iter_mut()
+        .find(|entry| entry.name == "RETIRED_PUBLIC_INPUT")
+        .unwrap()
+        .status = status;
     store.save(&refreshed).unwrap();
     env.project_requirements.remove(0);
     apply_scoped_binding(&store, &config, &env, &remaining).unwrap();
@@ -472,7 +481,10 @@ fn envp05a_reviewed_apply_locator_updates_public_and_named_vault_sources() {
 
 #[test]
 fn envp05a_status_refresh_preserves_reviewed_locator_ownership() {
-    for status in [ProjectEnvironmentEntryStatus::Missing, ProjectEnvironmentEntryStatus::Problem] {
+    for status in [
+        ProjectEnvironmentEntryStatus::Missing,
+        ProjectEnvironmentEntryStatus::Problem,
+    ] {
         reviewed_locators_after_status_refresh(status);
     }
 }
@@ -535,7 +547,9 @@ fn reviewed_locators_after_status_refresh(status: ProjectEnvironmentEntryStatus)
     apply_scoped_binding(&store, &config, &env, &public).unwrap();
     apply_scoped_binding(&store, &config, &env, &secret).unwrap();
     let mut refreshed = store.load(project.id()).unwrap().unwrap();
-    for entry in &mut refreshed.manifest.entries { entry.status = status; }
+    for entry in &mut refreshed.manifest.entries {
+        entry.status = status;
+    }
     store.save(&refreshed).unwrap();
     public.spec = RequirementSpec::Variables {
         name: "PUBLIC_SITE".into(),

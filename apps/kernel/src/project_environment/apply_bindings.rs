@@ -49,7 +49,7 @@ pub(crate) fn publish_scoped_binding(
                 reviewed_manifest: None,
                 last_review: None,
             });
-    reconcile_owned_bindings(&mut stored, env, &[r.scope.clone()]);
+    reconcile_owned_bindings(&mut stored, env, std::slice::from_ref(&r.scope));
     // Publish only independently validated folder entries; values remain with the resolver.
     for entry in entries {
         let owned = stored.manifest.entries.iter().any(|e| {

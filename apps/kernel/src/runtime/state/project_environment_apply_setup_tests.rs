@@ -460,7 +460,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             "inapplicable Setup must not run declared commands"
         );
         assert!(
-            attempt.setup_admitted_commands.get("setup").is_none(),
+            !attempt.setup_admitted_commands.contains_key("setup"),
             "applicability failure must precede Setup admission"
         );
         assert_eq!(
