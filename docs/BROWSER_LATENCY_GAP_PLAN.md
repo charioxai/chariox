@@ -2,15 +2,17 @@
 
 latfable r1, 2026-10-28. MP-08 / MP-09 / MP-10 / MP-11. Companion: `AUDIT.md` (causes with evidence), `history/*.md` (file:line digests), `OPUS_BRIEF.md` (first-round brief). Baseline: OSS main `362ef830c9`, Cloud main `8bbdf60b3c`.
 
+> **Terms (Miguel, 2026-10-28).** kernel browser = the Chariox browser running in the kernel (DOM mirror, video regions, tabs); a Room is a session whose agents share ONE kernel browser; slice desktop projection = the video projection of a slice's desktop (its own Chromium, Computer-use panel, today also shown by the Room's Browser view). The slice desktop projection is a separate item, not part of browser use and latency: see the appendix "Parked: slice desktop projection".
+
 Rules the plan respects (Miguel): strict per-cell parity for keystroke-to-paint and omnibox first paint; other gates P95 <= RTT + 60 with RTT printed; software target <= 1 core at 1920x1080 moving, click/type -> present P95 < 50 ms on the local path, exact settled pixels; beat Selkies in both software (builder) and GPU (owner laptop) modes on latency, scroll fps, CPU, bandwidth, moving quality and settled exactness; DOM mirror primary, video regions inside it, whole-page protected video fallback stays, browser chrome as a protected video region; pinned kernel Chromium; OpenH264 stays; never downgrade to stills. Multi-domain redesign and its display redesign are on hold: each item below is marked INDEPENDENT or BLOCKED-BY-REDESIGN. Nothing below invests in the Selkies-in-slice bridge (`slice-selkies-stream.py`, `room_display.rs`), which current clients no longer use.
 
-Ordering: items that close the most cells per unit of work first. P0 is the rig and must come first because every later item is proven with it. P1-P3 are one connected piece of work on the kernel-browser navigation path and should be done in that order by one implementer; P4 is the Room desktop path and can run in parallel with P1-P3 by a second implementer if one exists.
+Ordering: items that close the most cells per unit of work first. P0 is the rig and must come first because every later item is proven with it. P1-P3 are one connected piece of work on the kernel-browser navigation path and should be done in that order by one implementer. P4 and P10 (slice desktop projection) are PARKED: a separate item, not browser use or latency.
 
 ## P0 — One paired rig for every cell (prerequisite) — INDEPENDENT
 
-- Goal: one harness that measures Chariox and Selkies in the same run with the same stop criterion, geometry and browser build, and records per-stage marks for both arms, for the kernel-browser path and the Room desktop path.
+- Goal: one harness that measures Chariox and Selkies in the same run with the same stop criterion, geometry and browser build, and records per-stage marks for both arms, for the kernel-browser path and the slice desktop projection path.
 - Owning code: harness only (no product behaviour). Start from `/root/.chariox/dev/navlat/r3/harness` (navigation-pair.mjs, scroll-pair.mjs, pixel-probe.py, aggregate-display-pipeline.py) and `/root/.chariox/dev/vidlat/r45` (keyboard glyph detection, band.mjs, video-sink.mjs) and slicemem r5 `measure.mjs` (desktop path). Runbook: `history/rig_runbook.md`.
-- Changes: (a) Selkies arm at the cell geometry (`--manual-width/height` = W*DPR x H*DPR, not the fixed 1280x800) so ROIs are physically equal; (b) both arms on CfT 155.0.8059.79, verified by `--version` in evidence; (c) stop criterion = physical headline region (<2.5 % px differ > 24 levels) for navigation and glyph detection for keystrokes, identical for both arms; (d) ABAB interleaving per block with the order alternated across passes; (e) add the omnibox-suggestion cell (typed character -> suggestion list pixels in the browser-chrome region) which does not exist today; (f) add the Room desktop cells (key, click, wheel, fps) on the same host with the same probe; (g) per-stage marks (diagnostic cells only, `CHARIOX_BROWSER_DISPLAY_TIMING=1 BUX_TIMING=1 BUX_RECEIVE_SIZE=1`): input | Chrome commit | Chrome first paint | display retired/admitted | frame encoded (bytes, QP, kind) | wire | received | decoded | presented | pixel error vs target per presented frame | exact repair sent/arrived/presented | mirror snapshot/sheets/frames/apply/paint | stop; Selkies arm: input | each frame sent (bytes) | presented | pixel error | stop; (h) byte counters per class (kinds 1-5, RPC, relay TLS) and per-process CPU per stage; (i) io probe (fdatasync p99) logged next to every run; (j) a table generator that prints the exit table (section "Exit table") with RTT next to every P95.
+- Changes: (a) Selkies arm at the cell geometry (`--manual-width/height` = W*DPR x H*DPR, not the fixed 1280x800) so ROIs are physically equal; (b) both arms on CfT 155.0.8059.79, verified by `--version` in evidence; (c) stop criterion = physical headline region (<2.5 % px differ > 24 levels) for navigation and glyph detection for keystrokes, identical for both arms; (d) ABAB interleaving per block with the order alternated across passes; (e) add the omnibox-suggestion cell (typed character -> suggestion list pixels in the browser-chrome region) which does not exist today; (f) add the slice desktop projection cells (key, click, wheel, fps) on the same host with the same probe; (g) per-stage marks (diagnostic cells only, `CHARIOX_BROWSER_DISPLAY_TIMING=1 BUX_TIMING=1 BUX_RECEIVE_SIZE=1`): input | Chrome commit | Chrome first paint | display retired/admitted | frame encoded (bytes, QP, kind) | wire | received | decoded | presented | pixel error vs target per presented frame | exact repair sent/arrived/presented | mirror snapshot/sheets/frames/apply/paint | stop; Selkies arm: input | each frame sent (bytes) | presented | pixel error | stop; (h) byte counters per class (kinds 1-5, RPC, relay TLS) and per-process CPU per stage; (i) io probe (fdatasync p99) logged next to every run; (j) a table generator that prints the exit table (section "Exit table") with RTT next to every P95.
 - Target: the rig runs the whole exit table on a fresh ccx33 in one command and on Miguel's Mac for the GPU arm; acceptance cells with diagnostics OFF.
 - Command: `R/host/ssh "OSS_HEAD=... CLOUD_HEAD=... /opt/browserperf/run.sh <label> kernel-final '<WxH>@<DPR>' '14-open-band,browserperf-navigation-pair' BP_NAV_TRIALS=10 BP_TYPE_DELAY=40 BP_SOURCE_PROBE=1 BP_ARM_ORDER=native-first"` then `report.py`; extend with `BP_OMNIBOX=1`, `BP_DESKTOP=1`.
 - Expected gain: none in product; it removes the measurement artefacts that made 43 rounds incomparable (AUDIT section 4.5).
@@ -50,19 +52,9 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 - Risk: relay change touches every client (protocol rule; the relay must keep the JSON envelope for clients that did not negotiate binary); window layer removal must not reintroduce white frames on cold open (COLD-FRAME rule C: check with the stageboot cold-open harness).
 - Dependencies: P1 for the window-layer part; the relay part is independent.
 
-## P4 — Room desktop path: push frames from the worker, inject input without a process per event — INDEPENDENT (Computer); the Room-browser mirror dimension is BLOCKED-BY-REDESIGN
+## P4 — PARKED (slice desktop projection; see the appendix)
 
-- Goal: the headed-slice desktop stream behaves like the kernel-browser native stream: frames pushed with the ACK gate from where the worker is, input injected inline.
-- Owning code: K/runtime/state/room_shared_display.rs:482-532 and room_shared_display/worker.rs (replace per-credit `Capture` peer RPCs with a worker-side pump: the worker kernel runs `display_pump`-style capture/seal and streams sealed frames to the home kernel as events; the home kernel relays and keeps the ACK gate), K/transport/relay_client/display_pump.rs:373-410,512-531 (the direct-frame path with `lease` must also serve Room captures), K/runtime/state/room_browser_controller.rs:67-95 (local slice: skip the relay), K/runtime/state/human_environment_action_runtime_state.rs:24,319 (10 ms admission polling -> event), K/runtime/state/tool_dispatch/slice.rs:842-870,1044-1300 (one long-lived input helper per slice with a pipe, instead of a `slice-screen.sh` process per event; XTest for humans too, keeping the xdotool path for what XTest cannot do), D/slice-screen.sh:601-699, D/slice-keyboard.py:157,200-257 (40 ms per key pace -> only between repeated keys), cloud packages/terminal-domain/src/room/screen-input-queue.ts:4-14 (do not wait a full round trip per event; pipeline input like the kernel-browser `display_input`), K/config.rs:69 `DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS=33` (exempt display and input lanes from the local write delay, as culinux r56 found).
-- Selkies mechanism copied: capture thread -> socket with ack backpressure (we already have display_pump); XTEST input inline without sync (S input_handler.py:4525,5132).
-- Target and cells: WT-22 / ND-06 input P95 <= RTT + 60 (138 ms at RTT 78) and scroll >= 30 fps on the 6 sites at DPR1 and DPR2 with 0 timeouts; CU-ROOM-TAKEOVER-RELEASE P95 <= RTT + 60 at both DPRs; CU-PARITY click/type/fps/cores <= Selkies in the same paired run (Selkies arm at `--framerate=60 cbr 8000` on the same slice display, same geometry); CU-ROOM-SOAK-2H 2 h without a worker restart (see P12); the stall at scroll start (0.5-3 s) root-caused and gone.
-- Rig/command: P0 desktop cells (`BP_DESKTOP=1`) on the quiet host with the slice on the same host; `slicemem/r5/harness/measure.mjs` as the starting point.
-- Expected gain: frame cadence from 1/(2 x relay RTT + wait) to the ACK-gated push (fps 0-17 -> >= 30; culinux r58 already saw ~20 fps capped by the serial RPC chain at p50 48.6 ms); key latency from (round trip + fork/exec + 40 ms pace) x serial to one way (382-432 -> ~RTT + 60); click 271-1682 -> under the gate.
-- Risk: peer protocol change (RELAY_PEER_PROTOCOL_VERSION) for the pushed-frame event and the input pipe; the worker kernel must keep sealing frames for the viewer key (it already does); the slice Chromium is Debian chromium, not CfT (parity rule): record versions, and consider shipping CfT into the slice image.
-- Dependencies: none for the video/input part. The mirror-coverage dimension of WT-22 (Room Browser as a DOM mirror) depends on the pending redesign that puts the kernel browser on slices too (P10): do not build a mirror bridge into the headed slice before that design lands.
-- Redesign note: if the "higher-quality transmission replacing Selkies" replaces the desktop video transport itself, the worker-side pump is still the mechanism that transport needs (frames must be pushed from where they are captured); the input pipe is independent of transport. Neither is wasted.
-
-## P5 — DPR2: motion at DPR1 geometry, settled pixels exact at DPR2 — INDEPENDENT (needs Miguel's confirmation of the moving-quality trade, see pre-requisites)
+## P5 — DPR2: motion at DPR1 geometry, settled pixels exact at DPR2 — INDEPENDENT (APPROVED by Miguel 2026-10-28: Selkies does the same)
 
 - Goal: a DPR2 viewer's moving frames cost what a DPR1 viewer's cost; settled frames are exact at device scale 2.
 - Owning code: DN/codec.c:232-247 (`motion_geometry`: reduced 2560x1600 -> 1280x800 only under contention today; make it the default for unprotected whole-frame motion at dsf 2 with the exact repair restoring the native raster), D/kernel-browser-process.mjs:34-36 (`--force-device-scale-factor=2` stays, so settled pixels are exact), BD/presenter.mjs:76 and BD/video-sink.mjs:150-153 (present a 1280x800 motion frame scaled into the 2560x1600 backing until the repair lands), DN/openh264.c:102-104 (2 threads above 2.5 MP becomes moot for motion).
@@ -70,7 +62,7 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 - Target and cells: DPR2 click/type P95 <= Selkies (today 195-273 vs 187; 128-265 vs 116); STAGE-BROWSER-LATENCY-SCROLL 1920 DPR2 >= 50 fps (today 47-47.5); DPR2 video region fps >= Selkies; DISPLAY-P1-GATE DPR2/click-p95 and DPR2/news-scroll PASS; cores at DPR2 moving <= 1.0.
 - Rig/command: P0 click/type/scroll/video cells at DPR2; moving-quality check = per-frame PSNR of the presented motion frames vs the DPR2 source, compared with Selkies' DPR1-upscaled frames in the same run (must be >= Selkies).
 - Expected gain: -50..-80 ms on DPR2 interactions (displayopus FINAL-r2.md:58), 4x fewer pixels through capture/convert/encode during motion.
-- Risk: the Chromium repaint at DSF2 itself (part of the +50-80 ms) is not removed by this item; if the measurement shows the repaint dominates, the alternative is rendering at DSF1 during motion, which is a bigger change to the owned-window geometry. Moving quality at DPR2 equals Selkies' (both DPR1 sources) and must be shown to Miguel.
+- Risk: the Chromium repaint at DSF2 itself (part of the +50-80 ms) is not removed by this item; if the measurement shows the repaint dominates, the alternative is rendering at DSF1 during motion, which is a bigger change to the owned-window geometry. Moving quality at DPR2 equals Selkies' (both DPR1 sources).
 - Dependencies: P2 (the repair must be fast enough that the DPR1 motion frame is replaced within 150 ms of motion stop).
 
 ## P6 — OpenH264 threaded like x264; activity scan only over changed rows — INDEPENDENT
@@ -117,12 +109,7 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 - Risk: more packets in flight means ordering/apply discipline in the renderer (already in-sequence apply); verify first with the trace that the batching is kernel-side (hypothesis) before changing it.
 - Dependencies: none.
 
-## P10 — Room Browser as the kernel browser (DOM mirror in Rooms) — BLOCKED-BY-REDESIGN
-
-- Goal: the Room Browser sub-view shows the user-domain kernel browser (mirror primary, video regions, protected video fallback) instead of a headed-slice desktop; mirror coverage per site in Rooms.
-- Owning code: everything behind `shared_display`/`RoomSharedDisplay` for the browser case; the slice would host the kernel browser (pinned CfT) with its mirror ops routed through the Room peer protocol.
-- Why blocked: this is the "browser in the kernel as well as on slices" item of the pending multi-domain redesign. Building a mirror bridge into the current headed slice (Debian chromium, desktop-only controller) would be thrown away.
-- What is useful now: P4's worker-side pump and input pipe, which that design needs too; and recording WT-22's mirror dimension as BLOCKED-BY-REDESIGN with this reference.
+## P10 — PARKED (Rooms use the kernel browser instead of the slice desktop projection; see the appendix)
 
 ## P11 — Web-client cold raster and exactness rows — INDEPENDENT (small)
 
@@ -140,21 +127,20 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 
 ## What depends on what
 
-- Start now, in parallel: P0 (rig), then P1 -> P2 -> P3 (one implementer, kernel-browser navigation), P4 (second implementer or after P3), P6, P8, P9, P11 (any time, small).
-- After P1-P3 land: P5 (needs P2's fast repair), P7 (attributable only after P1-P3), P12 (after P4).
-- BLOCKED-BY-REDESIGN: P10 only. Items that would be useless once the new Browser/Apps setup arrives: none of P1-P9 (the kernel browser, its native display, the relay and the viewer stay; the redesign adds the browser on slices and a higher-quality transmission for which P1/P2/P4 are the prerequisites). Explicitly not planned: any work on the Selkies-in-slice bridge (`slice-selkies-stream.py`, `room_display.rs`, `display_tunnel.rs`), already unused by current clients.
+- Start now, in parallel: P0 (rig), then P1 -> P2 -> P3 (one implementer, kernel-browser navigation), P6, P8, P9, P11 (any time, small).
+- After P1-P3 land: P5 (needs P2's fast repair), P7 (attributable only after P1-P3). P12 (worker stability) stays, measured on the kernel-browser native display.
+- BLOCKED-BY-REDESIGN: none in the active list (P10, parked, was the only one). Items that would be useless once the new Browser/Apps setup arrives: none of P1-P9 (the kernel browser, its native display, the relay and the viewer stay; the redesign adds the browser on slices and a higher-quality transmission for which P1/P2 are the prerequisites). Explicitly not planned: any work on the Selkies-in-slice bridge (`slice-selkies-stream.py`, `room_display.rs`, `display_tunnel.rs`), already unused by current clients.
 
 ## Pre-requisites from Miguel / the coordinator
 
 1. A quiet rented host of the ccx33 class for every measuring round (one per implementer round; 8 h), the navlat SSH identity and peer allowance; the pr-stack with the implementer's OSS head and `--base-cloud` (or a Cloud branch when the client changes).
 2. A Mac session (owner laptop) for the GPU arm of the exit table (VideoToolbox/VAAPI vs Selkies): one paired run per completed phase, driven by the same harness; Miguel's eyes on the moving-quality A/B of P5 (DPR1 motion source at DPR2) and on the final side-by-side.
-3. Protocol numbers for P1 (frame-header `document_id`, display_subscribe shape), P3 (relay binary passthrough) and P4 (peer protocol: pushed desktop frames, input pipe): the coordinator allocates them.
-4. A decision on P5's trade (moving frames at DPR1 geometry on Retina until the repair lands) before P5 starts; and the timing of the Room-browser redesign (P10).
-5. Confirmation that the pinned Selkies arm for parity cells is `--framerate=60 --rate-control-mode=cbr --video-bitrate=8000` at the cell geometry (the slice runs Selkies at 30 fps CRF 25: not a parity arm).
+3. Protocol numbers for P1 (frame-header `document_id`, display_subscribe shape) and P3 (relay binary passthrough): allocated by the coordinator 2026-10-28 (local 720-739, relay peer 280-289).
+4. P5 is approved (Miguel 2026-10-28). The Selkies parity arm is confirmed: `--framerate=60 --rate-control-mode=cbr --video-bitrate=8000` at the cell geometry (the slice runs Selkies at 30 fps CRF 25: not a parity arm).
 
 ## Exit criterion (gap closed)
 
-All rows of AUDIT.md section 6 at their thresholds in one paired run per host class (software on the builder-class host; GPU on the owner laptop), N >= 10, diagnostics OFF, CfT 155.0.8059.79 on both arms, RTT next to every P95, with the io probe showing fsync p99 < 20 ms during the run. Cells: STAGE-BROWSER-LATENCY-URL x4, -LINK x4, omnibox-suggestion x4, keystroke static x4 and animated x4, click x4, SCROLL x4 (+ >= 50 fps), video/canvas fps DPR1+2, cores <= 1.0 and <= Selkies, bytes/nav <= Selkies x1.2 and idle <= 2 KB/s, settled exactness (raster gate 0.5 %/1.5 %, drift <= 4 px, repair <= 150 ms), WT-22/ND-06 input and fps, CU-PARITY, CU-ROOM-TAKEOVER-RELEASE, CU-ROOM-SOAK-2H, BROWSER-UX-05, V-UX-02, AT-17, BROWSER-UX-COLD-OPEN. DISPLAY-P1, DISPLAY-P1-GATE and DISPLAY-P2 are PASS when the above hold.
+All rows of AUDIT.md section 6 at their thresholds in one paired run per host class (software on the builder-class host; GPU on the owner laptop), N >= 10, diagnostics OFF, CfT 155.0.8059.79 on both arms, RTT next to every P95, with the io probe showing fsync p99 < 20 ms during the run. Cells: STAGE-BROWSER-LATENCY-URL x4, -LINK x4, omnibox-suggestion x4, keystroke static x4 and animated x4, click x4, SCROLL x4 (+ >= 50 fps), video/canvas fps DPR1+2, cores <= 1.0 and <= Selkies, bytes/nav <= Selkies x1.2 and idle <= 2 KB/s, settled exactness (raster gate 0.5 %/1.5 %, drift <= 4 px, repair <= 150 ms), BROWSER-UX-05, V-UX-02, AT-17, BROWSER-UX-COLD-OPEN. The slice desktop projection cells (WT-22, ND-06, CU-*) are not part of this criterion (parked). DISPLAY-P1, DISPLAY-P1-GATE and DISPLAY-P2 are PASS when the above hold.
 
 ### Exit table template (one per host class; fill both)
 
@@ -175,6 +161,33 @@ All rows of AUDIT.md section 6 at their thresholds in one paired run per host cl
 | Cores 1920x1080 moving (software) | @1 | | - | - | - | - | | | | 3x60 s | <= 1.0 |
 | Bytes per URL nav / idle | (4 rows) | | - | - | - | - | - | - | | 10 | |
 | Settled exactness (raster gate, drift, repair ms) | (4 rows) | | | | | | - | - | - | 20 | |
-| Room desktop key / click / wheel / fps | @1, @2 | | | | | | | | | 20 | |
-| Takeover release | @1, @2 | | | - | | - | - | - | - | 10 | |
-| Soak 2 h | @1+@2 | | - | - | - | - | min | max | - | 1 | |
+
+
+## Appendix — Parked: slice desktop projection (separate item, not browser use or latency)
+
+Miguel 2026-10-28: not part of browser use and latency. Two parked items, kept with their full text for the separate item:
+
+### (a) Speed up the projection path (old P4)
+
+## P4 — slice desktop projection path: push frames from the worker, inject input without a process per event — INDEPENDENT (Computer); the Room-browser mirror dimension is BLOCKED-BY-REDESIGN
+
+- Goal: the slice desktop projection stream behaves like the kernel-browser native stream: frames pushed with the ACK gate from where the worker is, input injected inline.
+- Owning code: K/runtime/state/room_shared_display.rs:482-532 and room_shared_display/worker.rs (replace per-credit `Capture` peer RPCs with a worker-side pump: the worker kernel runs `display_pump`-style capture/seal and streams sealed frames to the home kernel as events; the home kernel relays and keeps the ACK gate), K/transport/relay_client/display_pump.rs:373-410,512-531 (the direct-frame path with `lease` must also serve Room captures), K/runtime/state/room_browser_controller.rs:67-95 (local slice: skip the relay), K/runtime/state/human_environment_action_runtime_state.rs:24,319 (10 ms admission polling -> event), K/runtime/state/tool_dispatch/slice.rs:842-870,1044-1300 (one long-lived input helper per slice with a pipe, instead of a `slice-screen.sh` process per event; XTest for humans too, keeping the xdotool path for what XTest cannot do), D/slice-screen.sh:601-699, D/slice-keyboard.py:157,200-257 (40 ms per key pace -> only between repeated keys), cloud packages/terminal-domain/src/room/screen-input-queue.ts:4-14 (do not wait a full round trip per event; pipeline input like the kernel-browser `display_input`), K/config.rs:69 `DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS=33` (exempt display and input lanes from the local write delay, as culinux r56 found).
+- Selkies mechanism copied: capture thread -> socket with ack backpressure (we already have display_pump); XTEST input inline without sync (S input_handler.py:4525,5132).
+- Target and cells: WT-22 / ND-06 input P95 <= RTT + 60 (138 ms at RTT 78) and scroll >= 30 fps on the 6 sites at DPR1 and DPR2 with 0 timeouts; CU-ROOM-TAKEOVER-RELEASE P95 <= RTT + 60 at both DPRs; CU-PARITY click/type/fps/cores <= Selkies in the same paired run (Selkies arm at `--framerate=60 cbr 8000` on the same slice display, same geometry); CU-ROOM-SOAK-2H 2 h without a worker restart (see P12); the stall at scroll start (0.5-3 s) root-caused and gone.
+- Rig/command: P0 desktop cells (`BP_DESKTOP=1`) on the quiet host with the slice on the same host; `slicemem/r5/harness/measure.mjs` as the starting point.
+- Expected gain: frame cadence from 1/(2 x relay RTT + wait) to the ACK-gated push (fps 0-17 -> >= 30; culinux r58 already saw ~20 fps capped by the serial RPC chain at p50 48.6 ms); key latency from (round trip + fork/exec + 40 ms pace) x serial to one way (382-432 -> ~RTT + 60); click 271-1682 -> under the gate.
+- Risk: peer protocol change (RELAY_PEER_PROTOCOL_VERSION) for the pushed-frame event and the input pipe; the worker kernel must keep sealing frames for the viewer key (it already does); the slice Chromium is Debian chromium, not CfT (parity rule): record versions, and consider shipping CfT into the slice image.
+- Dependencies: none for the video/input part. The mirror-coverage dimension of WT-22 (Room's Browser view as a DOM mirror) depends on the pending redesign that puts the kernel browser on slices too (P10): do not build a mirror bridge into the headed slice before that design lands.
+- Redesign note: if the "higher-quality transmission replacing Selkies" replaces the desktop video transport itself, the worker-side pump is still the mechanism that transport needs (frames must be pushed from where they are captured); the input pipe is independent of transport. Neither is wasted.
+
+
+### (b) Rooms use the kernel browser (shared tabs) instead of the slice desktop projection (old P10)
+
+## P10 — Rooms using the kernel browser (shared tabs) (DOM mirror in Rooms) — BLOCKED-BY-REDESIGN
+
+- Goal: the Room's Browser view (slice desktop projection) shows the user-domain kernel browser (mirror primary, video regions, protected video fallback) instead of a slice desktop projection; mirror coverage per site in Rooms.
+- Owning code: everything behind `shared_display`/`RoomSharedDisplay` for the browser case; the slice would host the kernel browser (pinned CfT) with its mirror ops routed through the Room peer protocol.
+- Why blocked: this is the "browser in the kernel as well as on slices" item of the pending multi-domain redesign. Building a mirror bridge into the current headed slice (Debian chromium, desktop-only controller) would be thrown away.
+- What is useful now: P4's worker-side pump and input pipe, which that design needs too; and recording WT-22's mirror dimension as BLOCKED-BY-REDESIGN with this reference.
+
