@@ -39,3 +39,13 @@ test("MP-08 current and previous released protocols are the only upgrade predece
   assert.ok(policy.upgradeFrom.length <= 32)
   assert.ok(policy.rollbackTo.length <= 32)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: the process-control drill names the combined pair.
+test("process-control snapshot covers the generated protocol pair", () => {
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
+  const snapshot = JSON.parse(readFileSync(new URL("apps/kernel/src/local/api/tests/protocol_shapes/session-processes-800.json", repositoryRoot), "utf8"))
+  assert.equal(snapshot.protocol_version, pair.local)
+  assert.equal(snapshot.relay_peer_protocol_version, pair.relayPeer)
+  assert.ok(snapshot.shapes.some(shape => shape.StopSessionProcesses))
+  assert.ok(snapshot.shapes.some(shape => shape.SessionProcessesStopped))
+})

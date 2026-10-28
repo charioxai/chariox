@@ -50,3 +50,19 @@ The Web Health view groups the same session projections by connected machine
 and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
 Its collapse/expand state belongs to the viewer; process authority remains in
 the kernel.
+
+The combined sidebar/process protocol is local **800**, peer **350**. Its shape
+fixture is `session-processes-800.json`; regenerate protocol consumers with
+`node scripts/generate-protocol-versions.mjs` when the coordinator renumbers it.
+The focused shape check is
+`cargo test -p chariox-kernel --lib local_daemon_protocol_session_process_memory_outcomes_are_versioned`.
+Run it through the lane's Cargo slot. `node --test scripts/protocol-versions.test.mjs`
+also checks the process-control fixture against both generated versions.
+
+For the real control drill, start a kernel and client from the same combined
+head, check their advertised version pair, and run two agents with long-lived
+children. In the TUI, list processes, kill one child's opaque process id, then
+kill the owning agent with confirmation. Verify `outside_end`, absence of the
+selected tree, and the second agent's nonempty process set before and after.
+Repeat through Health on the real Web bundle at DPR1 and DPR2; record the
+source heads and screenshots separately from any earlier protocol's results.
