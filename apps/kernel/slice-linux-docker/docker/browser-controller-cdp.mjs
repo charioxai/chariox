@@ -135,8 +135,6 @@ export class BrowserCdpClient {
     this.documentIdsByTarget = new Map();
     this.commitWaiters = new Map();
     this.pageFramesByTarget = new Map();
-    // MP-08/MP-10: each target's committed document and whether it painted (CDP lifecycle or the Tab display's pixels).
-    this.paintsByTarget = new Map();
     // Records that loading start retired until a same-document navigation proves the document unchanged.
     this.suspendedPageFrames = new Map();
     this.focusWorldsByTarget = new Map();
@@ -1247,24 +1245,6 @@ export class BrowserCdpClient {
       && entry.sessionId === this.sessionsByTarget.get(targetId)
       && entry.frame.loaderId === this.documentIdsByTarget.get(targetId) ? entry : null;
   }
-  documentPainted(targetId, documentId) {
-    const entry = this.paintsByTarget.get(targetId);
-    if (!entry || entry.documentId !== documentId || entry.painted) return;
-    entry.painted = true;
-    for (const wake of entry.waiters) wake(true);
-    entry.waiters.clear();
-  }
-  // True once the committed document painted; false when another document replaces it or `ms` pass first.
-  whenPainted(targetId, documentId, ms) {
-    const entry = this.paintsByTarget.get(targetId);
-    if (entry?.documentId !== documentId) return Promise.resolve(false);
-    if (entry.painted) return Promise.resolve(true);
-    return new Promise(resolve => {
-      const wake = painted => { clearTimeout(timer); entry.waiters.delete(wake); resolve(painted); };
-      const timer = setTimeout(wake, Math.max(0, ms), false);
-      entry.waiters.add(wake);
-    });
-  }
   // MP-08/MP-10/MP-11 (P1): the committed document of this target on the live connection/session. Unlike
   // currentPageFrame it stays while a navigation is under way: the page shows that document until the next commit.
   committedPageDocument(targetId) {
@@ -1467,15 +1447,9 @@ export class BrowserCdpClient {
         if (waiters) { this.commitWaiters.delete(targetId); for (const wake of waiters) wake(); }
         const navigatedAt = performance.timeOrigin + performance.now();
         this.pageFramesByTarget.set(targetId, { connection: this.connection, sessionId: message.sessionId, frame: message.params.frame, navigatedAt });
-        const replaced = this.paintsByTarget.get(targetId);
-        if (replaced?.documentId !== documentId) { for (const wake of replaced?.waiters ?? []) wake(false); this.paintsByTarget.set(targetId, { documentId, painted: false, waiters: new Set() }); }
         this.pageTiming?.("page_commit", navigatedAt, navigatedAt);
         for(const [key,target] of this.fillTargets)if(target.target_id===targetId&&target.document_id!==documentId)this.fillTargets.delete(key);
       }
-    }
-    if (message?.method === "Page.lifecycleEvent" && (message.params?.name === "firstPaint" || message.params?.name === "firstContentfulPaint")) {
-      const targetId = this.targetsBySession.get(message.sessionId);
-      if (targetId) this.documentPainted(targetId, message.params.loaderId);
     }
     if (message?.method === "Page.loadEventFired") {
       const committed = this.pageFramesByTarget.get(this.targetsBySession.get(message.sessionId))?.navigatedAt;

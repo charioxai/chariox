@@ -658,19 +658,6 @@ test('MP-08/MP-10/MP-11 native preview follows a document transition, not initia
  assert.equal(packet.fallback,'navigation_preview');assert.equal(packet.document_id,'typed');
 });
 
-test('MP-08/MP-10 the mirror builds a previewed document only after its first paint',async()=>{
- const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
- let paint;const waits=[];
- const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{whenPainted:(target,document,ms)=>{waits.push([target,document,ms>0]);return new Promise(resolve=>{paint=resolve})}},displays:new Map(),mirrorTarget:async()=>tab};
- const mirror=new Mirror2({host,require:()=>stream,streams:new Map([['s',stream]])});
- let reached=false;mirror.world=async()=>{reached=true;throw Error('mirror preparation')};
- const pending=mirror.packet(stream,{subscription_id:'s',generation:1,after_sequence:6},'scope').catch(error=>error);
- await new Promise(setImmediate);
- assert.equal(reached,false,'the world and snapshot run on the renderer main thread: Chrome paints the new document first');
- assert.deepEqual(waits,[['T','new',true]]);
- paint(true);assert.match((await pending).message,/mirror preparation/);assert.equal(reached,true);
-});
-
 test('MP-08/MP-10/MP-11 mirror preparation does not wait for an unavailable native preview',async()=>{
  const tab={tab_id:'t',target_id:'T',document_id:'new'},stream={tab_id:'t',scope:'scope',navigationPreview:true,previewDocument:'new',issued:6,document_id:'old',resetAt:7};
  const host={generation:1,pageSize,scales:new Map(),protection:{},browser:{},displays:new Map(),chromium:{desktop:{binding:()=>({})}},mirrorTarget:async()=>tab};

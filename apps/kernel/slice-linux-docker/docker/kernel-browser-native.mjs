@@ -135,7 +135,6 @@ export class LinuxCapture {
   if(raw.signature===hold.before||oneColour(raw.pixels))return false;
   clearTimeout(hold.timer);this.paintHold=null;this.paintedAt=raw.captured_ms;
   this.timing('native_paint_hold_end pixels',performance.timeOrigin+performance.now());
-  this.browser?.documentPainted?.(this.tab.target_id,hold.document);
   return true;
  }
  // MP-08/MP-10 (P1): a parked Tab display reads nothing back; unparking reads the current picture at once.
