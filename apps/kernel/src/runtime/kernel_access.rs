@@ -116,9 +116,11 @@ pub(crate) struct AccessState {
 #[derive(Debug, Clone)]
 pub(crate) struct OwedEnd {
     pub(crate) grant: KernelAccessGrant,
+    /// Covered identities whose end has not yet reached the audit stream.
+    pub(crate) covered: Vec<ProcessIdentity>,
     pub(crate) outcome: String,
     pub(crate) reason: String,
-    /// The end is already in the audit log; only the event inbox is left open.
+    /// The grant end is in the audit log; its inbox or process ends may remain.
     pub(crate) recorded: bool,
 }
 

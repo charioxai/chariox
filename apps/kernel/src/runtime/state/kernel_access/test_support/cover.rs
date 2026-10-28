@@ -126,6 +126,166 @@ fn outcomes(state: &KernelRuntimeState) -> Vec<String> {
         .collect()
 }
 
+#[tokio::test]
+async fn every_grant_end_audits_each_remaining_covered_process_once() {
+    for reason in [
+        "process_exit",
+        "revoked_by_owner",
+        "expiry",
+        "kernel_shutdown",
+    ] {
+        let root = crate::test_support::TestWorktree::new("cover-grant-end");
+        let holder_pid = detached(
+            root.path(),
+            "holder",
+            &format!(
+                "sleep 600 & echo $! > {}; exec sleep 600",
+                root.path().join("background").display()
+            ),
+        );
+        let background = background_pid(root.path());
+        let holder = process::inspect(holder_pid).unwrap().0;
+        let target = process::inspect(background).unwrap().0;
+        let router = kernel(&root);
+        let state = router.runtime_state();
+        let mut grant = summary(&holder);
+        let clock = (reason == "expiry" || reason == "kernel_shutdown").then(|| {
+            grant.term = KernelAccessTerm::Minutes(30);
+            GrantClock::new(30, 5)
+        });
+        state
+            .admit_grant(
+                &mut state.owned.kernel_access.lock().unwrap(),
+                "cover".into(),
+                grant,
+                holder.clone(),
+                clock,
+            )
+            .unwrap();
+        state
+            .cover_kernel_access_process(
+                &holder,
+                None,
+                &CoverKernelAccessProcessRequest {
+                    pid: background,
+                    start: None,
+                },
+            )
+            .unwrap();
+        match reason {
+            "process_exit" => {
+                kill_pid(holder_pid);
+                state.sweep_kernel_access();
+            }
+            "expiry" => state.sweep_kernel_access_at(Instant::now() + Duration::from_secs(3600)),
+            "kernel_shutdown" => {
+                state.end_kernel_access_for_shutdown().unwrap();
+            }
+            _ => {
+                state
+                    .revoke_kernel_access(None, Some("cover"), reason)
+                    .unwrap();
+            }
+        }
+        state.sweep_kernel_access();
+        let events = state
+            .owned
+            .durable_state_store
+            .load_events_by_kind("kernel_access.grant")
+            .unwrap();
+        let ends: Vec<_> = events
+            .iter()
+            .filter(|event| event.payload["outcome"] == "cover_ended")
+            .collect();
+        kill_pid(background);
+        if reason != "process_exit" {
+            kill_pid(holder_pid);
+        }
+        assert_eq!(
+            ends.len(),
+            1,
+            "{reason}: every covered process needs its own end"
+        );
+        assert_eq!(ends[0].payload["reason"], reason);
+        assert_eq!(
+            serde_json::from_value::<ProcessIdentity>(ends[0].payload["process"].clone()).unwrap(),
+            target
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_cover_end_is_finished_after_restart_without_restoring_authority() {
+    let root = crate::test_support::TestWorktree::new("cover-end-retry");
+    let holder_pid = detached(
+        root.path(),
+        "holder",
+        &format!(
+            "sleep 600 & echo $! > {}; exec sleep 600",
+            root.path().join("background").display()
+        ),
+    );
+    let background = background_pid(root.path());
+    let holder = process::inspect(holder_pid).unwrap().0;
+    let database = rusqlite::Connection::open(root.path().join("state.db")).unwrap();
+    {
+        let router = kernel(&root);
+        let state = router.runtime_state();
+        state
+            .admit_grant(
+                &mut state.owned.kernel_access.lock().unwrap(),
+                "cover".into(),
+                summary(&holder),
+                holder.clone(),
+                None,
+            )
+            .unwrap();
+        state
+            .cover_kernel_access_process(
+                &holder,
+                None,
+                &CoverKernelAccessProcessRequest {
+                    pid: background,
+                    start: None,
+                },
+            )
+            .unwrap();
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_cover_end BEFORE INSERT ON durable_state_events
+             WHEN NEW.payload_json LIKE '%\"outcome\":\"cover_ended\"%'
+             BEGIN SELECT RAISE(FAIL, 'injected cover end failure'); END;",
+            )
+            .unwrap();
+        assert!(state
+            .revoke_kernel_access(None, Some("cover"), "revoked_by_owner")
+            .is_err());
+        assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+        assert!(state.outside_ended_response("cover").unwrap().is_some());
+        let outcomes = outcomes(&state);
+        assert_eq!(outcomes.iter().filter(|o| *o == "revoked").count(), 1);
+        assert!(!outcomes.iter().any(|o| o == "cover_ended"));
+    }
+    database
+        .execute_batch("DROP TRIGGER fail_cover_end;")
+        .unwrap();
+    let router = kernel(&root);
+    let state = router.runtime_state();
+    assert_eq!(state.restore_kernel_access_grants().unwrap(), 0);
+    assert!(state.owned.kernel_access.lock().unwrap().grants.is_empty());
+    state.sweep_kernel_access();
+    let outcomes = outcomes(&state);
+    kill_pid(background);
+    kill_pid(holder_pid);
+    for outcome in ["revoked", "cover_ended"] {
+        assert_eq!(
+            outcomes.iter().filter(|o| *o == outcome).count(),
+            1,
+            "{outcomes:?}"
+        );
+    }
+}
+
 // A process only has to be named once: the cover is recorded with the grant, so it is
 // still there after the kernel restarts, and it ends, audited once, when the process does.
 #[tokio::test]
