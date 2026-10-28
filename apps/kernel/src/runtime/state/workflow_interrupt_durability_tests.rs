@@ -315,7 +315,11 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(&fixture.workflow_run_id)
     );
     let runs = owned.provider_store.list_runs();
-    assert_eq!(runs.len(), 1, "continuation must queue behind the active turn");
+    assert_eq!(
+        runs.len(),
+        1,
+        "continuation must queue behind the active turn"
+    );
     assert_eq!(runs[0].id(), "interrupt-provider-run");
 }
 
