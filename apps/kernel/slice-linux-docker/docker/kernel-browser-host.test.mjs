@@ -8,7 +8,6 @@ import readline from "node:readline";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserMemory } from "./browser-memory.mjs";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
-import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import path from "node:path";
 import { encodePng, decodePng, maskPng } from "./kernel-browser-pixels.mjs";
 import { KernelBrowserHost, navigationUrl, scheduleHostRequest } from "./kernel-browser-host.mjs";
