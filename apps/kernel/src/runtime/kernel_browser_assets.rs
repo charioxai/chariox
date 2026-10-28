@@ -7,6 +7,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-app-drafts.mjs"),
     ),
     (
+        "browser-app-view-actions.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-app-view-actions.mjs"),
+    ),
+    (
         "room-shared-display.mjs",
         include_bytes!("../../slice-linux-docker/docker/room-shared-display.mjs"),
     ),

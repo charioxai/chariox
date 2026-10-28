@@ -1,4 +1,5 @@
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -74,8 +75,12 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
+  const viewActions = (${createViewActions.toString()})();
+  Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    action: viewActions.action,
+    view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
