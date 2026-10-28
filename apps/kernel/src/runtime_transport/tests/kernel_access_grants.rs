@@ -1225,6 +1225,31 @@ async fn grant_until_exit(kernel: &mut Kernel, holder: &mut Client) -> Value {
     result["response"]["KernelAccessGranted"]["grant"].clone()
 }
 
+#[tokio::test]
+async fn an_idle_until_exit_inbox_ends_without_an_inbound_request() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    let grant = grant_until_exit(&mut kernel, &mut holder).await;
+    let subscribed = holder.request(serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":SESSION}]}}));
+    assert!(subscribed["error"].is_null(), "{subscribed}");
+    // Let the transport enter its idle sleep; reading the database does not
+    // wake it or sweep grants on behalf of this assertion.
+    sleep(Duration::from_millis(1200)).await;
+    let database = rusqlite::Connection::open(kernel.root.join("control/state.db")).unwrap();
+    drop(holder);
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let ended: bool = database.query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_state_events WHERE kind = 'kernel_access.grant' AND subject_id = ?1 AND json_extract(payload_json, '$.outcome') = 'revoked')",
+                [grant["grant_id"].as_str().unwrap()],
+                |row| row.get(0),
+            ).unwrap();
+            if ended { break; }
+            sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("an idle holder exit must end its inbox within two seconds");
+}
+
 // MP-08 / MP-10 / MP-11: the holder can outlive the CLI that asked on its behalf.
 // Approving that abandoned popup must not strand the grant lock or another decision.
 #[tokio::test]
@@ -1677,6 +1702,10 @@ async fn outside_unix_wait_delivers_subscription_ended_after_revoke() {
     .await
     .unwrap()
     .unwrap();
+    assert_eq!(
+        response["response"]["EventsListed"]["timed_out"], false,
+        "{response}"
+    );
     assert_eq!(
         response["response"]["EventsListed"]["events"][0]["type"], "subscription_ended",
         "{response}"

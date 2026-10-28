@@ -10,6 +10,8 @@ use crate::runtime::kernel_access::{
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
 
+mod holder_exit;
+
 impl KernelRuntimeState {
     fn audit_access(
         &self,
@@ -203,6 +205,12 @@ impl KernelRuntimeState {
                                 clock: None,
                             },
                         );
+                    self.owned
+                        .kernel_access
+                        .lock()
+                        .expect("access state poisoned")
+                        .holder_changed
+                        .notify_one();
                     restored += 1;
                 }
                 None => self.audit_access(&summary, "revoked", Some("process_exit"))?,
@@ -545,6 +553,7 @@ impl KernelRuntimeState {
                 clock,
             },
         );
+        state.holder_changed.notify_one();
         Ok(())
     }
 
