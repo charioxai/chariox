@@ -7,7 +7,7 @@ test("generated protocol consumers match the two runtime constants", () => {
 
 import assert from "node:assert/strict"
 import { readFileSync, readdirSync } from "node:fs"
-import { repositoryRoot } from "./lib/protocol-versions.mjs"
+import { repositoryRoot, admittedPredecessorProtocols } from "./lib/protocol-versions.mjs"
 test("MP-08/MP-10/MP-11 protocol tests use the generated pair instead of landing-number literals", () => {
   const pins = []
   for (const directory of ["apps/kernel/src", "apps/cli/src", "packages/kernel-client/src"]) {
@@ -29,13 +29,12 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
   assert.ok(pair.relayPeer >= 124, "paired peer allocation is 124, above target 121")
 })
 
-test("MP-08 current and previous released protocols are the only upgrade predecessors", () => {
+test("current and previous release define the upgrade policy", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
-  assert.deepEqual(policy.upgradeFrom, [629, 636, pair.local])
-  assert.deepEqual(policy.rollbackTo, [629, 636, pair.local])
-  assert.ok(policy.upgradeFrom.length <= 32)
-  assert.ok(policy.rollbackTo.length <= 32)
+  assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
+  assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
+  assert.equal(admittedPredecessorProtocols.length, 1)
 })

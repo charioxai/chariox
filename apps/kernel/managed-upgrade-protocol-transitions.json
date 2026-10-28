@@ -2,12 +2,10 @@
   "schemaVersion": 1,
   "protocol": 780,
   "upgradeFrom": [
-    629,
     636,
     780
   ],
   "rollbackTo": [
-    629,
     636,
     780
   ]
