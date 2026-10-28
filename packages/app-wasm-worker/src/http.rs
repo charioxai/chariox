@@ -9,8 +9,17 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use wasmtime::component::{Accessor, HasSelf, StreamReader};
+
+// The response owns a fetch's lifetime, independently of its invocation.
+// Dropping it must also stop an upload waiting for a broker acknowledgement.
+struct CancelUpload(watch::Sender<bool>);
+impl Drop for CancelUpload {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
 
 struct Stream {
     ipc: Ipc,
@@ -80,6 +89,8 @@ impl<T: Send + 'static> http::HostWithStore<T> for HasSelf<Host> {
             id: text(&opened, "streamId")?,
             _slot: slot,
         });
+        let (cancel_upload, mut upload_cancelled) = watch::channel(false);
+        let cancel_upload = CancelUpload(cancel_upload);
         let (upload_result, mut upload_status) = mpsc::channel(1);
         if let Some(body) = body {
             let (chunks, mut receiver) = mpsc::channel::<Vec<u8>>(1);
@@ -106,6 +117,7 @@ impl<T: Send + 'static> http::HostWithStore<T> for HasSelf<Host> {
                 tokio::select! {
                     biased;
                     _=scope.cancelled()=>{},
+                    _=upload_cancelled.changed()=>{},
                     result=upload=>{ let _=upload_result.send(result).await; },
                 }
             });
@@ -137,6 +149,7 @@ impl<T: Send + 'static> http::HostWithStore<T> for HasSelf<Host> {
         let (sender, receiver) = mpsc::channel(READ_AHEAD);
         let reading_scope = scope.clone();
         tokio::spawn(async move {
+            let _cancel_upload = cancel_upload;
             loop {
                 let next = async {
                     let permit = sender.reserve().await.map_err(|_| ())?;

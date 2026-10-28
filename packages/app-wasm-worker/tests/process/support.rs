@@ -117,7 +117,7 @@ impl Worker {
             panic!("worker.ready expected")
         };
         assert_eq!(method, "worker.ready");
-        assert_eq!(params["tools"].as_array().unwrap().len(), 11);
+        assert_eq!(params["tools"].as_array().unwrap().len(), 12);
         worker.answer(id, Value::Null).await;
         worker
     }

@@ -46,6 +46,7 @@ impl Guest for App {
             "slow_stream",
             "subscribe",
             "upload",
+            "early_response",
         ] {
             registry::tool(name);
         }
@@ -154,6 +155,22 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
             }
             let count = usize::from(stream.next().await.is_some());
             Ok(json!({"events":count}).to_string())
+        }
+        "early_response" => {
+            let (mut writer, reader) = wit_stream::new::<u8>();
+            let upload = async move {
+                let _remaining = writer.write_all(vec![9; 1024 * 1024]).await;
+                state::get("upload-stopped".into()).await
+            };
+            let response = async move {
+                let response = http::fetch(request(), Some(reader)).await?;
+                drop(response);
+                state::get("response-dropped".into()).await
+            };
+            let (uploaded, dropped) = futures::join!(upload, response);
+            uploaded?;
+            dropped?;
+            Ok("null".into())
         }
         "upload" => {
             let (mut writer, reader) = wit_stream::new::<u8>();
