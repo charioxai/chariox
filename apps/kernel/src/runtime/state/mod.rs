@@ -482,6 +482,7 @@ mod provider;
 mod provider_account_admission;
 mod provider_account_authority;
 mod provider_account_copy;
+mod provider_account_copy_offer;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;

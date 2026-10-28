@@ -404,3 +404,20 @@ pub struct CopyProviderAccountToKernelRequest {
     #[serde(default)]
     pub replace: bool,
 }
+
+/// A receiving kernel discovers only metadata for eligible, independently owned copies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListProviderAccountCopyOffersRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyProviderAccountFromKernelRequest {
+    pub provider: String,
+    pub account_profile: String,
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+    #[serde(default)]
+    pub replace: bool,
+}

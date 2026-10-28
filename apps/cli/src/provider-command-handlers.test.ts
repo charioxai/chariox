@@ -786,3 +786,27 @@ for (const provider of ["claude", "claude-p", "claude-headless"]) {
     assert.deepEqual(errors, [])
   })
 }
+
+test("account copy discovery identifies the source without selecting a remote profile", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice: value => notices.push(value),
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => { assert.fail("discovery must transfer nothing") },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy", value: "accounts copy" })
+  assert.match(notices.join("\n"), /Work · on A · Copy login to this machine/)
+  assert.match(notices.join("\n"), /\/provider accounts copy a work/)
+})
+
+test("a completed login copy never selects its profile on a newly selected kernel", async () => {
+  let target = "b"
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice() {},
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => { target = "c"; return { operation_id: "op", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" } },
+    getRelayStatus: async () => ({ daemon_id: target }),
+    applyAccountSelection: async () => { assert.fail("the receiving kernel is no longer selected") },
+  }
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+})

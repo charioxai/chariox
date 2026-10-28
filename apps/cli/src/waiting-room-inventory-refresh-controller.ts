@@ -52,6 +52,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setRemoteKernels: (kernels: RemoteKernelView[]) => void
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
+  setProviderAccountCopyOffers?: (offers: import("@chariox/kernel-client").ProviderAccountCopyOffer[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
   setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
   getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
@@ -256,6 +257,7 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
+    options.setProviderAccountCopyOffers?.(snapshot.providerAccountCopyOffers ?? [])
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
     const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
       ?? snapshot.kernelId

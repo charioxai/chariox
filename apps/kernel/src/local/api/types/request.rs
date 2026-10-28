@@ -185,6 +185,8 @@ pub enum LocalDaemonRequest {
     DeleteProviderAccountProfileData(DeleteProviderAccountProfileDataRequest),
     SetProviderAccountCredential(SetProviderAccountCredentialRequest),
     CopyProviderAccountToKernel(CopyProviderAccountToKernelRequest),
+    ListProviderAccountCopyOffers(ListProviderAccountCopyOffersRequest),
+    CopyProviderAccountFromKernel(CopyProviderAccountFromKernelRequest),
     InstallMcpServer(InstallMcpServerRequest),
     UpdateMcpServer(UpdateMcpServerRequest),
     UninstallMcpServer(UninstallMcpServerRequest),
