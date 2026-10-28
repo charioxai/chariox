@@ -14,9 +14,7 @@ export function getEnvironmentProposalPageRequest(projectId:string,snapshotDiges
   return {GetProjectEnvironment:{projectId,view:{knownDigest:null,proposals:{snapshotDigest,offset,limit}}}} as const
 }
 export function environmentFromView(projectId:string,value:unknown,previous:ProjectEnvironment | null):ProjectEnvironment {
-  const reply=value as {ProjectEnvironmentView?:{view?:EnvironmentReadView};ProjectEnvironment?:{environment:ProjectEnvironment}}
-  // The complete read remains supported for explicitly older clients and full mutation replies.
-  if(reply.ProjectEnvironment?.environment)return reply.ProjectEnvironment.environment
+  const reply=value as {ProjectEnvironmentView?:{view?:EnvironmentReadView}}
   const view=reply.ProjectEnvironmentView?.view
   if(!view || !view.snapshot_digest || !Number.isSafeInteger(view.proposal_count) || view.proposal_count<0)throw new Error("Environment summary unavailable")
   const summary=view.environment ?? (previous?.read_view?.snapshot_digest===view.snapshot_digest ? previous : null)

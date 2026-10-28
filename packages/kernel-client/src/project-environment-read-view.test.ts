@@ -21,3 +21,8 @@ test("missing or changed conditional summary cannot borrow stale or cross-Projec
  assert.throws(()=>environmentFromView("other",{ProjectEnvironmentView:{view:{...view,environment:null}}},first),/unavailable/)
  assert.throws(()=>environmentFromView("p",{ProjectEnvironmentView:{view:{...view,environment:null,snapshot_digest:"changed"}}},first),/unavailable/)
 })
+
+test("bounded reads reject a full response without the requested snapshot metadata",async()=>{
+ const read=createEnvironmentReader(async()=>({ProjectEnvironment:{environment}}))
+ await assert.rejects(()=>read("p"),/Environment summary unavailable/)
+})
