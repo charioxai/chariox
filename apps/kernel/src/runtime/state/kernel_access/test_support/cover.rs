@@ -3,9 +3,45 @@
 use super::*;
 use std::process::Command;
 
+/// The executable every script ends as (`sleep`), asked of a real one: `spawn` returns
+/// once the exec happened, whereas a shell that has not exec'd yet shows the shell's.
+fn sleep_executable() -> &'static str {
+    static EXECUTABLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    EXECUTABLE.get_or_init(|| {
+        let mut sleep = Command::new("sleep").arg("600").spawn().unwrap();
+        let executable = process::inspect(sleep.id()).unwrap().0.executable;
+        sleep.kill().unwrap();
+        sleep.wait().unwrap();
+        executable
+    })
+}
+
+/// The pid `file` names once the script is done with it: the file exists and the process
+/// is already `sleep`.
+fn ready_pid(file: &std::path::Path) -> u32 {
+    let started = Instant::now();
+    loop {
+        if let Some(pid) = std::fs::read_to_string(file)
+            .ok()
+            .and_then(|pid| pid.trim().parse().ok())
+            .filter(|pid| {
+                process::inspect(*pid).is_ok_and(|(p, _)| p.executable == sleep_executable())
+            })
+        {
+            return pid;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{} was not ready",
+            file.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A process the test process did not start (the kernel's own descendants are never
 /// covered): the launcher exits at once, so `script` is orphaned, and `file` receives
-/// its pid.
+/// its pid. `script` ends in `exec sleep`; the pid is returned once it has.
 fn detached(dir: &std::path::Path, name: &str, script: &str) -> u32 {
     let file = dir.join(name);
     let status = Command::new("sh")
@@ -14,20 +50,12 @@ fn detached(dir: &std::path::Path, name: &str, script: &str) -> u32 {
         .status()
         .unwrap();
     assert!(status.success());
-    let started = Instant::now();
-    loop {
-        if let Some(pid) = std::fs::read_to_string(&file)
-            .ok()
-            .and_then(|pid| pid.trim().parse().ok())
-        {
-            return pid;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "{name} did not start"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    ready_pid(&file)
+}
+
+/// The `sleep` the holder script started and named in `background`.
+fn background_pid(dir: &std::path::Path) -> u32 {
+    ready_pid(&dir.join("background"))
 }
 
 fn kill_pid(pid: u32) {
@@ -50,6 +78,30 @@ fn summary(holder: &ProcessIdentity) -> KernelAccessGrant {
         term: KernelAccessTerm::UntilHolderExits,
         expires_at_ms: None,
     }
+}
+
+// The helper returns a process that is already its final program, with every pid file the
+// script writes in place, however late the script gets there.
+#[test]
+fn a_late_script_is_complete_when_the_helper_returns() {
+    let root = crate::test_support::TestWorktree::new("cover-late");
+    let holder_pid = detached(
+        root.path(),
+        "holder",
+        &format!(
+            "sleep 0.5; sleep 600 & echo $! > {}; exec sleep 600",
+            root.path().join("background").display()
+        ),
+    );
+    let background = background_pid(root.path());
+    for pid in [holder_pid, background] {
+        assert_eq!(
+            process::inspect(pid).unwrap().0.executable,
+            sleep_executable()
+        );
+    }
+    kill_pid(background);
+    kill_pid(holder_pid);
 }
 
 fn kernel(root: &crate::test_support::TestWorktree) -> crate::runtime::router::CommandRouter {
@@ -88,11 +140,7 @@ async fn a_covered_process_survives_a_restart_and_ends_with_its_exit() {
             root.path().join("background").display()
         ),
     );
-    let background = std::fs::read_to_string(root.path().join("background"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let background = background_pid(root.path());
     let holder = process::inspect(holder_pid).unwrap().0;
     let target = process::inspect(background).unwrap().0;
     let request = CoverKernelAccessProcessRequest {
@@ -215,11 +263,7 @@ async fn a_cover_that_fails_to_persist_is_not_live_and_a_retry_records_it() {
             root.path().join("background").display()
         ),
     );
-    let background = std::fs::read_to_string(root.path().join("background"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let background = background_pid(root.path());
     let holder = process::inspect(holder_pid).unwrap().0;
     let target = process::inspect(background).unwrap().0;
     let request = CoverKernelAccessProcessRequest {
