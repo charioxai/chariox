@@ -130,7 +130,8 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
 ## 8. View actions and the signed declarations (A1)
 
 - The view registers what the signed `schemas/ui-actions.json` declares, through
-  `chariox.action(declaration, handler)` or `<form data-chariox-action>`
+  `chariox.action(declaration, handler)` or `chariox.form(formElement, handler)`
+  on `<form data-chariox-action>` markup
   (`browser-app-view-actions.mjs`, injected by the App bridge). A registration
   has the `UiActionDeclaration` shape; there is no second format. The page
   grants nothing: the kernel compares and decides.
@@ -190,3 +191,34 @@ R refreshes the bound Tab, F8 reaches the shared approval handler, and a Room/ke
 serialization proves inspector/read equivalence; equivalence with A2's agent
 catalog needs its integration drill. The web inspector remains a proposal until
 Miguel approves a prototype-copy mock; no web behavior ships in A4.
+
+### Caller-scoped view handlers
+
+An action handler receives `(input, caller)`. Use `await caller.call(method, input)`
+for backend calls belonging to that invocation. The function returned by
+`chariox.action` runs the same handler with a human caller when the UI calls it.
+Ambient `chariox.call` always acts as the human, including while an agent handler
+waits. Page code never supplies an actor identity. An invocation token travels
+inside the existing call id; unknown or retired tokens fail with
+`APP_INVOCATION_EXPIRED`, without falling back to a human call.
+
+Register asynchronous forms explicitly:
+
+```js
+chariox.form(document.querySelector('form[data-chariox-action]'), async (input, caller) => {
+  await caller.call('save', input);
+  await caller.call('refresh');
+});
+```
+
+Human submit and agent invoke enter this handler with their own caller. The agent
+path applies controls, waits for component updates, checks validity, then awaits
+the handler. A successful form returns `{submitted: true}` after completion;
+handler errors are returned as action errors. An unregistered annotated form
+fails with `form_unregistered`. Native submit listeners cannot provide this
+completion contract. One agent action runs per Tab: another action or state read
+gets `view_busy` until the running handler settles, even after its deadline.
+Human input and registration/change-log reads remain available during the wait.
+
+Forms used only by humans can register without action markup. They do not appear
+in the agent catalog and need no signed action declaration.
