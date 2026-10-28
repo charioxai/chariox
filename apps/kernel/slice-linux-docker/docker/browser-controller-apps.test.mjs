@@ -816,3 +816,31 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
  assert.equal([...tabs.apps.values()][0].ready,true);
 });
+
+test('a token that retires while document lookup waits cannot admit a backend call', async () => {
+  const {tabs,connection} = await opened();
+  const send = connection.send.bind(connection);
+  let finishAction, finishDocument, enteredAction, enteredDocument;
+  const actionStarted = new Promise(resolve=>{enteredAction=resolve;});
+  const documentStarted = new Promise(resolve=>{enteredDocument=resolve;});
+  connection.send = async (method,params,session) => {
+    if(method==='Runtime.evaluate'&&params.awaitPromise) {
+      enteredAction(); return new Promise(resolve=>{finishAction=()=>resolve({result:{value:{ok:true,value:null}}});});
+    }
+    if(method==='Page.getFrameTree') {
+      enteredDocument(); return new Promise(resolve=>{finishDocument=()=>resolve({frameTree:{frame:{loaderId:'document-found'}}});});
+    }
+    return send(method,params,session);
+  };
+  // The first binding can arrive before the initial loader event.
+  tabs.apps.get('s1').document=null;
+  const running=tabs.agent({target_id:'t1',agent:'agent-one',call:'invoke',name:'save'});
+  await actionStarted;
+  const token=tabs.apps.get('s1').invocation.token;
+  const sending=bindingCall(tabs,connection,{id:`invocation:${token}:document:1`,method:'save'});
+  await documentStarted;
+  finishAction(); await running;
+  finishDocument(); await sending;
+  assert.deepEqual(tabs.calls,[]);
+  assert.match(connection.sent.at(-1).params.expression,/APP_INVOCATION_EXPIRED/);
+});
