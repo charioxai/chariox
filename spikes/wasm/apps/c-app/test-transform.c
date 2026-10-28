@@ -59,8 +59,6 @@ app_subtask_status_t chariox_app_state_transact(chariox_app_state_transaction_t 
   assert(tx->writes.len == 1);
   app_string_t value = tx->writes.ptr[0].val.put.f1;
   assert(value.len == 2 && memcmp(value.ptr, "42", 2) == 0);
-  app_string_free(&value);
-  free(counter_value);
   result->is_err = false;
   result->val.ok.revision = 8;
   return APP_SUBTASK_RETURNED;
