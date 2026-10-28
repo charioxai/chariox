@@ -269,3 +269,20 @@ test('MP-08/MP-10 a Chrome UI stream drops queued deltas for the newest sample, 
  assert.equal(m.take(),null);
  await m.close();
 });
+// A settling page's small damage after an exact frame was patched losslessly, which retired the video in hand: a
+// ~100 KB key at 1920 per patch, 80 ms of wire each, before the page reached its settled picture.
+test('MP-08/MP-10 small damage continues the video chain in hand instead of a patch that retires it for a key',async()=>{
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ const {nativePatchable}=await import('./kernel-browser-display-credit.mjs');
+ const raw={nativeExact:async()=>{},format:'bgr0',width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4),damage:[0,0,32,32],base_serial:10,serial:11,adjacent_damage_tiles:[[0,0,32,32]]};
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:2_000_000,codec:'avc1.420033',dependencies:true},{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ stream.document_id='d';stream.previous={signature:'exact'};stream.exact=true;stream.compositorSerial=10;stream.compositorMasks='[]';
+ const f=fixture();stream.producer=f.m;
+ try{
+  assert.equal(nativePatchable(stream,{serial:11,raw}),true,'an idle encoder lets small damage patch the exact canvas');
+  f.offer(11);await f.m.active;
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),false,'queued video work keeps the chain');
+  assert.equal(nativePatchable(stream,{serial:11,raw},{holdsVideo:false}),true);
+  f.hold();f.offer(12);assert.equal(f.m.holdsVideo,true,'an encode in flight holds video too');f.release();await f.m.active;
+ }finally{await stream.close()}
+});

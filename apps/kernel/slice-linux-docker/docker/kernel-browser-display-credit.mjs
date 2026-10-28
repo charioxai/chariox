@@ -15,6 +15,9 @@ import { DisplayDocumentPending } from './kernel-browser-display-document.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 
 const frameKinds={video:1,stripes:2,tiles:3,png:4};
+// MP-08/MP-10: a lossless patch retires the video in hand for a key (~100 KB at 1920); while video work is queued
+// or encoding, small damage continues its chain instead and the exact repair settles it.
+export function nativePatchable(stream,sample,producer=stream.producer){return !producer?.holdsVideo&&stream.canPatchNative(sample);}
 export async function displayCredit(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
@@ -100,7 +103,7 @@ export async function displayCredit(host, stream, command, signal) {
   if(compositor&&sample&&stream.codec!=='png'){
     // Serials are source-local. Retiring a source also retires its exact
     // base, even when a newly navigated document starts at the same serial.
-    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:sample=>{const encode=!stream.canPatchNative(sample)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
+    if(stream.producer?.source!==compositor){stream.invalidate(true,'source');stream.document_id=null;await stream.producer?.close();stream.producer=new MotionEncoder(compositor,stream.encoder,{bitrate:stream.bitrate,codec:stream.codec,independent:!stream.dependencies,stripes:stream.stripes,latest:['browser_chrome','browser_auxiliary'].includes(stream.regionTarget?.kind),shouldEncode:(sample,producer)=>{const encode=!nativePatchable(stream,sample,producer)&&!stream.shiftCandidate(sample)&&!(stream.exact&&identicalToDelivered(stream,sample));if(encode&&stream.exact)host.timing('shift_skipped_exact',timestamp());return encode;},valid:()=>!compositor.closed&&compositor.allowed(compositor.policy),timing:host.timing});}
     // Admit recovery before selecting a native patch or taking an encoded
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
@@ -120,7 +123,7 @@ export async function displayCredit(host, stream, command, signal) {
       stream.compositorSerial=sample.serial;
       return {generation:host.generation,frame_sent:false,display_frame:null};
     }
-    const patchable=stream.canPatchNative(sample);
+    const patchable=nativePatchable(stream,sample);
     const shift=patchable?null:stream.shiftKind(sample);
     const encoded=patchable||shift ? null : stream.producer.take();
     if(shift){

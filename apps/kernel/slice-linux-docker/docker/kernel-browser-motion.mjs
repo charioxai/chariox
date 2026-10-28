@@ -25,7 +25,7 @@ export class MotionEncoder {
  // MP-08/MP-10: encode a sample previously skipped as a lossless candidate.
  // Nothing was encoded for it, so no reference chain is retired.
  retry(sample){if(sample?.serial===this.lastSerial&&!this.pending&&!this.closed){this.lastSerial=sample.serial-1;this.offer(sample)}}
- offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};
+ offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample,this)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};
   // PERF_AUDIT 4.2.1: Chrome UI (band, popups) shows the newest sample rather than deltas queued behind a
   // closed ACK gate; the next encode is a key (a band crop IDR is cheap). Page streams keep every delta.
   if(this.latest&&this.frames.length>=2){for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.keyed('latest');this.revision++;this.timing('motion_stale_dropped',performance.timeOrigin+this.now());}
@@ -115,6 +115,8 @@ export class MotionEncoder {
   if(Number.isSafeInteger(after)&&[...this.frames.map(frame=>frame.serial),this.active?this.activeSerial:after,this.pending?.serial??after].every(serial=>serial>=after))return;
   if(this.frames.length||this.active||this.pending)this.invalidateRows(false,cause);
  }
+ // Video queued or encoding: retiring it costs a key.
+ get holdsVideo(){return Boolean(this.frames.length||this.active);}
  invalidateRows(reoffer=true,cause){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer,cause);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  invalidate(reoffer=true,cause='invalidated'){this.revision++;this.keyed(cause);for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  // Diagnostics: the first reason a key was asked for since the last one shipped (display_key timing label).
