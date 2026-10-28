@@ -94,6 +94,8 @@ impl Grant {
 #[derive(Default)]
 pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
+    /// Admission wakes the idle pump so it can watch the new holder's exit.
+    pub(crate) holder_changed: Arc<tokio::sync::Notify>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
     pub(crate) generation: u64,
     /// The kernel has begun to stop: event waits end their poll.
