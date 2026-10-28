@@ -7,6 +7,7 @@ fn leased_provider_discovers_and_invokes_home_app_view_tools() {
 }
 
 async fn check_leased_app_view_tools() {
+    let _tools = ScopedEnvironment::set([("CHARIOX_ROOM_AGENT_TOOLS", "1".into())]);
     let mut fixture = LiveWorker::start().await;
     let (_worker_state, worker) = start_agent_worker(&mut fixture).await;
     let check = std::panic::AssertUnwindSafe(async {
