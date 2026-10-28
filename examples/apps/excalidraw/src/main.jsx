@@ -28,12 +28,16 @@ const ready = next => {
   if (api) return;
   api = next;
   storage = persistence(chariox, api, loaded);
-  const handlers = { ...diagramActions(api, storage.save), ...storage };
-  actions = Object.fromEntries(declarations.uiActions.map(({ name }) => [name, input => {
-    const result = actionQueue.then(() => handlers[name](input));
-    actionQueue = result.catch(() => {});
-    return result;
-  }]));
+  actions = Object.fromEntries(declarations.uiActions.map(declaration => [declaration.name,
+    chariox.action(declaration, (input, caller) => {
+      const result = actionQueue.then(() => {
+        const handlers = { ...diagramActions(api, candidate => storage.save(candidate, caller)), ...storage };
+        return handlers[declaration.name](input, caller);
+      });
+      actionQueue = result.catch(() => {});
+      return result;
+    }),
+  ]));
   // Excalidraw installs its default actions after calling excalidrawAPI.
   queueMicrotask(() => { for (const [name, handler, key, shift] of [
     ['loadScene', 'open_file', 'o', false],
@@ -45,7 +49,6 @@ const ready = next => {
     perform: async () => { try { await actions[handler]({}); } catch (error) { report(error); } return false; },
   });
   });
-  for (const declaration of declarations.uiActions) chariox.action(declaration, actions[declaration.name]);
   chariox.view.state(() => ({ ...summary(api), persistence: storage.status() }));
 };
 

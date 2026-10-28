@@ -59,7 +59,7 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
         if (name === 'pick_file') return { grants: [] };
         throw Error('unknown backend tool: ' + name);
       });
-      await page.addInitScript(`const sdk = (${createViewActions.toString()})(); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
+      await page.addInitScript(`const sdk = (${createViewActions.toString()})((...args) => window.broker(...args)); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
       await page.goto(origin + '/index.html');
       await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
       const invoke = async (name, input = {}) => {

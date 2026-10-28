@@ -27,8 +27,9 @@ async function fixture(run) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
-    const broker = { scene: null, version: null, saveAttempts: 0, saves: [], fail: false, files: new Map(), writes: [], picked: null };
-    await context.exposeFunction('broker', async (name, input) => {
+    const broker = { scene: null, version: null, saveAttempts: 0, saves: [], fail: false, files: new Map(), writes: [], callers: [], picked: null };
+    await context.exposeFunction('broker', async (name, input, token) => {
+      broker.callers.push({name,token:token??null});
       if (name === 'load_scene') return { scene: JSON.parse(JSON.stringify(broker.scene, (_, value) =>
         value && !Array.isArray(value) && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))) : value)), version: broker.version };
       if (name === 'save_scene') {
@@ -48,10 +49,10 @@ async function fixture(run) {
       if (name === 'read_file') return { name: input.name ?? input.grantId, scene: JSON.parse(broker.files.get(input.name ?? input.grantId)) };
       throw Error('unknown tool: ' + name);
     });
-    await context.addInitScript(`const sdk = (${createViewActions.toString()})(); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
+    await context.addInitScript(`const sdk = (${createViewActions.toString()})((...args) => window.broker(...args)); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;`);
     await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
     await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
-    const invoke = (name, input = {}) => page.evaluate(({ name, input }) => window.__charioxViewAgent.invoke(name, input), { name, input });
+    const invoke = (name, input = {}) => page.evaluate(({ name, input }) => window.__charioxViewAgent.invoke(name, input, 'agent-test'), { name, input });
     const draw = async (x = 300) => {
       await page.locator('.excalidraw__canvas.interactive').click({ position: { x: 1000, y: 650 } });
       await page.keyboard.press('Escape'); await page.keyboard.press('r');
@@ -289,4 +290,16 @@ test('selection and hover do not parse or normalize an unchanged scene', { timeo
   assert.equal(work.normalizations, 0, 'unchanged canvas events must skip key sorting and serialization');
   assert.equal(broker.saveAttempts, before);
   assert.equal((await page.evaluate(() => window.__charioxViewAgent.changes(0))).value.latest, changes.value.latest);
+}));
+
+
+test('agent persistence uses its caller while a later human save stays human', {timeout:30000}, () => fixture(async ({broker,invoke,draw}) => {
+  broker.callers.length=0;
+  assert.equal((await invoke('add_elements',{elements:[{id:'scoped',type:'rectangle',x:50,y:50}]})).ok,true);
+  assert.equal((await invoke('save_file',{name:'scoped'})).ok,true);
+  assert(broker.callers.some(call=>call.name==='save_scene'&&call.token==='agent-test'));
+  assert(broker.callers.some(call=>call.name==='write_file'&&call.token==='agent-test'));
+  broker.callers.length=0;
+  await draw(600);
+  assert(broker.callers.some(call=>call.name==='save_scene'&&call.token===null));
 }));
