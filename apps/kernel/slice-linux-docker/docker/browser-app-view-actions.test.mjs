@@ -217,3 +217,14 @@ test('throwing handlers retire their callers and preserve definitive errors', as
   assert.equal((await api.agent.invoke('add_todo', {}, 'token')).code, 'action_failed');
   await assert.rejects(caller.call('late'), { code: 'APP_INVOCATION_EXPIRED' });
 });
+
+
+test('a human-only form registers without an agent declaration', async () => {
+  const node = form('human', {}, [{ tagName: 'INPUT', type: 'text', name: 'title', value: 'Draft' }]);
+  const { api } = page([]);
+  let received;
+  api.form(node, async (input, caller) => { received = input.title; await caller.call('save', input); });
+  await node.submit({ preventDefault() {} });
+  assert.equal(received, 'Draft');
+  assert.equal(api.agent.registrations().length, 0);
+});

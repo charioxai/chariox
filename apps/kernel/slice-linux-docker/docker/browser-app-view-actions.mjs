@@ -69,7 +69,7 @@ export function createViewActions(request) {
   function form(element, handler) {
     if (element?.tagName !== 'FORM') throw new TypeError('chariox.form needs a form element');
     if (typeof handler !== 'function') throw new TypeError('chariox.form needs a handler function');
-    describe(describeForm(element));
+    if (element.getAttribute('data-chariox-action') !== null) describe(describeForm(element));
     if (formHandlers.has(element)) throw new Error('chariox.form: this form is already registered');
     formHandlers.set(element, handler);
     element.addEventListener('submit', event => {

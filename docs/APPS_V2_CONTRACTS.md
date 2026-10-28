@@ -215,3 +215,6 @@ fails with `form_unregistered`. Native submit listeners cannot provide this
 completion contract. One agent action runs per Tab: another action or state read
 gets `view_busy` until the running handler settles, even after its deadline.
 Human input and registration/change-log reads remain available during the wait.
+
+Forms used only by humans can register without action markup. They do not appear
+in the agent catalog and need no signed action declaration.
