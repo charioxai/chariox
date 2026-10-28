@@ -743,8 +743,16 @@ pub(crate) fn workflow_outgoing_edge_contract_line(
         .map(|node| node.public_label())
         .filter(|label| !label.trim().is_empty());
     let mut line = match target_label {
-        Some(label) => format!("- edge {} -> {} ({label})", edge.id(), edge.to_node_id()),
-        None => format!("- edge {} -> {}", edge.id(), edge.to_node_id()),
+        Some(label) => format!(
+            "- edge_id: \"{}\", to_node_id: \"{}\" ({label})",
+            edge.id(),
+            edge.to_node_id()
+        ),
+        None => format!(
+            "- edge_id: \"{}\", to_node_id: \"{}\"",
+            edge.id(),
+            edge.to_node_id()
+        ),
     };
     if let Some(schema_ref) = edge.handoff_schema_ref() {
         line.push_str(&format!(", handoff_schema_ref: {schema_ref}"));

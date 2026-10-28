@@ -1137,10 +1137,10 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
 
     assert!(prompt.contains("<outgoing-edge-contracts>"));
     assert!(prompt.contains(&format!(
-        "- edge {analyst_edge_id} -> {analyst_node_id} (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
+        "- edge_id: \"{analyst_edge_id}\", to_node_id: \"{analyst_node_id}\" (Analyst), handoff_schema_ref: schema:analysis, validation_policy: halt"
     )));
     assert!(prompt.contains(&format!(
-        "- edge {reviewer_edge_id} -> {reviewer_node_id} (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
+        "- edge_id: \"{reviewer_edge_id}\", to_node_id: \"{reviewer_node_id}\" (Reviewer), handoff_schema_ref: schema:review, validation_policy: warn"
     )));
     assert!(!prompt.contains("Analyze quantitative evidence and route only analysis tasks here."));
     assert!(
