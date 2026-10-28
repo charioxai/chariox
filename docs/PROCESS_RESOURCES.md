@@ -35,4 +35,18 @@ agent or terminal owner, PID, executable name, resident bytes, CPU and age. CPU 
 `ps`'s lifetime average expressed as a percentage of one core. Arguments and
 environment variables are excluded. Samples reach clients through the existing
 session subscription projection, reconciled every two seconds; clients discard
-samples older than five seconds. This adds no process termination command.
+samples older than five seconds.
+
+`/provider processes list` opens the same view. To stop work, use
+`/provider processes kill agent <agent-id>` (one confirmation) or
+`/provider processes kill process <process-id>` (no confirmation). The process
+IDs are issued by the kernel and shown below each TUI row; a raw PID is refused.
+The controller rechecks session access and launch ownership, sends TERM, then
+KILL after a bounded grace period. Controller stops use the typed `outside_end`
+outcome, preserving `memory_limit` for a resource limit. Individual child stops
+leave the owning provider and unrelated processes running.
+
+The Web Health view groups the same session projections by connected machine
+and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
+Its collapse/expand state belongs to the viewer; process authority remains in
+the kernel.
