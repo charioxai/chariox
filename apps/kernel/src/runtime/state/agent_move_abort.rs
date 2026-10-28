@@ -40,6 +40,7 @@ impl KernelRuntimeState {
                 | HomeMovePhase::SourceStopped
                 | HomeMovePhase::Captured { .. }
                 | HomeMovePhase::Materialized { .. }
+                | HomeMovePhase::Bound { remote: None, .. }
         ) {
             return Err(move_error("This Move may already own a target lease. Finish the operation, then Return through a new generation"));
         }
@@ -88,6 +89,27 @@ impl KernelRuntimeState {
         &self,
         mut operation: crate::agent_move::HomeMoveOperation,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        if operation.target_ref.is_none() {
+            // Return attachment may have changed these fields before native import or
+            // setup failed. Restore them durably before source admission reopens.
+            self.with_app_side_effect(|app| {
+                let mut agent = app.agents().get_agent(&operation.identity.home_agent_id)?;
+                agent.set_remote_execution(operation.source_remote.clone());
+                agent.set_workspace_id(operation.original_agent.workspace_id().map(String::from));
+                agent.set_worktree_id(operation.original_agent.worktree_id().map(String::from));
+                agent.set_provider_resume_state(
+                    operation.original_agent.provider_resume_state().clone(),
+                );
+                app.agents().restore_agent(agent.clone());
+                app.durable_state_store().append_event(
+                    "agent.updated",
+                    Some(agent.id().into()),
+                    serde_json::json!({"agent":agent,"source":"agent_move_abort"}),
+                )?;
+                Ok::<_, DaemonError>(())
+            })
+            .await?;
+        }
         self.release_agent_move_source(&operation, false, true)
             .await?;
         let agent_id = operation.identity.home_agent_id.clone();

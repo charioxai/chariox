@@ -1851,3 +1851,80 @@ async fn mk03_restart_removes_completed_workspace_archives_but_keeps_native() {
         assert_eq!(std::fs::read(native).unwrap(), b"native state must survive");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_unactivated_return_restores_home_configuration() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let original = fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap();
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::write(root.join("crash-after-phase-for-test"), "target:attached").unwrap();
+    let home = fixture.home.clone();
+    let agent_id = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let interrupted = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToLocal(
+            crate::local::MoveAgentToLocalRequest {
+                session_id,
+                agent_ref: agent_id,
+                abort_pending: false,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "return-attach",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(interrupted.unwrap_err().is_panic());
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "bound"
+    );
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.expect("an unactivated Return must be cancellable");
+    let home = fixture.home.lock().await;
+    let restored = home.agents().get_agent(&fixture.agent_id).unwrap();
+    assert_eq!(restored.remote_execution(), original.remote_execution());
+    assert_eq!(restored.workspace_id(), original.workspace_id());
+    assert_eq!(restored.worktree_id(), original.worktree_id());
+    assert_eq!(
+        restored.provider_resume_state(),
+        original.provider_resume_state()
+    );
+    assert!(!home
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    let operation = home
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    assert!(
+        home.agent_moves
+            .target(&operation.identity.operation_id)
+            .unwrap()
+            .retired
+    );
+    let worker = fixture.workers[0].lock().await;
+    let remote = restored.remote_execution().unwrap();
+    let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+    assert!(!worker
+        .agent_moves
+        .dispatch_fenced(&backing.backing_session_id, &backing.backing_agent_id));
+}

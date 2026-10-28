@@ -82,7 +82,8 @@ impl DaemonApp {
         });
         if target.active
             || target.backing.is_some()
-            || target.backing_agent_id.is_some()
+            || (target.backing_agent_id.is_some()
+                && identity.target_kernel_id != identity.home_kernel_id)
             || has_agent
         {
             return Err(move_error("The target already holds a Move lease with an agent; finish the operation before returning"));
