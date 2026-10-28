@@ -75,11 +75,12 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
-  const viewActions = (${createViewActions.toString()})();
+  const viewActions = (${createViewActions.toString()})(request);
   Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
     action: viewActions.action,
+    form: viewActions.form,
     view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
