@@ -850,7 +850,7 @@ export class KernelBrowserHost {
           typeof command.dialog_id !== "string" || !this.browser.dialogDefaults?.current(tab.target_id, command.dialog_id, command.document_id)) {
         throw new BrowserActionError("browser_dialog_invalid", "browser dialog is no longer pending; read the current browser state");
       }
-      this.appAgent(tab, command, true);
+      this.appForInput(tab, command, true);
       await this.browser.handleDialog({ ...command, target_id: tab.target_id }, { signal });
       this.stateSignal.notify();
       return this.observe(this.tabState(), null, scope);
@@ -934,7 +934,7 @@ export class KernelBrowserHost {
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
-    const { app, agent } = this.appAgent(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
+    const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
       throw new UserDomainRefusal("not_granted");
@@ -1096,12 +1096,10 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
   // claimed that App view in the agent's own grant.
-  appAgent(tab, command, drives) {
+  appForInput(tab, command, drives) {
     const app = [...(this.browser.appTabs?.apps?.values() ?? [])].find(open => open.targetId === tab.target_id);
-    const agent = command.focused_agent || command._agent_input
-      ? /^agent:(.+)$/.exec(String(command.observed_by ?? ""))?.[1] ?? "unattributed-agent" : null;
-    if (app && drives && agent && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
-    return { app, agent };
+    if (app && drives && (command.focused_agent || command._agent_input) && command._app_view_tab !== tab.tab_id) throw new UserDomainRefusal("not_granted");
+    return app;
   }
   async handle(request, { signal } = {}) {
     const browserAtEntry = this.browser;
@@ -1131,7 +1129,7 @@ export class KernelBrowserHost {
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
         // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
         // recorded before the field's input/change handlers can run.
-        const { app, agent } = this.appAgent(tab, request.params, true);
+        const app = this.appForInput(tab, request.params, true);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
