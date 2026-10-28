@@ -1,7 +1,5 @@
 use super::*;
-use crate::durable_state::{
-    app_publishers::AppPublisherMutation, app_state::fixture_event_package,
-};
+use crate::durable_state::app_publishers::AppPublisherMutation;
 use crate::local::*;
 use crate::runtime::command::KernelCommand;
 use crate::{
@@ -110,7 +108,7 @@ impl Fixture {
             .unwrap()
     }
     async fn uploaded(&self) -> (String, String) {
-        let (bytes, publisher) = fixture_event_package();
+        let (bytes, publisher) = crate::runtime::app_package_preparation::test_package::package();
         self.control()
             .0
             .shared

@@ -17,7 +17,7 @@ pub struct EventCatalog {
     events: BTreeMap<String, Event>,
 }
 impl EventCatalog {
-    pub fn compile(package: &VerifiedPackage<'_>, catalog: Arc<AppCatalog>) -> Result<Self> {
+    pub fn compile(package: &impl VerifiedApp, catalog: Arc<AppCatalog>) -> Result<Self> {
         if package.package_digest() != catalog.package_digest() {
             return Err(OutboxError::Conflict);
         }

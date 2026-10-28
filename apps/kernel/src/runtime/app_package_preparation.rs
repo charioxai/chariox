@@ -6,7 +6,9 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 
-use chariox_app_package::{inspect_untrusted, verify, ErrorCode, Limits, VerificationPolicy};
+use chariox_app_package::{
+    inspect_publisher, verify_app as verify, ErrorCode, Limits, VerificationPolicy, VerifiedApp,
+};
 use chariox_app_runtime::{
     installation::{VerifiedInstallCandidate, VerifiedStageError},
     package_upload::{UploadError, MAX_UPLOAD_ARCHIVE_BYTES},
@@ -36,6 +38,7 @@ pub(crate) enum PreparationError {
     PublisherNotEnrolled,
     PublisherRevoked,
     PackageRejected(ErrorCode),
+    LegacyNodePackage,
     InsufficientStorage,
     UnsafeRelease,
     ArchiveMismatch,
@@ -115,6 +118,32 @@ impl AppPackagePreparation {
 
     /// Both admission permits are retained in the blocking task until all file
     /// and verification work finishes, even if its awaiting client disconnects.
+    pub(crate) async fn prepare_portable(
+        &self,
+        trusted_owner: String,
+        upload_handle: String,
+        admission: OwnedSemaphorePermit,
+    ) -> Result<PreparedAppPackage> {
+        let service = self.clone();
+        admitted_blocking(Arc::clone(&self.preparation), admission, move || {
+            // R5 has not shipped a contained native runtime in release builds.
+            // Keep the enrolled Node path usable until v2 can actually launch.
+            let portable_only =
+                chariox_app_runtime::worker_process::wasm::WasmRuntime::beside_kernel().is_ok();
+            service.prepare_at(
+                &trusted_owner,
+                &upload_handle,
+                crate::session::unix_epoch_ms(),
+                portable_only,
+                |_| Ok(()),
+            )
+        })
+        .await
+    }
+
+    // Retained Node installations and their lifecycle fixtures still use the
+    // existing verifier/store. User installation requests use prepare_portable.
+    #[cfg(test)]
     pub(crate) async fn prepare(
         &self,
         trusted_owner: String,
@@ -127,6 +156,7 @@ impl AppPackagePreparation {
                 &trusted_owner,
                 &upload_handle,
                 crate::session::unix_epoch_ms(),
+                false,
                 |_| Ok(()),
             )
         })
@@ -138,6 +168,7 @@ impl AppPackagePreparation {
         owner: &str,
         handle: &str,
         now_ms: u64,
+        portable_only: bool,
         checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
     ) -> Result<PreparedAppPackage> {
         // Finalize authenticates the owner/handle, rejects partial or expired
@@ -165,12 +196,19 @@ impl AppPackagePreparation {
         if bytes.len() != capacity {
             return Err(PreparationError::UploadDigestMismatch);
         }
-        self.verify_and_stage(owner, &bytes, &upload.status().sha256, checkpoint)
+        self.verify_and_stage(
+            owner,
+            &bytes,
+            &upload.status().sha256,
+            portable_only,
+            checkpoint,
+        )
     }
 
     /// Protocol 367: a release already in the local release store (a
     /// deployment copy's install), re-verified against the owner's current
-    /// enrolled publisher trust.
+    /// enrolled publisher trust. Retained Node releases keep this existing
+    /// deployment path until P1; uploaded packages use the portable-only gate.
     pub(crate) async fn prepare_release(
         &self,
         trusted_owner: String,
@@ -183,7 +221,7 @@ impl AppPackagePreparation {
                 .and_then(|store| store.open_stored_archive(&package_digest))
                 .and_then(|mut archive| archive.read_bytes())
                 .map_err(|_| PreparationError::UploadNotFound)?;
-            service.verify_and_stage(&trusted_owner, &bytes, &package_digest, |_| Ok(()))
+            service.verify_and_stage(&trusted_owner, &bytes, &package_digest, false, |_| Ok(()))
         })
         .await
     }
@@ -193,17 +231,14 @@ impl AppPackagePreparation {
         owner: &str,
         bytes: &[u8],
         expected_digest: &str,
+        portable_only: bool,
         mut checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
     ) -> Result<PreparedAppPackage> {
-        let claimed = inspect_untrusted(bytes, &Limits::default())
+        let claimed = inspect_publisher(bytes, &Limits::default())
             .map_err(|e| PreparationError::PackageRejected(e.code))?;
         let trust = self
             .store
-            .trusted_app_publisher(
-                owner,
-                &claimed.manifest.publisher.id,
-                &claimed.manifest.publisher.key_id,
-            )
+            .trusted_app_publisher(owner, &claimed.id, &claimed.key_id)
             .map_err(publisher_error)?;
         let policy = VerificationPolicy::new(
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -213,6 +248,9 @@ impl AppPackagePreparation {
             verify(bytes, &policy).map_err(|e| PreparationError::PackageRejected(e.code))?;
         if verified.package_digest() != expected_digest {
             return Err(PreparationError::UploadDigestMismatch);
+        }
+        if portable_only && matches!(verified, chariox_app_package::VerifiedAppPackage::Node(_)) {
+            return Err(PreparationError::LegacyNodePackage);
         }
         let candidate = VerifiedInstallCandidate::from_verified(&verified, &trust).map_err(
             |error| match error {
@@ -318,3 +356,6 @@ fn release_error(error: ReleaseStoreError) -> PreparationError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod test_package;

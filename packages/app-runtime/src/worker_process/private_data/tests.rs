@@ -57,7 +57,8 @@ impl Fixture {
                 heap_mib: 64,
                 v8_threads: 1,
                 max_file_bytes: 1048576,
-            },
+            }
+            .into(),
             _objects: vec![],
             domain: Box::new(Domain(dropped.clone(), File::open(&path).unwrap())),
         };

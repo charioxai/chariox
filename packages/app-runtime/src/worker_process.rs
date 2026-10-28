@@ -30,10 +30,13 @@ mod storage_macos;
 #[cfg(feature = "test-fixtures")]
 #[doc(hidden)]
 pub mod test_fixture;
+pub mod wasm;
+pub mod wasm_config;
 #[cfg(any(target_os = "macos", test))]
 mod worker_platform;
 
 use crate::wire::{Channel, Sender};
+#[cfg(any(test, feature = "test-fixtures"))]
 use record::LaunchRecord;
 use std::{
     ffi::CString,
@@ -53,7 +56,7 @@ use std::{
 pub struct PreparedWorker {
     program: CString,
     arguments: Vec<CString>,
-    record: LaunchRecord,
+    record: record::PreparedLaunch,
     // Open objects AND the domain's pinning lease survive through the caller's
     // lifecycle join, including broker drain after actual process/domain reap.
     _objects: Vec<File>,
@@ -334,9 +337,9 @@ impl WorkerProcess {
         let limits = limits.validate()?;
         let record = prepared.record.encode()?;
         let ready = prepared.record.ready();
-        let generation = prepared.record.generation.clone();
-        let installation = prepared.record.installation.clone();
-        let release_digest = prepared.record.release_digest.clone();
+        let generation = prepared.record.generation().to_owned();
+        let installation = prepared.record.installation().to_owned();
+        let release_digest = prepared.record.release_digest().to_owned();
         let (sdk, child_sdk) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (control, child_control) = UnixStream::pair().map_err(|_| WorkerError::Io)?;
         let (stdout, child_stdout) = UnixStream::pair().map_err(|_| WorkerError::Io)?;

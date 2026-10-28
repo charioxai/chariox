@@ -10,7 +10,7 @@ use crate::durable_state::{
     app_file_grants::{FileGrantCommand, FilePick, PickState, MAX_FILES, MAX_FILE_BYTES, PICK_MS},
     DurableKernelStateStore,
 };
-use chariox_app_package::{ExternalFileAccess, VerifiedPackage};
+use chariox_app_package::{ExternalFileAccess, VerifiedApp};
 use chariox_app_runtime::{
     app_outbox::EventCatalog,
     wire::RemoteError,
@@ -69,7 +69,7 @@ impl AppFileGrantBroker {
         catalog: Arc<EventCatalog>,
         admission: Arc<Semaphore>,
         data: PrivateData,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
     ) -> Self {
         let user_selected = package
             .manifest()

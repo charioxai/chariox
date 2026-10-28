@@ -5,7 +5,7 @@ use crate::durable_state::app_validations::EffectReceipt;
 use crate::{
     durable_state::DurableKernelStateStore, runtime::app_operation_budget::AppOperationBudget,
 };
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use chariox_app_runtime::worker_peer::ResponsePublication;
 use chariox_app_runtime::{
     app_catalog::AppCatalog, wire::RemoteError, worker_peer::BrokerRequest,
@@ -40,7 +40,7 @@ impl AppHttpBroker {
         store: DurableKernelStateStore,
         owner: String,
         catalog: Arc<AppCatalog>,
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         data: PrivateData,
         admission: Arc<Semaphore>,
         context: HttpContext,

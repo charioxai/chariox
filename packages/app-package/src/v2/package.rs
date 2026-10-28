@@ -108,6 +108,9 @@ impl<'a> VerifiedPackageV2<'a> {
     pub fn ui_actions(&self) -> &[UiActionDeclaration] {
         &self.ui_actions
     }
+    pub fn package_digest(&self) -> &str {
+        &self.digests.delivered
+    }
     pub fn digests(&self) -> &PackageDigests {
         &self.digests
     }
@@ -116,6 +119,11 @@ impl<'a> VerifiedPackageV2<'a> {
     }
     pub fn file(&self, path: &str) -> Option<&'a [u8]> {
         self.files.get(path).copied()
+    }
+    pub fn files(&self) -> impl Iterator<Item = (&str, &'a [u8])> + '_ {
+        self.files
+            .iter()
+            .map(|(path, bytes)| (path.as_str(), *bytes))
     }
 }
 

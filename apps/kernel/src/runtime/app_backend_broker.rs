@@ -7,7 +7,7 @@ use super::{
     app_worker::AppWorkerError,
 };
 use crate::durable_state::DurableKernelStateStore;
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 use chariox_app_runtime::{
     app_outbox::EventCatalog,
     wire::RemoteError,
@@ -27,7 +27,7 @@ pub(crate) fn broker(
     catalog: Arc<EventCatalog>,
     admission: Arc<Semaphore>,
     process: &WorkerProcess,
-    package: &VerifiedPackage<'_>,
+    package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {
@@ -52,7 +52,7 @@ fn build(
     catalog: Arc<EventCatalog>,
     admission: Arc<Semaphore>,
     process: &WorkerProcess,
-    package: &VerifiedPackage<'_>,
+    package: &impl VerifiedApp,
     http: HttpContext,
     event_config: super::app_lifecycle::EventConfig,
 ) -> Result<BackendBroker, AppWorkerError> {
@@ -216,7 +216,7 @@ pub(crate) fn fixture_http(
     catalog: Arc<EventCatalog>,
     admission: Arc<Semaphore>,
     process: &WorkerProcess,
-    package: &VerifiedPackage<'_>,
+    package: &impl VerifiedApp,
     http: HttpContext,
     network: Arc<super::app_http::fixture::NetworkFixture>,
 ) -> Result<Arc<dyn Broker>, AppWorkerError> {

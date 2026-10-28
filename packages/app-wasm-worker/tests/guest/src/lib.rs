@@ -9,6 +9,8 @@ wit_bindgen::generate!({
             import chariox:app/http@1.0.0;
             import chariox:app/events@1.0.0;
             import chariox:app/log@1.0.0;
+            import chariox:app/host@1.0.0;
+            import wasi:filesystem/preopens@0.2.0;
             export chariox:app/handlers@1.0.0;
         }
     "#,
@@ -17,7 +19,7 @@ wit_bindgen::generate!({
 });
 use chariox::app::{
     app_types::{AppError, InvocationContext, Wake},
-    events, http, log, registry, state,
+    events, host, http, log, registry, state,
 };
 use exports::chariox::app::handlers::Guest;
 use futures::future::{select, Either};
@@ -105,6 +107,54 @@ impl Guest for App {
 async fn run(name: String, input: String) -> Result<String, AppError> {
     let input: Value = serde_json::from_str(&input).map_err(|_| fail("INVALID_ARGUMENT"))?;
     match name.as_str() {
+        "echo" if input["portable"] == "migration-state" => Ok(state::get("migrated".into())
+            .await?
+            .map_or("null".into(), |record| record.value)),
+        "echo" if input["portable"] == "files-links" || input["portable"] == "files-links-read" => {
+            use wasi::filesystem0_2_0::types::{DescriptorFlags as D, OpenFlags as O, PathFlags as P};
+            let (dir, _) = wasi::filesystem0_2_0::preopens::get_directories().into_iter().find(|(_, name)| name == "data").ok_or_else(|| fail("NO_DATA"))?;
+            if input["portable"] == "files-links" {
+                let file = dir.open_at(P::empty(), "linked-value", O::CREATE, D::READ | D::WRITE).unwrap();
+                file.write(b"committed-linked-data", 0).unwrap();
+                dir.symlink_at("linked-value", "symlink").unwrap();
+                dir.link_at(P::empty(), "linked-value", &dir, "hardlink").unwrap();
+                let large = dir.open_at(P::empty(), "large", O::CREATE, D::READ | D::WRITE).unwrap();
+                large.set_size(513 * 1024 * 1024).unwrap();
+            }
+            let read = |path| {
+                let file = dir.open_at(P::SYMLINK_FOLLOW, path, O::empty(), D::READ).unwrap();
+                String::from_utf8(file.read(100, 0).unwrap().0).unwrap()
+            };
+            Ok(json!({"value":read("linked-value"),"hardlink":read("hardlink"),"symlink":dir.readlink_at("symlink").unwrap(),"bytes":dir.stat_at(P::empty(), "large").unwrap().size}).to_string())
+        }
+        "echo" if input["portable"] == "files-write" || input["portable"] == "files-read" => {
+            use wasi::filesystem0_2_0::types::{
+                DescriptorFlags as D, OpenFlags as O, PathFlags as P,
+            };
+            let mut values = serde_json::Map::new();
+            for (dir, name) in wasi::filesystem0_2_0::preopens::get_directories() {
+                let flags = if input["portable"] == "files-write" {
+                    O::CREATE
+                } else {
+                    O::empty()
+                };
+                let value = match dir.open_at(P::empty(), "marker", flags, D::READ | D::WRITE) {
+                    Ok(file) => {
+                        if input["portable"] == "files-write" {
+                            file.write(b"r6-user-data", 0).unwrap();
+                        }
+                        Some(String::from_utf8(file.read(100, 0).unwrap().0).unwrap())
+                    }
+                    Err(_) => None,
+                };
+                values.insert(name, json!(value));
+            }
+            Ok(Value::Object(values).to_string())
+        }
+        "echo" if input["portable"] == "pick" => {
+            let grants = host::pick_file(host::Pick { multiple: false, accept: vec![] }).await?;
+            Ok(json!(grants).to_string())
+        }
         "echo" => Ok(input.to_string()),
         "shared" => {
             let count = COUNTER.with(|counter| {

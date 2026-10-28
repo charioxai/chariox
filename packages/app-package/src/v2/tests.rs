@@ -76,6 +76,18 @@ fn policy() -> PolicyV2 {
     )
 }
 
+#[test]
+fn generic_verifier_refuses_ui_actions_without_a_runtime() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    let error = crate::verify_app(&bytes, &generic)
+        .err()
+        .expect("R4 has no UI-action runtime");
+    assert_eq!(error.code, ErrorCode::IncompatibleProtocol);
+    assert!(error.message.contains("ui-actions"), "{}", error.message);
+}
+
 struct Fixture {
     manifest: ManifestV2,
     files: BTreeMap<String, Vec<u8>>,
@@ -663,6 +675,21 @@ fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
     let error = verify(&bytes, &no_migration).unwrap_err();
     assert_eq!(error.code, ErrorCode::IncompatibleContract);
     assert!(error.message.contains("chariox:app/migration@1.0.0"));
+}
+
+#[test]
+fn kernel_verifier_admits_the_registered_signed_migration_world() {
+    let mut fixture = base();
+    if let Some(actions) = fixture.manifest.ui_actions.take() {
+        fixture.files.remove(&actions);
+    }
+    fixture.manifest.required_features = fixture.manifest.derive_features();
+    let bytes = packed(&fixture, &[]);
+    let policy = crate::VerificationPolicy::new(619, policy().trusted_publishers);
+    assert!(matches!(
+        crate::verify_app(&bytes, &policy),
+        Ok(crate::VerifiedAppPackage::Wasm(_))
+    ));
 }
 
 #[test]

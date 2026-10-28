@@ -11,7 +11,21 @@ import { runAppCommand } from "./app-command.js"
 import { parseSlashCommand, sharedShellCommandForSlashCommand } from "./commands.js"
 
 type Message = Record<string, any>
+
+test("a legacy Node rebuild explains that private files need migration", () => {
+  assert.equal(formatInstallFailure("app_install_node_package_requires_rebuild"),
+    "This App uses the Node backend. Rebuild it as a portable Apps v2 .cxapp. Node private files are not migrated to v2; export and restore them separately.")
+})
 const digest = (bytes: Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+test("cache contention, capacity and storage failures explain recovery", () => {
+  assert.match(formatInstallFailure("app_aot_busy"), /Retry starting/)
+  assert.match(formatInstallFailure("app_aot_limit"), /Rebuild a smaller/)
+  assert.match(formatInstallFailure("app_aot_store"), /disk space and permissions/)
+})
+test("migration checkpoint failures explain storage recovery", () => {
+  assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /Free disk space and check storage permissions/)
+  assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /retry the update/)
+})
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => { resolve = done })

@@ -7,7 +7,7 @@
 mod invocation;
 mod payload;
 
-use chariox_app_package::{ActionDeclaration, Limits, VerifiedPackage};
+use chariox_app_package::{ActionDeclaration, Limits, VerifiedApp};
 pub use invocation::{
     is_context_id, Actor, CallerContext, OwnedValidatedToolCall, ValidatedToolCall,
 };
@@ -94,7 +94,7 @@ pub struct AppCatalog {
 
 impl AppCatalog {
     pub fn compile(
-        package: &VerifiedPackage<'_>,
+        package: &impl VerifiedApp,
         binding: &StageTrustBinding,
         trust: &TrustedPublisherSnapshot,
     ) -> Result<Self> {

@@ -572,3 +572,51 @@ async fn cancelled_guest_gets_cleanup_grace_after_a_broker_wait() {
     );
     println!("DRILL cancellation permits guest cleanup after broker wait without replacing peers or shared state: PASS");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "source App build required; use scripts/drill.sh"]
+async fn real_worker_file_pick_terminal_states() {
+    let mut worker = Worker::start(vec![]).await;
+    for (state, expected) in [
+        ("declined", "CANCELLED"),
+        ("expired", "FILE_PICK_EXPIRED"),
+        ("granted", "OK"),
+        ("cancelled", "APP_BROKER_PROTOCOL"),
+    ] {
+        worker
+            .call_input(state, "echo", json!({"portable":"pick"}), 2000)
+            .await;
+        let Message::Request { id, method, .. } = worker.next().await else {
+            panic!("file pick request expected")
+        };
+        assert_eq!(method, "host.pick_file");
+        worker
+            .answer(
+                id,
+                json!({"operationId":"pick","state":"pending","grantIds":[]}),
+            )
+            .await;
+        let Message::Request {
+            id, method, params, ..
+        } = worker.next().await
+        else {
+            panic!("file pick poll expected")
+        };
+        assert_eq!(method, "host.pick_file_status");
+        assert_eq!(params["operationId"], "pick");
+        worker
+            .answer(
+                id,
+                json!({"operationId":"pick","state":state,"grantIds":["grant"]}),
+            )
+            .await;
+        let outcome = worker.response(state).await;
+        if expected == "OK" {
+            assert!(
+                matches!(outcome, Outcome::Success(ref success) if success.result == json!(["grant"]))
+            );
+        } else {
+            assert_eq!(code(outcome), expected, "terminal file pick state {state}");
+        }
+    }
+}
