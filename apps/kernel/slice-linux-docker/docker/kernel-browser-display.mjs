@@ -458,7 +458,7 @@ export class DisplayStream {
     // the untouched raster before the whole frame becomes exact.
     this.exact = source.native_tiles ? wasExact : !['video','stripes'].includes(payload.kind) && !this.repair; this.sequence++;
     if(this.exact&&!wasExact)this.shiftHold=false;
-    if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent();
+    if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent(source.refinement_serial??source.serial);
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
     if(payload.kind==='video'){const at=this.now();this.streak=at-this.streakAt<=LEASE_GAP_MS?this.streak+1:1;this.streakAt=at;}

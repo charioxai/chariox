@@ -35,7 +35,7 @@ export class MotionEncoder {
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
-   const sample=this.pending;this.pending=null;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
+   const sample=this.pending;this.pending=null;this.activeSerial=sample.serial;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
    // MP-08/MP-10/MP-11: one small protected native PNG establishes the
    // canvas without eight cold decoder-worker fetches. Motion stays video.
@@ -109,7 +109,12 @@ export class MotionEncoder {
   const frame=this.frames.shift()??null;this.pump();return frame;
  }
  get independentFrameReady(){const frame=this.frames[0];return Boolean(frame?.force_lossless||frame?.encoded?.key||frame?.encoded?.stripes?.length===8&&frame.encoded.stripes.every(row=>row.key));}
- retireUnsent(){if(this.frames.length||this.active||this.pending)this.invalidateRows(false)}
+ // `after`: the source serial an exact frame just showed. Work encoded from that raster or a newer one cannot regress
+ // it and keeps its reference chain (retiring an in-flight encode costs a key: one per repair on a settling page).
+ retireUnsent(after){
+  if(Number.isSafeInteger(after)&&[...this.frames.map(frame=>frame.serial),this.active?this.activeSerial:after,this.pending?.serial??after].every(serial=>serial>=after))return;
+  if(this.frames.length||this.active||this.pending)this.invalidateRows(false);
+ }
  invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  invalidate(reoffer=true){this.revision++;this.key=true;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
  async close(){if(this.closed)return;this.closed=true;this.wakeReady();this.off?.();this.invalidate();await this.active;}
