@@ -5204,6 +5204,16 @@ ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
 including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
 for edge cases, resource ownership and the proposal approval requirement.
 
+### Held notification delivery (670)
+
+A workflow notification whose injection into a running agent has no proven outcome is held by the
+kernel and never re-sent on its own. Protocol 670 projects that hold on the queued item as
+`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
+`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh injection
+and may arrive twice) or discard with the existing `RemoveQueuedWorkflowPrompt`, which now also accepts
+a held item. At the deadline the kernel retires a held item with a notice that names the reason.
+TUI: `/workflow queue retry|remove <item>`. Clients send `retry_delivery` only to kernels at 670 or newer.
+
 ### Staging new UI union (599/205)
 
 MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),

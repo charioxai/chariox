@@ -375,4 +375,7 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 636;
+/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
+/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
+/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 670;

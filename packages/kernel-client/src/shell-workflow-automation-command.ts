@@ -275,6 +275,13 @@ export async function executeWorkflowQueueCommand(
     const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptRemoved")
     return { ok: true, message: `removed queued workflow prompt ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
+  if (action === "retry") {
+    const queueItemRef = parsed.args[1]
+    if (!queueItemRef) return { ok: false, message: "usage: workflow queue retry [--workflow <workflow-ref>] <queue-item-ref>" }
+    const response = await deps.client.send(updateQueuedWorkflowPromptRequest(sessionId, queueItemRef, { retryDelivery: true }))
+    const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptUpdated")
+    return { ok: true, message: `retrying held notification ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
+  }
   if (action === "edit") {
     const queueItemRef = parsed.args[1]
     const prompt = parsed.args.slice(2).join(" ").trim()
@@ -291,7 +298,7 @@ export async function executeWorkflowQueueCommand(
     const payload = expectVariant<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>(response, "QueuedWorkflowPromptUpdated")
     return { ok: true, message: `moved queued workflow prompt ${payload.queued_prompt.id}`, data: payload, contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) } }
   }
-  return { ok: false, message: "usage: workflow queue [list|create|priority|edit|move|clear|remove]" }
+  return { ok: false, message: "usage: workflow queue [list|create|priority|edit|move|retry|clear|remove]" }
 }
 
 function parseWorkflowQueueArgs(args: readonly string[]): { args: string[]; workflowRef?: string; error?: boolean } {
