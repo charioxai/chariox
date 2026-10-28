@@ -7,7 +7,9 @@ use serde_json::{json, Value};
 const OVERLOADED: &str = "Provider prompt dispatch failed: Codex error [server_overloaded]: \
      Selected model is at capacity. Please try a different model.";
 
+/// A follower of the turn, which is running as a dispatched turn does: it has activity.
 fn follow(turn: &FailingTurn) {
+    turn.runtime.owned.note_prompt_started(&turn.failed_run_id);
     let target = EventTarget {
         kernel: turn.runtime.owned.config_projection.snapshot().daemon_id,
         session_id: turn.session_id.clone(),
@@ -28,10 +30,6 @@ fn follow(turn: &FailingTurn) {
 /// The agent events the follower holds, as they go over the wire.
 fn followed_agent_events(turn: &FailingTurn) -> Vec<Value> {
     turn.runtime
-        .owned
-        .publish_outside_runtime_activity()
-        .unwrap();
-    turn.runtime
         .outside_store()
         .outside_list("follower", None, 100)
         .unwrap()
@@ -41,6 +39,21 @@ fn followed_agent_events(turn: &FailingTurn) -> Vec<Value> {
         .map(|event| serde_json::to_value(event.value).unwrap())
         .filter(|value| value["type"] == "agent" && value["value"]["run_state"].is_string())
         .map(|value| value["value"].clone())
+        .collect()
+}
+
+/// Each event as `run_state` or `run_state:prompt:outcome kind`, in the order it was heard.
+fn heard(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .map(|event| match event["outcome"]["kind"].as_str() {
+            Some(kind) => format!(
+                "{}:{}:{kind}",
+                event["run_state"].as_str().unwrap(),
+                event["prompt_id"].as_str().unwrap()
+            ),
+            None => event["run_state"].as_str().unwrap().to_string(),
+        })
         .collect()
 }
 
@@ -85,9 +98,12 @@ async fn a_completed_turn_says_completed_with_its_ids_in_event_history_and_state
     let expected = json!({ "kind": "completed", "retryable": false, "reason": "" });
     let events = followed_agent_events(&turn);
     let last = events.last().expect("the follower hears the turn end");
-    assert_eq!(last["run_state"], "idle", "{last}");
+    assert_eq!(
+        heard(&events),
+        [format!("idle:{}:completed", turn.prompt_id)],
+        "{events:?}"
+    );
     assert_eq!(last["outcome"], expected, "{last}");
-    assert_eq!(last["prompt_id"], turn.prompt_id.as_str());
     assert_eq!(last["turn_id"], turn.prompt_id.as_str());
     assert_eq!(history_outcome(&turn), expected);
     assert_eq!(state_outcome(&turn), expected);
@@ -102,17 +118,20 @@ async fn a_cancelled_turn_says_cancelled_and_is_not_an_error() {
         .owned
         .cancel_active_prompt_only(&turn.session_id, &turn.agent_id)
         .unwrap();
+    turn.runtime
+        .owned
+        .clear_prompt_activity(&turn.failed_run_id);
 
     let expected = json!({ "kind": "cancelled", "retryable": false, "reason": "" });
     let events = followed_agent_events(&turn);
     let last = events.last().expect("the follower hears the turn end");
-    assert_eq!(last["run_state"], "idle", "{last}");
-    assert_eq!(last["outcome"], expected, "{last}");
-    assert_eq!(last["turn_id"], turn.prompt_id.as_str());
-    assert!(
-        events.iter().all(|event| event["run_state"] != "error"),
+    assert_eq!(
+        heard(&events),
+        [format!("idle:{}:cancelled", turn.prompt_id)],
         "{events:?}"
     );
+    assert_eq!(last["outcome"], expected, "{last}");
+    assert_eq!(last["turn_id"], turn.prompt_id.as_str());
     assert_eq!(history_outcome(&turn), expected);
     assert_eq!(state_outcome(&turn), expected);
 }
@@ -131,9 +150,12 @@ async fn a_failed_turn_carries_the_same_outcome_in_event_history_and_state() {
     });
     let events = followed_agent_events(&turn);
     let last = events.last().expect("the follower hears the turn end");
-    assert_eq!(last["run_state"], "error", "{last}");
+    assert_eq!(
+        heard(&events),
+        [format!("error:{}:overloaded", turn.prompt_id)],
+        "{events:?}"
+    );
     assert_eq!(last["outcome"], expected, "{last}");
-    assert_eq!(last["prompt_id"], turn.prompt_id.as_str());
     assert_eq!(history_outcome(&turn), expected);
     assert_eq!(state_outcome(&turn), expected);
 }
@@ -216,7 +238,7 @@ async fn each_turn_that_ends_into_a_queued_one_is_heard_once_before_the_next_sta
     turn.queue("third", "third turn").await;
 
     let mut ended = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..3 {
         ended.push(turn.active_prompt().expect("a turn runs").id().to_string());
         turn.runtime
             .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
@@ -224,29 +246,16 @@ async fn each_turn_that_ends_into_a_queued_one_is_heard_once_before_the_next_sta
             .expect("the turn completes");
     }
     assert_eq!(ended[0], turn.prompt_id);
-    assert_ne!(ended[1], ended[0]);
-    assert!(turn.active_prompt().is_some(), "the third turn runs");
+    assert!(turn.active_prompt().is_none(), "the queue is empty");
 
     let events = followed_agent_events(&turn);
-    let heard: Vec<_> = events
-        .iter()
-        .filter(|event| event["outcome"].is_object())
-        .map(|event| event["prompt_id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(heard, ended, "{events:?}");
-    let first = events
-        .iter()
-        .position(|event| event["outcome"].is_object())
-        .unwrap();
-    assert_eq!(
-        events[first + 1]["run_state"],
-        "working",
-        "the next turn starts after the one that ended is heard: {events:?}"
-    );
-    assert!(
-        events
-            .iter()
-            .all(|event| event["run_state"] != "working" || event["outcome"].is_null()),
-        "a running turn carries no outcome: {events:?}"
-    );
+    let expected: Vec<_> = [
+        format!("idle:{}:completed", ended[0]),
+        "working".to_string(),
+        format!("idle:{}:completed", ended[1]),
+        "working".to_string(),
+        format!("idle:{}:completed", ended[2]),
+    ]
+    .into();
+    assert_eq!(heard(&events), expected, "{events:?}");
 }

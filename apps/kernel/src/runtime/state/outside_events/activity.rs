@@ -67,6 +67,17 @@ impl KernelRuntimeOwnedState {
                     continue;
                 }
                 let turn = settled_turn(&value);
+                // The turn that just settled keeps its activity until the settlement
+                // finishes. That is not a successor starting, so its end is published
+                // once, when the activity clears.
+                if value.status == AgentRuntimeStatus::Working
+                    && turn
+                        .as_ref()
+                        .zip(value.active_turn.as_ref())
+                        .is_some_and(|(settled, active)| settled.prompt_id == active.prompt_id)
+                {
+                    continue;
+                }
                 let state = match value.status {
                     AgentRuntimeStatus::Idle => EventRunState::Idle,
                     AgentRuntimeStatus::Working => EventRunState::Working,
