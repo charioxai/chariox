@@ -97,7 +97,7 @@ export function createViewActions(request, inputs) {
       }
       event.preventDefault();
       submitting = token;
-      try { element.requestSubmit(submitter); }
+      try { HTMLFormElement.prototype.requestSubmit.call(element, submitter); }
       finally { submitting = undefined; }
     };
     element.addEventListener('click', submitFromInput);
