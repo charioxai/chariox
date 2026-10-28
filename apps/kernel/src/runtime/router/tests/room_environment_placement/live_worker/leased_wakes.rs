@@ -225,17 +225,6 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     let room = fixture.rooms[0].clone();
     let (child, attachment) =
         spawn_leased_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
-    let ready = fixture
-        .worktrees
-        .last()
-        .unwrap()
-        .join("controlled-cancel-ready");
-    // Keep the manually completed turn active, with no echoed input competing
-    // with the synthetic answer in the home history.
-    eventually("the worker fixture disabling echo", || {
-        ready.exists().then_some(())
-    })
-    .await;
     let parent = local_agent(&fixture, &room, &child).await;
     let store = store(&fixture).await;
     delegator_waiting_on(&store, &room, &parent, &child);
@@ -254,6 +243,17 @@ async fn leased_delegate_completion_wakes_the_home_delegator(worker_completes: b
     )
     .await
     .expect("submit the delegated turn through the real relay");
+    let ready = fixture
+        .worktrees
+        .last()
+        .unwrap()
+        .join("controlled-cancel-ready");
+    // Keep the manually completed turn active, with no echoed input competing
+    // with the synthetic answer in the home history.
+    eventually("the worker fixture disabling echo", || {
+        ready.exists().then_some(())
+    })
+    .await;
     leased_run(&fixture, &room, &child).await;
     fixture
         .home
