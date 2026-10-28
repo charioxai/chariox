@@ -11,8 +11,24 @@ use super::{
 impl ProviderProcessService {
     pub(crate) fn start_run_provider_only(
         &mut self,
-        request: LaunchProviderRequest,
+        mut request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        if let Some(checkpoint) = request.native_checkpoint.as_ref() {
+            request.resume_state = Some(
+                checkpoint
+                    .prepare_resume_state(&request)
+                    .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?,
+            );
+        }
+        if let Some(required) = request
+            .resume_state
+            .as_ref()
+            .and_then(|state| state.required_native_session())
+        {
+            required
+                .validate_request(&request)
+                .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
+        }
         let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
             DaemonError::ProviderAdapterNotFound {
                 adapter_key: request.adapter_key.clone(),
@@ -31,6 +47,7 @@ impl ProviderProcessService {
 
         let run_id = self.next_run_id();
         let launch_result = adapter.connect(&request)?;
+
         crate::logging::info_with_fields(
             "daemon.provider",
             "provider launch planned",
@@ -230,6 +247,9 @@ impl ProviderProcessService {
                 state: run.state(),
                 operation: "finish launch",
             });
+        }
+        if run.native_checkpoint().is_some() {
+            return Err(crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error());
         }
         run.mark_running();
         Ok(run.clone())

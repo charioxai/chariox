@@ -480,6 +480,9 @@ impl KernelRuntimeOwnedState {
             )?;
         match cleared {
             crate::agent::ProviderResumeClearOutcome::Cleared => {}
+            crate::agent::ProviderResumeClearOutcome::Required => {
+                return Ok(FailedPromptResumePreparation::NotRequired)
+            }
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {
                 return Ok(FailedPromptResumePreparation::Cleared(settlement_claim));
             }

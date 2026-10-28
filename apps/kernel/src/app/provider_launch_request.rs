@@ -186,8 +186,38 @@ impl DaemonApp {
                 .with_provider_account_env(provider_account_env)
                 .with_provider_credential_env(launch_environment);
         }
-        if request.resume_state.is_none() {
+        if request.resume_state.is_none()
+            || agent.as_ref().is_some_and(|agent| {
+                agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .is_none_or(|state| state.required_native_session().is_none())
+            })
+        {
             if let Some(agent) = agent.as_ref() {
+                if agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .and_then(|state| state.provider_session_id(&request.adapter_key))
+                        .is_some_and(|id| {
+                            Some(id)
+                                != agent
+                                    .provider_resume_state()
+                                    .provider_session_id(&request.adapter_key)
+                        })
+                {
+                    return Err(crate::provider::NativeCheckpointFailure::SessionChanged
+                        .into_daemon_error());
+                }
+
                 let resume_state = sanitize_resume_state_for_launch(&request, agent);
                 if !resume_state.is_empty() {
                     request = request.with_resume_state(resume_state);

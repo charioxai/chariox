@@ -57,6 +57,10 @@ pub(super) fn execute_submit_command(
         let result = submit_codex_prompt(&run, &mut state, &envelope);
         let mut resume_state = run.resume_state().clone();
         resume_state.set_codex_thread_id(state.thread_id());
+        if result.is_ok() && state.native_resume_turn_accepted() {
+            resume_state.record_native_resume_accepted("codex", state.thread_id());
+        }
+
         runtime_registry.restore_codex_runtime_if_live(&run_id, &slot, state);
         return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }

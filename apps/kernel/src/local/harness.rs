@@ -103,6 +103,7 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
             structured_endpoint: None,
             provider_session_id: None,
             native_tui: false,
+            native_checkpoint_binding: None,
         },
     ))? {
         LocalDaemonResponse::ProviderRunLaunched { provider_run }

@@ -118,6 +118,9 @@ pub struct RuntimeProviderRun {
     control_capabilities: Vec<ControlCapability>,
     #[serde(default, skip_serializing_if = "ProviderResumeState::is_empty")]
     resume_state: ProviderResumeState,
+    // Native payloads stay runtime-only until startup verifies the checkpoint.
+    #[serde(skip)]
+    native_checkpoint: Option<std::sync::Arc<super::ProviderNativeCheckpoint>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider_import: Option<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,6 +207,7 @@ impl RuntimeProviderRun {
                 request.runtime_mcp_binding.is_some(),
             ),
             resume_state: request.resume_state.clone().unwrap_or_default(),
+            native_checkpoint: request.native_checkpoint.clone().map(std::sync::Arc::new),
             external_provider_import: request.external_provider_import.clone(),
             provider_session_id: request
                 .resume_state
@@ -276,6 +280,7 @@ impl RuntimeProviderRun {
                 inferred_has_runtime_mcp_binding,
             ),
             resume_state: ProviderResumeState::default(),
+            native_checkpoint: None,
             external_provider_import: None,
             provider_session_id: None,
             terminal_diagnostic: None,
@@ -637,6 +642,14 @@ impl RuntimeProviderRun {
         self.write_access_mode.uses_workspace_live_sync()
     }
 
+    pub(crate) fn native_checkpoint(&self) -> Option<&super::ProviderNativeCheckpoint> {
+        self.native_checkpoint.as_deref()
+    }
+
+    pub(crate) fn clear_native_checkpoint(&mut self) {
+        self.native_checkpoint = None;
+    }
+
     pub fn resume_state(&self) -> &ProviderResumeState {
         &self.resume_state
     }
@@ -736,6 +749,7 @@ impl RuntimeProviderRun {
     }
 
     pub fn mark_ended(&mut self) {
+        self.clear_native_checkpoint();
         self.state = ProviderRunState::Ended;
     }
 

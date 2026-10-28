@@ -73,3 +73,25 @@ test("MP-08 / MP-10 conditional catalogs carry known revisions and the ordinary 
   assert.deepEqual(getClientCatalogSnapshotRequest(scope, known), {GetClientCatalogSnapshot: {scope: getProviderCatalogRequest(scope).GetProviderCatalog, known}})
   assert.equal(getClientCatalogSnapshotRequest().GetClientCatalogSnapshot.known, null)
 })
+
+test("native checkpoint launch preserves its required-resume binding", () => {
+  const binding: providerRequests.NativeProviderCheckpointBinding = {
+    provider: "codex",
+    session_id: "native-session",
+    account_sha256: "a".repeat(64),
+    model: "gpt-6-luna",
+    variant: "low",
+    cli_version: "codex-cli 0.159.3",
+    source_os: "linux",
+    artifact_sha256: "b".repeat(64),
+  }
+  const request = providerRequests.launchProviderRunRequest(
+    "session", "codex", "profile", "gpt-6-luna", "low", "agent",
+    { providerSessionId: binding.session_id, checkpointBinding: binding },
+  )
+  assert.deepEqual(request.LaunchProviderRun.native_checkpoint_binding, binding)
+  const ordinary = providerRequests.launchProviderRunRequest(
+    "session", "codex", "profile", "gpt-6-luna", "low",
+  )
+  assert.equal("native_checkpoint_binding" in ordinary.LaunchProviderRun, false)
+})

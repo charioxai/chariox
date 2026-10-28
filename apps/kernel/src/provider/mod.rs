@@ -10,6 +10,12 @@ pub(crate) use claude_runtime::usage::{
     claude_status_line_context_usage, claude_status_line_usage_snapshot,
 };
 mod account_handoff;
+mod checkpoint;
+pub(crate) use checkpoint::supported_interface as native_checkpoint_support;
+pub use checkpoint::{
+    NativeCheckpointBinding, NativeCheckpointFailure, ProviderNativeCheckpoint,
+    RequiredNativeSession,
+};
 mod codex;
 mod codex_client;
 mod codex_runtime;
