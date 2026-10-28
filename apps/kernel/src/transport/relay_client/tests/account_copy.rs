@@ -453,6 +453,71 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 .iter()
                 .all(|offer| offer["target_kernel_id"] == target.daemon_id
                     && offer["source_kernel_id"] == source.daemon_id));
+            for kind in [RelaySubjectKind::Kernel, RelaySubjectKind::Machine] {
+                for case in [
+                    "owner",
+                    "realm",
+                    "target-key",
+                    "target-id",
+                    "unbound",
+                    "expired",
+                    "unenrolled",
+                ] {
+                    let mut request = crate::local::CopyProviderAccountToKernelRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                        operation_id: "invalid-recipient".into(),
+                        target_kernel_id: target.daemon_id.clone(),
+                        target_key_thumbprint:
+                            crate::runtime::terminal_pairings::public_key_thumbprint(
+                                &target.relay_public_key,
+                            ),
+                        replace: false,
+                    };
+                    let mut identity = chariox_relay::protocol::RelayCallerIdentity {
+                        realm_id: "copy-realm".into(),
+                        subject: target.daemon_id.clone(),
+                        subject_kind: kind,
+                        expires_at_ms: crate::session::unix_epoch_ms() + 3_600_000,
+                        token_id: Some("fixture".into()),
+                        user_id: Some("copy-owner".into()),
+                        public_key_thumbprint: Some(request.target_key_thumbprint.clone()),
+                    };
+                    match case {
+                        "owner" => identity.user_id = Some("another-owner".into()),
+                        "realm" => identity.realm_id = "another-realm".into(),
+                        "target-key" => request.target_key_thumbprint = "c".repeat(64),
+                        "target-id" => request.target_kernel_id = "another-target".into(),
+                        "unbound" => identity.public_key_thumbprint = None,
+                        "expired" => identity.expires_at_ms = 1,
+                        "unenrolled" => {
+                            omit_target.store(true, std::sync::atomic::Ordering::SeqCst)
+                        }
+                        _ => unreachable!(),
+                    }
+                    let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
+                    let result = crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
+                        &source_router, &Arc::new(RwLock::new(RelayClientState::default())), &outgoing,
+                        &target.daemon_id, identity, &target.relay_private_key, &source.relay_public_key,
+                        RelayPeerRequest::RequestProviderAccountCopy { request },
+                    ).await;
+                    omit_target.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let public = match result {
+                        Ok(response) => serde_json::to_value(response).unwrap(),
+                        Err(error) => serde_json::to_value(error).unwrap(),
+                    };
+                    assert!(
+                        public.to_string().contains("unauthorized"),
+                        "{kind:?} {case}: {public}"
+                    );
+                    assert!(!public.to_string().contains(canary));
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                }
+            }
             let receive = serde_json::json!({"CopyProviderAccountFromKernel":{
                 "provider":"claude", "account_profile":profile.profile_id, "operation_id":"receive-1",
                 "source_kernel_id":source.daemon_id,

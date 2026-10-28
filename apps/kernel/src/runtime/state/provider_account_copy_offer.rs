@@ -296,9 +296,13 @@ impl KernelRuntimeState {
             .cloud_relay
             .as_ref()
             .ok_or_else(|| failure("provider_account_copy_unauthorized"))?;
-        if identity.subject_kind != chariox_relay::auth::RelaySubjectKind::Kernel
-            || chariox_relay::protocol::canonical_peer_daemon_id(&identity.subject)
-                != Some(target_kernel)
+        if !matches!(
+            identity.subject_kind,
+            chariox_relay::auth::RelaySubjectKind::Kernel
+                | chariox_relay::auth::RelaySubjectKind::Machine
+        ) || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
+            && chariox_relay::protocol::canonical_peer_daemon_id(&identity.subject)
+                != Some(target_kernel))
             || identity.user_id.as_deref() != Some(profile.user_id.as_str())
             || identity.realm_id != profile.realm_id
             || request.target_kernel_id != target_kernel
