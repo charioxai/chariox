@@ -19,6 +19,7 @@ tokio = { version = "1.44.2", features = ["io-util", "time", "sync", "macros", "
 wasmtime = { version = "=50.0.0", default-features = false, features = ["std", "runtime", "cranelift", "component-model-async", "call-hook", "task-group-hook"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 wit-parser = "=0.262.0"
 wit-component = { version = "=0.262.0", features = ["dummy-module"] }
 wasm-encoder = { version = "=0.262.0", features = ["wasmparser"] }

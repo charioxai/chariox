@@ -17,7 +17,7 @@ use tokio::net::UnixStream;
 
 pub(super) struct Worker {
     child: Child,
-    pub(super) channel: Channel<UnixStream>,
+    pub(super) channel: Option<Channel<UnixStream>>,
     directory: PathBuf,
 }
 impl Worker {
@@ -52,7 +52,7 @@ impl Worker {
         let mut manifest = fixture["shared"]["manifest"].clone();
         manifest["idempotentTools"] = json!(retries);
         let launch = directory.join("launch.json");
-        fs::write(&launch,json!({"component":component,"generation":"1","installation_id":"worker-drill","release_digest":format!("sha256:{}","0".repeat(64)),"manifest":manifest,"limits":{"memory_bytes":16<<20,"slice_ms":100,"call_ms":5000,"cancel_grace_ms":50}}).to_string()).unwrap();
+        fs::write(&launch,json!({"component":component,"generation":"1","installation_id":"worker-drill","release_digest":format!("sha256:{}","0".repeat(64)),"manifest":manifest,"limits":{"memory_bytes":16<<20,"slice_ms":100,"call_ms":30000,"cancel_grace_ms":50}}).to_string()).unwrap();
         let (supervisor, worker) = std::os::unix::net::UnixStream::pair().unwrap();
         let (mut control, ready) = std::os::unix::net::UnixStream::pair().unwrap();
         control
@@ -94,7 +94,7 @@ impl Worker {
         .unwrap();
         let mut worker = Self {
             child,
-            channel,
+            channel: Some(channel),
             directory,
         };
         let mut header = [0; 8];
@@ -117,14 +117,34 @@ impl Worker {
             panic!("worker.ready expected")
         };
         assert_eq!(method, "worker.ready");
-        assert_eq!(params["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(params["tools"].as_array().unwrap().len(), 13);
         worker.answer(id, Value::Null).await;
         worker
+    }
+    pub(super) fn peer(
+        &mut self,
+        broker: std::sync::Arc<dyn chariox_app_runtime::worker_peer::Broker>,
+    ) -> (
+        chariox_app_runtime::worker_peer::WorkerPeer,
+        tokio::sync::mpsc::Receiver<chariox_app_runtime::worker_peer::ControlEvent>,
+        chariox_app_runtime::worker_peer::PeerTask,
+    ) {
+        chariox_app_runtime::worker_peer::WorkerPeer::start(
+            self.channel
+                .take()
+                .expect("channel already handed to kernel peer"),
+            broker,
+            chariox_app_runtime::worker_peer::PeerLimits::default(),
+        )
+        .unwrap()
     }
     pub(super) async fn next(&mut self) -> Message {
         let message = tokio::time::timeout(
             Duration::from_secs(10),
-            self.channel.receive(Duration::from_secs(2)),
+            self.channel
+                .as_mut()
+                .unwrap()
+                .receive(Duration::from_secs(2)),
         )
         .await
         .expect("worker stalled")
@@ -148,6 +168,8 @@ impl Worker {
     }
     pub(super) async fn send(&mut self, message: Message) {
         self.channel
+            .as_mut()
+            .unwrap()
             .send(&message, Duration::from_secs(2))
             .await
             .unwrap();
