@@ -81,13 +81,11 @@ fn generic_verifier_refuses_ui_actions_without_a_runtime() {
     let fixture = base();
     let bytes = packed(&fixture, &[]);
     let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
-    assert_eq!(
-        crate::verify_app(&bytes, &generic)
-            .err()
-            .expect("R4 has no UI-action runtime")
-            .code,
-        ErrorCode::UnsupportedFeature
-    );
+    let error = crate::verify_app(&bytes, &generic)
+        .err()
+        .expect("R4 has no UI-action runtime");
+    assert_eq!(error.code, ErrorCode::IncompatibleProtocol);
+    assert!(error.message.contains("ui-actions"), "{}", error.message);
 }
 
 struct Fixture {
