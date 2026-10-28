@@ -295,7 +295,8 @@ export class DisplayStream {
     const frames=afterSequence-this.sequence;this.sequence=afterSequence;this.invalidate();return frames;
   }
   endLease(){clearInterval(this.leaseTimer);this.leaseTimer=null;this.encoder?.nativeRetireState?.(this.encoder.nativeSession);}
-  invalidate() { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();this.producer?.invalidate(); }
+  // `reencode` false: the frame in hand is itself an independent key, so the producer's chain already restarts with it.
+  invalidate(reencode=true) { if(this.leased||this.leaseTimer)this.endLease();this.motionActive=false;this.shiftHold=false;this.compositorSerial=null;this.compositorCommittedSerial=null;this.previous = null; this.exact = false; this.repair = null;this.repairSerial=null; this.capture?.invalidate();this.refiner?.invalidate();if(reencode)this.producer?.invalidate(); }
   async frame(source, documentId, afterSequence, validate = async () => true, currentBinding = () => true) {
     const codec={};
     const epoch=this.deliveryEpoch??0;
@@ -320,10 +321,12 @@ export class DisplayStream {
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
-      this.invalidate();
       // Selection can already have taken a delta from the producer. Resetting
       // only future work cannot make that packet independently decodable.
-      if (source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key)) {this.discardSource(source);return null;}
+      // A taken key ships: encoding its raster again would send the same IDR twice (every new document's first frame).
+      const delta=source.encoded && (source.encoded.stripes ? source.encoded.stripes.length!==8||source.encoded.stripes.some(r=>!r.key) : !source.encoded.key);
+      this.invalidate(!source.encoded||delta);
+      if (delta) {this.discardSource(source);return null;}
     }
     const same = current.signature ? this.previous?.signature === current.signature : Boolean(this.previous?.pixels && this.previous.pixels.equals(current.pixels));
     // Taken packets have already advanced the persistent codec reference chain.
