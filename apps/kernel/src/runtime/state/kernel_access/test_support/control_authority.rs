@@ -195,20 +195,21 @@ async fn revoked_control(operation: Operation, discovery: bool) {
         None,
         &request,
     );
-    let response = dispatch(&state, &session_runtime, terminal, request)
-        .await
-        .unwrap();
-    assert!(match operation {
-        Operation::MoveLocal => matches!(response, LocalDaemonResponse::AgentMovedToLocal { .. }),
-        Operation::MoveRemote => matches!(response, LocalDaemonResponse::AgentMovedToRemote { .. }),
-        Operation::Config => matches!(response, LocalDaemonResponse::AgentConfigUpdated { .. }),
-    });
-    assert_eq!(
-        worker.requests.load(Ordering::SeqCst),
-        if matches!(operation, Operation::Config) {
-            1
-        } else {
-            2
+    let outcome = dispatch(&state, &session_runtime, terminal, request).await;
+    // A command without a grant still reaches the worker: the config update completes and Move
+    // stops at the worker's refusal of its first compatibility request.
+    match operation {
+        Operation::Config => assert!(matches!(
+            outcome.unwrap(),
+            LocalDaemonResponse::AgentConfigUpdated { .. }
+        )),
+        Operation::MoveLocal | Operation::MoveRemote => {
+            let error = outcome.unwrap_err().to_string();
+            assert!(
+                error.contains("fixture worker refuses Move"),
+                "unexpected Move error: {error}"
+            );
         }
-    );
+    }
+    assert_eq!(worker.requests.load(Ordering::SeqCst), 1);
 }
