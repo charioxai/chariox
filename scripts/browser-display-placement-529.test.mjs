@@ -19,8 +19,8 @@ test('MP-08/MP-10/MP-11: page placement has its allocated 529/137 floor and pinn
 });
 
 
-test('MP-08/MP-10/MP-11: placement upgrade retains the preceding 528 release',()=>{
+test('MP-08/MP-10/MP-11: historical placement predecessor is outside the current upgrade policy',()=>{
  const transitions=JSON.parse(readFileSync(new URL('../apps/kernel/managed-upgrade-protocol-transitions.json',import.meta.url)));
- assert(transitions.upgradeFrom.includes(528));
- assert(transitions.rollbackTo.includes(528));
+ assert(!transitions.upgradeFrom.includes(528));
+ assert(!transitions.rollbackTo.includes(528));
 });
