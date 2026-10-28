@@ -428,14 +428,14 @@ export class AppTabs {
     let call;
     try { call = JSON.parse(payload); } catch { return; }
     if (typeof call?.id !== "string" || typeof call.method !== "string" || call.method.length > 128) return;
-    // Attribute at binding time, before any await can admit other input.
     const scoped = call.id.startsWith("invocation:");
     const invocation = app.invocation;
-    const valid = invocation && call.id.split(":")[1] === invocation.token && invocation.document === app.document;
-    const actor = scoped && valid ? invocation.actor : undefined;
     // Resolve the document before admission; the bounded queue check and push
     // then run without an await, even when a page sends one concurrent burst.
     const documentId = app.document ?? await this.document(sessionId, app);
+    const valid = invocation && app.invocation === invocation
+      && call.id.split(":")[1] === invocation.token && invocation.document === documentId;
+    const actor = scoped && valid ? invocation.actor : undefined;
     // Refusing admission must settle the page's promise. Silently dropping
     // overflow leaves Promise.all backlogs waiting forever, even after drain.
     if (scoped && !valid) {
