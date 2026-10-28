@@ -297,6 +297,12 @@ impl DaemonApp {
             mcp_servers,
         )?);
         request = apply_metaagent_launch_policy(request, agent.as_ref());
+        request = crate::runtime::state::restore_agent_move_preparation_environment(
+            &self.config,
+            &self.durable_state,
+            &self.agent_moves,
+            request,
+        )?;
         crate::project_environment::attach_project_provider_environment(
             &self.config,
             &session,

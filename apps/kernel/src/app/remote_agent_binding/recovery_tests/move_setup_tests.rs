@@ -254,3 +254,129 @@ async fn mk10_failed_target_setup_can_be_cancelled_and_retried_with_a_fixed_reci
         2
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_return_setup_failure_can_be_cancelled_and_corrected() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    install_move_setup_definition(&fixture, &session).await;
+    let original = {
+        let home = fixture.home.lock().await;
+        let room = home.sessions().get_session(&session).unwrap();
+        let mut definition = home
+            .sessions()
+            .get_project(room.project_id())
+            .unwrap()
+            .environment_definition()
+            .cloned()
+            .unwrap();
+        definition.setup_steps = vec![serde_json::from_value(
+            serde_json::json!({"kind": "command", "command": "exit 7"}),
+        )
+        .unwrap()];
+        home.sessions
+            .write()
+            .update_project_environment_definition(
+                room.project_id(),
+                definition,
+                room.owner_user_id(),
+            )
+            .unwrap();
+        home.agents().get_agent(&fixture.agent_id).unwrap()
+    };
+    let request = serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id}});
+    let error = dispatch_move_value(&fixture, request.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Project setup failed"),
+        "{error}"
+    );
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "bound"
+    );
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.expect("Return setup failure must leave cancellation available");
+    {
+        let home = fixture.home.lock().await;
+        let restored = home.agents().get_agent(&fixture.agent_id).unwrap();
+        assert_eq!(restored.remote_execution(), original.remote_execution());
+        assert_eq!(restored.workspace_id(), original.workspace_id());
+        assert_eq!(restored.worktree_id(), original.worktree_id());
+        assert_eq!(
+            restored.provider_resume_state(),
+            original.provider_resume_state()
+        );
+        assert!(!home
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id));
+    }
+    install_move_setup_definition(&fixture, &session).await;
+    dispatch_move_value(&fixture, request)
+        .await
+        .expect("corrected Return must use a new generation");
+    assert_eq!(
+        move_journal(&fixture, &session).await["identity"]["generation"],
+        3
+    );
+    assert!(fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_move_restores_prepared_environment_after_worker_restart() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (mut fixture, session, _) = crash_fixture().await;
+    install_move_setup_definition(&fixture, &session).await;
+    move_request(&fixture, &session, true).await;
+    let remote = fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .unwrap()
+        .clone();
+    reboot_worker(&mut fixture).await;
+    let mut worker = fixture.workers[0].lock().await;
+    let backing = worker
+        .leased_agents
+        .get(&remote.leased_agent_id)
+        .unwrap()
+        .clone();
+    assert!(worker
+        .providers()
+        .get_run_for_agent(&backing.backing_session_id, &backing.backing_agent_id)
+        .is_none());
+    let id = worker
+        .ensure_prompt_provider_run_for_agent(
+            &backing.backing_session_id,
+            &backing.backing_agent_id,
+        )
+        .unwrap();
+    let run = worker.providers().get_run(&id).unwrap();
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", "test \"$(move-tool)\" = move-tool-ready"])
+        .env_clear()
+        .envs(run.pty_env())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "the first turn after restart must find the prepared HOME tool through its definition PATH"
+    );
+}

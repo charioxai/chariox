@@ -524,6 +524,7 @@ pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
 mod project_environment_setup;
+pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;

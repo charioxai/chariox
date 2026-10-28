@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 #[path = "project_environment_move.rs"]
 mod project_environment_move;
+pub(crate) use project_environment_move::restore_agent_move_preparation_environment;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

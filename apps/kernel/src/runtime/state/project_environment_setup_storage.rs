@@ -1923,3 +1923,25 @@ impl ProjectEnvironmentSetupStore {
         }
     }
 }
+
+pub(super) fn ready_move_setup_execution(
+    durable: &DurableKernelStateStore,
+    operation: &str,
+) -> Result<Option<SetupExecution>, DaemonError> {
+    let Some(event) = durable
+        .load_subject_events_by_kind(operation, "project.environment_setup.updated", 1)?
+        .into_iter()
+        .last()
+    else {
+        return Ok(None);
+    };
+    let persisted: PersistedSetupEntry = serde_json::from_value(event.payload).map_err(|_| {
+        setup_error(
+            "Move Project setup state is invalid; restore the setup journal before launching",
+        )
+    })?;
+    if persisted.entry.status.phase != ProjectEnvironmentSetupPhase::Ready {
+        return Ok(None);
+    }
+    Ok(Some(persisted.entry.execution))
+}

@@ -155,3 +155,73 @@ impl KernelRuntimeState {
         });
     }
 }
+
+pub(crate) fn restore_agent_move_preparation_environment(
+    config: &DaemonConfig,
+    durable: &DurableKernelStateStore,
+    moves: &crate::agent_move::AgentMoveStore,
+    mut request: crate::provider::LaunchProviderRequest,
+) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
+    if request.preparation_environment.is_some() {
+        return Ok(request);
+    }
+    let Some(target) = request
+        .agent_id
+        .as_deref()
+        .and_then(|agent| moves.target_for_agent(&request.session_id, agent))
+    else {
+        return Ok(request);
+    };
+    if target
+        .composition
+        .requirements
+        .as_ref()
+        .and_then(|requirements| requirements.environment_definition.as_ref())
+        .is_none()
+    {
+        return Ok(request);
+    }
+    let operation = format!("{}-setup", target.capture.identity.operation_id);
+    let Some(execution) =
+        project_environment_setup_storage::ready_move_setup_execution(durable, &operation)?
+    else {
+        return if target.active || target.composition.readiness.is_some() {
+            Err(setup_error("Committed Move Project setup is unavailable; restore its Ready setup journal before launching"))
+        } else {
+            Ok(request)
+        };
+    };
+    let receipt = target
+        .receipt
+        .as_ref()
+        .ok_or_else(|| setup_error("Move Project receipt is missing"))?;
+    if execution.operation_id != operation
+        || execution.owner_user_id != request.owner_user_id
+        || execution.execution_session_id != request.session_id
+        || Some(execution.execution_agent_id.as_str()) != request.agent_id.as_deref()
+        || execution.project_id != receipt.target_project_id
+        || execution.target_worker_id != config.host_machine_id
+        || execution.target_platform != actual_worker_platform()
+        || Path::new(&execution.workspace_id) != receipt.primary_path()?
+        || request.working_directory.as_deref() != Some(Path::new(&execution.workspace_id))
+    {
+        return Err(setup_error("Move Project setup no longer matches its execution target; restore the prepared workspace before launching"));
+    }
+    let kernel_home = resolved_worker_kernel_home(config)?;
+    let workspace =
+        canonical_worker_workspace(&execution.workspace_id, Some(kernel_home.as_os_str()))?;
+    let home = WorkerPreparationHome::for_project_worker(
+        &workspace,
+        &kernel_home,
+        &execution.project_id,
+        &execution.target_worker_id,
+    )?;
+    let path = worker_preparation_path(
+        home.path(),
+        Some(&workspace),
+        &std::env::var("PATH").unwrap_or_default(),
+        execution.definition.as_ref(),
+    );
+    request = request.with_preparation_environment(home.path().display().to_string(), path);
+    Ok(request)
+}
