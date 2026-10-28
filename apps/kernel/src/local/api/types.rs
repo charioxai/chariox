@@ -356,7 +356,7 @@ pub use workspace::*;
 /// older than its `agent_activity_revision`, and lets `AttachSessionView` ask for `latest_prompt_count` turns.
 /// Allocated 594 adds `Dictation`: kernel speech-to-text with an on-demand model download.
 /// Allocated 603 adds speech-service selection, owner Vault metadata, setup state and recording context.
-/// Allocated 610 unions the staging features 588-603 with the new-UI contracts; 599 and 567 stay reciprocal predecessors.
+/// Allocated 610 unions the staging features 588-603 with the new-UI contracts.
 /// Agent-model line (537, relay peer 145) contracts were integrated in 570/178:
 /// task/wake, completion, leased-watcher, paired-display and historical-workflow projections, owner-only 520/128 direct carriers
 /// and owner-managed contexts.
@@ -367,11 +367,9 @@ pub use workspace::*;
 /// Allocated 585 adds outside event subscriptions and executor-local agent deadlines.
 /// Allocated 591 adds the outside `steer` event.
 /// Allocated 609 adds explicit same-owner Vault-backed provider account copy.
-/// Allocated 614 unions the staging 610 line with the external agents 609 line; 610 and 609 are not admitted as separate kernels
-/// (609 never shipped), and 525 leaves the predecessor list to keep it within the 32-entry policy.
+/// Allocated 614 unions the staging 610 line with the external agents 609 line.
 /// MP-08/MP-10/MP-11: allocated 629 adds the shared browser viewport resize mutation, the mirror v2 viewport-first
-/// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`);
-/// 588 leaves the predecessor list to keep it within the 32-entry policy.
+/// snapshot (`viewport_first`, `deferred` records, `snapshot_viewport_complete`) and `:visited` links (`visited_links`).
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
