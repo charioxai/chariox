@@ -14,7 +14,7 @@ const updateId = "managed_release_update_0123abcd-0000-4000-8000-0123456789ab"
 
 const targetTransitionPolicy = JSON.parse(await readFile(
   new URL("../apps/kernel/managed-upgrade-protocol-transitions.json", import.meta.url), "utf8"))
-// The oldest release the repository policy still upgrades from, so trimming the policy cannot strand the fixture.
+// The previous release admitted by the repository policy keeps recovery on the supported transition.
 const currentProtocol = targetTransitionPolicy.upgradeFrom[0]
 
 async function path1Harness(context) {

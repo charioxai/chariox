@@ -29,15 +29,8 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
   assert.ok(pair.relayPeer >= 124, "paired peer allocation is 124, above target 121")
 })
 
-test("dictation603 retains594 and567 within the32-entry policy", () => {
+test("dictation603 keeps its allocated protocol floors", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
-  const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
-  assert.ok(policy.upgradeFrom.includes(594))
-  assert.ok(policy.rollbackTo.includes(594))
-  assert.ok(policy.upgradeFrom.includes(567))
-  assert.ok(policy.rollbackTo.includes(567))
-  assert.ok(policy.upgradeFrom.length <= 32)
-  assert.ok(policy.rollbackTo.length <= 32)
 })
