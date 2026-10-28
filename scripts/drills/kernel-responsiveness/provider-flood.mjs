@@ -14,7 +14,7 @@ export async function floodProvider({rpc,root,connect,measure,profilePath,profil
   const events=connect(), maximum=new Map()
   let eventBytes=0, pumpedBytes=0, pumpedRecords=0, pumpError, pumping=true
   let pump
-  events.onKernelEvent(event=>{if(event.event==='terminal_output')for(const record of event.records){const bytes=Buffer.byteLength(String(record.text??''));eventBytes+=bytes;maximum.set(record.merge_key??record.id,Math.max(maximum.get(record.merge_key??record.id)??0,bytes))}})
+  events.onKernelEvent(event=>{if(event.event==='terminal_output')for(const record of event.records){const bytes=record.bytes?.length ?? 0;eventBytes+=bytes;maximum.set(record.merge_key??record.record_id,Math.max(maximum.get(record.merge_key??record.record_id)??0,bytes))}})
   try {
     await events.subscribeToKernelEvents(session,attached)
     await rpc({LaunchProviderRun:{session_id:session,agent_id:agent,adapter_key:'codex',provider:'codex',account_profile:profile,model:'gpt-6-luna',variant:'low',native_tui:false}})
@@ -23,8 +23,8 @@ export async function floodProvider({rpc,root,connect,measure,profilePath,profil
       while(pumping) {
         const value=await rpc({PumpTerminalOutput:{session_id:session,attachment_id:attached}})
         for(const record of value.TerminalOutput?.records ?? []) {
-          const bytes=Buffer.byteLength(String(record.text??''));pumpedBytes+=bytes;pumpedRecords++
-          maximum.set(record.merge_key??record.id,Math.max(maximum.get(record.merge_key??record.id)??0,bytes))
+          const bytes=record.bytes?.length ?? 0;pumpedBytes+=bytes;pumpedRecords++
+          maximum.set(record.merge_key??record.record_id,Math.max(maximum.get(record.merge_key??record.record_id)??0,bytes))
         }
         await delay(5)
       }
