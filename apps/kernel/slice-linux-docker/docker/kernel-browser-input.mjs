@@ -38,7 +38,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
@@ -97,11 +97,12 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       await check(true);
       await mirrorGuard?.();
     };
+    const stamp = inputTimestamp === undefined ? {} : { timestamp: inputTimestamp };
     const sendInput = async (method, params) => {
       await admitInput();
       const endDispatch = onDispatch?.();
       try {
-        const result = await connection.send(method, params, sessionId);
+        const result = await connection.send(method, method === "Input.dispatchMouseEvent" || method === "Input.dispatchKeyEvent" ? { ...params, ...stamp } : params, sessionId);
         assertNotCancelled(signal);
         return result;
       } finally { endDispatch?.(); }
@@ -167,8 +168,8 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         // navigation cannot strand the key or replay the press.
         const endDispatch = onDispatch?.();
         try {
-          const press = connection.send("Input.dispatchKeyEvent", down, sessionId);
-          const release = connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, sessionId);
+          const press = connection.send("Input.dispatchKeyEvent", { ...down, ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;
@@ -195,8 +196,8 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // matching release before awaiting the frame-paced press reply. Once
           // admitted, navigation/cancellation must not strand a pressed button.
           onDispatch?.();
-          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, sessionId);
-          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, sessionId);
+          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;
