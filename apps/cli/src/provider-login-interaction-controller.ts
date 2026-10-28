@@ -1,7 +1,6 @@
 import {
   PROVIDER_LOGIN_CODE_CHOICE_ID,
   providerLoginName,
-  providerLoginMessageProblem,
   providerLoginProblem,
   providerLoginView,
   type ProviderLoginView,
@@ -184,7 +183,7 @@ export function createProviderLoginInteractionController(deps: ProviderLoginInte
     if (login) {
       const newRequest = login.sentOutput !== null && login.sentInteractionAt !== interaction.requested_at_ms
       if (login.projectionOnly || !login.status || newRequest) {
-        updateProblem(login, projection.terminal_output_base64, providerLoginMessageProblem(interaction.message), newRequest)
+        updateProblem(login, projection.terminal_output_base64, projection.problem, newRequest)
       }
     }
     const startedAt = login?.status?.started_at_ms

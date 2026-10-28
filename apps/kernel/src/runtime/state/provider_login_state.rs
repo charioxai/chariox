@@ -365,6 +365,7 @@ impl ProviderLoginProcessRecord {
             let mut start = self.start.clone();
             start.auth_url = authorization_url;
             interaction = interaction.with_provider_login(crate::session::RuntimeProviderLogin {
+                problem: self.message.clone(),
                 kernel_id: self.kernel_id.clone(),
                 login: start,
                 terminal_output_base64: String::new(),
@@ -897,6 +898,38 @@ mod tests {
         assert!(!String::from_utf8_lossy(&output).contains("abc123#def456"));
         assert_eq!(status.started_at_ms, started);
         assert!(status.message.is_some());
+    }
+
+    // MP-08/MP-09/MP-10/MP-11: first attachment needs a structural message role.
+    #[test]
+    fn setup_token_projects_all_code_problems_without_classifying_words() {
+        let store = ProviderLoginProcessStore::default();
+        let mut login = record("owner-a", "login-a");
+        login.setup_token = Some(ClaudeSetupTokenLogin::default());
+        login.start.login_kind = "terminal_setup_token".into();
+        store.insert(login).unwrap();
+        let projection = || {
+            let record = store.record_for_owner("owner-a", "login-a").unwrap();
+            let interaction = record.interaction().unwrap();
+            assert!(record.status().terminal_output_base64.is_empty());
+            interaction.provider_login().unwrap().clone()
+        };
+        assert_eq!(projection().problem, None);
+        for message in [
+            DaemonError::ProviderLoginCodeIncomplete.to_string(),
+            DaemonError::ProviderLoginCodeInvalid.to_string(),
+            "That code was not accepted. Open the new sign-in link and copy a new code.".into(),
+            "Copy a new code from the provider.".into(),
+        ] {
+            for _ in 0..2 {
+                store
+                    .set_message("owner-a", "login-a", &message, 2)
+                    .unwrap();
+                assert_eq!(projection().problem.as_deref(), Some(message.as_str()));
+                store.input_sent("owner-a", "login-a", true, 3).unwrap();
+                assert_eq!(projection().problem, None);
+            }
+        }
     }
 
     // MP-08/MP-10/MP-11: OAuth links belong to the kernel interaction.

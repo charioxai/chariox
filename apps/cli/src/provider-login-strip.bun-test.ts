@@ -91,6 +91,7 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     ]) {
       logins.codeSent(interaction)
       interaction.message = message
+      interaction.provider_login!.problem = message
       interaction.requested_at_ms += 1
       render()
       await harness.renderOnce()
@@ -108,7 +109,8 @@ test("MP-08/MP-10/MP-11 first attachment at a forwarded retry keeps the explanat
   harness.renderer.root.add(box)
   const store = createInteractionChoiceStoreController()
   const timers: Array<() => void> = []
-  const retry = { ...interaction, message: "The code looks incomplete. Copy the whole code, including # and the part after it." }
+  const message = "The code could not be read. Copy the whole code and try again."
+  const retry = { ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } }
   const logins = createProviderLoginInteractionController({
     getKernelId: async () => "home",
     getLoginStatus: async () => { throw Error("forwarded login must use projections") },

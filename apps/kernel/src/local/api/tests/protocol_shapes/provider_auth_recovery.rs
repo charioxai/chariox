@@ -14,6 +14,7 @@ fn mp08_mp10_mp11_provider_login_projection_shape_is_versioned() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
     let projection = RuntimeProviderLogin {
+        problem: Some("Copy the whole code and try again.".into()),
         kernel_id: "worker".into(),
         terminal_output_base64: "Zml4dHVyZQ==".into(),
         login: crate::provider::ProviderLoginStart {
@@ -52,7 +53,7 @@ fn mp08_mp10_mp11_provider_login_projection_shape_is_versioned() {
             "id":"provider-auth-recovery:run:login", "agent_id":"agent", "kind":"choice", "level":"warning",
             "title":"Log in to Codex on this machine", "message":"Complete official login",
             "choices":[{"id":"cancel","label":"Cancel login","reply":"cancel"}], "timeout_sec":600, "requested_at_ms":1000,
-            "provider_login": {"kernel_id":"worker","terminal_output_base64":"Zml4dHVyZQ==",
+            "provider_login": {"problem":"Copy the whole code and try again.","kernel_id":"worker","terminal_output_base64":"Zml4dHVyZQ==",
                 "login":{"provider":"codex","account_profile":"work","login_kind":"chatgptDeviceCode",
                     "login_id":"synthetic-login","auth_url":null,"verification_url":"http://127.0.0.1/device","user_code":"SYNTHETIC"}}
         })
@@ -66,14 +67,14 @@ fn mp08_mp10_mp11_provider_login_projection_shape_is_versioned() {
             home_prompt_id: None,
         },
         interaction_id: "provider-auth-recovery:run:login".into(),
-        login: None,
+        login: Some(projection.clone()),
     };
     assert_eq!(
         serde_json::to_value(request).unwrap(),
         serde_json::json!({"kind":"update_native_interaction",
             "context":{"home_session_id":"session","home_agent_id":"agent",
                 "leased_agent_id":"leased","worker_provider_run_id":"run"},
-            "interaction_id":"provider-auth-recovery:run:login", "login":null
+            "interaction_id":"provider-auth-recovery:run:login", "login":serde_json::to_value(projection).unwrap()
         })
     );
     assert_eq!(

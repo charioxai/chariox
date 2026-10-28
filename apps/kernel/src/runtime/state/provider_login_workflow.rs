@@ -113,6 +113,7 @@ impl KernelRuntimeState {
                     .provider_login()
                     .cloned()
                     .unwrap_or_else(|| RuntimeProviderLogin {
+                        problem: status.message.clone(),
                         kernel_id: self.provider_login_kernel_id(),
                         login: login.clone(),
                         terminal_output_base64: String::new(),

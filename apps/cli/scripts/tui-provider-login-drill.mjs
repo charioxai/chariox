@@ -305,6 +305,17 @@ try {
       await capture('incomplete-code')
       record('incomplete input restores the code field with one plain explanation',
         await shows('Code:') && !(await shows('Checking the code…')))
+      // MP-08/MP-09/MP-10/MP-11: ambiguous callbacks are rejected before
+      // reaching the official provider, then the same interaction accepts input.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await press('\x1b[200~abc#def other#state\x1b[201~')
+        await press('\r')
+        await waitFor(async () => await shows('The code could not be read.') && await shows('Code:') && !(await shows('Checking the code…')), 30_000, 'invalid code retry')
+        await capture(`invalid-code-${attempt + 1}`)
+        record(`ambiguous input restores the code field on attempt ${attempt + 1}`,
+          await shows('Code:') && !(await shows('Checking the code…')))
+      }
+
     }
     // Paste into the already focused native-strip code field, then submit once.
     const code = 'invalidDrillCode0123456789#invalidDrillState'

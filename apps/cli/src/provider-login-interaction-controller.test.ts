@@ -270,9 +270,9 @@ for (const message of [
     assert.equal(state.problem, message)
     // Resubmitting while the previous retry is still projected waits again.
     h.controller.codeSent({ ...interaction, message })
-    assert.equal(h.controller.stripState({ ...interaction, message })!.checking, true)
+    assert.equal(h.controller.stripState({ ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } })!.checking, true)
     await h.tick()
-    assert.equal(h.controller.stripState({ ...interaction, message })!.checking, false, "another identical rejection answers the next submission")
+    assert.equal(h.controller.stripState({ ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } })!.checking, false, "another identical rejection answers the next submission")
     h.controller.dispose()
   })
 
@@ -281,7 +281,7 @@ for (const message of [
     h.controller.stripState(interaction)
     await h.tick()
     h.controller.codeSent(interaction)
-    const state = h.controller.stripState({ ...interaction, message })!
+    const state = h.controller.stripState({ ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } })!
     assert.equal(state.checking, false)
     assert.equal(state.problem, message)
     h.controller.dispose()
@@ -293,7 +293,7 @@ for (const message of [
       getKernelId: async () => "home",
       getLoginStatus: async () => { reads++; throw Error("forwarded login must use projections") },
     })
-    const retry = { ...interaction, message }
+    const retry = { ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } }
     try {
       assert.equal(h.controller.stripState(retry)!.problem, message, "the first observed message can already be a retry")
       await h.tick()
@@ -345,4 +345,44 @@ test("MP-08/MP-11 a status read started before submission cannot answer the new 
   await h.tick()
   assert.equal(h.controller.stripState(interaction)!.checking, false)
   h.controller.dispose()
+})
+
+// MP-08/MP-09/MP-10/MP-11: all kernel code-validation messages, plus future wording.
+// provider_login_workflow.rs handles CodeIncomplete/CodeInvalid (error.rs);
+// provider_login_state.rs supplies provider rejection; claude_setup_token_login.rs
+// handles later token/Vault failures outside the code-waiting strip.
+const codeValidationMessages = [
+  "The code looks incomplete. Copy the whole code, including # and the part after it.",
+  "The code could not be read. Copy the whole code and try again.",
+  "That code was not accepted. Open the new sign-in link and copy a new code.",
+  "Copy a new code from the provider.",
+]
+for (const message of codeValidationMessages) {
+  test(`MP-08/MP-09/MP-10/MP-11 forwarded structured problem survives first attachment and fresh requests: ${message}`, async () => {
+    const h = harness([], { getKernelId: async () => "home" })
+    const retry = { ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } }
+    try {
+      assert.equal(h.controller.stripState(retry)!.problem, message)
+      await h.tick()
+      for (let attempt = 0; attempt < 2; attempt++) {
+        h.controller.codeSent(retry)
+        assert.equal(h.controller.stripState(retry)!.checking, true)
+        assert.equal(h.controller.stripState(retry)!.problem, null)
+        retry.requested_at_ms++
+        const state = h.controller.stripState(retry)!
+        assert.equal(state.checking, false)
+        assert.equal(state.problem, message)
+      }
+    } finally { h.controller.dispose() }
+  })
+}
+
+test("MP-08/MP-09/MP-10/MP-11 instructions never become a problem based on wording", async () => {
+  const h = harness([], { getKernelId: async () => "home" })
+  const initial = { ...interaction, message: "If your code expired, open the sign-in link.", provider_login: { ...interaction.provider_login!, problem: null } }
+  try {
+    assert.equal(h.controller.stripState(initial)!.problem, null)
+    await h.tick()
+    assert.equal(h.controller.stripState(initial)!.problem, null)
+  } finally { h.controller.dispose() }
 })
