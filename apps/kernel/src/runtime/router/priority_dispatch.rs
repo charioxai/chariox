@@ -620,17 +620,6 @@ impl CommandRouter {
                     .await
                     .map(|offers| LocalDaemonResponse::ProviderAccountCopyOffers { offers })
             }),
-            LocalDaemonRequest::CopyProviderAccountFromKernel(request) => {
-                boxed_handler(|| async move {
-                    self.runtime_state
-                        .copy_provider_account_from_kernel(
-                            &command_caller_user_id(&command),
-                            request,
-                        )
-                        .await
-                        .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
-                })
-            }
             LocalDaemonRequest::CopyProviderAccountToKernel(request) => {
                 boxed_handler(|| async move {
                     let caller = command_caller_user_id(&command);
