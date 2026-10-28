@@ -28,14 +28,14 @@ export class MotionEncoder {
  offer(sample){if(!sample||this.closed||!this.valid()||sample.serial<=this.lastSerial)return;this.lastSerial=sample.serial;if(!this.shouldEncode(sample)){this.wakeReady();return;}if(this.pending)this.source.rejected?.('serial_skipped');this.pending?.raw?.release?.();sample.raw?.retain?.();this.pending={...sample,offeredAt:this.now()};
   // PERF_AUDIT 4.2.1: Chrome UI (band, popups) shows the newest sample rather than deltas queued behind a
   // closed ACK gate; the next encode is a key (a band crop IDR is cheap). Page streams keep every delta.
-  if(this.latest&&this.frames.length>=2){for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.key=true;this.revision++;this.timing('motion_stale_dropped',performance.timeOrigin+this.now());}
+  if(this.latest&&this.frames.length>=2){for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.keyed('latest');this.revision++;this.timing('motion_stale_dropped',performance.timeOrigin+this.now());}
   this.pump();}
  // MP-08/MP-10: coalesce only unencoded samples. Every completed
  // packet retains its decoder reference until delivery.
  pump(){if(this.active||!this.pending||this.closed||this.frames.length>=2)return;this.active=this.run().catch(()=>{if(!this.closed)this.failure=Error('MD-DISPLAY: motion encoder failed')}).finally(()=>{this.active=null;if(this.failure)this.wakeReady();if(this.pending&&!this.closed&&!this.failure)this.pump()});}
  async run(){
   while(this.pending&&!this.closed&&!this.failure&&this.frames.length<2){
-   const sample=this.pending;this.pending=null;this.activeSerial=sample.serial;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.key=true;this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
+   const sample=this.pending;this.pending=null;this.activeSerial=sample.serial;this.native=Boolean(sample.raw?.nativeEncode);const rowMode=Boolean(this.stripes&&sample.raw&&!denseNative(sample.raw));if(this.rowMode!==rowMode)this.keyed('row_mode');this.rowMode=rowMode;const revision=this.revision,key=this.independent||this.key;this.key=false;const reset=key?true:[...this.resetRows];this.resetRows.clear();const at=performance.timeOrigin+this.now();
    try{
    // MP-08/MP-10/MP-11: one small protected native PNG establishes the
    // canvas without eight cold decoder-worker fetches. Motion stays video.
@@ -55,12 +55,12 @@ export class MotionEncoder {
    try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
    // MP-11: an overlapping exact encode (busy) or one refused protected frame
    // skips this sample; the next one starts an independent reference chain.
-   catch(error){if(!error?.busy&&!error?.refused)throw error;this.key=true;continue;}
+   catch(error){if(!error?.busy&&!error?.refused)throw error;this.keyed(error.busy?'busy':'refused');continue;}
    this.timing('motion_encode',at);
    if(encoded.dropped){
     // MP-11: discard every lossy byte, retire its references, and present only
     // this already-protected exact raster. Never freeze a newly masked field.
-    this.key=true;
+    this.keyed('protected_drop');
     if(this.closed||!this.valid()||revision!==this.revision)continue;
     let png=sample.data_base64,nativeExact;
     if(sample.raw?.nativeExact){
@@ -92,15 +92,15 @@ export class MotionEncoder {
    if(['libyuv','swscale'].includes(this.encoder.converter))this.timing('motion_converter_'+this.encoder.converter,performance.timeOrigin+this.now());
    if(this.closed||!this.valid()){this.encoder.discard?.(encoded);return;}
    if(encoded.stripes?.length===0)continue;
-   if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.key=true;continue;}
-   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate();continue;}
+   if(revision!==this.revision){this.encoder.discard?.(encoded);if(encoded.stripes&&!this.key)for(const row of encoded.stripes)this.resetRows.add(row.row);else this.keyed('stale_revision');continue;}
+   if(this.frames.length>=2||this.frames.reduce((n,f)=>n+frameBytes(f),(JSON.stringify(encoded).length+(encoded.packet?.length??0)))>1024*1024){this.encoder.discard?.(encoded);this.invalidate(true,'queue_bound');continue;}
    this.frames.push({...sample,encoded,encode_started_ms:at,encoded_ms:performance.timeOrigin+this.now()});this.wakeReady();
    }finally{sample.raw?.release?.()}
   }
  }
  // MP-08/MP-10: native x264 sessions retune their rate live (no IDR);
  // other encoders restart their reference chain on a rate change.
- feedback(lag){if(this.rate.feedback(lag)&&!this.native)this.key=true;}
+ feedback(lag){if(this.rate.feedback(lag)&&!this.native)this.keyed('rate');}
  // MP-08/MP-10: the queue is bounded (two frames) and the client ACK gate
  // bounds delivery, so queued deltas are never dropped (Selkies keeps every
  // encoded frame of a live chain; a drop would force an IDR and a rate cut).
@@ -111,12 +111,14 @@ export class MotionEncoder {
  get independentFrameReady(){const frame=this.frames[0];return Boolean(frame?.force_lossless||frame?.encoded?.key||frame?.encoded?.stripes?.length===8&&frame.encoded.stripes.every(row=>row.key));}
  // `after`: the source serial an exact frame just showed. Work encoded from that raster or a newer one cannot regress
  // it and keeps its reference chain (retiring an in-flight encode costs a key: one per repair on a settling page).
- retireUnsent(after){
+ retireUnsent(after,cause='retired'){
   if(Number.isSafeInteger(after)&&[...this.frames.map(frame=>frame.serial),this.active?this.activeSerial:after,this.pending?.serial??after].every(serial=>serial>=after))return;
-  if(this.frames.length||this.active||this.pending)this.invalidateRows(false);
+  if(this.frames.length||this.active||this.pending)this.invalidateRows(false,cause);
  }
- invalidateRows(reoffer=true){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
- invalidate(reoffer=true){this.revision++;this.key=true;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ invalidateRows(reoffer=true,cause){if(!this.rowMode||this.frames.some(frame=>!frame.encoded?.stripes))return this.invalidate(reoffer,cause);for(const frame of this.frames)for(const row of frame.encoded.stripes)this.resetRows.add(row.row);this.revision++;for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ invalidate(reoffer=true,cause='invalidated'){this.revision++;this.keyed(cause);for(const frame of this.frames)this.encoder.discard?.(frame.encoded);this.frames=[];this.pending?.raw?.release?.();this.pending=null;if(reoffer){this.lastSerial=-1;if(!this.closed)this.offer(this.source.sample())}else this.lastSerial=Math.max(this.lastSerial,this.source.sample()?.serial??-1);}
+ // Diagnostics: the first reason a key was asked for since the last one shipped (display_key timing label).
+ keyed(cause){this.key=true;this.keyCause??=cause;}
  async close(){if(this.closed)return;this.closed=true;this.wakeReady();this.off?.();this.invalidate();await this.active;}
 }
 

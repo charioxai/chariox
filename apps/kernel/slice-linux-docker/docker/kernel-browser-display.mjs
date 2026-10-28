@@ -442,7 +442,7 @@ export class DisplayStream {
     this.timing('pacing', at);
     if (!await validate() || !currentBinding()) { if(['video','stripes'].includes(payload.kind))this.invalidate(true,'refused');else{this.capture?.invalidate();this.refiner?.invalidate();this.repair=null;}this.discardSource(source);return null; }
     if(bootstrap){
-      this.producer?.retireUnsent();this.refiner?.invalidate();
+      this.producer?.retireUnsent(undefined,'bootstrap');this.refiner?.invalidate();
       this.encoder.retire?.();
     }
     this.encoder.handedOff?.(source.encoded);
@@ -458,7 +458,7 @@ export class DisplayStream {
     // the untouched raster before the whole frame becomes exact.
     this.exact = source.native_tiles ? wasExact : !['video','stripes'].includes(payload.kind) && !this.repair; this.sequence++;
     if(this.exact&&!wasExact)this.shiftHold=false;
-    if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent(source.refinement_serial??source.serial);
+    if(!['video','stripes'].includes(payload.kind))this.producer?.retireUnsent(source.refinement_serial??source.serial,'exact_frame');
     // L3 stage 2b: only a push-delivered whole video frame from the worker's
     // unprotected auto packet, with references on and no repair owed.
     if(payload.kind==='video'){const at=this.now();this.streak=at-this.streakAt<=LEASE_GAP_MS?this.streak+1:1;this.streakAt=at;}
