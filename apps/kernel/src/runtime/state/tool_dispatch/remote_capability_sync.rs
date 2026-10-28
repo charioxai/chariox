@@ -161,7 +161,6 @@ impl KernelRuntimeState {
         let mut manifest = self.remote_extension_manifest_without_apps_for_agent(agent)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if agent.remote_execution().is_some() {
-            manifest.tools.extend(Self::remote_app_view_tools(agent));
             let occupied = manifest
                 .tools
                 .iter()
@@ -175,6 +174,7 @@ impl KernelRuntimeState {
                         message: error.to_string(),
                     })?,
             );
+            manifest.tools.extend(Self::remote_app_view_tools(agent));
         }
         Ok(manifest)
     }
