@@ -13,7 +13,7 @@
     },
     {
       "name": "read_range",
-      "description": "Read calculated values and formulas from a bounded A1 range, at most 1000 cells.",
+      "description": "Read calculated values and formulas from at most 1000 cells. Large results return JSON text pages: append text and pass next as offset until done. Restart if revision changes.",
       "effect": "read",
       "inputSchema": {
         "type": "object",
@@ -26,6 +26,11 @@
           "range": {
             "type": "string",
             "pattern": "^[A-Z]{1,2}[1-9][0-9]{0,4}(:[A-Z]{1,2}[1-9][0-9]{0,4})?$"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Character offset returned as next by the previous range page."
           }
         },
         "required": [

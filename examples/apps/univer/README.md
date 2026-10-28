@@ -13,7 +13,12 @@ The browser registers the exact signed declarations in
 and `chariox.view.changed`. Human file-menu callbacks use the same functions.
 The snapshot reports the actual workbook, used sheet dimensions, selection,
 save version, unsaved changes and a bounded A1:H10 preview. `read_range` returns
-both calculated values and formulas. Formula results are awaited before reads,
+both calculated values and formulas. Results exceeding the View action budget return
+`{text, next, done, revision}` pages of the same JSON: concatenate `text`, pass
+`next` as `offset` on the same range until `done`, then parse the JSON. Restart
+at offset zero if `revision` changes between pages. Set and sort return
+`{updated: true}` after completion; read the range to inspect the values.
+Formula results are awaited before reads,
 saves and exports; sorting uses Univer's reference-aware sort command.
 
 The L1 **Rust SDK** backend stores immutable snapshot files in App data and a

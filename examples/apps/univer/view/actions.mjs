@@ -78,7 +78,14 @@ export async function attachWorkbook(api, bridge) {
     async read_range(input) {
       await calculated(); const selected = range(input);
       latestRange = { sheet: sheet(input.sheet).getSheetName(), range: input.range };
-      return read(selected);
+      const result = read(selected), text = JSON.stringify(result);
+      if (input.offset === undefined && new TextEncoder().encode(text).length <= 256 * 1024) return result;
+      const offset = input.offset ?? 0;
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > text.length) throw new Error('Use the next offset from the previous range page');
+      let end = Math.min(offset + 16000, text.length);
+      const last = text.charCodeAt(end - 1);
+      if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+      return { text: text.slice(offset, end), next: end, done: end === text.length, revision };
     },
     async set_range(input) {
       const selected = range(input), bounds = selected.getRange();
@@ -86,7 +93,7 @@ export async function attachWorkbook(api, bridge) {
           input.values.some(row => !Array.isArray(row) || row.length !== bounds.endColumn - bounds.startColumn + 1 ||
             row.some(v => v !== null && !['string', 'number', 'boolean'].includes(typeof v)))) throw new Error('Values must match the rectangular range');
       selected.setValues(input.values);
-      await calculated(); return read(selected);
+      await calculated(); return { updated: true };
     },
     async edit_dimension(input) {
       const current = sheet(input.sheet), rows = input.axis === 'rows';
@@ -103,7 +110,7 @@ export async function attachWorkbook(api, bridge) {
       const selected = range(input), bounds = selected.getRange();
       if (!Number.isInteger(input.column) || input.column < bounds.startColumn || input.column > bounds.endColumn || typeof input.ascending !== 'boolean') throw new Error('Sort column must be inside the range');
       selected.sort({ column: input.column, ascending: input.ascending });
-      await calculated(); return read(selected);
+      await calculated(); return { updated: true };
     },
     async import_csv(input) {
       if (!input.name?.endsWith('.csv')) throw new Error('Choose a .csv filename');
