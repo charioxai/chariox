@@ -1716,7 +1716,7 @@ fn leased_provider_requires_explicit_completion(
         .uses_explicit_completion()
 }
 
-fn leased_provider_run_completion_key(
+pub(super) fn leased_provider_run_completion_key(
     leased_agent: &LeasedAgent,
     provider_run_id: &str,
     message_id: &str,
