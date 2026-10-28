@@ -44,6 +44,9 @@ pub(crate) struct Part {
     pub forwarded_counts: BTreeMap<String, u64>,
     #[serde(default)]
     pub run_states: BTreeMap<String, crate::local::EventRunState>,
+    /// The last settled turn each followed agent's holder has been told of.
+    #[serde(default)]
+    pub settled_prompts: BTreeMap<String, String>,
     #[serde(default)]
     pub kernel_health: BTreeMap<String, bool>,
 }
@@ -62,6 +65,7 @@ impl Part {
             cleanup_targets: Vec::new(),
             forwarded_counts: BTreeMap::new(),
             run_states: BTreeMap::new(),
+            settled_prompts: BTreeMap::new(),
             kernel_health: BTreeMap::new(),
         }
     }

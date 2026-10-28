@@ -66,9 +66,7 @@ impl KernelRuntimeOwnedState {
                 }) {
                     continue;
                 }
-                let turn = (value.status != AgentRuntimeStatus::Working)
-                    .then(|| settled_turn(&value))
-                    .flatten();
+                let turn = settled_turn(&value);
                 let state = match value.status {
                     AgentRuntimeStatus::Idle => EventRunState::Idle,
                     AgentRuntimeStatus::Working => EventRunState::Working,

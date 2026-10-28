@@ -179,3 +179,74 @@ fn a_kind_from_a_newer_kernel_reads_as_unknown_and_keeps_its_reason() {
         json!({ "kind": "unknown", "retryable": false, "reason": "A new cause." })
     );
 }
+
+impl FailingTurn {
+    async fn queue(&self, prompt_id: &str, text: &str) {
+        self.runtime
+            .with_app_side_effect(|app| {
+                let attachment = crate::app::KernelSessionService::new(app).attach(
+                    crate::attachment::AttachRequest::new(
+                        &self.session_id,
+                        "queued-client",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ),
+                )?;
+                app.prompt_owner_submit_prepared_prompt(
+                    &self.session_id,
+                    crate::session::PromptQueueItem::new(
+                        prompt_id,
+                        attachment.id(),
+                        &self.agent_id,
+                        text,
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    false,
+                )
+            })
+            .await
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn each_turn_that_ends_into_a_queued_one_is_heard_once_before_the_next_starts() {
+    let turn = failing_turn(&[]).await;
+    follow(&turn);
+    turn.queue("second", "second turn").await;
+    turn.queue("third", "third turn").await;
+
+    let mut ended = Vec::new();
+    for _ in 0..2 {
+        ended.push(turn.active_prompt().expect("a turn runs").id().to_string());
+        turn.runtime
+            .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+            .await
+            .expect("the turn completes");
+    }
+    assert_eq!(ended[0], turn.prompt_id);
+    assert_ne!(ended[1], ended[0]);
+    assert!(turn.active_prompt().is_some(), "the third turn runs");
+
+    let events = followed_agent_events(&turn);
+    let heard: Vec<_> = events
+        .iter()
+        .filter(|event| event["outcome"].is_object())
+        .map(|event| event["prompt_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(heard, ended, "{events:?}");
+    let first = events
+        .iter()
+        .position(|event| event["outcome"].is_object())
+        .unwrap();
+    assert_eq!(
+        events[first + 1]["run_state"],
+        "working",
+        "the next turn starts after the one that ended is heard: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["run_state"] != "working" || event["outcome"].is_null()),
+        "a running turn carries no outcome: {events:?}"
+    );
+}
