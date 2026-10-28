@@ -73,8 +73,10 @@ fn review0212_partial_check_expires_dependency_journal_evidence() {
         slice_ref: None,
     };
     let op = operation(&env, &target, vec!["b"]);
-    let mut journal = EnvironmentChecks::default();
-    journal.folder_binding_digest = folder_bindings_digest(&env);
+    let mut journal = EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        ..Default::default()
+    };
     journal.observations = vec![observation(
         &env,
         "a",

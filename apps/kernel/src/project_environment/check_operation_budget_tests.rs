@@ -150,7 +150,7 @@ fn files_measurement_settles_at_operation_deadline_and_allows_next_check() {
     store
         .run_check_until(
             ctx,
-            environment,
+            *environment,
             operation,
             || Ok(project.clone()),
             began + Duration::from_millis(80),
