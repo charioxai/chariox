@@ -9,6 +9,7 @@ wit_bindgen::generate!({
             import chariox:app/http@1.0.0;
             import chariox:app/events@1.0.0;
             import chariox:app/log@1.0.0;
+            import chariox:app/host@1.0.0;
             import wasi:filesystem/preopens@0.2.0;
             export chariox:app/handlers@1.0.0;
         }
@@ -18,7 +19,7 @@ wit_bindgen::generate!({
 });
 use chariox::app::{
     app_types::{AppError, InvocationContext, Wake},
-    events, http, log, registry, state,
+    events, host, http, log, registry, state,
 };
 use exports::chariox::app::handlers::Guest;
 use futures::future::{select, Either};
@@ -149,6 +150,10 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
                 values.insert(name, json!(value));
             }
             Ok(Value::Object(values).to_string())
+        }
+        "echo" if input["portable"] == "pick" => {
+            let grants = host::pick_file(host::Pick { multiple: false, accept: vec![] }).await?;
+            Ok(json!(grants).to_string())
         }
         "echo" => Ok(input.to_string()),
         "shared" => {
