@@ -216,7 +216,6 @@ export class LinuxCapture {
   try{while(this.pending&&this.valid()){
    let raw=this.pending;this.pending=null;this.publishingRaw=raw;
    const revision=this.regionRevision;
-   if(this.paintHold?!this.painted(this.paintHold,raw):raw.captured_ms<this.paintedAt){raw.release?.();this.publishingRaw=null;continue;}
    // r10: Chrome UI drawn in the window over this page region (the omnibox dropdown): hold the
    // last frame, never Chrome's pixels; its popup stream shows them over the page. Checked live
    // after the capture: a readback holding the list's pixels always sees it open.
@@ -224,6 +223,8 @@ export class LinuxCapture {
    if(this.connection.presentationFence&&!this.connection.presentationFence.stable(raw.captured_ms,raw.captured_ms+(raw.capture_ms??0))){
     this.timing('native_capture_transient_dropped',raw.captured_ms);raw.release?.();this.publishingRaw=null;resumeAfterCapturePresentation(this,this.connection.presentationFence,()=>this.wake(true));continue;
    }
+   // Only pixels that passed the window checks above judge the new document's paint (Chrome UI over the old page differs too).
+   if(this.paintHold?!this.painted(this.paintHold,raw):raw.captured_ms<this.paintedAt){raw.release?.();this.publishingRaw=null;continue;}
    if(!this.valid())break;
    if(revision!==this.regionRevision){this.rejected('region_revision');raw.release?.();this.publishingRaw=null;continue;}
    // MP-11: a source admitted without pixel proof cannot carry a Vault mask; retire it, the next start attests exactly.

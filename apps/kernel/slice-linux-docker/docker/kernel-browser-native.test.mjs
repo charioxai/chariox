@@ -490,6 +490,30 @@ test('MP-08/MP-10 the new document\'s first painted readback ends the paint hold
  assert.equal(source.paintHold,null,'the first painted readback ends the hold');assert.equal(source.sample()?.document_id,'d2');assert.equal(source.sample().serial,5);
  await source.close();
 });
+// Chrome UI over the page (the omnibox dropdown) differs from the commit's readback without being the new document.
+test('MP-08/MP-10 an occluded or transient readback is no document paint',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('unexpected '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true,followsDocument:true});
+ const painted=[];source.browser={documentPainted:(target,document)=>painted.push(document)};
+ source.valid=()=>!source.closed;source.attested=true;source.child={stdin:{destroyed:false,write:()=>{}}};
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const page=fill=>{const pixels=Buffer.alloc(64*32*4,255);pixels.fill(fill,0,64*4*8);return pixels};
+ const readback=(serial,signature,pixels)=>({width:64,height:32,length:pixels.length,pixels,serial,signature,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()});
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});
+ await source.regions.refresh();await new Promise(resolve=>setTimeout(resolve,2));
+ source.pending=readback(1,'old',page(10));await source.publish();
+ let occluded=true;source.occluded=async()=>occluded;
+ source.pending=readback(2,'old-with-dropdown',page(40));await source.publish();
+ assert.ok(source.paintHold,'the dropdown over the old page keeps the hold');assert.deepEqual(painted,[]);assert.equal(source.sample(),null);
+ occluded=false;let stable=false;source.connection.presentationFence={stable:()=>stable,recoverFailed:async()=>{}};
+ source.pending=readback(3,'old-moving',page(50));await source.publish();
+ assert.ok(source.paintHold,'a transient presentation keeps the hold');assert.deepEqual(painted,[]);
+ stable=true;source.pending=readback(4,'old',page(10));await source.publish();assert.ok(source.paintHold,'the old page again is no paint');
+ source.pending=readback(5,'new',page(90));await source.publish();
+ assert.equal(source.paintHold,null);assert.deepEqual(painted,['d2']);assert.equal(source.sample()?.serial,5);
+ await source.close();
+});
 test('MP-08/MP-10 parking a Tab display source pauses its worker readback and unparking resumes it',()=>{
  return import('./kernel-browser-native.mjs').then(({LinuxCapture})=>{
   const controls=[],source=new LinuxCapture({tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
