@@ -15,6 +15,10 @@ fn provider_login_810_retry_status_contract_roundtrips() {
         serde_json::from_value(fixture["response"].clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), fixture["request"]);
     assert_eq!(serde_json::to_value(response).unwrap(), fixture["response"]);
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 810);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 360);
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 810);
+    };
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 360);
+    };
 }

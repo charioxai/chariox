@@ -782,7 +782,7 @@ pub(crate) async fn execute_send_provider_login_input_request(
         && record
             .setup_token
             .as_ref()
-            .map_or(true, |login| login.expects_authorization_code());
+            .is_none_or(|login| login.expects_authorization_code());
     if authorization_code {
         data = super::provider_login_input::claude_authorization_input(&data)?;
     }
