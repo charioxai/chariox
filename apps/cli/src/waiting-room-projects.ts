@@ -34,11 +34,7 @@ export function waitingRoomProjectOptions(
 ): Array<{ id: string; label: string; project?: WaitingRoomProjectSummary }> {
   const existing = (projects ?? [])
     .filter((project) => project.status === "active")
-    .sort((left, right) => (
-      (right.last_session_activity_at_ms ?? right.updated_at_ms)
-      - (left.last_session_activity_at_ms ?? left.updated_at_ms)
-      || left.name.localeCompare(right.name)
-    ))
+    .sort(compareActiveProjects)
   return [
     { id: DEFAULT_PROJECT_SELECTION_ID, label: `Auto (${(projects ?? []).find(project => project.kind === "default" && project.workspace_id === workspaceId)?.name ?? "new project"})` },
     ...existing.map((project) => ({
@@ -93,12 +89,7 @@ export function activeWaitingRoomProjects(
 ): WaitingRoomProjectSummary[] {
   return (projects ?? [])
     .filter((project) => project.status === "active")
-    .sort((left, right) => (
-      Number(right.pinned === true) - Number(left.pinned === true) ||
-      (right.last_session_activity_at_ms ?? right.updated_at_ms)
-      - (left.last_session_activity_at_ms ?? left.updated_at_ms)
-      || left.name.localeCompare(right.name)
-    ))
+    .sort(compareActiveProjects)
 }
 
 export function archivedWaitingRoomProjects(
@@ -112,4 +103,12 @@ export function archivedWaitingRoomProjects(
 function modulo(value: number, size: number): number {
   if (size <= 0) return 0
   return ((value % size) + size) % size
+}
+
+function compareActiveProjects(left: WaitingRoomProjectSummary, right: WaitingRoomProjectSummary): number {
+  return Number(right.pinned === true) - Number(left.pinned === true)
+    || (left.pinned && right.pinned
+      ? (left.pinned_at_ms ?? Number.MAX_SAFE_INTEGER) - (right.pinned_at_ms ?? Number.MAX_SAFE_INTEGER)
+      : (right.last_session_activity_at_ms ?? right.created_at_ms) - (left.last_session_activity_at_ms ?? left.created_at_ms))
+    || left.created_at_ms - right.created_at_ms || left.id.localeCompare(right.id)
 }

@@ -753,6 +753,7 @@ fn waiting_room_structural_version(
                 "workspace_id": project.workspace_id,
                 "workspace_ids": project.workspace_ids,
                 "pinned": project.pinned,
+                "pinned_at_ms": project.pinned_at_ms,
                 "name": project.name,
                 "kind": project.kind,
                 "status": project.status,
@@ -2477,5 +2478,17 @@ mod owner15_projection_tests {
         let after =
             super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
         assert_ne!(before, after);
+        projects[0].pinned_at_ms = Some(10);
+        let first =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        let activity = super::waiting_room_activity_revision(&[], &projects, &[]).unwrap();
+        projects[0].pinned_at_ms = Some(20);
+        let second =
+            super::waiting_room_structural_version(&[], &projects, &[], false, None, None).unwrap();
+        assert_ne!(first, second, "repinning must publish its new order");
+        assert_eq!(
+            activity,
+            super::waiting_room_activity_revision(&[], &projects, &[]).unwrap()
+        );
     }
 }

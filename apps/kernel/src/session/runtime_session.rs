@@ -1318,6 +1318,11 @@ mod session_activity_tests {
         );
         let initial = session.last_activity_at_ms();
         session.touch();
+        session.set_pinned(true);
+        let pinned_at = session.pinned_at_ms();
+        assert!(pinned_at.is_some());
+        session.set_pinned(true);
+        assert_eq!(session.pinned_at_ms(), pinned_at);
         session.set_focused_agent(Some("agent".into()));
         assert_eq!(session.last_activity_at_ms(), initial);
         session.note_prompt_sent_at("agent", initial + 10);
@@ -1327,5 +1332,6 @@ mod session_activity_tests {
         let restored: RuntimeSession =
             serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
         assert_eq!(restored.last_activity_at_ms(), initial + 20);
+        assert_eq!(restored.pinned_at_ms(), pinned_at);
     }
 }
