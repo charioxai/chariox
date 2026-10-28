@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use super::identity::{
     load_or_create_runtime_identity, load_retained_slice_identity, persist_runtime_display_aliases,
@@ -389,7 +388,10 @@ pub(super) fn runtime_display_machine_name() -> Option<String> {
 }
 
 fn command_output(command: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(command).args(args).output().ok()?;
+    let output = crate::process_spawn::command(command)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

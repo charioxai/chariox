@@ -95,7 +95,13 @@ static int minimal_groups(void) {
 static int failure(void) { close(7); return DOMAIN_FAILURE; }
 
 int main(int argc, char** argv) {
-  if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) return failure();
+  /* The kernel may be protected; a constrained App must remain killable. */
+  int score = open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+  if (score < 0) return failure();
+  ssize_t reset;
+  do { reset = write(score, "0\n", 2); } while (reset < 0 && errno == EINTR);
+  int closed = close(score);
+  if (reset != 2 || closed || prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) return failure();
   struct stat cgroup, binary;
   struct statfs filesystem;
   if (argc < 2 || argc > 128 || fstat(5, &cgroup) || fstatfs(5, &filesystem) ||

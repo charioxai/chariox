@@ -232,7 +232,7 @@ fn command(
     let program = launch
         .pty_program
         .ok_or_else(|| std::io::Error::other("watched process launch has no executable"))?;
-    let mut command = Command::new(program);
+    let mut command = crate::process_spawn::command(program);
     command
         .args(launch.pty_args)
         .env_clear()
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn a03_signal_guard_rejects_a_group_outside_the_owned_session() {
         use std::os::unix::process::CommandExt;
-        let child = Command::new("sleep")
+        let child = crate::process_spawn::command("sleep")
             .arg("30")
             .process_group(0)
             .spawn()

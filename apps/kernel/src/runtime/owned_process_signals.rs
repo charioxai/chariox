@@ -226,7 +226,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
 }
 #[cfg(target_os = "macos")]
 fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
-    let result = std::process::Command::new("/bin/ps")
+    let result = crate::process_spawn::command("/bin/ps")
         .args(["-axo", "pid=,ppid=,pgid="])
         .env("LC_ALL", "C")
         .output()?;

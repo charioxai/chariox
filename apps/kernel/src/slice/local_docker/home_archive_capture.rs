@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -108,7 +108,7 @@ fn capture_with_progress_timeout(
         }
         // Direct tar output is streamed through a fixed buffer to private product
         // state. No login shell, helper-layer archive, or diagnostic byte capture.
-        let mut command = Command::new("docker");
+        let mut command = crate::process_spawn::command("docker");
         command
             .args([
                 "exec",

@@ -23,7 +23,7 @@ fn mp08_mp10_mp11_aggregate_agent_model_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "1179dafef6036f07282f83a59cfffcb81d43f282fd50067284491cf5f5cde9b5"
+        "8e33a25587416ef41249870b520896e5153d0e65110d41a4174fe487bf65886f"
     );
     for wire in snapshot["requests"].as_array().unwrap() {
         let typed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();

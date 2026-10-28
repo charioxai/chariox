@@ -92,8 +92,12 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     bash \
     ca-certificates \
     libdbus-1-3 \
+    procps \
     tini \
   && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/check-process-sampler.mjs /usr/local/lib/chariox/check-process-sampler.mjs
+RUN node /usr/local/lib/chariox/check-process-sampler.mjs
 
 COPY --from=js-toolchain /opt/chariox-toolchain /opt/chariox-toolchain
 ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin

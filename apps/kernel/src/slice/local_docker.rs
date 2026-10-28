@@ -261,7 +261,7 @@ pub fn run_local_docker_slice_action(
         None
     };
     let script = linux_docker_slice_script()?;
-    let mut command = Command::new(&script);
+    let mut command = crate::process_spawn::command(&script);
     let action_name = action.as_str();
     command.arg(action_name);
     configure_local_docker_slice_command(
@@ -510,7 +510,7 @@ fn bounded_github_token(
     timeout: Duration,
     context: &crate::managed_context::scm::GitCredentialCommandContext,
 ) -> Option<Zeroizing<Vec<u8>>> {
-    let mut command = Command::new(program);
+    let mut command = crate::process_spawn::command(program);
     command.args(["auth", "token", "--hostname", "github.com"]);
     context.configure_command(&mut command);
     let mut child = command
@@ -677,7 +677,7 @@ pub fn start_local_docker_slice_provider_login(
         });
     }
     let script = linux_docker_slice_script()?;
-    let mut command = Command::new(&script);
+    let mut command = crate::process_spawn::command(&script);
     command
         .arg("start-provider-login")
         .env("CHARIOX_SLICE_LOGIN_PROVIDER", provider)
@@ -1730,7 +1730,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
     let mut start_attempts = Vec::new();
     if command_exists("colima") {
         start_attempts.push("colima start");
-        let _ = Command::new("colima")
+        let _ = crate::process_spawn::command("colima")
             .arg("start")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1744,7 +1744,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
     {
         if command_exists("open") {
             start_attempts.push("open -ga Docker");
-            let _ = Command::new("open")
+            let _ = crate::process_spawn::command("open")
                 .args(["-ga", "Docker"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -1786,7 +1786,7 @@ fn docker_is_ready() -> bool {
 }
 
 fn command_exists(command: &str) -> bool {
-    Command::new("sh")
+    crate::process_spawn::command("sh")
         .args(["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -163,3 +163,176 @@ fn cgroup_observations_include_children_that_detach_between_samples() {
         "the cgroup-owned detached child was missing from Health observations"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn shell_exec_keeps_owned_root_and_subsequent_children_addressable() {
+    use std::io::{BufRead, Write};
+    let mut child = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "read ready; exec /bin/sh -c 'sleep 30 & echo $!; wait'",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let original = crate::runtime::kernel_access::process::inspect(child.id())
+        .unwrap()
+        .0;
+    let prepared = PreparedDomain {
+        limit: 64 * MIB,
+        #[cfg(target_os = "linux")]
+        cgroup: None,
+    };
+    let domain = prepared.start(child.id()).unwrap();
+    let key = format!("exec-tree-{}", child.id());
+    domain.bind_key(&key);
+    let wait_samples = |expected| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let rows = domain.samples();
+            if rows.len() >= expected || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    };
+    let before = wait_samples(1);
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"exec-now\n")
+        .unwrap();
+    let mut descendant = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut descendant)
+        .unwrap();
+    let descendant: u32 = descendant.trim().parse().unwrap();
+    let after = wait_samples(2);
+    #[cfg(target_os = "macos")]
+    let exec_changed_version = crate::runtime::kernel_access::process::inspect(child.id())
+        .is_ok_and(|(current, _)| current.version != original.version);
+    let stopped = stop_for_key(&key, None);
+    let child_exited = child.try_wait().unwrap().is_some();
+    // Cleanup also runs on the buggy base, where the watchdog has lost the root.
+    if descendant > 1 && descendant <= i32::MAX as u32 {
+        if let Ok((identity, parent)) = crate::runtime::kernel_access::process::inspect(descendant)
+        {
+            if parent == original.pid && identity.alive() {
+                unsafe {
+                    libc::kill(descendant as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(domain);
+    assert_eq!(before.len(), 1);
+    assert!(after
+        .iter()
+        .any(|row| row.pid == original.pid && row.process_id == before[0].process_id));
+    assert!(
+        after.iter().any(|row| row.pid == descendant),
+        "children created after exec remain owned"
+    );
+    assert!(
+        stopped.is_ok(),
+        "the exec'd tree can be stopped through its retained owner"
+    );
+    assert!(child_exited, "stop waits for the owned tree to exit");
+    #[cfg(target_os = "macos")]
+    assert!(
+        exec_changed_version,
+        "the drill must cross Darwin's exec identity change"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn watchdog_covers_children_created_after_shell_exec() {
+    use std::io::Write;
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "read ready; exec /bin/sh -c 'python3 -c \"import time; x=bytearray(48*1024*1024); time.sleep(5)\" & wait'"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let prepared = PreparedDomain {
+        limit: 24 * MIB,
+        #[cfg(target_os = "linux")]
+        cgroup: None,
+    };
+    let domain = prepared.start(child.id()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while domain.samples().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"exec-now\n")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while domain.memory_limit_bytes().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let limit = domain.memory_limit_bytes();
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(domain);
+    assert_eq!(limit, Some(24 * MIB));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn linux_controller_ends_a_runaway_before_the_oom_killer() {
+    let prepared = PreparedDomain::with_limit(32 * MIB).unwrap();
+    let path = prepared
+        .cgroup
+        .as_ref()
+        .expect("cgroup delegation required")
+        .path()
+        .to_owned();
+    let (program,args)=prepared.command("python3".into(),vec!["-c".into(),"import time; blocks=[]\nfor n in range(16):\n blocks.append(bytearray(4*1024*1024)); time.sleep(.04)\ntime.sleep(30)".into()]);
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .unwrap();
+    let domain = prepared.start(child.id()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while domain.memory_limit_bytes().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let limit = domain.memory_limit_bytes();
+    let mut exited = child.try_wait().unwrap().is_some();
+    while !exited && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(25));
+        exited = child.try_wait().unwrap().is_some();
+    }
+    let events = std::fs::read_to_string(path.join("memory.events")).unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(domain);
+    assert!(
+        exited,
+        "the resource controller must end the runaway without test cleanup"
+    );
+    assert_eq!(
+        limit,
+        Some(32 * MIB),
+        "the controller must name the configured limit"
+    );
+    assert!(
+        events.lines().any(|line| line == "oom 0"),
+        "controller must end the tree without kernel OOM: {events}"
+    );
+    assert!(
+        events.lines().any(|line| line == "oom_kill 0"),
+        "controller must own the stop: {events}"
+    );
+    assert!(!path.exists());
+}

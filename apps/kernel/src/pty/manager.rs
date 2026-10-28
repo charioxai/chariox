@@ -393,6 +393,7 @@ impl PtyManager {
         let process_key = run.pty_target().unwrap_or(run.id()).to_string();
         if let Some(process) = self.processes.get_mut(&process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(run.id());
             self.process_aliases
                 .insert(run.id().to_string(), process_key.clone());
             self.output_signal
@@ -525,6 +526,7 @@ impl PtyManager {
         }
         if let Some(process) = self.processes.get_mut(&request.process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(&request.provider_run_id);
             self.process_aliases
                 .insert(request.provider_run_id.clone(), request.process_key.clone());
             self.output_signal
@@ -1153,6 +1155,9 @@ impl PtyManager {
         };
         self.output_signal
             .unregister_alias(&process_key, provider_run_id);
+        if let Some(process) = self.processes.get(&process_key) {
+            process.resources.unbind_key(provider_run_id);
+        }
 
         self.remove_process_by_key(&process_key, Some(provider_run_id))
     }
@@ -1955,7 +1960,7 @@ mod tests {
     #[test]
     fn mp08_mp10_removal_after_reaping_does_not_signal_a_reused_group() {
         use std::os::unix::process::CommandExt;
-        let mut probe = std::process::Command::new("/bin/sh");
+        let mut probe = crate::process_spawn::command("/bin/sh");
         probe.args(["-c", "sleep 30"]);
         unsafe {
             probe.pre_exec(|| {
@@ -2312,6 +2317,29 @@ mod tests {
 
         assert_eq!(manager.processes.len(), 1);
         assert_eq!(manager.process_aliases.len(), 2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let first_rows = loop {
+            let rows = crate::runtime::process_resources::samples_for_key(first_run.id());
+            if !rows.is_empty() || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert!(
+            !first_rows.is_empty(),
+            "the shared PTY must have process rows"
+        );
+        assert_eq!(
+            crate::runtime::process_resources::samples_for_key(second_run.id())
+                .into_iter()
+                .map(|row| (row.pid, row.process_id))
+                .collect::<Vec<_>>(),
+            first_rows
+                .iter()
+                .map(|row| (row.pid, row.process_id.clone()))
+                .collect::<Vec<_>>(),
+            "every live PTY alias must resolve the retained resource domain"
+        );
 
         manager
             .write_input(first_run.id(), b"shared pty\n")
@@ -2333,6 +2361,21 @@ mod tests {
         assert!(!manager.has_process(first_run.id()));
         assert!(manager.has_process(second_run.id()));
         assert_eq!(manager.processes.len(), 1);
+        assert!(crate::runtime::process_resources::samples_for_key(first_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(first_run.id(), None).is_err());
+        let surviving = crate::runtime::process_resources::samples_for_key(second_run.id());
+        assert!(
+            !surviving.is_empty(),
+            "the surviving alias keeps its observations"
+        );
+        let stopped = crate::runtime::process_resources::stop_for_key(second_run.id(), None)
+            .expect("the surviving PTY alias can stop its owned tree");
+        assert!(surviving
+            .iter()
+            .all(|row| stopped.contains(&row.process_id)));
+        assert!(crate::runtime::process_resources::outside_ended_for_key(
+            second_run.id()
+        ));
 
         manager
             .remove_process(second_run.id())
@@ -2340,6 +2383,8 @@ mod tests {
         assert!(!manager.has_process(second_run.id()));
         assert!(manager.processes.is_empty());
         assert!(manager.process_aliases.is_empty());
+        assert!(crate::runtime::process_resources::samples_for_key(second_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(second_run.id(), None).is_err());
     }
 
     fn wait_for_output(

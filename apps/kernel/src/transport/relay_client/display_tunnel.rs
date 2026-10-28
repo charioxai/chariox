@@ -6,7 +6,6 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use std::io::Read;
-use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue};
@@ -235,7 +234,7 @@ async fn proxy_selkies_websocket(
             false,
         )
     })?;
-    let mut command = Command::new(command_program);
+    let mut command = crate::process_spawn::async_command(command_program);
     command.args(command_args);
     let (input_tx, input_rx) = mpsc::channel(16);
     let (output_tx, mut output_rx) = mpsc::channel(16);

@@ -778,7 +778,7 @@ fn read_proc_identity(_pid: u32) -> Result<ProcIdentity, String> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -818,7 +818,7 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let root = test_root("live-group");
         let scratch = make_scratch(&root, "live-group-op", 1, 0);
-        let mut command = std::process::Command::new("/bin/sleep");
+        let mut command = crate::process_spawn::command("/bin/sleep");
         command.arg("30").stdin(std::process::Stdio::null());
         unsafe {
             command.pre_exec(|| {
@@ -861,7 +861,7 @@ mod tests {
         use std::os::unix::process::CommandExt;
         let root = test_root("mismatch");
         let scratch = make_scratch(&root, "mismatch-op", 1, 0);
-        let mut command = std::process::Command::new("/bin/sleep");
+        let mut command = crate::process_spawn::command("/bin/sleep");
         command.arg("30").stdin(std::process::Stdio::null());
         unsafe {
             command.pre_exec(|| {
@@ -901,7 +901,7 @@ mod tests {
 
         let root = test_root("foreign-pid");
         let scratch = make_scratch(&root, "foreign-pid-op", 1, 0);
-        let mut command = Command::new("/bin/sleep");
+        let mut command = crate::process_spawn::command("/bin/sleep");
         command.arg("30").stdin(Stdio::null());
         unsafe {
             command.pre_exec(|| {
@@ -949,7 +949,7 @@ mod tests {
         let root = test_root("missing-leader");
         let scratch = make_scratch(&root, "missing-leader-op", 1, 0);
         let descendant_pid_path = root.join("descendant-pid");
-        let mut command = Command::new("/bin/sh");
+        let mut command = crate::process_spawn::command("/bin/sh");
         command
             .arg("-c")
             .arg("sleep 30 & echo $! > \"$1\"; IFS= read -r _")
@@ -1045,7 +1045,7 @@ mod tests {
 
         let root = test_root("different-boot");
         let scratch = make_scratch(&root, "different-boot-op", 1, 0);
-        let mut command = Command::new("/bin/sleep");
+        let mut command = crate::process_spawn::command("/bin/sleep");
         command.arg("30").stdin(Stdio::null());
         unsafe {
             command.pre_exec(|| {
@@ -1661,7 +1661,7 @@ exit 0
         store
             .persist_validation_scratch_intent("restore-live-group-op", 1, 0, scratch.path())
             .expect("scratch intent should be durably recorded");
-        let mut command = Command::new("/bin/sleep");
+        let mut command = crate::process_spawn::command("/bin/sleep");
         command.arg("30").stdin(Stdio::null());
         unsafe {
             command.pre_exec(|| {

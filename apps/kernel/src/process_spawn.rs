@@ -7,7 +7,59 @@ use std::process::{Child, Command};
 #[path = "process_spawn_tests.rs"]
 mod tests;
 
+/// Every kernel-owned command starts with its own OOM policy. In particular,
+/// a workload must not inherit the service's -1000 protection.
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    make_killable(&mut command);
+    command
+}
+
+pub(crate) fn async_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    command(program).into()
+}
+
+fn make_killable(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // Only async-signal-safe syscalls run between fork and exec. Raising an
+        // inherited negative adjustment to zero requires no added privilege.
+        unsafe {
+            command.pre_exec(|| {
+                let fd = libc::open(
+                    c"/proc/self/oom_score_adj".as_ptr(),
+                    libc::O_WRONLY | libc::O_CLOEXEC,
+                );
+                if fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let written = loop {
+                    let result = libc::write(fd, b"0\n".as_ptr().cast(), 2);
+                    if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                        continue;
+                    }
+                    break result;
+                };
+                let error = io::Error::last_os_error();
+                let closed = libc::close(fd);
+                if written != 2 {
+                    return Err(error);
+                }
+                if closed != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
+
 pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
+    make_killable(&mut command);
     on_owner(
         move || command.spawn(),
         |mut child| {
@@ -19,8 +71,22 @@ pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
 
 pub(crate) fn spawn_pty(
     slave: Box<dyn SlavePty + Send>,
-    command: CommandBuilder,
+    mut command: CommandBuilder,
 ) -> io::Result<Box<dyn portable_pty::Child + Send + Sync>> {
+    #[cfg(target_os = "linux")]
+    {
+        let argv = std::mem::take(command.get_argv_mut());
+        *command.get_argv_mut() = [
+            "/bin/sh",
+            "-c",
+            "printf '0\\n' > /proc/self/oom_score_adj || exit 125; exec \"$@\"",
+            "chariox-owned-process",
+        ]
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .chain(argv)
+        .collect();
+    }
     on_owner(
         move || slave.spawn_command(command).map_err(io::Error::other),
         |mut child| {

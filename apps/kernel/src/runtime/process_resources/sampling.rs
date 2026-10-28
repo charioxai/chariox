@@ -218,11 +218,60 @@ impl ProcessTree {
 }
 
 fn same_process(pid: u32, identity: &ProcessIdentity) -> bool {
-    inspect(pid).is_ok_and(|(current, _)| {
-        current.start == identity.start
-            && current.uid == identity.uid
-            && current.version == identity.version
-    })
+    inspect(pid).is_ok_and(|(current, _)| same_birth(&current, identity))
+}
+
+// Linux start ticks and Darwin's unique process ID survive exec. Darwin's
+// idversion and executable describe an exec image, so they are deliberately
+// retained for kernel-access admission but excluded from resource ownership.
+fn same_birth(current: &ProcessIdentity, identity: &ProcessIdentity) -> bool {
+    current.pid == identity.pid && current.start == identity.start && current.uid == identity.uid
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn resource_ownership_survives_exec_without_accepting_pid_reuse() {
+        let launched = ProcessIdentity {
+            pid: 42,
+            uid: 501,
+            start: 123,
+            version: 1,
+            executable: "/bin/sh".into(),
+        };
+        let executed = ProcessIdentity {
+            version: 2,
+            executable: "/bin/sleep".into(),
+            ..launched.clone()
+        };
+        assert!(
+            same_birth(&executed, &launched),
+            "Darwin exec changes idversion, not process birth"
+        );
+        assert!(!same_birth(
+            &ProcessIdentity {
+                start: 124,
+                ..executed.clone()
+            },
+            &launched
+        ));
+        assert!(!same_birth(
+            &ProcessIdentity {
+                uid: 502,
+                ..executed.clone()
+            },
+            &launched
+        ));
+        assert!(!same_birth(
+            &ProcessIdentity {
+                pid: 43,
+                ..executed
+            },
+            &launched
+        ));
+    }
 }
 #[derive(Clone)]
 struct Row {
@@ -261,7 +310,7 @@ pub(super) fn ensure_available() -> std::io::Result<()> {
 
 fn read_process_rows() -> Result<Vec<Row>, String> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
-    let output = std::process::Command::new("ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output()
+    let output = crate::process_spawn::command("ps").args(["-axo", "pid=,ppid=,rss=,pcpu=,etime=,comm="]).output()
         .map_err(|error| format!("process resource monitor cannot start ps: {error}; install ps and check the kernel PATH"))?;
     if !output.status.success() {
         return Err(

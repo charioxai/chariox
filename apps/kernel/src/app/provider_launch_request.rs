@@ -938,7 +938,7 @@ mod tests {
     }
 
     fn run_git_init(path: &std::path::Path) {
-        let status = std::process::Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(path)
             .arg("init")

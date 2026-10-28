@@ -3140,7 +3140,7 @@ pub(in crate::runtime::state) mod tests {
     ) {
         let worktree = crate::test_support::TestWorktree::new("local-prompt-admitted");
         if git_worktree {
-            let status = std::process::Command::new("git")
+            let status = crate::process_spawn::command("git")
                 .args(["init", "--quiet"])
                 .current_dir(worktree.path())
                 .status()

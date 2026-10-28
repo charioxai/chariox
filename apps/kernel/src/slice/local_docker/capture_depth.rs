@@ -9,8 +9,6 @@
 //! brokers apply the same rule to the commits they run; the kernel flattens
 //! only on a direct Docker engine and predicts the flatten for disk admission.
 
-use std::process::Command;
-
 use crate::error::DaemonError;
 
 use super::broker::{self, docker_command};
@@ -101,7 +99,7 @@ fn flatten_container_into_image(
                 provisioner.display()
             ),
         })?;
-    let mut command = Command::new("node");
+    let mut command = crate::process_spawn::command("node");
     command.arg(&script).args(["flatten", container, image_ref]);
     // MP-08/MP-11: the same explicit engine as the ordinary commit.
     if std::env::var_os("DOCKER_HOST").is_some_and(|host| !host.is_empty()) {

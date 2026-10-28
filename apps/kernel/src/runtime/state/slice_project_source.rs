@@ -194,7 +194,7 @@ mod tests {
         let root = std::fs::canonicalize(&scratch.0).unwrap();
         let workspace = root.join("repository");
         std::fs::create_dir_all(&workspace).unwrap();
-        assert!(std::process::Command::new("git")
+        assert!(crate::process_spawn::command("git")
             .args(["init", "--quiet"])
             .arg(&workspace)
             .status()
@@ -202,7 +202,7 @@ mod tests {
             .success());
         std::fs::write(workspace.join("app.ts"), "original home file\n").unwrap();
         let git = |args: &[&str]| {
-            assert!(std::process::Command::new("git")
+            assert!(crate::process_spawn::command("git")
                 .args([
                     "-c",
                     "user.name=Test",

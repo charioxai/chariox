@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -45,7 +45,7 @@ pub(super) fn spawn_claude_child(
         }
     })?;
     let (program, args) = prepared.command(program.to_string(), args.to_vec());
-    let mut command = Command::new(program);
+    let mut command = crate::process_spawn::command(program);
     command
         .args(args)
         .stdin(Stdio::piped())

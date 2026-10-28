@@ -2730,14 +2730,14 @@ mod bounded_output_tests {
 
     #[test]
     fn a_stalled_status_probe_is_killed_at_its_deadline() {
-        let mut quick = Command::new("sh");
+        let mut quick = crate::process_spawn::command("sh");
         quick.args(["-c", "printf ok"]);
         let output = bounded_output(quick, "quick probe", Duration::from_secs(10)).unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ok");
 
         // A launcher that exits while a descendant still holds its pipes.
-        let mut detached = Command::new("sh");
+        let mut detached = crate::process_spawn::command("sh");
         detached.args(["-c", "sleep 30 & printf ok"]);
         let started = std::time::Instant::now();
         let output = bounded_output(detached, "detached probe", Duration::from_secs(10)).unwrap();
@@ -2749,7 +2749,7 @@ mod bounded_output_tests {
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
-        let mut stalled = Command::new("sh");
+        let mut stalled = crate::process_spawn::command("sh");
         stalled.args([
             "-c",
             &format!("(sleep 1; touch '{}') & sleep 30", survived.display()),

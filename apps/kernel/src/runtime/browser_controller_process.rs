@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -299,7 +299,7 @@ impl BrowserControllerProcessStdioBackend {
     }
 
     fn spawn(&mut self) -> Result<(), String> {
-        let mut command = Command::new(&self.command);
+        let mut command = crate::process_spawn::command(&self.command);
         command
             .args(&self.args)
             .stdin(Stdio::piped())
@@ -2793,7 +2793,7 @@ mod tests {
             // by this multi-threaded test process could leak into another
             // test's fork and make exec fail with ETXTBSY.
             let path = root.join("controller-tool.sh");
-            let installed = std::process::Command::new("install")
+            let installed = crate::process_spawn::command("install")
                 .args(["-m", "700"])
                 .arg(&source)
                 .arg(&path)
@@ -3256,7 +3256,7 @@ done
                 "{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
                 module_path!().split_once("::").unwrap().1
             );
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
+            let status = crate::process_spawn::command(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
                 .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")

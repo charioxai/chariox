@@ -29,7 +29,14 @@ impl Domain {
             limit,
         };
         let configured = (|| -> std::io::Result<()> {
-            std::fs::write(group.path.join("memory.max"), limit.to_string())?;
+            // Throttle at the user limit so the controller can record the typed
+            // outcome and end the tree. The killable hard ceiling is a backstop
+            // for bursts between observations, not the normal termination path.
+            let hard_limit = limit
+                .checked_add((limit / 4).max(64 * 1024 * 1024))
+                .ok_or_else(|| std::io::Error::other("process memory limit overflow"))?;
+            std::fs::write(group.path.join("memory.high"), limit.to_string())?;
+            std::fs::write(group.path.join("memory.max"), hard_limit.to_string())?;
             std::fs::write(group.path.join("memory.swap.max"), "0")?;
             std::fs::write(group.path.join("memory.oom.group"), "1")?;
             Ok(())
@@ -68,6 +75,12 @@ impl Domain {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0)
         };
+        let charged = std::fs::read_to_string(self.path.join("memory.current"))
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok());
+        if count("high ") > 0 || charged.is_some_and(|bytes| bytes > self.limit) {
+            return Some(self.limit);
+        }
         (count("oom_kill ") > 0).then(|| {
             if count("oom ") > 0 {
                 self.limit

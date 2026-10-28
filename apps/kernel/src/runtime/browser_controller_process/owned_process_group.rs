@@ -251,7 +251,7 @@ fn snapshot(root: u32) -> Option<BTreeMap<u32, Process>> {
     #[cfg(not(target_os = "linux"))]
     {
         // Numeric IDs and start time only; never command lines or environment.
-        let output = std::process::Command::new("ps")
+        let output = crate::process_spawn::command("ps")
             .args(["-axo", "pid=,ppid=,pgid=,lstart="])
             .output()
             .ok()?;
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(process.started, "12345");
         assert!(linux_identity("42 (broken) S 2").is_none());
         let before = last_allocated_pid().unwrap();
-        std::process::Command::new("true").status().unwrap();
+        crate::process_spawn::command("true").status().unwrap();
         assert_ne!(
             last_allocated_pid().unwrap(),
             before,

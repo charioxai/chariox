@@ -212,7 +212,7 @@ mod tests {
         let executable = fixture.0.join("worker-test");
         std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let provisioned = std::process::Command::new("python3")
+        let provisioned = crate::process_spawn::command("python3")
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../deploy/local-linux/provision-docker-admission-locks.py"
@@ -230,7 +230,7 @@ mod tests {
         let held = open_for_owner(&path, 0).unwrap();
         held.lock_exclusive().unwrap();
         let probe = |blocked| {
-            let mut command = std::process::Command::new(&executable);
+            let mut command = crate::process_spawn::command(&executable);
             command
                 .args(["--exact", "slice::local_docker::admission_lock::tests::provisioned_root_lock_uses_kernel_opener_as_ordinary_uid"])
                 .uid(65534)

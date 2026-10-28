@@ -237,6 +237,15 @@ impl ProcessDomain {
         registry.retain(|_, state| state.strong_count() > 0);
         registry.insert(key.to_string(), Arc::downgrade(&self.state));
     }
+    pub(crate) fn unbind_key(&self, key: &str) {
+        let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if registry
+            .get(key)
+            .is_some_and(|state| state.ptr_eq(&Arc::downgrade(&self.state)))
+        {
+            registry.remove(key);
+        }
+    }
     pub(crate) fn samples(&self) -> Vec<ProcessSample> {
         self.state
             .lock()
@@ -251,6 +260,10 @@ impl Drop for ProcessDomain {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        registry()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, state| !state.ptr_eq(&Arc::downgrade(&self.state)));
     }
 }
 
@@ -385,7 +398,7 @@ fn memory_budget() -> Option<(u64, u64, Option<u64>)> {
     {
         static MEMORY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
         let total = (*MEMORY.get_or_init(|| {
-            let output = std::process::Command::new("sysctl")
+            let output = crate::process_spawn::command("sysctl")
                 .args(["-n", "hw.memsize"])
                 .output()
                 .ok()?;

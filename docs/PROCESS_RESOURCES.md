@@ -66,3 +66,62 @@ kill the owning agent with confirmation. Verify `outside_end`, absence of the
 selected tree, and the second agent's nonempty process set before and after.
 Repeat through Health on the real Web bundle at DPR1 and DPR2; record the
 source heads and screenshots separately from any earlier protocol's results.
+
+MP-08 / MP-09 / MP-10 / MP-11: all kernel images install `procps` and run
+`scripts/check-process-sampler.mjs` during the image build. The check launches
+an owned shell process and reads the exact `ps` columns the monitor needs.
+The publication runtime, lab runtime and Docker slice are covered; the native
+managed image also installs `procps` explicitly and checks those columns.
+The egress gateway, local Docker broker, dummy App and browser-only drill image
+do not run a kernel and do not need the kernel sampler (the browser drill
+already installs it for its own diagnostics).
+
+On macOS, resource ownership uses Darwin's exec-stable process unique ID and
+UID; kernel-access admission retains its stricter exec-image identity.
+Run these focused regressions on a real Mac with Python 3 installed:
+
+```sh
+cargo test -p chariox-kernel --lib shell_exec_keeps_owned_root_and_subsequent_children_addressable
+cargo test -p chariox-kernel --lib watchdog_covers_children_created_after_shell_exec
+```
+
+The first launches a shell, records its opaque process ID, execs another shell,
+then creates a child; both remain addressable and stop together. On Darwin it
+also asserts that exec changed the OS image version. The second crosses the
+same exec boundary before creating a child that exceeds the portable RSS cap.
+These focused regressions supplement PC-04's real client/provider drill.
+
+The Claude stream launch path has an independent containment regression:
+`cargo test -p chariox-kernel --lib claude_process_resources_end_only_the_overweight_stream_and_name_the_limit`.
+It uses the real Claude runtime initializer and event drain with a bounded
+stream fixture, checks prompt settlement and the named memory limit, and leaves
+an unrelated stream alive. It needs no account and supplements the real Claude
+provider leg; it does not certify that provider's authentication or CLI behavior.
+
+## Linux OOM protection and controller termination
+
+The kernel can retain its service's `oom_score_adj=-1000`. Every command it
+launches uses the shared killable command constructor, including watched agent
+commands, Room exec, browser controllers, connectors, scripts, probes and helper
+commands. The owned standard-process and PTY spawn boundaries also enforce zero.
+The native App domain entry clears inherited protection before joining its domain
+or executing bubblewrap. Failure to clear it refuses the launch. Bootstrap kernel
+replacement launches retain service policy; they are kernels, not workloads.
+
+Provider and terminal domains throttle at the configured limit using
+`memory.high`. The monitor observes charged memory and high-limit events, records
+`memory_limit`, then ends the owned domain. `memory.max` adds the greater of
+25 percent or 64 MiB as a killable burst backstop. It does not replace the
+configured user limit. The kernel and its other domains stay outside that tree.
+The watchdog remains the enforcement path when cgroups are unavailable.
+
+Regressions:
+- `spawned_trees_are_killable_when_the_kernel_is_oom_protected` runs an isolated
+  kernel test process at -1000 and checks standard, async, owned and PTY children,
+  including their children, at zero while the parent remains protected.
+- `linux_controller_ends_a_runaway_before_the_oom_killer` requires the configured
+  typed limit, actual controller termination, zero `oom`/`oom_kill` events and
+  complete cgroup cleanup. Run with `--ignored` on a delegated Linux host.
+- `apps/app-worker/tests/oom-protection.test.mjs` executes the real native App
+  admission entry under inherited protection and verifies it clears that policy
+  even when admission subsequently refuses invalid descriptors.

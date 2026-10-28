@@ -636,6 +636,7 @@ fn write_claude_hidden_context(
 #[cfg(test)]
 mod tests {
     mod model_observation;
+    mod process_resources;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
@@ -664,7 +665,7 @@ mod tests {
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
-        let mut child = std::process::Command::new("/bin/sh")
+        let mut child = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("cat >/dev/null")
             .stdin(std::process::Stdio::piped())

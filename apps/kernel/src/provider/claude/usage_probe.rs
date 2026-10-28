@@ -535,7 +535,6 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     #[cfg(unix)]
     #[test]
@@ -646,7 +645,11 @@ mod tests {
 
     #[test]
     fn probes_both_usage_windows_without_replacing_home() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let fixture = std::env::temp_dir().join(format!(
@@ -695,7 +698,7 @@ process.stdout.write(JSON.stringify({
         // A concurrent fork can retain this process's writable descriptors.
         // Like TestTool, install from a child and wait for it to exit: the
         // parallel test process never holds the executable open for writing.
-        let installed = Command::new("install")
+        let installed = crate::process_spawn::command("install")
             .args(["-m", "700"])
             .arg(&source)
             .arg(&executable)

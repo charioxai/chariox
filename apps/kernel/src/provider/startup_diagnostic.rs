@@ -160,12 +160,12 @@ fn classify(output: &[u8], classes: &mut BTreeSet<&'static str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     #[test]
     fn startup_diagnostic_drains_verbose_output_without_exposing_values() {
-        let mut child = Command::new("sh")
+        let mut child = crate::process_spawn::command("sh")
             .args(["-c", "printf 'Error loading config: private-fixture-value\\n' >&2; head -c 100000 /dev/zero >&2"])
             .stderr(Stdio::piped())
             .spawn()

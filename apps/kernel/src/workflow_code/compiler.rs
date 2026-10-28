@@ -253,7 +253,7 @@ fn discover_node_path(
         if remaining.is_zero() {
             break;
         }
-        let Ok(mut child) = Command::new(&candidate)
+        let Ok(mut child) = crate::process_spawn::command(&candidate)
             .env_clear()
             .arg("--version")
             .stdout(Stdio::null())

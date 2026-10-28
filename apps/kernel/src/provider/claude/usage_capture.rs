@@ -79,7 +79,7 @@ mod tests {
         let handler = worktree.path().join("capture.mjs");
         let output = worktree.path().join("usage.json");
         fs::write(&handler, CLAUDE_USAGE_HANDLER).unwrap();
-        let mut child = std::process::Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .arg(&handler)
             .env("CHARIOX_CLAUDE_USAGE_FILE", &output)
             .env("NODE_OPTIONS", "--max-old-space-size=4096")

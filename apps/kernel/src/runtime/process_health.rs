@@ -119,7 +119,7 @@ fn wait_for_processes_to_exit(pids: &[u32], timeout: std::time::Duration) {
 
 #[cfg(unix)]
 fn descendant_process_ids(root_pid: u32) -> Vec<u32> {
-    let output = match std::process::Command::new("ps")
+    let output = match crate::process_spawn::command("ps")
         .args(["-axo", "pid=,ppid="])
         .output()
     {

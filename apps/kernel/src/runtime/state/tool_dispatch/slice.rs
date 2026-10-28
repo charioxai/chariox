@@ -857,7 +857,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
         if let Some(authorize) = authorize.as_ref() {
             authorize()?;
         }
-        let mut command = std::process::Command::new(&tool_path);
+        let mut command = crate::process_spawn::command(&tool_path);
         command
             .args(&args)
             .stdout(std::process::Stdio::piped())

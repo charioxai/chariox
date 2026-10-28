@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::path::Component;
 
 #[cfg(unix)]
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(unix)]
 use std::io::{self, Read};
@@ -90,7 +90,7 @@ fn fallback_path(home: &Path) -> OsString {
 
 #[cfg(unix)]
 fn probe_login_path(home: &Path) -> Result<OsString, &'static str> {
-    let mut command = Command::new("/bin/bash");
+    let mut command = crate::process_spawn::command("/bin/bash");
     command
         .arg("--login")
         .arg("-c")
@@ -366,7 +366,7 @@ mod tests {
             );
         }
 
-        let output = Command::new("/bin/sh")
+        let output = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("chariox-provider-path-probe")
             .env("HOME", &home.0)
@@ -410,7 +410,7 @@ mod tests {
                 "supervisor env {name} changed after the profile update"
             );
         }
-        let restarted = Command::new("/bin/sh")
+        let restarted = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("chariox-provider-path-probe")
             .env("HOME", &home.0)
@@ -532,7 +532,7 @@ mod tests {
         let resolved = crate::provider::resolve_codex_executable()
             .expect("provider resolver should find the fallback home tool");
         assert_eq!(resolved, tool);
-        let output = Command::new(&resolved)
+        let output = crate::process_spawn::command(&resolved)
             .output()
             .expect("fallback provider tool should run");
         assert!(output.status.success());
@@ -558,7 +558,7 @@ mod tests {
             .expect("relative PATH profile should be written");
         let relative_path = resolve_login_path(&home.0);
         assert_eq!(relative_path, OsString::from("bin:"));
-        let relative_output = Command::new("/bin/sh")
+        let relative_output = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("relative-provider-tool")
             .current_dir(&selected_cwd)
@@ -575,7 +575,7 @@ mod tests {
             .expect("empty PATH profile should be written");
         let empty_path = resolve_login_path(&home.0);
         assert!(empty_path.is_empty());
-        let empty_output = Command::new("/bin/sh")
+        let empty_output = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("empty-path-provider-tool")
             .current_dir(&selected_cwd)

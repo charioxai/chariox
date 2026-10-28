@@ -4595,7 +4595,7 @@ fn collect_claude_keychain_credentials(
     service: &str,
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("security")
+    let output = crate::process_spawn::command("security")
         .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .map_err(registry_io("export Claude Keychain credentials"))?;

@@ -912,7 +912,7 @@ pub(super) fn run_worker_validation_command_with_output_timeout(
         // The shell has executed but remains blocked on a private stdin pipe.
         // Its durable process identity is committed before this pipe releases
         // the requested project command.
-        let mut command = Command::new("/bin/sh");
+        let mut command = crate::process_spawn::command("/bin/sh");
         command
             .arg("-c")
             .arg("IFS= read -r _ || exit 125; exec 0</dev/null; exec /bin/sh -c \"$1\"")
@@ -1354,7 +1354,7 @@ pub(super) fn run_worker_validation_command(
         // exactly; a login shell could source kernel-home startup files.
         ("/bin/sh", "-c")
     };
-    let mut command = Command::new(shell);
+    let mut command = crate::process_spawn::command(shell);
     command
         .arg(shell_flag)
         .arg(command_text)
