@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {spawnSync} from 'node:child_process';
-import {mkdtemp,writeFile,rm,mkdir} from 'node:fs/promises';
+import {mkdtemp,writeFile,readFile,rm,mkdir} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 
 for (const policy of ['protected', 'positive']) {
- test(`the native App entry preserves a killable ${policy} OOM policy before admission`, {skip:process.platform!=='linux'},async()=>{
+ test(`the native App entry preserves a killable ${policy} OOM policy before admission`, {skip:process.platform!=='linux'},async(t)=>{
+  if(policy==='protected'){
+   const status=await readFile('/proc/self/status','utf8');
+   const effective=BigInt(`0x${/^CapEff:\s*([0-9a-f]+)$/m.exec(status)[1]}`);
+   if((effective & (1n << 24n))===0n){
+    t.skip('privileged drill requires CAP_SYS_RESOURCE; run as capable root (docs/PROCESS_RESOURCES.md)');
+    return;
+   }
+  }
   const parent=path.join(homedir(),'.chariox/dev/app-oom-regression');await mkdir(parent,{recursive:true});
   const scratch=await mkdtemp(path.join(parent,'run-'));
   try{

@@ -122,7 +122,9 @@ Regressions:
 - `spawned_trees_are_killable_when_the_kernel_is_oom_protected` runs an isolated
   kernel test process at -1000 and checks standard, async, owned and PTY children,
   including their children and the resource-domain shell, at zero while the
-  parent remains protected.
+  parent remains protected. It is an ignored privileged drill because setting
+  -1000 requires Linux `CAP_SYS_RESOURCE`; the ordinary workspace suite never
+  attempts that setup.
 - `spawned_trees_preserve_a_positive_oom_policy` checks the same boundaries at
   +350. A root launcher establishes the positive minimum, then drops to nobody
   before the child runs; ordinary users also exercise preservation without
@@ -135,3 +137,18 @@ Regressions:
   even when admission subsequently refuses invalid descriptors. Its positive
   policy case drops privilege and verifies admission is reached without lowering
   the inherited adjustment.
+
+Run the protected-parent drills explicitly as a Linux user with effective
+`CAP_SYS_RESOURCE` (for example, root on the delegated builder):
+
+```sh
+cargo test -p chariox-kernel --lib \
+  process_spawn::tests::spawned_trees_are_killable_when_the_kernel_is_oom_protected \
+  -- --exact --ignored --nocapture
+node --test apps/app-worker/tests/oom-protection.test.mjs
+```
+
+The native protected-parent case reports a plain capability skip when
+`CAP_SYS_RESOURCE` is absent. Its positive-policy case always runs on Linux.
+A root execution of both positive-policy probes drops to nobody after setting
+the inherited minimum, so privilege cannot hide a forbidden decrease.

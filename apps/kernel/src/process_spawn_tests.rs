@@ -48,6 +48,7 @@ fn panicking_pty_does_not_disable_future_spawns() {
 }
 
 #[test]
+#[ignore = "privileged drill requires CAP_SYS_RESOURCE; see docs/PROCESS_RESOURCES.md"]
 fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
     check_inherited_oom_policy(-1000);
 }
@@ -153,6 +154,7 @@ fn check_inherited_oom_policy(inherited: i32) {
             },
             "--nocapture",
             "--test-threads=1",
+            "--include-ignored",
         ])
         .env(ENV, "1");
     let adjustment = format!("{inherited}\n");
