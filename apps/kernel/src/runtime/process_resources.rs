@@ -102,6 +102,10 @@ impl PreparedDomain {
         sampling::ensure_available()?;
         let mut tree = sampling::ProcessTree::new(pid);
         #[cfg(target_os = "linux")]
+        if let Some(group) = &self.cgroup {
+            tree.set_cgroup(group.clone());
+        }
+        #[cfg(target_os = "linux")]
         let cgroup = self.cgroup.clone();
         let state = Arc::new(Mutex::new(Observation::default()));
         let watched = state.clone();

@@ -17,6 +17,8 @@ pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
     ids: BTreeMap<u32, String>,
+    #[cfg(target_os = "linux")]
+    cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
 }
 impl ProcessTree {
     pub fn new(root: u32) -> Self {
@@ -28,12 +30,23 @@ impl ProcessTree {
             .keys()
             .map(|pid| (*pid, format!("process-{:032x}", rand::random::<u128>())))
             .collect();
-        Self { root, owned, ids }
+        Self {
+            root,
+            owned,
+            ids,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_cgroup(&mut self, cgroup: std::sync::Arc<super::cgroup::Domain>) {
+        self.cgroup = Some(cgroup);
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, String> {
         let rows = process_rows()?;
-        self.observe(&rows);
+        self.observe(&rows)?;
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
@@ -51,11 +64,28 @@ impl ProcessTree {
             .collect())
     }
 
-    fn observe(&mut self, rows: &[Row]) {
+    fn observe(&mut self, rows: &[Row]) -> Result<(), String> {
         // A recorded start identity survives exec but never PID recycling.
         self.owned
             .retain(|pid, identity| same_process(*pid, identity));
         self.ids.retain(|pid, _| self.owned.contains_key(pid));
+        #[cfg(target_os = "linux")]
+        if let Some(group) = &self.cgroup {
+            for pid in group
+                .pids()
+                .map_err(|error| format!("owned process cgroup membership unavailable: {error}"))?
+            {
+                if pid > 1 && !self.owned.contains_key(&pid) && group.owns(pid) {
+                    if let Ok((identity, _)) = inspect(pid) {
+                        if group.owns(pid) && same_process(pid, &identity) {
+                            self.owned.insert(pid, identity);
+                            self.ids
+                                .insert(pid, format!("process-{:032x}", rand::random::<u128>()));
+                        }
+                    }
+                }
+            }
+        }
         let mut changed = true;
         while changed {
             changed = false;
@@ -74,6 +104,7 @@ impl ProcessTree {
                 }
             }
         }
+        Ok(())
     }
 
     pub fn stop(
@@ -83,7 +114,7 @@ impl ProcessTree {
         force_domain: impl FnOnce(),
     ) -> Result<Vec<String>, String> {
         let rows = read_process_rows()?;
-        self.observe(&rows);
+        self.observe(&rows)?;
         let target = match process_id {
             None => self.root,
             Some(id) => self

@@ -119,3 +119,47 @@ fn outside_end_uses_issued_ids_and_keeps_an_unrelated_process_alive() {
     assert!(outside);
     assert!(sibling_alive);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn cgroup_observations_include_children_that_detach_between_samples() {
+    use std::io::{BufRead, Write};
+    let prepared = PreparedDomain::with_limit(64 * MIB).unwrap();
+    assert!(prepared.cgroup.is_some(), "cgroup delegation required");
+    let script = "import os,time,sys\nsys.stdin.readline()\np=os.fork()\nif p==0:\n c=os.fork()\n if c==0:\n  os.setsid(); time.sleep(30); os._exit(0)\n print(c,flush=True); os._exit(0)\nos.waitpid(p,0); time.sleep(30)";
+    let (program, args) = prepared.command("python3".into(), vec!["-c".into(), script.into()]);
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let domain = prepared.start(child.id()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while domain.samples().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.stdin.take().unwrap().write_all(b"go\n").unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let detached: u32 = line.trim().parse().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut observed = false;
+    while std::time::Instant::now() < deadline {
+        if domain.samples().iter().any(|row| row.pid == detached) {
+            observed = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(domain);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(
+        observed,
+        "the cgroup-owned detached child was missing from Health observations"
+    );
+}

@@ -37,6 +37,21 @@ impl Domain {
         configured.ok()?;
         Some(group)
     }
+    pub fn pids(&self) -> std::io::Result<Vec<u32>> {
+        Ok(std::fs::read_to_string(self.path.join("cgroup.procs"))?
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .collect())
+    }
+    pub fn owns(&self, pid: u32) -> bool {
+        let expected = self.path.strip_prefix("/sys/fs/cgroup").ok();
+        std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|text| {
+            text.lines().any(|line| {
+                line.strip_prefix("0::")
+                    .is_some_and(|path| Some(Path::new(path)) == expected)
+            })
+        })
+    }
     pub fn path(&self) -> &Path {
         &self.path
     }
