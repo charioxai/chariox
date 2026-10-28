@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn waiting_room_paging_rejects_activity_changes() {
+    run_with_large_test_stack("waiting-room-activity-paging", || {
+        let worktree = crate::test_support::TestWorktree::new("waiting-room-activity-paging");
+        let harness = LocalRouterTestHarness::new();
+        let LocalDaemonResponse::SessionCreated { session, .. } = harness
+            .dispatch(LocalDaemonRequest::CreateSession(
+                worktree.session_request(),
+            ))
+            .unwrap()
+        else {
+            panic!("expected session")
+        };
+        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } = harness
+            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+                GetWaitingRoomPublicSnapshotRequest,
+            ))
+            .unwrap()
+        else {
+            panic!("expected snapshot")
+        };
+        harness.with_app_mut(|app| {
+            app.session_state_projection_store()
+                .note_session_activity(session.id(), session.last_activity_at_ms() + 100);
+        });
+        let LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot: changed } = harness
+            .dispatch(LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+                GetWaitingRoomPublicSnapshotRequest,
+            ))
+            .unwrap()
+        else {
+            panic!("expected snapshot")
+        };
+        assert_eq!(
+            snapshot.structural_version, changed.structural_version,
+            "only ordering activity changed"
+        );
+        let result = harness.dispatch(LocalDaemonRequest::ListWaitingRoomSessions(
+            crate::local::ListWaitingRoomSessionsRequest {
+                cursor: None,
+                limit: Some(1),
+                inventory_version: Some(snapshot.inventory_version),
+            },
+        ));
+        assert!(
+            matches!(result, Err(crate::error::DaemonError::MachineRequest { code, .. }) if code == "waiting_room_inventory_changed")
+        );
+    });
+}
+
+#[test]
 fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
     run_with_large_test_stack("waiting-room-recent-sessions", || {
         let worktree = crate::test_support::TestWorktree::new("waiting-room-recent-sessions");

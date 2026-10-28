@@ -18,7 +18,7 @@ import type {
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
-import type { LocalIpcClient } from "./ipc.js"
+import { LocalIpcError, type LocalIpcClient } from "./ipc.js"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 const maximumTrackedKernelInventories = 64
@@ -42,7 +42,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
   getWaitingRoomState: () => WaitingRoomState
   getInventory: () => Promise<WaitingRoomInventory>
-  getSessionPage?: (cursor: string | null) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
+  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
   setAvailableSessions: (sessions: SessionListEntry[]) => void
@@ -318,23 +318,37 @@ export function createWaitingRoomInventoryRefreshController(
       const initial = inventoriesByKernel.get(kernelId)
       if (!initial || (initial.sessionsTotal ?? initial.sessions.length) <= initial.sessions.length) return
       if (!options.getSessionPage) throw new Error("This client cannot load older sessions. Update Chariox and reopen the session list.")
-      let cursor: string | null = null
-      const seen = new Set<string>()
-      do {
-        const page = await options.getSessionPage(cursor)
-        refreshProjectionScope()
-        const inventory = inventoriesByKernel.get(kernelId)
-        if (generation !== transportGeneration || kernelId !== activeKernelId || inventory?.structuralVersion !== initial.structuralVersion) {
-          throw new Error("The session catalog changed. Reopen the session list to load older sessions.")
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const baseline = inventoriesByKernel.get(kernelId)!
+        let cursor: string | null = null
+        const cursors = new Set<string>()
+        const sessions = new Map<string, WaitingRoomPublicSessionSummary>()
+        try {
+          do {
+            const page = await options.getSessionPage(cursor, baseline.inventoryVersion)
+            refreshProjectionScope()
+            const inventory = inventoriesByKernel.get(kernelId)
+            if (generation !== transportGeneration || kernelId !== activeKernelId) {
+              throw new Error("The kernel connection changed. Reopen the session list.")
+            }
+            if (inventory?.inventoryVersion !== baseline.inventoryVersion) {
+              throw new LocalIpcError("list sessions", "Session activity changed during listing", "waiting_room_inventory_changed")
+            }
+            for (const row of page.sessions) sessions.set(row.id, { ...row, kernel_id: inventory.kernelId, kernel_alias: inventory.kernelAlias ?? null, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null })
+            cursor = page.next_cursor
+            if (cursor !== null && cursors.has(cursor)) throw new Error("The kernel repeated a session page. Reopen the session list.")
+            if (cursor !== null) cursors.add(cursor)
+          } while (cursor !== null)
+          if (baseline.sessionsTotal !== undefined && sessions.size !== baseline.sessionsTotal) throw new Error("The kernel returned an incomplete session list. Reopen the session list.")
+          rememberInventory({ ...baseline, sessions: [...sessions.values()] })
+          options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
+          options.reconcileWaitingRoom(options.getWaitingRoomState())
+          return
+        } catch (error) {
+          if (!(error instanceof LocalIpcError) || error.code !== "waiting_room_inventory_changed" || attempt === 2) throw error
+          await refreshNow()
         }
-        const owned = page.sessions.map(row => ({ ...row, kernel_id: inventory.kernelId, kernel_alias: inventory.kernelAlias ?? null, machine_id: inventory.machineId, machine_alias: inventory.machineAlias ?? null }))
-        rememberInventory({ ...inventory, sessions: [...new Map([...inventory.sessions, ...owned].map(row => [row.id, row])).values()] })
-        options.setAvailableSessions(visibleSessions(inventoriesByKernel, directTargetKernelId))
-        options.reconcileWaitingRoom(options.getWaitingRoomState())
-        cursor = page.next_cursor
-        if (cursor !== null && seen.has(cursor)) throw new Error("The kernel repeated a session page. Reopen the session list.")
-        if (cursor !== null) seen.add(cursor)
-      } while (cursor !== null)
+      }
     },
     applyTransportClosed() {
       transportGeneration += 1
