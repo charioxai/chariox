@@ -487,7 +487,7 @@ export class AppTabs {
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
       document_id: documentId, call_id: call.id,
-      method: call.method, params: call.params ?? {} });
+      method: call.method, params: call.params ?? {}, ...(actor ? { actor } : {}) });
     this.wakeCalls();
   }
 
