@@ -4,12 +4,25 @@
 // Self-contained: installed in the App document before its scripts.
 export function createInputCallers() {
   const entries = new Map();
+  const callers = new WeakMap();
+  // The label is transport metadata. Capture it before App listeners and
+  // expose the actual dispatch time so App debounce/animation clocks stay sane.
+  const label = event => Math.round((performance.timeOrigin + event.timeStamp) / 1000);
+  for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keydown','keypress','keyup','wheel']) {
+    globalThis.addEventListener(type, event => {
+      if (!event.isTrusted) return;
+      for (const [token, entry] of entries) if (entry.timestamp === label(event)) {
+        callers.set(event, token);
+        Object.defineProperty(event, 'timeStamp', { value: performance.now() });
+        break;
+      }
+    }, true);
+  }
   return Object.freeze({
     begin(token, timestamp) { entries.set(token, { timestamp, handlers: new Set() }); },
     token(event) {
-      if (!event?.isTrusted) return undefined;
-      const timestamp = Math.round((performance.timeOrigin + event.timeStamp) / 1000);
-      for (const [token, entry] of entries) if (entry.timestamp === timestamp) return token;
+      const token = event && callers.get(event);
+      if (entries.get(token)?.timestamp != null) return token;
     },
     track(token, promise) {
       const entry = entries.get(token);

@@ -14,7 +14,7 @@ const script = `
   const spec = name => ({name, description:name, effect:'write', inputSchema:{type:'object'}});
   chariox.action(spec('hold'), async (input, caller) => { retained = caller; await caller.call('agent_hold', input); return {done:true}; });
   const clicked = chariox.action(spec('clicked'), async (input, caller) => { await caller.call('clicked'); await caller.call('after_click'); });
-  document.querySelector('#agent').onclick = () => clicked({});
+  document.querySelector('#agent').onclick = event => { window.lastInputTimestamp = event.timeStamp; return clicked({}); };
   chariox.action(spec('compete'), async (input, caller) => { await caller.call('compete'); return {done:true}; });
   chariox.action(spec('throws'), async (input, caller) => { retained = caller; await caller.call('before_throw'); throw new Error('handler refused'); });
   chariox.action(spec('late'), async () => retained.call('late'));
@@ -67,12 +67,14 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh']]) {
       if (input === 'click') await browserClick('#agent','agent-one');
+      else if (input === 'form_click') await browserClick('#save button','agent-one');
       else {
         await browserClick('#save input');
         await browserInput({kind:'key',key:'Enter'},'agent-one');
       }
+      if (input === 'click') assert.equal(await evaluate('lastInputTimestamp <= performance.now()'),true,'input labels must not change App event clocks');
       const firstInput = await nextCall();
       assert.equal(firstInput.method, firstMethod);
       assert.deepEqual(firstInput.actor,{kind:'agent',id:'agent-one'}, 'ordinary browser input must carry the invoking agent');
@@ -84,6 +86,8 @@ test('caller attribution and registered form completion through Chromium', async
       await respond(afterInput);
       for (let i=0;i<100 && [...host.browser.appTabs.apps.values()].some(app=>app.agentRunning);i++) await delay(10);
       observations[input+'Input'] = {agent:firstInput.actor,human:humanInput.actor??null,after:afterInput.actor};
+      const retiredInput = firstInput.call_id.split(':')[1];
+      assert.equal((await evaluate(`__charioxViewAgent.invoke('hold',{},${JSON.stringify(retiredInput)})`)).code,'APP_INVOCATION_EXPIRED');
     }
     const holding = agent('hold');
     const first = await nextCall(); assert.equal(first.method,'agent_hold');

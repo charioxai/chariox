@@ -23,7 +23,7 @@ const connection = {
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { loaderId: 'actor-document' } } };
     if (method === 'Page.addScriptToEvaluateOnNewDocument') bridge = params.source;
     if (method === 'Page.navigate') {
-      context = vm.createContext({ crypto: { randomUUID }, TextEncoder, setTimeout, clearTimeout, resume,
+      context = vm.createContext({ addEventListener() {}, crypto: { randomUUID }, TextEncoder, setTimeout, clearTimeout, resume,
         __charioxAppCall(payload) { listener?.({ method: 'Runtime.bindingCalled', sessionId, params: { name: '__charioxAppCall', payload } }); },
       });
       vm.runInContext(bridge, context);
