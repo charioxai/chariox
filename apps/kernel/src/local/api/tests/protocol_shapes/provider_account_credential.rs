@@ -174,20 +174,17 @@ fn account_copy_recipient_offer_requests_are_admitted() {
         );
         assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
     }
-    for value in [
-        serde_json::json!({"kind":"request_provider_account_copy", "request": {
-            "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
-            "target_kernel_id":"target", "target_key_thumbprint":"b".repeat(64), "replace":false
-        }}),
-    ] {
-        let request =
-            serde_json::from_value::<crate::transport::relay_peer::RelayPeerRequest>(value.clone());
-        assert!(
-            request.is_ok(),
-            "authenticated recipient copy request must be supported"
-        );
-        assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
-    }
+    let value = serde_json::json!({"kind":"request_provider_account_copy", "request": {
+        "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+        "target_kernel_id":"target", "target_key_thumbprint":"b".repeat(64), "replace":false
+    }});
+    let request =
+        serde_json::from_value::<crate::transport::relay_peer::RelayPeerRequest>(value.clone());
+    assert!(
+        request.is_ok(),
+        "authenticated recipient copy request must be supported"
+    );
+    assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
 }
 
 #[test]
