@@ -7,6 +7,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
+mod components;
+
 use super::*;
 use crate::{archive, read_inventory, signing_bytes_for, ErrorCode, Limits, TrustedPublisher};
 
@@ -54,11 +56,18 @@ fn policy() -> PolicyV2 {
             RequiredFeature::Connections,
             RequiredFeature::DirectedEvents,
         ]),
-        vec![SupportedWorld {
-            name: "chariox:app/app".to_owned(),
-            major: 1,
-            minor: 0,
-        }],
+        vec![
+            SupportedWorld {
+                name: "chariox:app/app".to_owned(),
+                major: 1,
+                minor: 0,
+            },
+            SupportedWorld {
+                name: "chariox:app/migration".to_owned(),
+                major: 1,
+                minor: 0,
+            },
+        ],
         vec![TrustedPublisher {
             publisher_id: "com.example".to_owned(),
             key_id: "developer-1".to_owned(),
@@ -80,7 +89,14 @@ fn fixture(shared: &Value) -> Fixture {
             .as_object()
             .unwrap()
             .iter()
-            .map(|(path, text)| (path.clone(), text.as_str().unwrap().as_bytes().to_vec()))
+            .map(|(path, text)| {
+                let text = text.as_str().unwrap();
+                let bytes = match text.strip_prefix("wit:") {
+                    Some(world) => components::build(world, false),
+                    None => text.as_bytes().to_vec(),
+                };
+                (path.clone(), bytes)
+            })
             .collect(),
         reviews: serde_json::from_value(shared["reviews"].clone()).unwrap(),
     }
@@ -553,4 +569,98 @@ fn the_dev_identity_is_a_distinct_principal() {
         SignerPrincipal::of(&verified.manifest().publisher),
         SignerPrincipal::Dev
     );
+}
+
+#[test]
+fn signed_unknown_component_import_is_refused_before_install() {
+    let mut fixture = base();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        components::build(APP_WORLD, true),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("signed forbidden import was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("forbidden"), "{}", error.message);
+    assert!(
+        error.message.contains("runtime/app.wasm"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn signed_migration_world_cannot_be_used_as_the_app_backend() {
+    let mut fixture = base();
+    fixture.manifest.world = MIGRATION_WORLD.into();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        components::build(MIGRATION_WORLD, false),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("signed migration-only App backend was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    for expected in ["runtime/app.wasm", APP_WORLD, MIGRATION_WORLD] {
+        assert!(error.message.contains(expected), "{}", error.message);
+    }
+}
+
+#[test]
+fn signed_migrations_cannot_import_the_app_http_surface() {
+    let mut fixture = base();
+    fixture.files.insert(
+        "migrations/001.wasm".into(),
+        components::build(APP_WORLD, false),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("network-capable migration was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(
+        error.message.contains("migrations/001.wasm"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
+fn signed_malformed_components_are_refused() {
+    let mut fixture = base();
+    fixture.files.insert(
+        fixture.manifest.runtime.component.clone(),
+        b"malformed component".to_vec(),
+    );
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let Err(error) = verify(&bytes, &policy) else {
+        panic!("malformed component was accepted");
+    };
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+}
+
+#[test]
+fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
+    let mut fixture = base();
+    fixture.manifest.world = "chariox:app/app@1.0.1".into();
+    let bytes = packed(&fixture, &[]);
+    let policy = policy();
+    let error = verify(&bytes, &policy).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("1.0.1"));
+    let bytes = packed(&base(), &[]);
+    let mut no_migration = policy;
+    no_migration
+        .worlds
+        .retain(|world| world.name != "chariox:app/migration");
+    let error = verify(&bytes, &no_migration).unwrap_err();
+    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert!(error.message.contains("chariox:app/migration@1.0.0"));
 }
