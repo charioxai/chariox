@@ -107,7 +107,8 @@ try {
     assert.equal(replicas[0].state, 'materialized');
     assert.equal(operation.composition.readiness.target_account_profile, source.accountProfile.profile_id);
     await record('resource-receipts', {requirements: operation.composition.requirements, readiness: operation.composition.readiness, commit: operation.composition.commit, accountTransferred: true, targetNativeSetup: true});
-    target.accountProfile = {profile_id: operation.composition.readiness.target_account_profile};
+    // The Move account belongs to the home owner; the inspection TUI uses the worker's local owner.
+    target.accountProfile = undefined;
     await project(target, approval);
     const workerSession = (await target.tui.send('snapshot')).session.id;
     await restart(target, approval.primary, workerSession);
