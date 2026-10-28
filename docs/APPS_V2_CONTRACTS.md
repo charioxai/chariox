@@ -234,3 +234,10 @@ Human input and registration/change-log reads remain available during the wait.
 
 Forms used only by humans can register without action markup. They do not appear
 in the agent catalog and need no signed action declaration.
+
+Room browser actions carry the kernel-selected agent separately from their
+locator/action data (peer protocol 245). App clicks use the same scoped input
+caller as native browser input. Explicit submit and fill-and-submit bind only
+the synchronous submission of the requested form. Human events remain unscoped.
+Execution receipts include the caller, so retrying an execution under a different
+agent cannot reuse another caller's result.

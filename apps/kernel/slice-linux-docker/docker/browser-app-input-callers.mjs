@@ -24,6 +24,15 @@ export function createInputCallers() {
       const token = event && callers.get(event);
       if (entries.get(token)?.timestamp != null) return token;
     },
+    submit(form, token) {
+      if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
+      // requestSubmit dispatches synchronously on this exact form. A person's
+      // concurrent form or a later event cannot inherit the caller.
+      const capture = event => { callers.set(event, token); };
+      form.addEventListener('submit', capture, true);
+      try { HTMLFormElement.prototype.requestSubmit.call(form); }
+      finally { form.removeEventListener('submit', capture, true); }
+    },
     track(token, promise) {
       const entry = entries.get(token);
       if (entry) entry.handlers.add(promise);

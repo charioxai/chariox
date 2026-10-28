@@ -29,13 +29,21 @@ async function drive(request) {
     const point=await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
     await send({kind:'click',...point},agent);
   };
-  if (params.name === 'human_input') await click('#human');
+  if (params.name.startsWith('room_')) {
+    const selector=params.name==='room_click'?'#agent':'form input';
+    const {root}=await connection.send('DOM.getDocument',{},sessionId);
+    const {nodeId}=await connection.send('DOM.querySelector',{nodeId:root.nodeId,selector},sessionId);
+    const {node}=await connection.send('DOM.describeNode',{nodeId},sessionId);
+    const {frameTree}=await connection.send('Page.getFrameTree',{},sessionId);
+    const action=params.name==='room_click'?{kind:'click'}:params.name==='room_submit'?{kind:'submit'}:{kind:'fill',text:'Edited',append:false,submit:true};
+    await host.browser.performAction({target_id:tab.target_id,document_id:frameTree.frame.loaderId,node_ref:'backend:'+node.backendNodeId,action,agent_id:params.agent,timeout_ms:500});
+  } else if (params.name === 'human_input') await click('#human');
   else if (params.name === 'browser_click') await click('#agent',params.agent);
   else { await click('form input'); await send({kind:'key',key:'Enter'},params.agent); }
   return {id:request.id,ok:true,result:{ok:true}};
 }
 await new BrowserControllerStdioServer({
-  handleRequest: request => request.method === 'browser.app.agent' && ['browser_click','browser_submit','human_input'].includes(request.params.name)
+  handleRequest: request => request.method === 'browser.app.agent' && ['browser_click','browser_submit','human_input','room_click','room_submit','room_fill_submit'].includes(request.params.name)
     ? drive(request) : host.handle(request),
   scheduleRequest: request => scheduleHostRequest(request,host.browser),
 }).run().finally(()=>host.stop());
