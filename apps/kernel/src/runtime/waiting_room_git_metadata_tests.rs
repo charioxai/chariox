@@ -157,7 +157,7 @@ fn review2018_cached_snapshots_retry_initial_timeouts_and_capacity_skips() {
     let events = crate::runtime::metaagent_event::MetaagentEventStore::default();
     let snapshot = || {
         build_waiting_room_public_snapshot_from_cached_shared(
-            &[session.clone()],
+            std::slice::from_ref(&session),
             1,
             &store,
             &events,
