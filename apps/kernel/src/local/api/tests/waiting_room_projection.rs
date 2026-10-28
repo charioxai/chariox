@@ -67,12 +67,14 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
             let worktree =
                 crate::test_support::TestWorktree::new("waiting-room-session-label-test");
             let workspace_root = worktree.path();
-            std::process::Command::new("git")
+            assert!(std::process::Command::new("git")
                 .args(["init", "-b", "main"])
                 .current_dir(workspace_root)
                 .output()
-                .expect("git init should work");
-            std::process::Command::new("git")
+                .expect("git init should work")
+                .status
+                .success());
+            assert!(std::process::Command::new("git")
                 .args([
                     "remote",
                     "add",
@@ -81,7 +83,9 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                 ])
                 .current_dir(workspace_root)
                 .output()
-                .expect("git remote add should work");
+                .expect("git remote add should work")
+                .status
+                .success());
 
             let harness = LocalRouterTestHarness::new();
             let created = match harness
@@ -94,14 +98,29 @@ fn waiting_room_inventory_includes_session_workspace_display_labels() {
                 other => panic!("unexpected response: {other:?}"),
             };
 
-            let snapshot = match harness
-                .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
-                    GetWaitingRoomInventoryRequest,
-                ))
-                .expect("waiting room inventory should succeed")
-            {
-                LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
-                other => panic!("unexpected response: {other:?}"),
+            // Git labels arrive after the initial inventory without a session mutation.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+            let snapshot = loop {
+                let snapshot = match harness
+                    .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+                        GetWaitingRoomInventoryRequest,
+                    ))
+                    .expect("waiting room inventory should succeed")
+                {
+                    LocalDaemonResponse::WaitingRoomInventory { snapshot } => snapshot,
+                    other => panic!("unexpected response: {other:?}"),
+                };
+
+                if snapshot.sessions.iter().any(|candidate| {
+                    candidate.id == created.id() && candidate.workspace_label.is_some()
+                }) {
+                    break snapshot;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "workspace label did not reach the inventory"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
             };
 
             let session = snapshot
