@@ -1015,7 +1015,7 @@ export class KernelBrowserHost {
         // The cached target can still match while a late native window fold
         // changed Chrome's selection. Reconcile checks the live native target
         // before activating, so ordinary keys do not refocus an active tab.
-        if (!agent && !command._agent_input && !command.focused_agent) {
+        if (!agentRequest) {
           this.pendingActive = {tab_id:tab.tab_id,app_origin:origin,apps:intent?.apps ?? [],until:intent?.until ?? Date.now()};
         }
       };
@@ -1127,8 +1127,7 @@ export class KernelBrowserHost {
         if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
         const tab = await this.target(request.params);
         if (tab.document_id !== request.params.document_id) throw new UserDomainRefusal("stale_reference");
-        // MP-08/MP-11: a Vault fill is the agent's input to an App Tab too,
-        // recorded before the field's input/change handlers can run.
+        // Check the App view claim before dispatching the fill.
         const app = this.appForInput(tab, request.params, true);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
