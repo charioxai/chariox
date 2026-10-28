@@ -333,7 +333,7 @@ test("ENV-UX-01 missing Project TUI is a clear empty state",async()=>{
 test("standalone TUI confirms absence then explicitly sets up and opens the returned Project",async()=>{
  const requests:unknown[]=[]
  const environment:any={schema_version:1,local_project_id:"kernel-project",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"d",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
- const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);const r=request as any;if(r.ResolveProject)return{ProjectResolved:{project:r.ResolveProject.create_if_missing?{id:"kernel-project",name:"Source",workspace_id:"/source"}:null}};return{ProjectEnvironment:{environment}}},render(){},pageSize:()=>100, textWidth: () => 72,kernelKey:()=>"kernel"})
+ const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);const r=request as any;if(r.ResolveProject)return{ProjectResolved:{project:r.ResolveProject.create_if_missing?{id:"kernel-project",name:"Source",workspace_id:"/source"}:null}};return environmentReadResponse(environment)},render(){},pageSize:()=>100, textWidth: () => 72,kernelKey:()=>"kernel"})
  await controller.open(null,"/source")
  assert(controller.visibleLines().includes("An Environment lists what this project needs on this machine."), "empty Set up keeps its explanation")
  assert(controller.visibleLines().includes("s · Set up Environment for this folder"))
@@ -352,7 +352,7 @@ test("standalone TUI does not create after a kernel selection change",async()=>{
 
 // MP-08 / MP-10 / MP-11: the explanation wraps to the panel width and every wrapped row stays reachable.
 test("ENV-UX-02 TUI explanation wraps to the panel width without losing text", async () => {
-  const controller = createProjectEnvironmentReadController({ send: async () => ({ProjectEnvironment:{environment:{schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}}}}), render() {}, pageSize: () => 100, textWidth: () => 30 })
+  const controller = createProjectEnvironmentReadController({ send: async () => (environmentReadResponse({schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}})), render() {}, pageSize: () => 100, textWidth: () => 30 })
   await controller.open("project")
   const rows = controller.visibleLines()
   assert(rows.every(row => row.length <= 30), rows.filter(row => row.length > 30).join("|"))
@@ -372,7 +372,7 @@ test("ENV-UX-02 TUI scrolls wrapped rows, not source lines", async () => {
 // MP-08 / MP-10 / MP-11: section navigation uses the rendered row after wrapping.
 test("wrapped Environment navigation still lands on the Project-wide section", async () => {
   const environment: any = {schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}}
-  const controller = createProjectEnvironmentReadController({send:async()=>({ProjectEnvironment:{environment}}),render(){},pageSize:()=>3,textWidth:()=>30})
+  const controller = createProjectEnvironmentReadController({send:async()=>(environmentReadResponse(environment)),render(){},pageSize:()=>3,textWidth:()=>30})
   await controller.open("project")
   controller.handleKey({name:"right"})
   assert.equal(controller.visibleLines()[0], "Project-wide")
