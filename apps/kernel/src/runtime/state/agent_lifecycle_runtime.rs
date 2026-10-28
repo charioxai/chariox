@@ -829,6 +829,21 @@ impl KernelRuntimeState {
         } else {
             text
         };
+        let (text, hidden_system_context) = match workflow.as_ref() {
+            Some((run, node)) => {
+                let session = self.owned.session_store.get_session(&task.room_id)?;
+                let refresh = |text: &str| {
+                    crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                        &session, run, node, text,
+                    )
+                };
+                (
+                    refresh(&text),
+                    hidden_system_context.map(|context| refresh(&context)),
+                )
+            }
+            None => (text, hidden_system_context),
+        };
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
             workflow_attachment.as_deref().unwrap_or(&attachment),

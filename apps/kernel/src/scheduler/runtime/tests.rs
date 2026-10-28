@@ -1172,6 +1172,15 @@ fn workflow_node_prompt_lists_public_multi_edge_routing_contracts() {
     );
     assert_eq!(recovered, format!("{outside_contract}{prompt}"));
     assert_eq!(cached, format!("{outside_contract}{legacy}"));
+    assert_eq!(
+        crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+            &snapshot,
+            workflow_run.id(),
+            &node_run_id,
+            &format!("{cached}\n{cached}"),
+        ),
+        format!("{recovered}\n{recovered}"),
+    );
     if let Some(previous_chariox_home) = previous_chariox_home {
         std::env::set_var("CHARIOX_HOME", previous_chariox_home);
     } else {

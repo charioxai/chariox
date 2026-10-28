@@ -758,39 +758,45 @@ pub(crate) fn refresh_recovered_workflow_prompt(
     else {
         return prompt.to_string();
     };
-    let Some((prefix, rest)) = prompt.split_once("<outgoing-edge-contracts>") else {
-        return prompt.to_string();
-    };
-    let Some((contracts, suffix)) = rest.split_once("</outgoing-edge-contracts>") else {
-        return prompt.to_string();
-    };
-    let mut contracts = contracts.to_string();
-    for edge in workflow
-        .edges()
-        .iter()
-        .filter(|edge| edge.from_node_id() == node.node_id())
-    {
-        let old = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
-        let current = format!(
-            "- edge_id: \"{}\", to_node_id: \"{}\"",
-            edge.id(),
-            edge.to_node_id()
-        );
-        contracts = contracts
-            .split_inclusive('\n')
-            .map(|line| match line.strip_prefix(&old) {
-                Some(tail)
-                    if tail.trim().is_empty()
-                        || tail.starts_with(" (")
-                        || tail.starts_with(", ") =>
-                {
-                    format!("{current}{tail}")
-                }
-                _ => line.to_string(),
-            })
-            .collect();
+    let mut remaining = prompt;
+    let mut refreshed = String::new();
+    while let Some((prefix, rest)) = remaining.split_once("<outgoing-edge-contracts>") {
+        let Some((contracts, suffix)) = rest.split_once("</outgoing-edge-contracts>") else {
+            break;
+        };
+        let mut contracts = contracts.to_string();
+        for edge in workflow
+            .edges()
+            .iter()
+            .filter(|edge| edge.from_node_id() == node.node_id())
+        {
+            let old = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
+            let current = format!(
+                "- edge_id: \"{}\", to_node_id: \"{}\"",
+                edge.id(),
+                edge.to_node_id()
+            );
+            contracts = contracts
+                .split_inclusive('\n')
+                .map(|line| match line.strip_prefix(&old) {
+                    Some(tail)
+                        if tail.trim().is_empty()
+                            || tail.starts_with(" (")
+                            || tail.starts_with(", ") =>
+                    {
+                        format!("{current}{tail}")
+                    }
+                    _ => line.to_string(),
+                })
+                .collect();
+        }
+        refreshed.push_str(&format!(
+            "{prefix}<outgoing-edge-contracts>{contracts}</outgoing-edge-contracts>"
+        ));
+        remaining = suffix;
     }
-    format!("{prefix}<outgoing-edge-contracts>{contracts}</outgoing-edge-contracts>{suffix}")
+    refreshed.push_str(remaining);
+    refreshed
 }
 
 pub(crate) fn workflow_outgoing_edge_contract_line(
