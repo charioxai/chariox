@@ -14,7 +14,8 @@ function control(attrs, ownerForm) {
     click() { this.checked = this.type === 'radio' ? true : !this.checked; events.push('click'); } };
 }
 function form(name, attributes, controls) {
-  const node = { elements: [], submitted: 0, valid: true,
+  const node = { tagName: 'FORM', elements: [], submitted: 0, valid: true,
+    addEventListener(type, listener) { this[type] = listener; },
     getAttribute: key => attributes[key] ?? null,
     checkValidity() { return this.elements.every(c => c.checkValidity()); },
     requestSubmit() { this.submitted++; } };
@@ -25,11 +26,11 @@ function form(name, attributes, controls) {
 // them is recorded in `native`, a plain assignment is not.
 const nativeSetter = () => ({ prototype: Object.defineProperty({}, 'value', {
   set(value) { this.native = [...(this.native ?? []), value]; this.value = value; } }) });
-function page(forms = []) {
+function page(forms = [], request = () => Promise.resolve(null)) {
   const context = { document: { querySelectorAll: () => forms }, TextEncoder, Event: class { constructor(type) { this.type = type; } },
     HTMLInputElement: nativeSetter(), HTMLSelectElement: nativeSetter(), HTMLTextAreaElement: nativeSetter(),
-    setTimeout, clearTimeout };
-  const api = vm.runInNewContext(`(${createViewActions.toString()})()`, context);
+    setTimeout, clearTimeout, request };
+  const api = vm.runInNewContext(`(${createViewActions.toString()})(request)`, context);
   return { api, forms };
 }
 const closed = { type: 'object', additionalProperties: false };
@@ -121,6 +122,7 @@ test('a form is an action whose schema comes from its simple controls', async ()
     { tagName: 'INPUT', type: 'submit', name: 'go' },
   ]);
   const { api } = page([rename]);
+  api.form(rename, async () => { rename.submitted++; });
   assert.deepEqual(JSON.parse(JSON.stringify(api.agent.registrations())), [{
     name: 'rename_list', description: 'Rename the list', effect: 'write',
     inputSchema: { type: 'object', additionalProperties: false, required: ['title'], properties: {
@@ -155,6 +157,7 @@ test('a form refuses what it cannot take and approval markup carries its reason'
     { tagName: 'INPUT', type: 'password', name: 'pw' },
   ]);
   const { api } = page([strict]);
+  api.form(strict, async () => { strict.submitted++; });
   assert.equal(api.agent.registrations()[0].approvalReason, 'Deletes all');
   for (const params of [{ nope: 'x' }, { title: 5 }, { pw: 5 }]) assert.equal((await api.agent.invoke('wipe', params)).code, 'invalid_params');
   assert.equal((await api.agent.invoke('wipe', {})).code, 'invalid_form');
@@ -162,4 +165,66 @@ test('a form refuses what it cannot take and approval markup carries its reason'
   assert.equal((await api.agent.invoke('wipe', { title: 'x', pw: 'secret' })).ok, true, 'an agent may enter a password it knows');
   assert.equal(strict.elements[1].value, 'secret');
   assert.equal(strict.submitted, 1);
+});
+
+
+test('human and agent handlers receive separate callers that retire on settlement', async () => {
+  const calls = [];
+  const { api } = page([], async (method, input, token) => { calls.push({ method, input, token }); return method; });
+  let retained;
+  const run = api.action(addTodo, async (input, caller) => { retained = caller; return caller.call('save', input); });
+  assert.equal(await run({ text: 'human' }), 'save');
+  assert.equal(calls[0].token, undefined);
+  await assert.rejects(retained.call('late'), { code: 'APP_INVOCATION_EXPIRED' });
+  assert.equal((await api.agent.invoke('add_todo', { text: 'agent' }, 'opaque')).value, 'save');
+  assert.equal(calls[1].token, 'opaque');
+  await assert.rejects(retained.call('late'), { code: 'APP_INVOCATION_EXPIRED' });
+});
+
+test('registered forms await both calls, preserve the caller, and handle human submission', async () => {
+  const node = form('save', { 'data-chariox-action': 'save', 'data-chariox-effect': 'write' }, [
+    { tagName: 'INPUT', type: 'text', name: 'title', value: 'Draft' },
+  ]);
+  let release, caller;
+  const calls = [];
+  const { api } = page([node], async (method, input, token) => {
+    calls.push({ method, input, token });
+    if (method === 'save') await new Promise(resolve => { release = resolve; });
+  });
+  assert.equal((await api.agent.invoke('save', {})).code, 'form_unregistered');
+  api.form(node, async (input, scoped) => { caller = scoped; await scoped.call('save', input); await scoped.call('refresh'); });
+  let finished = false;
+  const running = api.agent.invoke('save', {}, 'agent-token').then(value => { finished = true; return value; });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(finished, false);
+  release();
+  assert.equal((await running).ok, true);
+  assert.deepEqual(calls.map(call => call.token), ['agent-token', 'agent-token']);
+  assert.equal(calls[0].input.title, 'Draft');
+  await assert.rejects(caller.call('late'), { code: 'APP_INVOCATION_EXPIRED' });
+  release = null;
+  const human = node.submit({ preventDefault() {} });
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  release(); await human;
+  assert.equal(calls[2].token, undefined);
+  assert.equal(calls[3].token, undefined);
+});
+
+test('throwing handlers retire their callers and preserve definitive errors', async () => {
+  const { api } = page();
+  let caller;
+  api.action(addTodo, async (_input, scoped) => { caller = scoped; throw new Error('save refused'); });
+  assert.equal((await api.agent.invoke('add_todo', {}, 'token')).code, 'action_failed');
+  await assert.rejects(caller.call('late'), { code: 'APP_INVOCATION_EXPIRED' });
+});
+
+
+test('a human-only form registers without an agent declaration', async () => {
+  const node = form('human', {}, [{ tagName: 'INPUT', type: 'text', name: 'title', value: 'Draft' }]);
+  const { api } = page([]);
+  let received;
+  api.form(node, async (input, caller) => { received = input.title; await caller.call('save', input); });
+  await node.submit({ preventDefault() {} });
+  assert.equal(received, 'Draft');
+  assert.equal(api.agent.registrations().length, 0);
 });
