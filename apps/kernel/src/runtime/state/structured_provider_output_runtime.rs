@@ -640,9 +640,7 @@ impl KernelRuntimeState {
             });
         // Every client renders this one entry: the cause, the harness's own
         // words and what to do next.
-        let failure_notice = failure
-            .as_ref()
-            .map(crate::provider::TurnOutcome::notice);
+        let failure_notice = failure.as_ref().map(crate::provider::TurnOutcome::notice);
         project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
         recorded_notice_messages.extend(terminal_failure.iter().cloned());

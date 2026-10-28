@@ -108,7 +108,9 @@ impl TurnOutcome {
         match status {
             Status::Completed => Self::completed(),
             Status::Cancelled => Self::cancelled(),
-            Status::Failed => failure.unwrap_or_else(|| Self::of(TurnOutcomeKind::Other, false, "")),
+            Status::Failed => {
+                failure.unwrap_or_else(|| Self::of(TurnOutcomeKind::Other, false, ""))
+            }
         }
     }
 
@@ -165,11 +167,7 @@ impl TurnOutcome {
     /// the harness's own words and what to do next.
     pub fn notice(&self) -> String {
         const MAX_MESSAGE_CHARS: usize = 400;
-        let message = self
-            .reason
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let message = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
         let message = if message.chars().count() > MAX_MESSAGE_CHARS {
             format!(
                 "{}...",
@@ -238,10 +236,7 @@ impl TurnOutcome {
         {
             (TurnOutcomeKind::SignInRequired, false)
         } else if super::prompt_signals::text_reports_resource_limit(message) {
-            (
-                TurnOutcomeKind::UsageLimit,
-                rate_limit_clears(&normalized),
-            )
+            (TurnOutcomeKind::UsageLimit, rate_limit_clears(&normalized))
         } else if has(&[
             "exited before",
             "exited unexpectedly",
