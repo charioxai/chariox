@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { releaseVersion } from "./release-build.js"
 
-const commands = new Set(["create", "keygen", "manifest", "validate", "pack", "inspect"])
-const protocolCommands = new Set(["create", "manifest", "validate", "pack"])
+const commands = new Set(["create", "keygen", "manifest", "validate", "pack", "dev-pack", "inspect"])
+const protocolCommands = new Set(["create", "manifest", "validate", "pack", "dev-pack"])
 const maxOutputBytes = 2 * 1024 * 1024
 
 export type AppDeveloperDeps = {
@@ -67,12 +67,12 @@ export type PackedAppPackage = { appId: string, version: string, packageDigest: 
  * The helper verifies the archive with the installer's verifier before writing it.
  */
 export async function packAppPackage(
-  options: { bundle: string, manifest: string, key: string, output: string },
+  options: { bundle: string, manifest: string, key?: string, output: string },
   deps: Omit<AppDeveloperDeps, "write"> = defaultAppDeveloperDeps(),
 ): Promise<PackedAppPackage> {
   let printed = ""
   await runAppDeveloperCommand(
-    ["pack", "--bundle", options.bundle, "--manifest", options.manifest, "--key", options.key, "--output", options.output],
+    [options.key ? "pack" : "dev-pack", "--bundle", options.bundle, "--manifest", options.manifest, ...(options.key ? ["--key", options.key] : []), "--output", options.output],
     { ...deps, write: (text) => { printed += text } },
   )
   const result = JSON.parse(printed) as { manifest?: { appId?: unknown, version?: unknown }, packageDigest?: unknown }

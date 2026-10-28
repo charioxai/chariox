@@ -32,6 +32,8 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
         },
         LocalDaemonResponse::AppInstallation {
             installation: AppInstallationSummary {
+                channel: chariox_app_runtime::installation::channel::InstallationChannel::Release,
+                dev_room_id: None,
                 installation_id: "todo".into(),
                 app_id: "com.chariox.todo".into(),
                 generation: "9223372036854775807".into(),
@@ -75,7 +77,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&encoded)),
-        "49ca2c2378eddcfc193c7397ef4920ee8844f8cf4d7f20d04687190752116471"
+        "6515133774bc4cd6f5a943abefef81a966a44a0d7d082e6c0d2aa0d6ca912991"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ListAppInstallations": {"owner_id": "other"}})
@@ -474,6 +476,7 @@ fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
         crate::test_support::expected_local_protocol_version()
     );
     let request = LocalDaemonRequest::BeginAppUpdate(BeginAppUpdateRequest {
+        source: Default::default(),
         session_id: "session-1".into(),
         request_id: "update-1".into(),
         installation_id: "todo".into(),
@@ -489,7 +492,7 @@ fn app_update_shape_is_versioned_fenced_and_names_no_owner() {
     let digest = format!("{:x}", Sha256::digest(&encoded));
     assert_eq!(
         digest,
-        "413ddaba55fa0d7ed72db9ffa2e4186cef09cbc6a1127521372b6fdf76172efb"
+        "140b5caae4f7356afc0d5aa8333840a4b1e4bcf9080344e80f85f495ea0d9197"
     );
     assert!(
         serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({

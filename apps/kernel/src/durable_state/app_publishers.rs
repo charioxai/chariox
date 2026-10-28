@@ -13,9 +13,7 @@ use chariox_app_runtime::publisher_trust::{
 };
 use rusqlite::Connection;
 
-use super::DurableKernelStateStore;
-#[cfg(test)]
-use super::DurableWriterRequest;
+use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use crate::runtime::app_operation_budget::AppOperationBudget;
 
@@ -30,6 +28,9 @@ pub(crate) enum AppPublisherError {
 /// Kernel-only, never deserialized from App code or treated as human approval.
 #[derive(Debug, Clone)]
 pub(crate) enum AppPublisherMutation {
+    BindDevIdentity {
+        public_key: [u8; 32],
+    },
     #[allow(
         dead_code,
         reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
@@ -84,7 +85,6 @@ impl DurableKernelStateStore {
 
     /// The retained operation supplies its original cancellation and deadline.
     /// Writer queueing cannot extend that admission or invent a new decision.
-    #[cfg(test)]
     pub(crate) fn mutate_app_publisher_with_budget(
         &self,
         trusted_owner: &str,
@@ -167,6 +167,9 @@ pub(super) fn execute(connection: &mut Connection, request: AppPublisherRequest)
     let mut registry = PublisherTrustRegistry::new(connection);
     let check = || budget.check().map_err(|_| PublisherTrustError::Stopped);
     let result = match mutation {
+        AppPublisherMutation::BindDevIdentity { public_key } => {
+            check().and_then(|_| registry.bind_dev_identity(&owner_id, public_key))
+        }
         AppPublisherMutation::Enroll {
             publisher,
             expected_revision,

@@ -102,6 +102,11 @@ impl AppInstallControl {
             }
             _ => None,
         };
+        let source = match request {
+            LocalDaemonRequest::BeginAppInstall(value) => value.source,
+            LocalDaemonRequest::BeginAppUpdate(value) => value.source,
+            _ => Default::default(),
+        };
         let begin = match begin {
             Some((session, upload, digest, update)) => {
                 if !identity(session) || upload.len() != 71 || digest.len() != 71 {
@@ -112,6 +117,8 @@ impl AppInstallControl {
                 }
                 Some((
                     InstallInput {
+                        source,
+                        expected_upload_digest: (source == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush).then(|| digest.clone()),
                         session_id: session.clone(),
                         upload_handle: upload.clone(),
                         update,
@@ -238,6 +245,8 @@ impl AppInstallControl {
     ) -> Result<InstallOperation, InstallOperationError> {
         let store = self.0.shared.store.clone();
         let input = InstallInput {
+            source: Default::default(),
+            expected_upload_digest: None,
             session_id: session_id.into(),
             upload_handle: String::new(),
             update,

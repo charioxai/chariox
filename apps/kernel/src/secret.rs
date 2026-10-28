@@ -517,6 +517,54 @@ impl RuntimeSecretService {
             .map(|value| value.map(Zeroizing::new))
     }
 
+    /// Internal signing only. Neither the key nor a Vault handle is returned to a client.
+    pub(crate) fn app_dev_signing_key(
+        &self,
+        kernel_id: &str,
+    ) -> Result<ed25519_dalek::SigningKey, DaemonError> {
+        static CREATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = CREATE.lock().map_err(|_| {
+            secret_error("app_dev_identity", "Dev identity lock unavailable".into())
+        })?;
+        let service = self.vault_service_name()?;
+        use sha2::Digest as _;
+        let name = format!(
+            "app-dev-signing-key-{:x}",
+            sha2::Sha256::digest(kernel_id.as_bytes())
+        );
+        use base64::Engine as _;
+        let value = match self.vault_store.find_secret(service, &name)? {
+            Some(value) => zeroize::Zeroizing::new(value),
+            None => {
+                use rand::RngCore as _;
+                let mut bytes = zeroize::Zeroizing::new([0u8; 32]);
+                rand::rngs::OsRng.fill_bytes(bytes.as_mut());
+                let value = zeroize::Zeroizing::new(
+                    base64::engine::general_purpose::STANDARD.encode(bytes.as_ref()),
+                );
+                self.vault_store.set_secret(service, &name, &value)?;
+                value
+            }
+        };
+        let bytes = zeroize::Zeroizing::new(
+            base64::engine::general_purpose::STANDARD
+                .decode(value.as_bytes())
+                .map_err(|_| {
+                    secret_error(
+                        "app_dev_identity",
+                        "Stored dev identity is invalid; restore the kernel Vault".into(),
+                    )
+                })?,
+        );
+        let key: &[u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            secret_error(
+                "app_dev_identity",
+                "Stored dev identity is invalid; restore the kernel Vault".into(),
+            )
+        })?;
+        Ok(ed25519_dalek::SigningKey::from_bytes(key))
+    }
+
     pub fn set_vault_secret(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         validate_vault_key(key)?;
         if value.is_empty() {

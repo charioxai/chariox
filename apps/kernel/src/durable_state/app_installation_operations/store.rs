@@ -70,6 +70,11 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
         }
         _ => connection.execute_batch(schema)?,
     }
+    let has_input: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installation_operations') WHERE name='input_json')", [], |r| r.get(0))?;
+    if !has_input {
+        connection
+            .execute_batch("ALTER TABLE app_installation_operations ADD COLUMN input_json TEXT;")?;
+    }
     // Protocol 367: deployment copy installs.
     let deployments: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installation_operations')
@@ -166,6 +171,8 @@ pub(super) fn load(
                 u64::try_from(generation).map_err(|_| InstallOperationError::Storage)?;
             let input = match (session, upload) {
                 (Some(session_id), Some(upload_handle)) => Some(InstallInput {
+                    source: Default::default(),
+                    expected_upload_digest: None,
                     session_id,
                     upload_handle,
                     update: (base_generation > 0).then(|| UpdateTarget {
@@ -182,6 +189,8 @@ pub(super) fn load(
                 (None, None) => None,
                 _ => return Err(InstallOperationError::Storage),
             };
+            let recorded_input: Option<String> = sql(connection.query_row("SELECT input_json FROM app_installation_operations WHERE owner_id=?1 AND request_id=?2", params![owner,request], |r| r.get(0)))?;
+            let input = match recorded_input { Some(json) => Some(serde_json::from_str(&json).map_err(|_| InstallOperationError::Storage)?), None => input };
             let review = review
                 .map(|json| serde_json::from_str(&json).map_err(|_| InstallOperationError::Storage))
                 .transpose()?;

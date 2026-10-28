@@ -60,6 +60,8 @@ fn budget() -> AppOperationBudget {
 }
 fn input() -> InstallInput {
     InstallInput {
+        source: Default::default(),
+        expected_upload_digest: None,
         session_id: "session".into(),
         upload_handle: format!("upload_{}", "a".repeat(64)),
         update: None,
@@ -686,6 +688,8 @@ mod deployment_consent {
                 "alice",
                 request,
                 InstallInput {
+                    source: Default::default(),
+                    expected_upload_digest: None,
                     session_id: "session".into(),
                     upload_handle: String::new(),
                     update: None,
@@ -877,6 +881,8 @@ mod deployment_consent {
                 "alice",
                 request,
                 InstallInput {
+                    source: Default::default(),
+                    expected_upload_digest: None,
                     session_id: "session".into(),
                     upload_handle: String::new(),
                     update: Some(UpdateTarget {
@@ -928,4 +934,106 @@ fn a_deployment_copy_prompt_names_its_deployment() {
     );
     f.stage("own-install");
     assert_eq!(f.arm("own-install", "nonce-own").deployment_id(), None);
+}
+
+// MP-11: registration cannot claim the existing release's identity or data.
+#[test]
+fn local_registration_rejects_a_different_publisher_before_asking_for_capabilities() {
+    use crate::durable_state::app_publishers::AppPublisherMutation;
+    use chariox_app_package::{pack, Limits, TrustedPublisher};
+    use chariox_app_runtime::{
+        installation::channel::AcquisitionSource, publisher_trust::TrustDecision,
+    };
+    use ed25519_dalek::SigningKey;
+    let f = Fixture::new();
+    let before = f.store.get_app_installation("alice", "installed").unwrap();
+    let (bytes, publisher) = fixture_event_package();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let mut manifest = verified.manifest().clone();
+    manifest.publisher.id = "org.other".into();
+    manifest.publisher.key_id = "other-key".into();
+    let key = SigningKey::from_bytes(&[44; 32]);
+    let publisher = TrustedPublisher {
+        publisher_id: manifest.publisher.id.clone(),
+        key_id: manifest.publisher.key_id.clone(),
+        public_key: key.verifying_key(),
+    };
+    f.store
+        .mutate_app_publisher(
+            "alice",
+            AppPublisherMutation::Enroll {
+                publisher: publisher.clone(),
+                expected_revision: 0,
+                decision: TrustDecision {
+                    decision_id: "other".into(),
+                    authority_ref: "kernel-test".into(),
+                },
+                now_ms: 1,
+            },
+        )
+        .unwrap();
+    let files = verified
+        .files()
+        .map(|(name, bytes)| (name.to_owned(), bytes.to_vec()))
+        .collect();
+    let bytes = pack(&manifest, &files, &key, &Limits::default()).unwrap();
+    let verified = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    let trust = f
+        .store
+        .trusted_app_publisher("alice", "org.other", "other-key")
+        .unwrap();
+    let candidate = VerifiedInstallCandidate::from_verified(&verified, &trust).unwrap();
+    let mut input = input();
+    input.source = AcquisitionSource::Register;
+    f.store
+        .reserve_app_install(
+            "alice",
+            "register-other",
+            input,
+            &candidate.release_metadata().package_digest,
+            budget(),
+        )
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .complete_app_install_preparation("alice", "register-other", candidate, budget()),
+        Err(InstallOperationError::PublisherConflict)
+    ));
+    assert_eq!(
+        f.store.get_app_installation("alice", "installed").unwrap(),
+        before
+    );
+}
+
+#[test]
+fn registering_different_bytes_at_the_active_release_version_requires_a_new_version() {
+    let f = Fixture::new();
+    let before = f.store.get_app_installation("alice", "installed").unwrap();
+    let candidate = release("1.0.0", 0, true, &f.store);
+    f.store
+        .reserve_app_install(
+            "alice",
+            "same-version",
+            update_input(1),
+            &candidate.release_metadata().package_digest,
+            budget(),
+        )
+        .unwrap();
+    assert!(matches!(
+        f.store
+            .complete_app_install_preparation("alice", "same-version", candidate, budget()),
+        Err(InstallOperationError::ImmutableVersion)
+    ));
+    assert_eq!(
+        f.store.get_app_installation("alice", "installed").unwrap(),
+        before
+    );
 }

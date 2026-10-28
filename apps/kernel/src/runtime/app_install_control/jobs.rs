@@ -43,6 +43,12 @@ fn error(error: InstallOperationError) -> Error {
         InstallOperationError::Stale => Error::Failed("app_install_authority_changed"),
         InstallOperationError::Limit => Error::Failed("app_install_limit"),
         InstallOperationError::NotFound => Error::Failed("app_install_not_found"),
+        InstallOperationError::PublisherConflict => {
+            Error::Failed("app_register_publisher_conflict")
+        }
+        InstallOperationError::ImmutableVersion => {
+            Error::Failed("app_register_new_version_required")
+        }
         InstallOperationError::SchemaDowngrade => Error::Failed("app_update_schema_downgrade"),
         _ => Error::Failed("app_install_conflict"),
     }
@@ -50,6 +56,7 @@ fn error(error: InstallOperationError) -> Error {
 fn preparation(error: PreparationError) -> Error {
     match error {
         PreparationError::Busy => Error::Busy,
+        PreparationError::DevVaultUnavailable => Error::Failed("app_dev_unlock_kernel_vault"),
         PreparationError::PublisherNotEnrolled => {
             Error::Failed("app_install_publisher_not_enrolled")
         }
@@ -160,7 +167,9 @@ pub(super) async fn run(
                 } else {
                     shared
                         .preparation
-                        .prepare(key.0.clone(), upload_handle.clone(), preparing)
+                        .prepare(key.0.clone(), upload_handle.clone(), preparing, if input.source == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush {
+                            crate::runtime::app_package_preparation::PreparationSource::Dev {expected_upload_digest: operation.package_digest.clone()}
+                        } else { crate::runtime::app_package_preparation::PreparationSource::Publisher })
                         .await
                 }
                 .map_err(preparation)?;

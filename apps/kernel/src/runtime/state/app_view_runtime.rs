@@ -96,7 +96,15 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.clone(), installation.to_owned());
+        let room = session_id.to_owned();
         let view = tokio::task::spawn_blocking(move || {
+            if !store
+                .get_app_installation(&view_owner, &view_installation)
+                .map_err(|_| crate::durable_state::app_view_assets::AppViewAssetsError::NotFound)?
+                .visible_in_room(Some(&room))
+            {
+                return Err(crate::durable_state::app_view_assets::AppViewAssetsError::NotFound);
+            }
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await

@@ -91,7 +91,23 @@ pub(crate) struct AppControlService {
 }
 
 impl AppControlService {
+    #[cfg(test)]
     pub(crate) fn new(store: DurableKernelStateStore) -> Self {
+        let kernel_id = format!("test-{}", store.path().display());
+        Self::with_vault_config(
+            store,
+            crate::config::UserCredentialVaultConfig {
+                backend: crate::config::CredentialVaultBackend::ProcessMemory,
+                ..Default::default()
+            },
+            kernel_id,
+        )
+    }
+    pub(crate) fn with_vault_config(
+        store: DurableKernelStateStore,
+        vault_config: crate::config::UserCredentialVaultConfig,
+        kernel_id: String,
+    ) -> Self {
         let uploads = super::app_package_upload_control::AppPackageUploadControl::new(
             store.path().to_path_buf(),
         );
@@ -112,6 +128,8 @@ impl AppControlService {
         let preparation = super::app_package_preparation::AppPackagePreparation::new(
             store.clone(),
             uploads.clone(),
+            vault_config,
+            kernel_id,
         );
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let installs = super::app_install_control::AppInstallControl::new(

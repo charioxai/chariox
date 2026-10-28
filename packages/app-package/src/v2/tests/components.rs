@@ -3,7 +3,7 @@ use std::path::Path;
 use wit_component::{dummy_module, embed_component_metadata, ComponentEncoder, StringEncoding};
 use wit_parser::{LiftLowerAbi, ManglingAndAbi, Resolve};
 
-pub(super) fn build(world: &str, forbidden_import: bool) -> Vec<u8> {
+pub(crate) fn build(world: &str, forbidden_import: bool) -> Vec<u8> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-wit");
     let mut resolve = Resolve::default();
     let (package, _) = resolve.push_dir(root.join("wit")).unwrap();

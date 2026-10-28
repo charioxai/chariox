@@ -21,6 +21,11 @@ use crate::durable_state::{app_publishers::AppPublisherError, DurableKernelState
 const MAX_STAGE_BYTES: u64 = 512 * 1024 * 1024;
 const HOST_RESERVE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
+pub(crate) enum PreparationSource {
+    Publisher,
+    Dev { expected_upload_digest: String },
+}
+
 /// Safe classifications, not raw I/O messages or paths. PublicationInterrupted
 /// means retrying the same upload is safe: publication may already be visible,
 /// and ReleaseStore revalidates/seals/syncs it before acknowledging reuse.
@@ -34,6 +39,7 @@ pub(crate) enum PreparationError {
     Busy,
     LimitExceeded,
     PublisherNotEnrolled,
+    DevVaultUnavailable,
     PublisherRevoked,
     PackageRejected(ErrorCode),
     InsufficientStorage,
@@ -93,6 +99,8 @@ pub(crate) struct AppPackagePreparation {
     // single verification/publication bounds archive allocations and prevents
     // this service's own concurrent staging from overspending its reservation.
     preparation: Arc<Semaphore>,
+    vault_config: crate::config::UserCredentialVaultConfig,
+    kernel_id: String,
 }
 
 impl AppPackagePreparation {
@@ -105,11 +113,18 @@ impl AppPackagePreparation {
 
     /// Reuse the AppControl upload service, not a second open of its live store.
     /// Construct once per kernel and clone. Constructor performs no I/O.
-    pub(crate) fn new(store: DurableKernelStateStore, uploads: AppPackageUploadControl) -> Self {
+    pub(crate) fn new(
+        store: DurableKernelStateStore,
+        uploads: AppPackageUploadControl,
+        vault_config: crate::config::UserCredentialVaultConfig,
+        kernel_id: String,
+    ) -> Self {
         Self {
             store,
             uploads,
             preparation: Arc::new(Semaphore::new(1)),
+            vault_config,
+            kernel_id,
         }
     }
 
@@ -120,6 +135,7 @@ impl AppPackagePreparation {
         trusted_owner: String,
         upload_handle: String,
         admission: OwnedSemaphorePermit,
+        source: PreparationSource,
     ) -> Result<PreparedAppPackage> {
         let service = self.clone();
         admitted_blocking(Arc::clone(&self.preparation), admission, move || {
@@ -128,6 +144,7 @@ impl AppPackagePreparation {
                 &upload_handle,
                 crate::session::unix_epoch_ms(),
                 |_| Ok(()),
+                source,
             )
         })
         .await
@@ -139,6 +156,7 @@ impl AppPackagePreparation {
         handle: &str,
         now_ms: u64,
         checkpoint: impl FnMut(PreparationCheckpoint) -> Result<()>,
+        source: PreparationSource,
     ) -> Result<PreparedAppPackage> {
         // Finalize authenticates the owner/handle, rejects partial or expired
         // uploads, rehashes the exact file and retains its existing upload lease.
@@ -165,7 +183,46 @@ impl AppPackagePreparation {
         if bytes.len() != capacity {
             return Err(PreparationError::UploadDigestMismatch);
         }
-        self.verify_and_stage(owner, &bytes, &upload.status().sha256, checkpoint)
+        if let PreparationSource::Dev {
+            expected_upload_digest,
+        } = source
+        {
+            if upload.status().sha256 != expected_upload_digest {
+                return Err(PreparationError::UploadDigestMismatch);
+            }
+            let secrets = crate::secret::RuntimeSecretService::with_vault_config(
+                Vec::new(),
+                &self.vault_config,
+            )
+            .map_err(|_| PreparationError::DevVaultUnavailable)?;
+            let key = secrets
+                .app_dev_signing_key(&self.kernel_id)
+                .map_err(|_| PreparationError::DevVaultUnavailable)?;
+            self.store
+                .mutate_app_publisher_with_budget(
+                    owner,
+                    crate::durable_state::app_publishers::AppPublisherMutation::BindDevIdentity {
+                        public_key: key.verifying_key().to_bytes(),
+                    },
+                    super::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+                )
+                .map_err(publisher_error)?;
+            let bytes =
+                chariox_app_package::dev_bundle::sign_dev_bundle(&bytes, &key, &Limits::default())
+                    .map_err(|e| PreparationError::PackageRejected(e.code))?;
+            use sha2::Digest as _;
+            let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+            self.verify_and_stage(owner, &bytes, &digest, checkpoint)
+        } else {
+            let claimed = inspect_untrusted(&bytes, &Limits::default())
+                .map_err(|e| PreparationError::PackageRejected(e.code))?;
+            if claimed.manifest.publisher.id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+                return Err(PreparationError::PackageRejected(
+                    ErrorCode::UntrustedPublisher,
+                ));
+            }
+            self.verify_and_stage(owner, &bytes, &upload.status().sha256, checkpoint)
+        }
     }
 
     /// Protocol 367: a release already in the local release store (a

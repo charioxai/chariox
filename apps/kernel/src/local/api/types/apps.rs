@@ -41,6 +41,8 @@ pub struct AppPublisherEnrollmentSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginAppInstallRequest {
+    #[serde(default)]
+    pub source: chariox_app_runtime::installation::channel::AcquisitionSource,
     pub session_id: String,
     pub request_id: String,
     pub upload_handle: String,
@@ -51,6 +53,8 @@ pub struct BeginAppInstallRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BeginAppUpdateRequest {
+    #[serde(default)]
+    pub source: chariox_app_runtime::installation::channel::AcquisitionSource,
     pub session_id: String,
     pub request_id: String,
     pub installation_id: String,
@@ -164,6 +168,8 @@ pub struct AppReleaseSummary {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppInstallationSummary {
+    pub channel: chariox_app_runtime::installation::channel::InstallationChannel,
+    pub dev_room_id: Option<String>,
     pub installation_id: String,
     pub app_id: String,
     /// Decimal strings preserve generations beyond JavaScript's safe integers.

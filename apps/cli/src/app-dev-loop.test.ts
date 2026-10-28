@@ -37,7 +37,7 @@ async function fixture(t: test.TestContext, keyParts = ["keys", "app-publisher",
 function harness(f: { root: string, app: string, home: string, key: string }, options: { installed?: boolean, failure?: string } = {}) {
   const notices: string[] = []
   const packs: AppDevPackOptions[] = []
-  const calls: { kind: "install" | "update", installation?: string, path: string, session: string }[] = []
+  const calls: { kind: "install" | "update", installation?: string, path: string, session: string, source?: string }[] = []
   const requests: Message[] = []
   let onChange: ((file: string | null) => void) | undefined
   let closed = 0
@@ -77,11 +77,11 @@ function harness(f: { root: string, app: string, home: string, key: string }, op
       if (!(request as Message).ListAppInstallations.after) {
         return { AppInstallationsListed: { installations: [{ installation_id: "other", app_id: "com.example.other", generation: "1", active_release: {}, pending_generation: null, admission_paused: false }], next_cursor: "other" } }
       }
-      return { AppInstallationsListed: { installations: installed ? [{ installation_id: "todo", app_id: "com.example.todo", generation: String(generation), active_release: {}, pending_generation: null, admission_paused: false }] : [], next_cursor: null } }
+      return { AppInstallationsListed: { installations: installed ? [{ channel: "dev", dev_room_id: "session-1", installation_id: "todo", app_id: "com.example.todo", generation: String(generation), active_release: {}, pending_generation: null, admission_paused: false }] : [], next_cursor: null } }
     },
     installer: {
-      install: async (path, session) => { calls.push({ kind: "install", path, session }); return operate("install", path) as never },
-      update: async (installation, path, session) => { calls.push({ kind: "update", installation, path, session }); return operate("update", path) as never },
+      install: async (path, session, source) => { calls.push({ kind: "install", path, session, ...(source ? {source} : {}) }); return operate("install", path) as never },
+      update: async (installation, path, session, source) => { calls.push({ kind: "update", installation, path, session, ...(source ? {source} : {}) }); return operate("update", path) as never },
       status: async (request) => {
         const status = statuses.get(request!)!
         if (options.failure) Object.assign(status, { phase: "failed", failure: options.failure })
@@ -94,22 +94,24 @@ function harness(f: { root: string, app: string, home: string, key: string }, op
     },
   }
   return {
-    deps, notices, packs, calls, requests, workspaces,
+    deps, get notices() { return notices.filter(value => !value.includes(" → running:")) }, get timings() { return notices.filter(value => value.includes(" → running:")) }, packs, calls, requests, workspaces,
     change: (file: string | null = "bundle/ui/index.html") => onChange!(file),
     get closed() { return closed },
     hold() { const d = deferred(); gate = d.promise; return () => { gate = undefined; d.resolve() } },
   }
 }
 
-test("the default signing path uses the protected publisher namespace in the selected HOME", async t => {
+test("dev packs without a CLI signing key and records save timing", async t => {
   const f = await fixture(t)
   assert.equal(defaultAppDevKey(f.home), join(f.home, ".chariox", "keys", "app-publisher", "private"))
   const h = harness(f)
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
-  assert.deepEqual(await loop.start("my-app"), { directory: f.app, key: f.key })
+  await rm(f.home, {recursive:true,force:true})
+  assert.deepEqual(await loop.start("my-app"), { directory: f.app })
   await loop.settled()
-  assert.equal(h.packs[0]!.key, f.key)
+  assert.equal(h.packs[0]!.key, undefined)
+  assert.equal(h.timings.length, 1)
 })
 
 test("missing-key guidance uses protected paths and private directory modes without creating a key", async t => {
@@ -119,7 +121,7 @@ test("missing-key guidance uses protected paths and private directory modes with
   const h = harness(f)
   const loop = new AppDevLoop({ ...h.deps, home })
   let instructions = ""
-  await assert.rejects(loop.start("my-app"), (error: Error) => {
+  await assert.rejects(loop.register("my-app"), (error: Error) => {
     instructions = error.message
     assert.ok(instructions.startsWith(`No developer signing key at ${defaultAppDevKey(home)}.\n`))
     return true
@@ -154,9 +156,9 @@ test("an existing legacy path requires explicit --key and is kept at its origina
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
   const before = await stat(f.key)
-  await assert.rejects(loop.start("my-app"), /No developer signing key at .*\.chariox\/keys\/app-publisher\/private/)
+  await assert.rejects(loop.register("my-app"), /No developer signing key at .*\.chariox\/keys\/app-publisher\/private/)
   assert.equal(h.packs.length, 0)
-  assert.deepEqual(await loop.start("my-app", { key: relative(f.root, f.key) }), { directory: f.app, key: f.key })
+  await loop.register("my-app", { key: relative(f.root, f.key) })
   await loop.settled()
   assert.equal(h.packs[0]!.key, f.key)
   const after = await stat(f.key)
@@ -169,13 +171,13 @@ test("first cycle packs outside the App directory and installs; later changes up
   const h = harness(f)
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
-  await assert.rejects(new AppDevLoop({ ...h.deps, home: join(f.root, "no-home") }).start("my-app"), /No developer signing key at .*app-publisher\/private[\s\S]*chariox app keygen/)
-  await assert.rejects(loop.start("missing", { key: f.key }), /App directory not found/)
-  await loop.start("my-app", { key: f.key })
+  await assert.rejects(new AppDevLoop({ ...h.deps, home: join(f.root, "no-home") }).register("my-app"), /No developer signing key at .*app-publisher\/private[\s\S]*chariox app keygen/)
+  await assert.rejects(loop.start("missing"), /App directory not found/)
+  await loop.start("my-app")
   await loop.settled()
   assert.equal(h.packs.length, 1)
   const { output, bundle, manifest, key } = h.packs[0]!
-  assert.deepEqual([bundle, manifest, key], [join(f.app, "bundle"), join(f.app, "app.json"), f.key])
+  assert.deepEqual([bundle, manifest, key], [join(f.app, "bundle"), join(f.app, "app.json"), undefined])
   assert.ok(!output.startsWith(f.app))
   assert.deepEqual(h.calls.map(v => [v.kind, v.installation, v.session]), [["install", undefined, "session-1"]])
   await assert.rejects(stat(output), /ENOENT/)
@@ -186,7 +188,7 @@ test("first cycle packs outside the App directory and installs; later changes up
   h.change()
   await loop.settled()
   assert.deepEqual(h.calls.map(v => [v.kind, v.installation]), [["install", undefined], ["update", "todo"]])
-  assert.equal(h.notices.at(-1), "Updated todo to generation 9; App data is kept. Reopen views opened earlier with /app open todo")
+  assert.equal(h.notices.at(-1), "Updated todo to generation 9; App data is kept. Open views reload in place.")
   assert.deepEqual(h.requests.slice(-2), [{ ListAppInstallations: { after: null, limit: 100 } }, { ListAppInstallations: { after: "other", limit: 100 } }])
   h.change("node_modules/x/index.js")
   h.change(".git/HEAD")
@@ -200,7 +202,7 @@ test("changes during a cycle coalesce into exactly one more cycle", async t => {
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
   const release = h.hold()
-  await loop.start(f.app, { key: f.key })
+  await loop.start(f.app)
   for (let index = 0; index < 5; index++) { h.change(); await new Promise(resolve => setTimeout(resolve, 8)) }
   assert.equal(h.packs.length, 1)
   release()
@@ -213,10 +215,10 @@ test("stop closes the watcher and the private workspace; a new start replaces th
   const f = await fixture(t)
   const h = harness(f, { installed: true })
   const loop = new AppDevLoop(h.deps)
-  await loop.start(f.app, { key: f.key })
+  await loop.start(f.app)
   await loop.settled()
   const release = h.hold()
-  await loop.start(f.app, { key: f.key })
+  await loop.start(f.app)
   assert.equal(h.closed, 1)
   await assert.rejects(stat(h.workspaces[0]!), /ENOENT/)
   const parsed = parseSlashCommand("/app dev stop")!
@@ -243,7 +245,7 @@ test("a failed update reports the friendly kernel failure and keeps watching", a
   const h = harness(f, { installed: true, failure: "app_update_schema_downgrade" })
   const loop = new AppDevLoop(h.deps)
   t.after(() => loop.dispose())
-  await loop.start(f.app, { key: f.key })
+  await loop.start(f.app)
   await loop.settled()
   assert.match(h.notices.at(-1)!, /^Update failed: This release's data schema is older than the installed App's; App data is never migrated to an older schema\. Operation app-update-1\.$/)
   h.deps.pack = async () => { throw new Error("INVALID_MANIFEST: app.json is invalid") }
@@ -261,7 +263,7 @@ async function lostBegin(t: test.TestContext, installed: boolean) {
   const uploads = new Map<string, Message>()
   let generation = 7
   let offline = false
-  const installation = () => ({ installation_id: "todo", app_id: "com.example.todo", generation: String(generation), active_release: {}, pending_generation: null, admission_paused: false })
+  const installation = () => ({ channel: "dev", dev_room_id: "session-1", installation_id: "todo", app_id: "com.example.todo", generation: String(generation), active_release: {}, pending_generation: null, admission_paused: false })
   const send = async (request: Message): Promise<Message> => {
     if (offline) throw new Error("socket closed")
     requests.push(request)
@@ -300,7 +302,7 @@ async function lostBegin(t: test.TestContext, installed: boolean) {
     },
   })
   t.after(async () => { await loop.dispose(); await installer.dispose() })
-  await loop.start("my-app", { key: f.key })
+  await loop.start("my-app")
   await loop.settled()
   assert.match(notices.at(-1)!, /^App dev: Connection interrupted/)
   assert.ok(installer.retained()?.begun)
@@ -315,9 +317,9 @@ test("after a lost update Begin, the next cycle reports it as the previous build
   const r = await lostBegin(t, true)
   assert.deepEqual(r.begins, [["update", r.packed[0]], ["update", r.packed[1]]])
   assert.equal(r.retained, undefined)
-  assert.deepEqual(r.notices.slice(-4), [
-    `Previous build (${r.packed[0]!.slice(0, 19)}…): Updated todo to generation 8; App data is kept.`, "Open its view with /app open todo",
-    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Reopen views opened earlier with /app open todo",
+  assert.deepEqual(r.notices.filter(value => !value.includes(" → running:")).slice(-4), [
+    `Previous build (${r.packed[0]!.slice(0, 19)}…): Updated todo to generation 8; App data is kept. Open views reload in place.`, "Open its view with /app open todo",
+    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Open views reload in place.",
   ])
 })
 
@@ -325,9 +327,9 @@ test("after a lost first install that the kernel committed, the next cycle updat
   const r = await lostBegin(t, false)
   assert.deepEqual(r.begins, [["install", r.packed[0]], ["update", r.packed[1]]])
   assert.equal(r.retained, undefined)
-  assert.deepEqual(r.notices.slice(-4), [
+  assert.deepEqual(r.notices.filter(value => !value.includes(" → running:")).slice(-4), [
     `Previous build (${r.packed[0]!.slice(0, 19)}…): Installed todo at generation 8.`, "Open its view with /app open todo",
-    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Reopen views opened earlier with /app open todo",
+    `Packed com.example.todo 1.0.2 (${r.packed[1]!.slice(0, 19)}…)`, "Updated todo to generation 9; App data is kept. Open views reload in place.",
   ])
 })
 
@@ -337,4 +339,40 @@ test("ignored paths are dotfiles and dependency trees", () => {
   assert.equal(ignored("node_modules/a.js"), true)
   assert.equal(ignored("bundle/ui/index.html"), false)
   assert.equal(ignored(null), false)
+})
+
+// MP-08 / MP-10 / MP-11: same App ID, separate Room and channel selection.
+test("dev ignores the registered copy and other Rooms; register targets the release", async t => {
+  const f = await fixture(t)
+  const h = harness(f)
+  const loop = new AppDevLoop(h.deps)
+  t.after(() => loop.dispose())
+  const entry = (installation_id: string, channel: string, dev_room_id: string | null) => ({installation_id, app_id:"com.example.todo", channel, dev_room_id, generation:"1",active_release:{},pending_generation:null,admission_paused:false,data_kept:false})
+  h.deps.send = async () => ({ AppInstallationsListed: { installations: [entry("registered", "release", null),entry("other-dev", "dev", "session-2")], next_cursor: null } })
+  await loop.start("my-app")
+  await loop.settled()
+  assert.equal(h.calls[0]!.kind, "install")
+  assert.equal(h.calls[0]!.source, "dev_push")
+  assert.equal(h.packs[0]!.key, undefined)
+  h.deps.send = async () => ({ AppInstallationsListed: { installations: [entry("registered", "release", null),entry("todo", "dev", "session-1")], next_cursor: null } })
+  h.change()
+  await loop.settled()
+  assert.equal(h.calls[1]!.installation, "todo")
+  await loop.register("my-app", {key:f.key})
+  assert.equal(h.calls[2]!.installation, "registered")
+  assert.equal(h.calls[2]!.source, "register")
+  assert.equal(h.packs[2]!.key, f.key)
+  assert.equal(loop.active, true)
+})
+
+test("ambiguous dev installations refuse instead of selecting the first App ID match", async t => {
+  const f = await fixture(t)
+  const h = harness(f)
+  const loop = new AppDevLoop(h.deps)
+  t.after(() => loop.dispose())
+  h.deps.send = async () => ({ AppInstallationsListed: { installations: ["a", "b"].map(installation_id => ({installation_id,app_id:"com.example.todo",channel:"dev",dev_room_id:"session-1",active_release:{}})), next_cursor:null } })
+  await loop.start("my-app")
+  await loop.settled()
+  assert.equal(h.calls.length, 0)
+  assert.match(h.notices.at(-1)!, /Several installations match/)
 })

@@ -206,6 +206,36 @@ pub struct PackageReport {
     pub file_count: Option<usize>,
 }
 
+/// Transport a completed build without giving the CLI a signing identity.
+pub fn pack_dev_directory(
+    bundle: &Path,
+    manifest_path: &Path,
+    output: &Path,
+    limits: &Limits,
+) -> Result<serde_json::Value> {
+    let bundle = fs::Directory::open(bundle)?;
+    let destination = fs::Destination::open(output, false)?;
+    fs::outside_bundle(&bundle, &destination.directory)?;
+    let mut manifest: serde_json::Value = json::read_json(
+        &fs::read(manifest_path, limits.max_metadata_bytes, false)?,
+        limits.max_metadata_bytes,
+        limits,
+        ErrorCode::InvalidManifest,
+        false,
+    )?;
+    let files = read_bundle_open(&bundle, limits, None)?;
+    if manifest["schema"] != crate::v2::APP_SCHEMA_V2 {
+        let parsed: Manifest = serde_json::from_value(manifest)
+            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
+        manifest = serde_json::to_value(with_migrations(&parsed, &files, limits)?)
+            .map_err(|_| PackageError::new(ErrorCode::InvalidManifest, "invalid dev manifest"))?;
+    }
+    let bytes = crate::dev_bundle::pack_dev_bundle(&manifest, &files, limits)?;
+    let report = serde_json::json!({"status":"packed-dev-unsigned", "manifest":manifest, "packageDigest":crate::digest(&bytes)});
+    destination.prepare(&bytes)?.publish()?;
+    Ok(report)
+}
+
 pub fn pack_directory(
     bundle: &Path,
     manifest: &Manifest,
