@@ -1,10 +1,21 @@
 use wasmtime::{component::Component, Config, Engine};
 
 pub fn engine() -> wasmtime::Result<Engine> {
+    Engine::new(&configuration())
+}
+
+pub(crate) fn configuration() -> Config {
     let mut config = Config::new();
     config.wasm_component_model_async(true);
     config.epoch_interruption(true);
-    Engine::new(&config)
+    // Linux RLIMIT_AS bounds the whole worker, including compiler and stacks.
+    // Avoid the default multi-GiB virtual reservation for each guest memory.
+    config.memory_reservation(0);
+    config.memory_reservation_for_growth(4 << 20);
+    config.memory_guard_size(64 << 10);
+    // No memfd or filesystem backing escapes the native file-size ceiling.
+    config.memory_init_cow(false);
+    config
 }
 
 /// Offline preflight uses the same admission and engine as execution.
@@ -15,8 +26,12 @@ pub fn check(bytes: &[u8], world: &str) -> wasmtime::Result<Component> {
 
 /// Keep this identity in R4's AOT key. Platform/CPU policy and worker build
 /// are independent parts of that key, never inferred from a package.
-pub const ENGINE_CONFIG: &str = "wasmtime=50.0.0;component-model-async=true;epoch-interruption=true;compiler=cranelift;cpu=native";
+pub const ENGINE_CONFIG: &str = "wasmtime=50.0.0;component-model-async=true;epoch-interruption=true;compiler=cranelift;cpu=native;memory-reservation=0;memory-reservation-for-growth=4194304;memory-guard-size=65536;memory-init-cow=false";
 pub fn configuration_digest() -> String {
     use sha2::{Digest, Sha256};
-    format!("sha256:{:x}", Sha256::digest(ENGINE_CONFIG.as_bytes()))
+    let mut digest = Sha256::new();
+    digest.update(ENGINE_CONFIG.as_bytes());
+    #[cfg(target_os = "macos")]
+    digest.update(b";macos-code=map-jit-v1");
+    format!("sha256:{:x}", digest.finalize())
 }

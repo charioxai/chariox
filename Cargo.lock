@@ -457,6 +457,7 @@ dependencies = [
  "base64",
  "chariox-app-package",
  "chariox-app-runtime",
+ "chariox-app-wasm-worker",
  "chariox-app-wit",
  "futures",
  "libc",

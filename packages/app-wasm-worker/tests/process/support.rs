@@ -109,6 +109,8 @@ impl Worker {
             control.read_exact(&mut value).unwrap();
             assert_eq!(value, expected.as_bytes());
         }
+        #[cfg(target_os = "linux")]
+        worker.assert_native_containment();
         control.write_all(b"CXAWGO01").unwrap();
         let Message::Request {
             id, method, params, ..
@@ -117,9 +119,55 @@ impl Worker {
             panic!("worker.ready expected")
         };
         assert_eq!(method, "worker.ready");
-        assert_eq!(params["tools"].as_array().unwrap().len(), 12);
+        assert_eq!(params["tools"].as_array().unwrap().len(), 13);
         worker.answer(id, Value::Null).await;
         worker
+    }
+    #[cfg(target_os = "linux")]
+    fn assert_native_containment(&self) {
+        let status = fs::read_to_string(format!("/proc/{}/status", self.child.id())).unwrap();
+        assert!(
+            status.lines().any(|line| line == "NoNewPrivs:\t1"),
+            "worker replied ready without no-new-privileges"
+        );
+        assert!(
+            status.lines().any(|line| line == "Seccomp:\t2"),
+            "worker replied ready without seccomp"
+        );
+        let limits = fs::read_to_string(format!("/proc/{}/limits", self.child.id())).unwrap();
+        for (name, expected) in [
+            (
+                "Max address space",
+                chariox_app_wasm_worker::containment::ADDRESS_SPACE_BYTES,
+            ),
+            (
+                "Max file size",
+                chariox_app_wasm_worker::containment::FILE_BYTES,
+            ),
+            (
+                "Max open files",
+                chariox_app_wasm_worker::containment::DESCRIPTORS,
+            ),
+        ] {
+            let values: Vec<_> = limits
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .expect("native quota exists")
+                .split_whitespace()
+                .collect();
+            assert_eq!(
+                values[0],
+                expected.to_string(),
+                "{name} soft ceiling before ready"
+            );
+            let hard = expected;
+            assert_eq!(
+                values[1],
+                hard.to_string(),
+                "{name} hard ceiling before ready"
+            );
+        }
+        println!("DRILL {} OS-observed seccomp, no-new-privileges and hard memory/file/FD ceilings before Continue: PASS", self.child.id());
     }
     pub(super) async fn next(&mut self) -> Message {
         let message = tokio::time::timeout(
