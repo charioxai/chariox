@@ -245,7 +245,7 @@ async fn room_browser_input_backend_keeps_agent_turn_and_human_actor() {
         let opened = controller(&store,&session,BrowserAppViewRequest::Open{origin_label:"input-actor".into(),installation_id:"installed".into(),instance_id:None,entry:"index.html".into(),assets,page:None}).await;
         let target = opened["target_id"].as_str().unwrap();
         state.app_control().views().register(&session,target,binding);
-        for mode in ["browser_click","browser_submit"] {
+        for mode in ["browser_click","browser_submit","room_click","room_submit","room_fill_submit"] {
             let input = |name:&str|BrowserAppViewRequest::Agent{target_id:target.into(),agent:agent.id().into(),call:ViewAgentCallKind::Invoke,name:Some(name.into()),input:None,since:None,wait_ms:None,deadline_ms:20000};
             assert_eq!(controller(&store,&session,input(mode)).await["ok"],true);
             let first = next_call(&store,&session).await;
@@ -274,7 +274,7 @@ async fn room_browser_input_backend_keeps_agent_turn_and_human_actor() {
         .iter()
         .flat_map(|o| o.tool_requests().unwrap())
         .collect();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(requests.len(), 15);
     for request in requests {
         let context = &request["context"];
         if context["actor"]["kind"] == "human" {

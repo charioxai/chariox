@@ -27,3 +27,15 @@ test('input callers match only the stamped trusted event and retire after handle
   assert.equal(settled,true);
   await inputs.end('caller');
 });
+
+test('controller submission tags only the exact synchronous form event', async () => {
+  const listeners=new Map();let seen;
+  function Form() {}
+  Form.prototype.requestSubmit=function(){const event={target:this};listeners.get(this)?.(event);seen=inputs.token(event);};
+  const inputs=vm.runInNewContext(`(${createInputCallers.toString()})()`, {performance:{timeOrigin:0,now:()=>1},addEventListener(){},HTMLFormElement:Form});
+  const form={addEventListener(_type,fn){listeners.set(this,fn);},removeEventListener(){listeners.delete(this);}};
+  inputs.begin('caller',10);inputs.submit(form,'caller');
+  assert.equal(seen,'caller');assert.equal(listeners.size,0);
+  assert.equal(inputs.token({target:form}),undefined);
+  await inputs.end('caller');assert.throws(()=>inputs.submit(form,'caller'),/expired/);
+});

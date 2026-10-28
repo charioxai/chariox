@@ -105,6 +105,7 @@ impl KernelRuntimeState {
         };
         let command =
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::Action {
+                agent_id: None,
                 execution_id: format!("owner-{id}"),
                 target_id: snapshot.target_id.clone(),
                 document_id: target.document_id.clone(),

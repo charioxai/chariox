@@ -600,12 +600,14 @@ fn receipt_recovery_command(command: &Command) -> Option<Command> {
         }),
         Command::Action {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
             action,
             timeout_ms,
         } => Some(Command::RecoverAction {
+            agent_id: agent_id.clone(),
             execution_id: execution_id.clone(),
             target_id: target_id.clone(),
             document_id: document_id.clone(),
@@ -1033,6 +1035,7 @@ async fn execute_local(
             .map(|batch| Response::Events { batch }),
         Command::Action {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
@@ -1045,10 +1048,12 @@ async fn execute_local(
             &document_id,
             &node_ref,
             &action,
+            agent_id.as_deref(),
             timeout_ms,
         ),
         Command::RecoverAction {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
@@ -1061,6 +1066,7 @@ async fn execute_local(
             &document_id,
             &node_ref,
             &action,
+            agent_id.as_deref(),
             timeout_ms,
         ),
         Command::ComputerSecretTarget => {
