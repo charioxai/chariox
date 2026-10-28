@@ -2054,3 +2054,97 @@ fn envp02b_workspace_update_waits_for_environment_lock() {
     holder.join().unwrap();
     harness.block_on_test_task(task).unwrap().unwrap();
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: acceptance reviews newly attached topology in a new revision.
+#[test]
+fn r4_envp02b_accept_detected_requirement_in_newly_attached_folder() {
+    let first = crate::test_support::TestWorktree::new("r4-topology-first");
+    let added = crate::test_support::TestWorktree::new("r4-topology-added");
+    std::fs::write(added.path().join("brief.md"), "Product brief").unwrap();
+    let harness = envp02b_harness();
+    let paths = [
+        first.path().to_string_lossy().into_owned(),
+        added.path().to_string_lossy().into_owned(),
+    ];
+    let update = |paths: &[String]| {
+        serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":paths}})).unwrap()
+    };
+    harness.dispatch(update(&paths[..1])).unwrap();
+    let before = envp02b_read(&harness);
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: saved, ..
+    } = harness.dispatch(envp02b_save(&before, "Saved")).unwrap()
+    else {
+        panic!("Save expected")
+    };
+    harness.dispatch(update(&paths)).unwrap();
+    let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
+    let LocalDaemonResponse::ProjectEnvironment { environment: detected } = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"new-folder-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
+    assert_eq!(detected.content_digest, saved.content_digest);
+    assert_eq!(
+        environment_draft_for_test(&detected),
+        environment_draft_for_test(&saved)
+    );
+    let proposal = detected
+        .proposals
+        .iter()
+        .find(|p| p.requirement.title == "brief.md")
+        .unwrap();
+    let crate::project_environment::RequirementScope::Folder { folder_id } =
+        &proposal.requirement.scope
+    else {
+        panic!("Folder proposal expected")
+    };
+    let request = serde_json::from_value(serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"edit-project","expectedRevision":detected.revision,"expectedContentDigest":detected.content_digest,"draft":environment_draft_for_test(&detected),"acceptedProposalIds":[proposal.proposal_id],"excludedProposalIds":[]}})).unwrap();
+    let LocalDaemonResponse::ProjectEnvironmentSaved {
+        environment: next,
+        diff,
+    } = harness
+        .dispatch(request)
+        .expect("accepting the proposal reviews its newly attached folder")
+    else {
+        panic!("Save expected")
+    };
+    assert_eq!(next.revision, saved.revision + 1);
+    assert_eq!(
+        next.parent_revision_digest.as_ref(),
+        Some(&saved.content_digest)
+    );
+    let folder = next
+        .folders
+        .iter()
+        .find(|f| &f.folder_id == folder_id)
+        .unwrap();
+    assert_eq!(folder.local_workspace_binding, paths[1]);
+    assert!(folder
+        .requirements
+        .iter()
+        .any(|r| r.requirement_id == proposal.requirement.requirement_id));
+    assert!(diff.folder_map.iter().any(|f| &f.folder_id == folder_id));
+    let reopened = envp02b_read(&harness);
+    assert_eq!(
+        environment_draft_for_test(&reopened),
+        environment_draft_for_test(&next)
+    );
+    let root = harness.with_app(|app| app.config().private_runtime_state_root());
+    let history: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(
+            root.join("project-environments")
+                .read_dir()
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path.to_string_lossy().ends_with("revisions.json"))
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        history["revisions"][1]["content_digest"],
+        saved.content_digest
+    );
+    assert_eq!(
+        history["revisions"][1]["folders"].as_array().unwrap().len(),
+        1
+    );
+}

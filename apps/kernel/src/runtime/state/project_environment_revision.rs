@@ -34,7 +34,7 @@ impl KernelRuntimeState {
     }
     pub(crate) async fn save_project_environment_revision(
         &self,
-        request: crate::local::SaveProjectEnvironmentRevisionRequest,
+        mut request: crate::local::SaveProjectEnvironmentRevisionRequest,
         user: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let project = self.owned.session_store.get_project(&request.project_id)?;
@@ -57,7 +57,9 @@ impl KernelRuntimeState {
                 "caller does not own the selected Project",
             ));
         }
-        let current = store.snapshot_locked(&project)?;
+        let mut current = store.snapshot_locked(&project)?;
+        let attached = store.snapshot_live_bindings_locked(&project)?;
+        review_new_proposal_folders(&mut current, &mut request, &attached.folders)?;
         let (environment, diff) = store.save_revision_locked(&current, &request, user)?;
         Ok(LocalDaemonResponse::ProjectEnvironmentSaved { environment, diff })
     }
