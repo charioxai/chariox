@@ -5,6 +5,11 @@
 export function createInputCallers() {
   const entries = new Map();
   const callers = new WeakMap();
+  const edits = new WeakMap();
+  globalThis.addEventListener('input', event => {
+    const token = edits.get(event.target);
+    if (event.isTrusted && entries.get(token)?.timestamp != null) callers.set(event, token);
+  }, true);
   // The label is transport metadata. Capture it before App listeners and
   // expose the actual dispatch time so App debounce/animation clocks stay sane.
   const label = event => Math.round((performance.timeOrigin + event.timeStamp) / 1000);
@@ -32,6 +37,21 @@ export function createInputCallers() {
       form.addEventListener('submit', capture, true);
       try { HTMLFormElement.prototype.requestSubmit.call(form); }
       finally { form.removeEventListener('submit', capture, true); }
+    },
+    edit(element, text, token) {
+      if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
+      // Chromium's native edit emits input synchronously. Capture that exact
+      // target only while the command runs, with no caller left on the page.
+      edits.set(element, token);
+      try {
+        if (!element.ownerDocument.execCommand(text ? 'insertText' : 'delete', false, text))
+          throw new Error('App text edit failed');
+      } finally { edits.delete(element); }
+    },
+    dispatch(element, event, token) {
+      if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
+      callers.set(event, token);
+      return element.dispatchEvent(event);
     },
     track(token, promise) {
       const entry = entries.get(token);

@@ -39,3 +39,21 @@ test('controller submission tags only the exact synchronous form event', async (
   assert.equal(inputs.token({target:form}),undefined);
   await inputs.end('caller');assert.throws(()=>inputs.submit(form,'caller'),/expired/);
 });
+
+test('native text edits capture only synchronous events on the edited element', async () => {
+  const listeners=new Map();let during,late,fail=false;
+  const inputs=vm.runInNewContext(`(${createInputCallers.toString()})()`, {
+    performance:{timeOrigin:0,now:()=>1},addEventListener(type,fn){listeners.set(type,fn);},
+  });
+  const element={ownerDocument:{execCommand(command,_ui,text){
+    assert.equal(command,'insertText');assert.equal(text,'A😀B');
+    const event={target:element,isTrusted:true};listeners.get('input')(event);during=inputs.token(event);
+    const other={target:{},isTrusted:true};listeners.get('input')(other);assert.equal(inputs.token(other),undefined);
+    if(fail)throw Error('native edit refused');return true;
+  }}};
+  inputs.begin('caller',10);inputs.edit(element,'A😀B','caller');assert.equal(during,'caller');
+  const event={target:element,isTrusted:true};listeners.get('input')(event);late=inputs.token(event);assert.equal(late,undefined);
+  fail=true;assert.throws(()=>inputs.edit(element,'A😀B','caller'),/native edit refused/);
+  listeners.get('input')(event);assert.equal(inputs.token(event),undefined);
+  await inputs.end('caller');assert.throws(()=>inputs.edit(element,'A😀B','caller'),/expired/);
+});
