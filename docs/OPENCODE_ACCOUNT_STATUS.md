@@ -92,8 +92,14 @@ prove they represent the same upstream login.
 
 ## Owner questions
 
-Should a configured OpenCode service read **Signed in** or **Login saved** when
-only credential presence is known? The latter is more precise because a saved
-key may have expired. The implementation uses **Login saved** for OpenCode;
-no remote verification or plan claim is implied. The accompanying status-only
-mock uses the existing account row and usage text slot, with no new component.
+Resolved 2026-10-28: the approved text is **Login saved**, with configured
+service names in the account row tooltip. A configured credential is not proof
+that its key is currently valid. The wording is defined once in the shared
+account-status presentation function.
+
+The approved configuration check uses disposable native OpenCode homes with
+dummy Go, Zen and upstream entries. It covers saved-login state and service
+names; valid-key, revoked-key and real billing behaviour are not covered.
+No remaining plan or credit value is inferred when the official harness does
+not expose it. The status-only mock uses the existing account row and text
+slot, with no new component.
