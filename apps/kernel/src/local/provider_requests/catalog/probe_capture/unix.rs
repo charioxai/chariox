@@ -108,7 +108,7 @@ impl Process {
             if pid == 0 {
                 return Ok(None);
             }
-            return Ok(Some(ExitStatus::from_raw(
+            Ok(Some(ExitStatus::from_raw(
                 if info.si_code == libc::CLD_EXITED {
                     status << 8
                 } else if info.si_code == libc::CLD_DUMPED {
@@ -116,7 +116,7 @@ impl Process {
                 } else {
                     status
                 },
-            )));
+            )))
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         self.child.try_wait()
