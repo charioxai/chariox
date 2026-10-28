@@ -3,7 +3,7 @@
 //!
 //! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
 //! reports the kind and retryability, preserving the harness's explicit
-//! retryability when it supplies one. It never retries, backs off or counts quota; the provider's
+//! retryability when it supplies one. It never retries, backs off or tracks usage limits; the provider's
 //! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
 //! `retryable` only; `reason` is for people.
 

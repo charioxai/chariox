@@ -5440,7 +5440,7 @@ HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in 
 unrecognised error are not). A reader decides to retry or stop from `kind` and
 `retryable` only. `reason` is text for people: the harness's own error text with
 credentials removed, whitespace and diagnostic length preserved; it is empty for
-`completed` and `cancelled`. Chariox adds no retry, backoff or quota policy; the
+`completed` and `cancelled`. Chariox adds no retry, backoff or usage-limit policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
 
 The kernel types a failure once from the harness's native error: Codex
