@@ -9,8 +9,8 @@ CHARIOX_WORKSPACE_TUI=/absolute/path/to/built/chariox \
 CHARIOX_WORKSPACE_PROFILE=/absolute/path/to/product-linked/codex-profile \
 CHARIOX_WORKSPACE_STATE=/absolute/path/to/unused/disposable-root \
 CHARIOX_WORKSPACE_EVIDENCE=/absolute/path/to/evidence \
-CHARIOX_WORKSPACE_ORIGIN=https://lane.val.51-255-87-178.sslip.io \
-CHARIOX_WORKSPACE_RELAY=wss://lanerelay.val.51-255-87-178.sslip.io \
+CHARIOX_WORKSPACE_ORIGIN=https://stack.val.51-255-87-178.sslip.io \
+CHARIOX_WORKSPACE_RELAY=wss://stackrelay.val.51-255-87-178.sslip.io \
 systemd-run --scope -p MemoryMax=4G node scripts/e2e-stack/movekernel/workspace-transfer.mjs
 ```
 
