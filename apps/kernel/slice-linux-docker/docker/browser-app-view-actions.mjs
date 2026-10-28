@@ -1,11 +1,11 @@
 // Apps v2 A1: what an App view declares for agents. The page registers actions
-// (`chariox.action`, or a `<form data-chariox-action>`), publishes a bounded state
+// (`chariox.action`, or `chariox.form` with annotated markup), publishes a bounded state
 // snapshot (`chariox.view.state`) and announces changes (`chariox.view.changed`).
 // The kernel's later A2 bridge reads and drives the page only through
 // `__charioxViewAgent`; this module grants no authority, because the signed
 // declarations decide what a registration may be (`check_agreement` in
 // packages/app-package). Self-contained: it is stringified into the page bridge.
-export function createViewActions() {
+export function createViewActions(request) {
   const NAME = /^[a-z][a-z0-9_]{0,63}$/;
   const EFFECTS = ['read', 'write', 'approval'];
   const FIELDS = new Set(['name', 'description', 'inputSchema', 'outputSchema', 'effect', 'approvalReason']);
@@ -20,6 +20,7 @@ export function createViewActions() {
   const SKIPPED_INPUTS = /^(?:submit|button|reset|image|file|hidden)$/;
 
   const registered = new Map();
+  const formHandlers = new WeakMap();
   let stateProvider = null;
   let latest = 0;
   const log = [];
@@ -50,7 +51,31 @@ export function createViewActions() {
     if (registered.has(descriptor.name)) throw new Error(`chariox.action: "${descriptor.name}" is already registered`);
     registered.set(descriptor.name, { descriptor, handler });
     // The user path calls the very function an agent runs.
-    return handler;
+    return input => runHandler(handler, input ?? {});
+  }
+
+  async function runHandler(handler, input, token) {
+    let active = true;
+    const caller = Object.freeze({
+      call(method, params = {}) {
+        if (!active) return Promise.reject(Object.assign(new Error('The action handler has finished'), { code: 'APP_INVOCATION_EXPIRED' }));
+        return request(method, params, token);
+      },
+    });
+    try { return await handler(input, caller); }
+    finally { active = false; }
+  }
+
+  function form(element, handler) {
+    if (element?.tagName !== 'FORM') throw new TypeError('chariox.form needs a form element');
+    if (typeof handler !== 'function') throw new TypeError('chariox.form needs a handler function');
+    describe(describeForm(element));
+    if (formHandlers.has(element)) throw new Error('chariox.form: this form is already registered');
+    formHandlers.set(element, handler);
+    element.addEventListener('submit', event => {
+      event.preventDefault();
+      return runHandler(handler, readForm(element));
+    });
   }
 
   // Forms: only the simple controls map to a schema; anything richer is a
@@ -108,7 +133,20 @@ export function createViewActions() {
     control.dispatchEvent(new Event('change', { bubbles: true }));
   };
 
-  async function submitForm(form, params) {
+  function readForm(form) {
+    const input = {};
+    for (const [name, field] of fieldsOf(form)) {
+      const control = field.radio ? controlsOf(form).find(c => c.name === name && c.checked) : field.control;
+      if (!control) continue;
+      input[name] = field.kind === 'checkbox' ? control.checked
+        : field.schema.type === 'number' ? Number(control.value) : control.value;
+    }
+    return input;
+  }
+
+  async function submitForm(form, params, token) {
+    const handler = formHandlers.get(form);
+    if (!handler) return fail('form_unregistered', 'The annotated form must register its handler with chariox.form');
     const fields = fieldsOf(form);
     if (!params || typeof params !== 'object' || Array.isArray(params)) return fail('invalid_params', 'params must be an object');
     const changed = [];
@@ -130,8 +168,8 @@ export function createViewActions() {
     // Let the page's own handlers apply the writes before the form is read.
     await new Promise(resolve => setTimeout(resolve, 0));
     if (!form.checkValidity()) return fail('invalid_form', `the form rejects these fields: ${controlsOf(form).filter(c => !c.checkValidity()).map(c => c.name).join(', ')}`);
-    form.requestSubmit();
-    // A form has no return value; the agent reads the state it changed.
+    await runHandler(handler, readForm(form), token);
+    // Form completion follows the registered handler, including its backend calls.
     return { ok: true, value: { submitted: true } };
   }
 
@@ -155,14 +193,14 @@ export function createViewActions() {
     registrations() {
       return [...[...registered.values()].map(({ descriptor }) => JSON.parse(JSON.stringify(descriptor))), ...forms().map(describeForm)];
     },
-    async invoke(name, params) {
+    async invoke(name, params, token) {
       const entry = registered.get(name);
       const matching = forms(name);
       if (matching.length + (entry ? 1 : 0) > 1) return fail('duplicate_action', `"${name}" is registered more than once`);
       if (entry) {
-        try { return bounded(await entry.handler(params ?? {}), MAX_RESULT_BYTES, 'result_too_large', 'the result'); } catch (error) { return failure(error); }
+        try { return bounded(await runHandler(entry.handler, params ?? {}, token), MAX_RESULT_BYTES, 'result_too_large', 'the result'); } catch (error) { return failure(error); }
       }
-      return matching.length ? submitForm(matching[0], params ?? {}) : fail('unknown_action', `the view has no action "${name}"`);
+      try { return matching.length ? await submitForm(matching[0], params ?? {}, token) : fail('unknown_action', `the view has no action "${name}"`); } catch (error) { return failure(error); }
     },
     async state() {
       if (!stateProvider) return fail('state_unavailable', 'the view did not call chariox.view.state');
@@ -182,5 +220,5 @@ export function createViewActions() {
     },
   });
 
-  return { action, view, agent };
+  return { action, form, view, agent };
 }
