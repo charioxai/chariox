@@ -37,6 +37,7 @@ struct Host {
     data: PathBuf,
     offers: Vec<(String, Vec<u8>)>,
     export_barrier: Option<Arc<tokio::sync::Barrier>>,
+    fault: Option<(FileStage, bool, Arc<tokio::sync::Notify>)>,
 }
 impl WasiView for Host {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -118,6 +119,31 @@ impl<D> StreamConsumer<D> for Contents {
         Poll::Ready(Ok(StreamResult::Completed))
     }
 }
+#[derive(Clone, Copy, PartialEq)]
+enum FileStage {
+    Replace,
+    Export,
+}
+async fn file_fault<T: Send>(
+    accessor: &Accessor<T, HasSelf<Host>>,
+    stage: FileStage,
+) -> Result<(), AppError> {
+    let fault = accessor.with(|mut access| access.get().fault.clone());
+    if let Some((at, cancel, reached)) = fault {
+        if at == stage {
+            if cancel {
+                reached.notify_one();
+                return std::future::pending().await;
+            }
+            return Err(AppError {
+                code: "FILE_TEST_FAILURE".into(),
+                message: "file broker refused".into(),
+                retryable: None,
+            });
+        }
+    }
+    Ok(())
+}
 impl files::Host for Host {}
 impl<T: Send> files::HostWithStore<T> for HasSelf<Host> {
     async fn atomic_replace(
@@ -131,6 +157,7 @@ impl<T: Send> files::HostWithStore<T> for HasSelf<Host> {
             .with(|mut access| contents.pipe(&mut access, Contents(bytes.clone(), Some(done))))
             .unwrap();
         completed.await.unwrap();
+        file_fault(accessor, FileStage::Replace).await?;
         let bytes = bytes.lock().unwrap();
         accessor
             .with(|mut access| fs::write(access.get().data.join(path), &*bytes))
@@ -138,6 +165,7 @@ impl<T: Send> files::HostWithStore<T> for HasSelf<Host> {
         Ok(bytes.len() as u64)
     }
     async fn export(accessor: &Accessor<T, Self>, path: String) -> Result<String, AppError> {
+        file_fault(accessor, FileStage::Export).await?;
         let barrier = accessor.with(|mut access| access.get().export_barrier.clone());
         if let Some(barrier) = barrier {
             barrier.wait().await;
@@ -259,6 +287,7 @@ async fn runtime(root: &std::path::Path) -> wasmtime::Result<(Store<Host>, Drill
             data: root.to_path_buf(),
             offers: vec![],
             export_barrier: None,
+            fault: None,
         },
     );
     let app = Drill::instantiate_async(&mut store, &component, &linker).await?;
@@ -390,4 +419,77 @@ async fn concurrent_same_named_exports_have_independent_staging() -> wasmtime::R
         "successful offers remove all staging files"
     );
     Ok(())
+}
+
+async fn interrupted_export(stage: FileStage, cancel: bool) -> wasmtime::Result<()> {
+    let root = scratch(if stage == FileStage::Replace {
+        "replace-interrupted"
+    } else {
+        "export-interrupted"
+    })?;
+    let (mut store, app) = runtime(&root.0).await?;
+    let reached = Arc::new(tokio::sync::Notify::new());
+    store.data_mut().fault = Some((stage, cancel, reached.clone()));
+    let scene =
+        serde_json::json!({"type":"excalidraw","version":2,"elements":[],"appState":{},"files":{}});
+    let input = serde_json::json!({"name":"copy.excalidraw","text":scene.to_string(),"offer":true})
+        .to_string();
+    let result = store
+        .run_concurrent(async |accessor| {
+            let cancel = accessor.with(|mut access| {
+                FutureReader::new(&mut access, async move {
+                    if cancel {
+                        reached.notified().await;
+                        Ok("cancel requested".to_string())
+                    } else {
+                        std::future::pending::<wasmtime::Result<String>>().await
+                    }
+                })
+            })?;
+            let context = InvocationContext {
+                deadline_ms: u64::MAX,
+                installation_id: None,
+                room_id: None,
+                operation_id: None,
+                agent_id: None,
+                task_id: None,
+                turn_id: None,
+                actor: None,
+            };
+            app.chariox_app_handlers()
+                .call_call_tool(accessor, "write_file".into(), input, context, cancel)
+                .await
+        })
+        .await??;
+    assert_eq!(
+        result.unwrap_err().code,
+        if cancel {
+            "CANCELLED"
+        } else {
+            "FILE_TEST_FAILURE"
+        }
+    );
+    assert_eq!(
+        fs::read_dir(&root.0)?.count(),
+        0,
+        "an interrupted export must remove its private staging directory and file"
+    );
+    assert!(store.data().offers.is_empty());
+    Ok(())
+}
+#[tokio::test(flavor = "current_thread")]
+async fn failed_replacement_releases_export_staging() -> wasmtime::Result<()> {
+    interrupted_export(FileStage::Replace, false).await
+}
+#[tokio::test(flavor = "current_thread")]
+async fn failed_offer_releases_export_staging() -> wasmtime::Result<()> {
+    interrupted_export(FileStage::Export, false).await
+}
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_replacement_releases_export_staging() -> wasmtime::Result<()> {
+    interrupted_export(FileStage::Replace, true).await
+}
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_offer_releases_export_staging() -> wasmtime::Result<()> {
+    interrupted_export(FileStage::Export, true).await
 }

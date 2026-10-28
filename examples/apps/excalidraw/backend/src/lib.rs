@@ -64,6 +64,35 @@ fn reserve_export(name: &str) -> Result<String, AppError> {
     ))
 }
 
+struct ExportFile(String);
+impl ExportFile {
+    fn reserve(name: &str) -> Result<Self, AppError> {
+        reserve_export(name).map(Self)
+    }
+
+    fn remove(&self) -> Result<(), AppError> {
+        std::fs::remove_file(format!("data/{}", self.0)).map_err(|_| {
+            error(
+                "FILE_CLEANUP_FAILED",
+                "copy was offered but its private staging file could not be removed",
+            )
+        })?;
+        std::fs::remove_dir(format!("data/{}", self.0.rsplit_once('/').unwrap().0)).map_err(|_| {
+            error(
+                "FILE_CLEANUP_FAILED",
+                "copy was offered but its private staging directory could not be removed",
+            )
+        })
+    }
+}
+impl Drop for ExportFile {
+    fn drop(&mut self) {
+        // Failed writes, failed offers and cancellation must release their reservation too.
+        let _ = std::fs::remove_file(format!("data/{}", self.0));
+        let _ = std::fs::remove_dir(format!("data/{}", self.0.rsplit_once('/').unwrap().0));
+    }
+}
+
 async fn replace(name: String, bytes: Vec<u8>) -> Result<u64, AppError> {
     let (mut writer, reader) = chariox_app_sdk::bindings::wit_stream::new();
     let (result, remaining) = futures::join!(files::atomic_replace(name, reader), async move {
@@ -127,28 +156,15 @@ async fn call(name: &str, input: &str) -> Result<Value, AppError> {
                 )?;
             }
             let offer = input["offer"].as_bool().unwrap_or(false);
-            let destination = if offer {
-                reserve_export(&name)?
-            } else {
-                name.clone()
-            };
+            let staging = offer.then(|| ExportFile::reserve(&name)).transpose()?;
+            let destination = staging
+                .as_ref()
+                .map_or_else(|| name.clone(), |file| file.0.clone());
             let length = replace(destination.clone(), bytes).await?;
-            let grant = if offer {
-                let grant = files::export(destination.clone()).await?;
+            let grant = if let Some(staging) = staging.as_ref() {
+                let grant = files::export(destination).await?;
                 // The broker owns the offered bytes after export succeeds.
-                std::fs::remove_file(format!("data/{destination}")).map_err(|_| {
-                    error(
-                        "FILE_CLEANUP_FAILED",
-                        "copy was offered but its private staging file could not be removed",
-                    )
-                })?;
-                let directory = destination.rsplit_once('/').unwrap().0;
-                std::fs::remove_dir(format!("data/{directory}")).map_err(|_| {
-                    error(
-                        "FILE_CLEANUP_FAILED",
-                        "copy was offered but its private staging directory could not be removed",
-                    )
-                })?;
+                staging.remove()?;
                 Some(grant)
             } else {
                 None
