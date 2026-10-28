@@ -1,3 +1,4 @@
+import { waitingRoomSessionRecencyMs } from "@chariox/kernel-client/waiting-room-activity"
 import { createWaitingRoomRetainedRows } from "./waiting-room-retained-rows.js"
 import {
   externalProviderSessionPageSessions,
@@ -481,7 +482,8 @@ function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): Sess
   return Array.from(inventories)
     .flatMap((inventory) => inventory.sessions)
     .sort((left, right) => (
-      (right.last_used_at_ms ?? right.created_at_ms ?? 0) - (left.last_used_at_ms ?? left.created_at_ms ?? 0)
+      waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left)
+      || (left.created_at_ms ?? 0) - (right.created_at_ms ?? 0) || left.id.localeCompare(right.id)
     ))
 }
 

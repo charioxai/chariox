@@ -15,7 +15,7 @@ import {
 
 test("waiting room session rows render active sessions with stable columns", () => {
   const sessions = [
-    session({ id: "session-old", last_used_at_ms: Date.UTC(2026, 0, 1, 10, 0) }),
+    session({ id: "session-old", last_activity_at_ms: Date.UTC(2026, 0, 1, 10, 0), last_used_at_ms: Date.UTC(2026, 0, 1, 10, 0) }),
     session({
       id: "session-working",
       alias: "frontend",
@@ -23,6 +23,7 @@ test("waiting room session rows render active sessions with stable columns", () 
       host_daemon_id: "home-kernel",
       host_machine_id: "home-machine",
       workspace_live_sync_mode: "managed",
+      last_activity_at_ms: Date.UTC(2026, 0, 2, 10, 0),
       last_used_at_ms: Date.UTC(2026, 0, 2, 10, 0),
       activity: {
         agent_count: 2,
@@ -212,23 +213,23 @@ test("waiting room session helpers filter, sort, and size preview rows", () => {
   ]
 
   assert.deepEqual(waitingRoomSessions(sessions).map((entry) => entry.id), [
-    "prompt",
     "activity",
-    "last-used",
     "created",
+    "last-used",
+    "prompt",
   ])
   assert.equal(waitingRoomPreviewSessions(sessions).length, MAX_VISIBLE_WAITING_ROOM_SESSIONS)
   assert.equal(waitingRoomSessionTitleWidth(sessions) >= 24, true)
   assert.equal(waitingRoomMenuMinWidth(sessions) > waitingRoomSessionTitleWidth(sessions), true)
 })
 
-test("waiting room session recency prioritizes prompt and activity timestamps before fallbacks", () => {
+test("waiting room session recency uses only semantic activity or creation", () => {
   assert.equal(sessionLastActiveMs(session({
     last_prompt_sent_at_ms: 40,
     last_activity_at_ms: 30,
     created_at_ms: 20,
     last_used_at_ms: 10,
-  })), 40)
+  })), 30)
   assert.equal(sessionLastActiveMs(session({
     last_prompt_sent_at_ms: null,
     last_activity_at_ms: 30,
@@ -240,13 +241,13 @@ test("waiting room session recency prioritizes prompt and activity timestamps be
     last_activity_at_ms: null,
     created_at_ms: 20,
     last_used_at_ms: 10,
-  })), 10)
+  })), 20)
   assert.equal(sessionLastActiveMs(session({
     last_prompt_sent_at_ms: null,
     last_activity_at_ms: null,
     created_at_ms: 0,
     last_used_at_ms: 10,
-  })), 10)
+  })), 0)
 })
 
 function session(overrides: Partial<SessionListEntry> = {}): SessionListEntry {

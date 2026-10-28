@@ -144,6 +144,9 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/created_at_ms")
         .expect("session created_at_ms should encode") = serde_json::json!(42);
     *snapshot
+        .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_activity_at_ms")
+        .expect("session activity should encode") = serde_json::json!(42);
+    *snapshot
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_used_at_ms")
         .expect("session last_used_at_ms should encode") = serde_json::json!(42);
     assert_eq!(
@@ -183,7 +186,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9532c94456dbfaec1a8ea4ec4c1678d9d84f5187c0fcf845b0a10921c7dd3342"
+        "2310a9554cc05659266f076da039e0e5a445bf7de5957a9634e7e3bb3e33099b"
     );
 }
 
@@ -1028,7 +1031,10 @@ fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() 
 #[test]
 fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
     use crate::runtime::process_resources::{ProcessSample, SessionProcess, SessionProcessOwner};
-    let snapshot = serde_json::json!([
+    let snapshot = serde_json::json!({
+        "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
+        "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        "shapes": [
         crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
@@ -1064,9 +1070,9 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             }
         },
         crate::provider::ProviderRunTermination::outside_end(10000),
-    ]);
+    ]});
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("session-processes-760.json")).unwrap();
+        serde_json::from_str(include_str!("session-processes-800.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -1077,6 +1083,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "d4203b96e0220c55f595078da81191d766954a03266f2b286ca87c827e6d70de"
+        "aa73b3495b2fc97fa0628f28097f3a0e0373f720aa8cd9e8aca9a7064958fc1c"
     );
 }

@@ -581,6 +581,9 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
         .pointer_mut("/16/MetaagentTaskUpdated/session/created_at_ms")
         .expect("session created_at_ms should encode") = serde_json::json!(42);
     *snapshot
+        .pointer_mut("/16/MetaagentTaskUpdated/session/last_activity_at_ms")
+        .expect("session activity should encode") = serde_json::json!(42);
+    *snapshot
         .pointer_mut("/16/MetaagentTaskUpdated/session/last_used_at_ms")
         .expect("session last_used_at_ms should encode") = serde_json::json!(42);
     *snapshot
@@ -675,7 +678,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a806fee4ae9d00f189581a767bc55296a3c98e380f5b8a0d925b3479ca7e6cd4"
+        "fa5e8dc117725530ae1c69adc96ae7e6e355b59d7fca97bb722059c78b5a58b5"
     );
 }
 

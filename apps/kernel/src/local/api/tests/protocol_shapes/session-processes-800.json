@@ -1,0 +1,62 @@
+{
+  "protocol_version": 800,
+  "relay_peer_protocol_version": 350,
+  "shapes": [
+    {
+      "event": "session_processes_changed",
+      "session_id": "room-1",
+      "processes": [
+        {
+          "owner": {
+            "kind": "agent",
+            "id": "agent-1"
+          },
+          "pid": 42,
+          "command": "python3",
+          "resident_set_bytes": 1048576,
+          "cpu_millis": 250,
+          "sampled_at_ms": 10000,
+          "age_ms": 3000,
+          "process_id": "process-issued-1"
+        }
+      ]
+    },
+    {
+      "category": "memory_limit",
+      "reason": "provider process tree exceeded its memory limit of 33554432 bytes",
+      "timestamp_ms": 10000
+    },
+    {
+      "reason": "memory_limit",
+      "limit_bytes": 33554432
+    },
+    {
+      "kind": "memory_limit",
+      "limit_bytes": 33554432
+    },
+    {
+      "StopSessionProcesses": {
+        "session_id": "room-1",
+        "target": {
+          "kind": "process",
+          "process_id": "process-issued-1"
+        }
+      }
+    },
+    {
+      "SessionProcessesStopped": {
+        "result": {
+          "outcome": "outside_end",
+          "process_ids": [
+            "process-issued-1"
+          ]
+        }
+      }
+    },
+    {
+      "category": "outside_end",
+      "reason": "provider process tree stopped by a session controller",
+      "timestamp_ms": 10000
+    }
+  ]
+}

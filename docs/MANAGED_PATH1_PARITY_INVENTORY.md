@@ -1,5 +1,10 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 semantic session activity
+
+Local 780 / peer 330 adds the persisted kernel-owned `last_activity_at_ms` and public snapshot schema 14. Ordinary and managed sessions use the same prompt, turn, message, interaction, durable replay and projection paths. Presence and connection updates cannot change this stamp. Clients consume it without deriving activity from last-used or arrival order. This source change alone does not establish hosted acceptance.
+
+
 ## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
 
 `RoomTerminal` binary exec operations enter the same owner/Room-agent checks in

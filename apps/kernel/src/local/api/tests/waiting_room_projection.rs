@@ -38,6 +38,7 @@ fn waiting_room_inventory_sends_recent_sessions_before_the_full_catalog() {
             let response = harness
                 .dispatch(LocalDaemonRequest::ListWaitingRoomSessions(
                     crate::local::ListWaitingRoomSessionsRequest {
+                        inventory_version: None,
                         cursor,
                         limit: Some(7),
                     },
@@ -146,7 +147,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             other => panic!("unexpected response: {other:?}"),
         };
 
-        assert_eq!(snapshot.schema_version, 13);
+        assert_eq!(snapshot.schema_version, 14);
         assert!(snapshot.generated_at_ms > 0);
         let session = snapshot
             .sessions

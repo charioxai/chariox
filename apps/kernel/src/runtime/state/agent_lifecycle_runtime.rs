@@ -546,6 +546,16 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        if let Err(error) = self
+            .owned
+            .record_session_activity(session.id(), crate::session::unix_epoch_ms())
+        {
+            crate::logging::error_with_fields(
+                "daemon.activity",
+                "Could not persist session message activity",
+                serde_json::json!({"session_id": session.id(), "error": error.to_string()}),
+            );
+        }
         self.owned.record_notice_for_agent(
             session.id(),
             None,

@@ -69,6 +69,18 @@ pub(crate) async fn execute_waiting_room_request(
                 caller_user_id,
             )
             .await?;
+            if request
+                .inventory_version
+                .as_ref()
+                .is_some_and(|version| version != &snapshot.inventory_version)
+            {
+                return Err(DaemonError::MachineRequest {
+                    code: "waiting_room_inventory_changed".into(),
+                    message:
+                        "Session activity changed during listing. Read the session list again."
+                            .into(),
+                });
+            }
             Ok(LocalDaemonResponse::WaitingRoomSessionsListed {
                 page: super::waiting_room_sessions::session_page(snapshot.sessions, request)?,
             })

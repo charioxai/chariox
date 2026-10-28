@@ -243,6 +243,9 @@ impl SessionService {
         mut session: RuntimeSession,
         default_project_name_hint: Option<&str>,
     ) -> RuntimeSession {
+        if let Some(held) = self.store.get(session.id()) {
+            session.note_activity_at(held.last_activity_at_ms());
+        }
         session.purge_unsupported_workflow_publications();
         if session.is_hidden() {
             session.clear_project_id_for_hidden_restore();

@@ -5654,3 +5654,11 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
+
+## Semantic session activity (local 780 / peer 330)
+
+MP-08 / MP-09 / MP-10 / MP-11: public snapshot schema 14 and persisted sessions carry `last_activity_at_ms`. The kernel advances it for prompt admission, agent turn start/end, completed agent messages, and answered interactions. Focus, configuration, output acknowledgement, presence, heartbeat, and connection updates never advance it. Clients order from this field, with creation time and id as fixed tie breakers. Session metadata writes and replay preserve the greatest activity timestamp.
+
+`ListWaitingRoomSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `waiting_room_inventory_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
+
+Projects and sessions persist `pinned_at_ms` when their pin changes from off to on. Clients preserve pin insertion order with this field; pinning never changes semantic session activity.

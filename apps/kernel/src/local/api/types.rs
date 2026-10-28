@@ -375,5 +375,6 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
-/// MP-08 / MP-09 / MP-10 / MP-11: process resource outcomes and session-owned samples.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 760;
+/// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08 / MP-09 / MP-10 / MP-11: 800 adds process limits, Health observations and owned process controls.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 800;
