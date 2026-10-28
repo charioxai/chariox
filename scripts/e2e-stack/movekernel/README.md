@@ -38,3 +38,12 @@ the existing source route and returns `AgentMoveAborted`; it does not Return a
 remote agent. Cancellation is refused once the move may hold a target lease.
 Preflight checks source eligibility and native provider/interface/platform/CLI
 compatibility before fencing. Return also checks its original home account.
+
+MP-08 / MP-09 / MP-10 / MP-11: `return-native-conflict.mjs` uses the same
+workspace environment and real TUI/provider path. It advances the remote native
+thread, adds an independent continuation to the original home thread created
+by the fixture, and attempts Return through the public request. The import must
+refuse the divergent history at Bound. Explicit cancellation must preserve both
+native files, restore the source route and workspace, and allow another remote
+turn in the same native thread. Evidence retains hashes and TUI captures; native
+payloads stay outside tool output and are removed with disposable state.
