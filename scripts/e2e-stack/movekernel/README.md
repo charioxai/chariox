@@ -35,7 +35,7 @@ at DPR 1 and 2; they do not prove the separately scoped Move route picker or
 MP-08 / MP-09 / MP-10 / MP-11: local protocol638 adds cancellation through
 `MoveAgentToLocal: {session_id, agent_ref, abort_pending: true}`. This restores
 the existing source route and returns `AgentMoveAborted`; it does not Return a
-remote agent. Cancellation is refused once the move may hold a target lease.
+remote agent. Cancellation is refused after target activation; an unactivated Return or failed target setup can still be cancelled.
 Preflight checks source eligibility and native provider/interface/platform/CLI
 compatibility before fencing. Return also checks its original home account.
 
@@ -48,9 +48,9 @@ same native session/account, a transferred granted skill, and a home-owned
 MCP tool. The ignored setup output must be regenerated at the imported
 primary path. The recipe also installs a tool under preparation HOME and adds
 its directory through the definition PATH entries; the first target turn must
-invoke it in a non-login shell, preserving the inherited Project PATH. This
-proves the ordinary prepared provider environment survives Move and any
-first-turn tool catalog refresh.
+invoke it in a non-login shell, preserving the inherited Project PATH. The drill restarts the target worker after Move commits and before that turn. This
+proves the ordinary prepared provider environment is reconstructed after restart and
+survives any first-turn tool catalog refresh.
 Use the environment above and the same 4 GiB scope. This kernel
 acceptance leaves the route picker and its `via` label to PR5.
 
