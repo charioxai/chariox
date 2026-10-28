@@ -693,6 +693,15 @@ fn claude_profile_auth_status(
     })
 }
 
+#[cfg(test)]
+fn claude_auth_status(
+    provider: &str,
+    account_profile: &str,
+    environment: &BTreeMap<String, String>,
+) -> Result<ProviderAuthStatus, DaemonError> {
+    claude_auth_status_until(provider, account_profile, environment, None)
+}
+
 fn claude_auth_status_until(
     provider: &str,
     account_profile: &str,
