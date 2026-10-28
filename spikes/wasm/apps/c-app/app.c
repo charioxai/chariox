@@ -170,7 +170,13 @@ static app_callback_code_t step(task_t *t) {
       uint64_t count = 0;
       t->check.version.is_some = t->got.val.ok.is_some;
       if (t->got.val.ok.is_some) {
-        count = strtoull((const char *) t->got.val.ok.val.value.ptr, NULL, 10);
+        app_string_t value = t->got.val.ok.val.value;
+        char *text = malloc(value.len + 1);
+        if (!text) return fail(t, "OUT_OF_MEMORY", "could not read counter state");
+        memcpy(text, value.ptr, value.len);
+        text[value.len] = '\0';
+        count = strtoull(text, NULL, 10);
+        free(text);
         t->check.version.val = t->got.val.ok.val.version;
       }
       t->next = count + 1;
