@@ -128,7 +128,7 @@ impl DurableKernelStateStore {
         agent: Option<&str>,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.tasks")?;
-        let mut q=db.prepare("SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        let mut q=db.prepare_cached("SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
         let rows = q
             .query_map(params![room, agent], |r| {
                 Ok((
