@@ -120,6 +120,18 @@ pub(super) use apply_setup::{
     setup_retry_is_settled,
 };
 
+// MP-08 / MP-10 / MP-11: metadata-only self-exec preparation reuses worker path policy.
+pub(crate) fn prepare_setup_paths(
+    workspace: &str,
+    home: &Path,
+    project: &str,
+    worker: &str,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    let workspace = canonical_worker_workspace(workspace, Some(home.as_os_str()))?;
+    let preparation = WorkerPreparationHome::for_project_worker(&workspace, home, project, worker)?;
+    Ok((workspace, preparation.path().to_path_buf()))
+}
+
 pub(super) fn current_worker_platform() -> String {
     actual_worker_platform()
 }

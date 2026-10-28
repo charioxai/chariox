@@ -182,6 +182,14 @@ pub(crate) fn canonical_workspace_path(
             if same_fs_path_buf(&git_dir, &common_dir) {
                 return (git_path == workspace_path).then(|| workspace_path.to_string());
             }
+            // MP-08 / MP-10 / MP-11: a bare mirror has no main checkout.
+            // Its parent can hold unrelated worktrees and private state.
+            if git_command_output(common_dir.to_str()?, &["rev-parse", "--is-bare-repository"])
+                .as_deref()
+                == Some("true")
+            {
+                return Some(git_path.to_string());
+            }
             let workspace = common_dir.parent()?.to_path_buf();
             Some(workspace.display().to_string())
         })
@@ -337,6 +345,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&non_git_workspace);
         let _ = std::fs::remove_dir_all(&worktree);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // MP-08 / MP-10 / MP-11: bare metadata is not a working directory.
+    #[test]
+    fn canonical_workspace_keeps_a_bare_backed_checkout_out_of_the_shared_parent() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-bare-workspace-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let seed = root.join("seed");
+        let metadata = root.join("mirror.git");
+        let checkout = root.join("checkout");
+        std::fs::create_dir_all(&seed).unwrap();
+        run_git(&seed, &["init"]);
+        run_git(&seed, &["config", "user.email", "tests@example.invalid"]);
+        run_git(&seed, &["config", "user.name", "Chariox Tests"]);
+        std::fs::write(seed.join("README.md"), "source\n").unwrap();
+        run_git(&seed, &["add", "README.md"]);
+        run_git(&seed, &["commit", "-m", "initial"]);
+        run_git(
+            &root,
+            &[
+                "clone",
+                "--bare",
+                seed.to_str().unwrap(),
+                metadata.to_str().unwrap(),
+            ],
+        );
+        run_git(
+            &metadata,
+            &["worktree", "add", "--detach", checkout.to_str().unwrap()],
+        );
+        let expected = std::fs::canonicalize(&checkout)
+            .unwrap()
+            .display()
+            .to_string();
+        let actual =
+            canonical_workspace_path(checkout.to_str().unwrap(), checkout.to_str().unwrap());
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(actual, Some(expected), "a bare mirror has no main checkout; its parent may contain unrelated source and private state");
     }
 
     fn run_git(cwd: &Path, args: &[&str]) {

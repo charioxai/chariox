@@ -182,7 +182,7 @@ pub use api::{
     RequestManagedEnvironmentReleaseUpdateRequest, RequestNativeProviderTurnInteractionRequest,
     RequestRoomEnvironmentInputTakeoverRequest, ResetAllPromptSettingsRequest,
     ResetPromptSettingRequest, ResizeTerminalRequest, ResolveKernelClientConnectionRequest,
-    ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
+    ResolveProjectRequest, ResolveSessionRequest, ResolveWorkflowRequest, RespondToHandoffRequest,
     RespondToInteractionRequest, RestoreProjectRequest, RestoreSliceBackupRequest,
     ResumeMetaagentTaskRequest, ResumeWorkflowRunRequest, RetryProjectEnvironmentSetupRequest,
     RetryRoomEnvironmentRequest, RevokeAgentExtensionRequest, RevokeCloudSessionInviteRequest,

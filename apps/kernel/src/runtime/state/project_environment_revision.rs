@@ -33,7 +33,7 @@ impl KernelRuntimeState {
             let current = store.snapshot_locked(&project)?;
             // Validate before any path read; Preview measures the same selections as Save.
             environment_revision_diff(&current, &draft)?;
-            verify_manual_files(&current, &mut draft)?;
+            store.verify_revision_files(&current, &mut draft)?;
             environment_revision_diff(&current, &draft)
         })
         .await

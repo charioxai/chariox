@@ -1,3 +1,4 @@
+import {createProjectEnvironmentReadController} from "./project-environment-read-controller.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -138,6 +139,8 @@ function createHarness(options: {
   sessions?: SessionListEntry[]
   projects?: WaitingRoomProjectSummary[]
   remote?: WaitingRoomRemoteState
+  workspacePath?: string
+  openProjectEnvironment?: WaitingRoomKeyControllerDeps["openProjectEnvironment"]
 } = {}) {
   let state = options.state ?? waitingRoomState()
   const calls: string[] = []
@@ -154,6 +157,7 @@ function createHarness(options: {
     getWaitingRoomState: () => state,
     getSessions: () => options.sessions ?? [],
     getProviderCatalog: () => fallbackProviderCatalog(),
+    getWorkspacePath: () => options.workspacePath ?? "/form/workspace",
     getRemoteState: () => options.remote ?? (options.projects ? { projects: options.projects } : {}),
     reconcileWaitingRoom: (nextState) => {
       calls.push("reconcile")
@@ -172,7 +176,7 @@ function createHarness(options: {
       calls.push(`lifecycle:${action}`)
       lifecycleActions.push(action)
     },
-    openProjectEnvironment: (projectId) => { calls.push(`environment:${projectId}`) },
+    openProjectEnvironment: (projectId, workspaceId) => { calls.push(`environment:${projectId}${projectId === null ? `:${workspaceId}` : ""}`); options.openProjectEnvironment?.(projectId, workspaceId) },
     pinProject: (projectId, pinned) => { calls.push(`pin:${projectId}:${pinned}`) },
     beginNewProject: () => { calls.push("new-project-name") },
     beginProjectRename: (projectId, name) => {
@@ -261,4 +265,25 @@ test("ENV P01 V opens exactly the selected Project and ignores release/modifiers
   assert.deepEqual(harness.calls(), [])
   harness.controller.handleKey({ name: "v", eventType: "press" })
   assert.deepEqual(harness.calls(), ["environment:second"])
+})
+
+// MP-08 / MP-10 / MP-11: editable Workspace takes precedence over inventory defaults.
+for (const workspaceId of ["/inventory/folder-a", undefined]) test(`Environment opens current form folder with inventory ${workspaceId}`,()=>{
+  const harness=createHarness({state:waitingRoomState({focus:"workspace"}),remote:workspaceId ? {workspaceId} : {},workspacePath:"/selected/folder-b"})
+  assert.equal(harness.controller.handleKey({name:"v",eventType:"press"}),true)
+  assert.deepEqual(harness.calls(),["environment:null:/selected/folder-b"])
+})
+
+// MP-02 / MP-08 / MP-10 / MP-11: normal V with an empty Workspace cannot revive an old target.
+test("review0440 Workspace V forgets a previous folder opening",async()=>{
+ const requests:unknown[]=[]
+ const environment=createProjectEnvironmentReadController({send:async request=>{requests.push(request);return {ProjectResolved:{project:null}}},render(){},pageSize:()=>100})
+ await environment.open(null,"/previous");environment.close();requests.length=0
+ let opening:Promise<void>|undefined
+ const harness=createHarness({state:waitingRoomState({focus:"workspace"}),workspacePath:"",openProjectEnvironment:(id,workspace)=>{opening=environment.open(id,workspace)}})
+ harness.controller.handleKey({name:"v",eventType:"press"});await opening
+ assert(environment.visibleLines().some(line=>line.includes("Choose a folder")))
+ environment.handleKey({name:"r"});await Promise.resolve()
+ assert.equal(requests.length,0)
+ environment.close()
 })

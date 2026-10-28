@@ -682,7 +682,8 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     applyLifecycleAction: (action) => {
       void deps.applyWaitingRoomSessionLifecycleAction(action)
     },
-    openProjectEnvironment: projectId => { void deps.openProjectEnvironment(projectId) },
+    getWorkspacePath: () => deps.waitingRoomTargets().workspacePath,
+    openProjectEnvironment: (projectId, workspaceId) => { void deps.openProjectEnvironment(projectId, workspaceId) },
     pinProject: (projectId, pinned) => {
       void deps.client.send({ SetProjectPinned: { project_id: projectId, pinned } })
         .then(() => deps.flashFooter(pinned ? "Project pinned" : "Project unpinned", "info"))

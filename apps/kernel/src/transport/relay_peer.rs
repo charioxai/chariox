@@ -140,7 +140,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
 /// Version 255 carries the local 660 compact Environment response union.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 255;
+/// Version 256 carries the local 661 standalone Project response union.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 256;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

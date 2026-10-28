@@ -5656,3 +5656,13 @@ digest and a bounded proposal page. Omitting it preserves the full legacy read.
 proposal count/cursor and operation item counts with the requested projection.
 The selected kernel retains Project and operation authority. Existing multiplexed
 relay framing, shared receipt credit and binary event transport remain unchanged.
+
+### Standalone Project resolution (local 661 / peer 256)
+
+`ResolveProject { project_id?, workspace_id, create_if_missing }` returns
+`ProjectResolved { project? }` through the ordinary kernel request dispatcher.
+A lookup never creates a Project or session. Explicit setup validates the owned
+workspace and journals a standalone Project before publishing its durable ID.
+Standalone Projects remain available without a running agent or visible session.
+Clients gate this action on661 while existing compact Environment reads keep
+their660 floor.

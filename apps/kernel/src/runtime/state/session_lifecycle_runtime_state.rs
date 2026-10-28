@@ -1355,11 +1355,14 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
-    crate::git_worktree_placement::preflight_existing_absolute_directory(
+    let admitted = crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.workspace_id,
         "workspace_id",
         "session.create",
     )?;
+    // MP-02 / MP-08 / MP-10 / MP-11: preserve the shared filesystem preflight's
+    // canonical spelling before Git normalization, just like Project resolution.
+    request.workspace_id = admitted.canonical_path.to_string_lossy().into_owned();
     crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.worktree_id,
         "worktree_id",

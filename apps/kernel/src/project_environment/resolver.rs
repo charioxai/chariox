@@ -195,6 +195,22 @@ pub fn resolve_project_environment(
     workspace_environment: &BTreeMap<String, BTreeMap<String, Zeroizing<String>>>,
     vault: &dyn CredentialVaultStore,
 ) -> Result<ResolvedProjectEnvironment, DaemonError> {
+    resolve_project_environment_with_reader(
+        manifest,
+        workspaces,
+        workspace_environment,
+        vault,
+        &mut read_environment_file,
+    )
+}
+
+pub(super) fn resolve_project_environment_with_reader(
+    manifest: &ProjectEnvironmentManifest,
+    workspaces: &BTreeMap<String, PathBuf>,
+    workspace_environment: &BTreeMap<String, BTreeMap<String, Zeroizing<String>>>,
+    vault: &dyn CredentialVaultStore,
+    read: &mut dyn FnMut(&Path, &str) -> Result<Zeroizing<String>, DaemonError>,
+) -> Result<ResolvedProjectEnvironment, DaemonError> {
     manifest.validate().map_err(environment_error)?;
     let service = project_environment_vault_service(&manifest.project_id);
     let mut resolved = ResolvedProjectEnvironment {
@@ -219,28 +235,27 @@ pub fn resolve_project_environment(
             .ok_or_else(|| environment_error("manifest workspace not selected"))?;
         let key = project_environment_vault_key(entry);
         let result = match &entry.locator {
-            ProjectEnvironmentLocator::EnvFile { path, key } => read_environment_file(root, path)
-                .and_then(|text| {
-                    let mut value = None;
-                    for line in text.lines() {
-                        if let Some(next) =
-                            parse_environment_assignment(line, key).map_err(environment_error)?
-                        {
-                            // A duplicate is ambiguous rather than a silent last-value win.
-                            if value.is_some() {
-                                return Err(environment_error("duplicate environment assignment"));
-                            }
-                            value = Some(Zeroizing::new(next));
+            ProjectEnvironmentLocator::EnvFile { path, key } => read(root, path).and_then(|text| {
+                let mut value = None;
+                for line in text.lines() {
+                    if let Some(next) =
+                        parse_environment_assignment(line, key).map_err(environment_error)?
+                    {
+                        // A duplicate is ambiguous rather than a silent last-value win.
+                        if value.is_some() {
+                            return Err(environment_error("duplicate environment assignment"));
                         }
+                        value = Some(Zeroizing::new(next));
                     }
-                    value.ok_or_else(|| environment_error("referenced environment value missing"))
-                }),
+                }
+                value.ok_or_else(|| environment_error("referenced environment value missing"))
+            }),
             ProjectEnvironmentLocator::WorkspaceEnvironment { name } => workspace_environment
                 .get(&entry.workspace_id)
                 .and_then(|env| env.get(name))
                 .cloned()
                 .ok_or_else(|| environment_error("referenced workspace environment value missing")),
-            ProjectEnvironmentLocator::ConfigFile { path } => read_environment_file(root, path),
+            ProjectEnvironmentLocator::ConfigFile { path } => read(root, path),
             ProjectEnvironmentLocator::Vault { service, key } => {
                 vault.get_secret(service, key).map(Zeroizing::new)
             }

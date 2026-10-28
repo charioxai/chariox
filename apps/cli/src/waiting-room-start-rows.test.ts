@@ -46,7 +46,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
   assert.equal(rows.find((row) => row.id === "model")?.value, "gpt-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
-  assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
+  assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace · V Environment")
   assert.equal(rows.find((row) => row.id === "live-sync"), undefined)
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")

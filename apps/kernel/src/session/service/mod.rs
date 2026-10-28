@@ -309,6 +309,7 @@ pub struct SessionService {
 
 mod core;
 mod durable_queue;
+mod project_resolution;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod helpers;
 mod launches;

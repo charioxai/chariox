@@ -255,6 +255,8 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        // MP-08 / MP-10: bounded initial labels, before clients can attach.
+        crate::runtime::waiting_room_git_metadata::prime_launch_target();
         if config.user_config.credential_vault.backend
             == crate::config::CredentialVaultBackend::CharioxEncrypted
         {

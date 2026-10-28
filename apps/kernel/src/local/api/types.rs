@@ -374,4 +374,5 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// Version 660 adds explicit bounded Project Environment reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 660;
+/// Version 661 adds session-free durable Project resolution.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 661;

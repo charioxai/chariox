@@ -208,6 +208,17 @@ pub(crate) fn verify_manual_files(
 ) -> Result<(), DaemonError> {
     verify_files(current, draft, true, None)
 }
+pub(super) fn verify_manual_files_until(
+    current: &ProjectEnvironment,
+    draft: &mut EnvironmentRevisionDraft,
+    deadline: std::time::Instant,
+) -> Result<(), DaemonError> {
+    verify_files(current, draft, true, Some(deadline))
+}
+pub(super) fn has_included_files(draft: &EnvironmentRevisionDraft) -> bool {
+    draft.project_requirements.iter().chain(draft.folders.iter().flat_map(|f| &f.requirements)).any(|r|
+        matches!(&r.spec, RequirementSpec::Files { entries, .. } if entries.iter().any(|e| e.transfer_inclusion != EnvironmentTransferInclusion::Exclude)))
+}
 // MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
 pub(super) fn verify_check_files(
     current: &ProjectEnvironment,
@@ -222,16 +233,7 @@ fn verify_files(
     git_metadata: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), DaemonError> {
-    let roots: Vec<_> = current
-        .folders
-        .iter()
-        .filter(|folder| !folder.local_workspace_binding.is_empty())
-        .filter_map(|folder| {
-            Path::new(&folder.local_workspace_binding)
-                .canonicalize()
-                .ok()
-        })
-        .collect();
+    let mut roots: Option<Vec<std::path::PathBuf>> = None;
     let mut total_bytes = 0;
     let mut total_count = 0;
     for requirement in draft
@@ -336,7 +338,26 @@ fn verify_files(
             total_bytes = selection.bytes;
             total_count = selection.count;
             if git_metadata {
-                entry.git_ignored = ignored(path, &entry.relative_path, &roots);
+                let roots = roots.get_or_insert_with(|| {
+                    current
+                        .folders
+                        .iter()
+                        .filter(|folder| !folder.local_workspace_binding.is_empty())
+                        .filter_map(|folder| {
+                            #[cfg(test)]
+                            if let Some(marker) =
+                                std::env::var_os("CHARIOX_MANUAL_ROOT_STALL_MARKER")
+                            {
+                                std::fs::write(marker, std::process::id().to_string()).unwrap();
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                            }
+                            Path::new(&folder.local_workspace_binding)
+                                .canonicalize()
+                                .ok()
+                        })
+                        .collect()
+                });
+                entry.git_ignored = ignored(path, &entry.relative_path, roots);
             }
             entry.secret_looking = selection.protected;
             if selection.protected {

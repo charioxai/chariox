@@ -49,7 +49,10 @@ impl KernelRuntimeOwnedState {
         {
             return None;
         }
-        self.session_store.get_project(project_id).ok()
+        self.session_store
+            .get_project(project_id)
+            .ok()
+            .filter(|project| !project.is_standalone())
     }
 
     pub(super) fn session_snapshot(

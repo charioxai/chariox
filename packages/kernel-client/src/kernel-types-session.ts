@@ -103,6 +103,7 @@ export type SessionProjectSelection =
 
 export type RuntimeProject = {
   pinned?: boolean
+  standalone?: boolean
   id: string
   owner_user_id: string
   workspace_id: string

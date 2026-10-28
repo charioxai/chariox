@@ -203,6 +203,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::CreateSession(request) => {
                 Box::pin(async move { self.store.create_session(request, caller_user_id).await })
             }
+            LocalDaemonRequest::ResolveProject(request) => {
+                Box::pin(
+                    async move { (self.store.resolve_project(request, &caller_user_id), None) },
+                )
+            }
             LocalDaemonRequest::ListProjects(request) => {
                 Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }

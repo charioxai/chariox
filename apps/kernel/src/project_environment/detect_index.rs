@@ -269,7 +269,7 @@ fn walk(
             break;
         }
         budget.visited += 1;
-        if !safe_metadata(&name) {
+        if !safe_metadata(&name) || credential_metadata(&name) {
             index
                 .skips
                 .push(skip(folder, "[protected path]", "protected_metadata"));

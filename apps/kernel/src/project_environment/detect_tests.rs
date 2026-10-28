@@ -490,3 +490,32 @@ fn r4_detect_excludes_generated_dependency_references() {
         !matches!(o, RequirementOrigin::Detected { relative_path, .. } if relative_path.ends_with("dependency.ts"))
     }));
 }
+
+// MP-08 / MP-10 / MP-11: reject each credential-shaped component before any model input.
+#[test]
+fn review1356_detect_excludes_credential_shaped_names_and_parent_directories() {
+    let root = TestWorktree::new("review1356-detect-path");
+    write(&root, "package.json", "{}");
+    for name in [
+        "api_key=synthetic-value.txt",
+        "api_key=synthetic-value.js",
+        "api_key=synthetic-parent/ordinary.js",
+    ] {
+        write(&root, name, "process.env.PUBLIC_SETTING");
+    }
+    write(&root, "ordinary.js", "process.env.BENIGN_SETTING");
+    let folders = vec![folder(&root)];
+    let detection = detect_environment(&folders, "environment").unwrap();
+    let (input, _) = detection.discovery_input(
+        "project",
+        &folders,
+        &std::collections::BTreeSet::from(["folder".into()]),
+    );
+    let retained = serde_json::to_string(&(detection.proposals, detection.skips, input)).unwrap();
+    assert!(
+        !retained.contains("synthetic-value") && !retained.contains("synthetic-parent"),
+        "protected filename bytes must not reach deterministic metadata or utility input"
+    );
+    assert!(retained.contains("protected_metadata"));
+    assert!(retained.contains("BENIGN_SETTING"));
+}

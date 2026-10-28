@@ -71,31 +71,23 @@ pub(super) fn check_platform(
                     return outcome(Missing,"gui_platform_gap","Desktop program is absent or unsupported on this platform; Check-only in V1");
                 }
             }
-            let version = if install_source.as_deref() == Some("npm package") {
-                super::check_files::npm(&ctx.config, workspace(env, r), identity, deadline)
-            } else {
-                inventory::software_version_until(
-                    identity,
-                    install_source.as_deref(),
-                    workspace(env, r),
-                    roots,
-                    deadline,
-                )
-            };
+            let version = super::check_files::software(
+                &ctx.config,
+                workspace(env, r),
+                identity,
+                install_source.as_deref(),
+                roots,
+                deadline,
+            );
             match version {
-                Ok(Some(v)) => {
+                Ok((Some(v), owned)) => {
                     facts.present = Some(true);
                     facts.version = Some(v.clone());
                     match version_constraint
                         .as_deref()
-                        .map(|c| inventory::satisfies(&v, c))
+                        .map(|c| inventory::satisfies(&v, c, inventory::VersionSemantics::software(identity, install_source.as_deref())))
                     {
                         Some(Some(false)) => {
-                            let owned = inventory::executable(identity)
-                                .and_then(|p| p.canonicalize().ok())
-                                .is_some_and(|p| {
-                                    p.starts_with(ctx.config.private_runtime_state_root())
-                                });
                             outcome(if owned{Outdated}else{Conflict},"version_mismatch","Installed version does not meet the requirement; Check never replaces or upgrades it")
                         }
                         Some(None) => outcome(
@@ -106,7 +98,7 @@ pub(super) fn check_platform(
                         _ => outcome(Ready, "software_present", "Named inventory probe passed"),
                     }
                 }
-                Ok(None) => {
+                Ok((None, _)) => {
                     facts.present = Some(false);
                     outcome(Missing, "software_absent", "Required executable is absent")
                 }

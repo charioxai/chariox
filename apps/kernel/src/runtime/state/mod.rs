@@ -472,6 +472,7 @@ mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
+mod project_resolution;
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
@@ -515,6 +516,7 @@ pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
 mod project_environment_setup;
+pub(crate) use project_environment_setup::prepare_setup_paths;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;

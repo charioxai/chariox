@@ -52,6 +52,8 @@ fn compatible(a: &RequirementSpec, b: &RequirementSpec) -> bool {
         RequirementSpec::Software {
             platform: pa,
             version_constraint: va,
+            identity,
+            install_source,
             ..
         },
         RequirementSpec::Software {
@@ -63,9 +65,11 @@ fn compatible(a: &RequirementSpec, b: &RequirementSpec) -> bool {
     {
         *pa = None;
         *pb = None;
-        let versions_overlap =
-            super::check_inventory::constraints_overlap(va.as_deref(), vb.as_deref())
-                != Some(false);
+        let versions_overlap = super::check_inventory::constraints_overlap(
+            va.as_deref(),
+            vb.as_deref(),
+            super::check_inventory::VersionSemantics::software(identity, install_source.as_deref()),
+        ) != Some(false);
         *va = None;
         *vb = None;
         return versions_overlap && a == b;
@@ -141,5 +145,24 @@ mod review2148 {
             validate_scopes(&draft).is_err(),
             "disjoint declarations must still be rejected"
         );
+    }
+}
+
+// MP-08 / MP-10: Python partial bounds remain numeric through Save conflicts.
+#[cfg(test)]
+mod review2018 {
+    use super::*;
+    #[test]
+    fn python_partial_bounds_preserve_save_conflicts() {
+        let software = |id: &str, constraint: &str| {
+            serde_json::from_value::<Requirement>(serde_json::json!({"requirement_id":id,"title":id,"scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"python","version_constraint":constraint,"platform":null,"install_scope":"project","install_source":"mise","detect_only":false},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap()
+        };
+        for (bound, expected) in [(">3.10", true), ("<=3.10", false)] {
+            let draft = EnvironmentRevisionDraft {
+                project_requirements: vec![software("a", bound), software("b", "==3.10.12")],
+                folders: vec![],
+            };
+            assert_eq!(validate_scopes(&draft).is_ok(), expected, "{bound}");
+        }
     }
 }

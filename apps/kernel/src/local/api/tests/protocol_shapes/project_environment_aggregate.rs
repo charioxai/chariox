@@ -119,3 +119,37 @@ fn environment_view_protocol_505_shapes_and_hash() {
         "42585c4c487e819f3b3cab90ce2577c556ea15f06e1d8473ae15b646e020ed48"
     );
 }
+
+// MP-08 / MP-10 / MP-11: local661/peer256 allocated for standalone Project entry.
+#[test]
+fn standalone_project_resolution_protocol_shape() {
+    assert_eq!(
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let requests = [false, true].map(|create_if_missing| {
+        crate::local::LocalDaemonRequest::ResolveProject(crate::local::ResolveProjectRequest {
+            project_id: Some("missing".into()),
+            workspace_id: "/src".into(),
+            create_if_missing,
+        })
+    });
+    let mut project = crate::session::RuntimeProject::new(
+        "project",
+        "owner",
+        "/src",
+        "Source",
+        crate::session::RuntimeProjectKind::Default,
+    );
+    project.retain_without_sessions();
+    let mut record = serde_json::to_value(project).unwrap();
+    record["created_at_ms"] = serde_json::json!(1);
+    record["updated_at_ms"] = serde_json::json!(2);
+    let snapshot = serde_json::json!([requests, crate::local::LocalDaemonResponse::ProjectResolved { project: None }, {"ProjectResolved":{"project":record}}]);
+    let serialized = serde_json::to_string(&snapshot).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serialized.as_bytes())),
+        "1e9bfeab4e1c56902a07360367cfc82cd68e8f0b5f6c874911c800b3554a2645"
+    );
+}

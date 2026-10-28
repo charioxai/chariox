@@ -40,8 +40,8 @@ pub(crate) fn capture_cancellable(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut process = platform::Process::spawn(&mut command)?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
+    let mut stdout = zeroize::Zeroizing::new(Vec::new());
+    let mut stderr = zeroize::Zeroizing::new(Vec::new());
     loop {
         if cancelled() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "owned probe cancelled").into());
@@ -62,8 +62,8 @@ pub(crate) fn capture_cancellable(
             while drain(stderr_pipe(&mut process), &mut stderr, stdout.len())? {}
             return Ok(Output {
                 status,
-                stdout,
-                stderr,
+                stdout: std::mem::take(&mut *stdout),
+                stderr: std::mem::take(&mut *stderr),
             });
         }
         if Instant::now() >= deadline {
@@ -105,7 +105,7 @@ fn drain<P: Read + platform::Pipe>(
     bytes: &mut Vec<u8>,
     other_len: usize,
 ) -> Result<bool, CaptureError> {
-    let mut buffer = [0_u8; 8192];
+    let mut buffer = zeroize::Zeroizing::new([0_u8; 8192]);
     let mut read = 0;
     while read < READ_BUDGET {
         let available = platform::available(pipe)?;

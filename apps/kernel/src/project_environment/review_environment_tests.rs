@@ -286,6 +286,7 @@ fn review0634_python_manifest_constraints_reach_save_and_check() {
         .expect("installed Python 3");
     let parts: Vec<_> = installed.split('.').collect();
     let minor = format!("{}.{}", parts[0], parts[1]);
+    let above_minor = parts.iter().skip(2).any(|p| p.parse::<u32>().unwrap() > 0);
     for (constraint, expected) in [
         (">=3.10,<4".to_owned(), EnvironmentObservationStatus::Ready),
         (
@@ -293,6 +294,22 @@ fn review0634_python_manifest_constraints_reach_save_and_check() {
             EnvironmentObservationStatus::Conflict,
         ),
         (format!("=={minor}.*"), EnvironmentObservationStatus::Ready),
+        (
+            format!(">{minor}"),
+            if above_minor {
+                EnvironmentObservationStatus::Ready
+            } else {
+                EnvironmentObservationStatus::Conflict
+            },
+        ),
+        (
+            format!("<={minor}"),
+            if above_minor {
+                EnvironmentObservationStatus::Conflict
+            } else {
+                EnvironmentObservationStatus::Ready
+            },
+        ),
         ("==2.7.*".to_owned(), EnvironmentObservationStatus::Conflict),
         (
             "~=3.12".to_owned(),
@@ -371,17 +388,29 @@ fn review0634_python_specifiers_keep_unsupported_or_malformed_cases_unproven() {
         ("3.12.8", ">=3.10,", None),
     ] {
         assert_eq!(
-            check_inventory::satisfies(version, constraint),
+            check_inventory::satisfies(
+                version,
+                constraint,
+                check_inventory::VersionSemantics::Numeric
+            ),
             expected,
             "{constraint}"
         );
     }
     assert_eq!(
-        check_inventory::constraints_overlap(Some(">=3.10,<4"), Some("==3.12.*")),
+        check_inventory::constraints_overlap(
+            Some(">=3.10,<4"),
+            Some("==3.12.*"),
+            check_inventory::VersionSemantics::Numeric
+        ),
         Some(true)
     );
     assert_eq!(
-        check_inventory::constraints_overlap(Some(">=3.10,<3.12"), Some("==3.12.*")),
+        check_inventory::constraints_overlap(
+            Some(">=3.10,<3.12"),
+            Some("==3.12.*"),
+            check_inventory::VersionSemantics::Numeric
+        ),
         Some(false)
     );
 }

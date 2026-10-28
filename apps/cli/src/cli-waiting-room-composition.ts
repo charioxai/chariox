@@ -226,7 +226,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     homeKernelId: () => homeKernelId,
     homeMachineId: () => homeMachineId,
     currentKernelId: () => deps.relayStatusState()?.daemon_id?.trim(),
-    invalidateInventory: () => waitingRoomInventoryRefreshController.invalidate(),
+    invalidateInventory: (snapshot) => waitingRoomInventoryRefreshController.invalidate(snapshot),
     clearProjectSetup: () => projectEnvironmentSetupProjection.clear(),
     connected: (label) => {
       deps.setKernelConnected(true)
