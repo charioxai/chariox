@@ -22,3 +22,13 @@ for advanced use and require explicit ownership. Use `ctx.resources.own(promise,
 dispose)` for another resource-valued import.
 
 See [builds, polyfill limits and integration gates](../app-sdk-tools/README.md).
+
+
+## Browser UI handlers
+
+This SDK dispatches backend WIT handlers. Browser UI actions receive
+`(input, caller)` and use `await caller.call(method, input)` for backend work
+belonging to that invocation. Ambient `chariox.call` always acts as the human.
+Register async forms with `chariox.form(element, async (input, caller) => {...})`;
+annotated forms without registration are refused. See the
+[view caller and form contract](../app-wit/README.md#view-callers-and-forms).

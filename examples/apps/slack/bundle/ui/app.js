@@ -46,14 +46,13 @@ function replyForm(notification) {
   send.type = "submit"
   send.textContent = "Reply"
   form.append(input, send)
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault()
+  window.chariox.form(form, async (_input, caller) => {
     send.disabled = true
     // One id per submitted reply: resending after an unclear failure posts
     // it at most once.
     const requestId = form.dataset.requestId ??= crypto.randomUUID()
     try {
-      const { posted } = await window.chariox.call("reply", { id: notification.id, text: input.value, request_id: requestId })
+      const { posted } = await caller.call("reply", { id: notification.id, text: input.value, request_id: requestId })
       if (!posted) {
         say("Slack did not accept the reply.", true)
         return
