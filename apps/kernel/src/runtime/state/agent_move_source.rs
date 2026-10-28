@@ -35,22 +35,6 @@ impl KernelRuntimeState {
             }
         }
         self.probe_agent_move_source(session_id, agent_id).await?;
-        if let Some(process) = self
-            .owned
-            .durable_state_store
-            .leased_process_receipts()?
-            .into_iter()
-            .find(|receipt| {
-                receipt.backing_room == session_id
-                    && receipt.backing_agent == agent_id
-                    && !matches!(
-                        receipt.wake.state.as_str(),
-                        "exited" | "lost" | "cancelled" | "fired"
-                    )
-            })
-        {
-            return Err(move_error(format!("Move cannot retire live process wake `{}`. Wait for it to exit or cancel it, then retry", process.wake.id)));
-        }
         let session = self
             .owned
             .agent_moves
@@ -64,13 +48,6 @@ impl KernelRuntimeState {
             .owned
             .provider_store
             .get_latest_run_for_agent(session_id, agent_id);
-        if let Some(run) = latest
-            .as_ref()
-            .filter(|run| run.provider_session_id().is_some() || !run.resume_state().is_empty())
-        {
-            crate::provider::native_checkpoint_support(run.provider(), run.client_interface())
-                .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
-        }
         let pending_checkpoint = if latest.is_none()
             && agent
                 .provider_resume_state()

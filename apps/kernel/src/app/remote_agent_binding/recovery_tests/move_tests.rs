@@ -2919,3 +2919,209 @@ async fn mk05_deferred_move_that_fails_publishes_its_reason_and_can_be_cancelled
         .expect("a failed Move without an operation is dismissed by cancelling it");
     assert!(agent_move_status(&fixture).await.is_none());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_unactivated_return_restores_home_configuration() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let original = fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap();
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::write(root.join("crash-after-phase-for-test"), "target:attached").unwrap();
+    let home = fixture.home.clone();
+    let agent_id = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let interrupted = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToLocal(
+            crate::local::MoveAgentToLocalRequest {
+                session_id,
+                agent_ref: agent_id,
+                abort_pending: false,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "return-attach",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(interrupted.unwrap_err().is_panic());
+    assert_eq!(
+        move_journal(&fixture, &session).await["phase"]["phase"],
+        "bound"
+    );
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.expect("an unactivated Return must be cancellable");
+    let home = fixture.home.lock().await;
+    let restored = home.agents().get_agent(&fixture.agent_id).unwrap();
+    assert_eq!(restored.remote_execution(), original.remote_execution());
+    assert_eq!(restored.workspace_id(), original.workspace_id());
+    assert_eq!(restored.worktree_id(), original.worktree_id());
+    assert_eq!(
+        restored.provider_resume_state(),
+        original.provider_resume_state()
+    );
+    assert!(!home
+        .agent_moves
+        .dispatch_fenced(&session, &fixture.agent_id));
+    let operation = home
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    assert!(
+        home.agent_moves
+            .target(&operation.identity.operation_id)
+            .unwrap()
+            .retired
+    );
+    let worker = fixture.workers[0].lock().await;
+    let remote = restored.remote_execution().unwrap();
+    let backing = worker.leased_agents.get(&remote.leased_agent_id).unwrap();
+    assert!(!worker
+        .agent_moves
+        .dispatch_fenced(&backing.backing_session_id, &backing.backing_agent_id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_cancelled_partial_upload_releases_transfer_archives_after_restart() {
+    use crate::agent_move::{AgentMoveArtifactKind, HomeMovePhase};
+    let (mut fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let HomeMovePhase::Captured { capture } = &operation.phase else {
+        panic!("capture required")
+    };
+    {
+        let worker = fixture.workers[0].lock().await;
+        worker
+            .agent_moves
+            .begin_target(
+                capture.clone(),
+                &fixture.workspace_root.join("partial-target"),
+            )
+            .unwrap();
+        worker
+            .agent_moves
+            .write_chunk(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+                0,
+                b"partial upload",
+            )
+            .unwrap();
+    }
+    dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap();
+    assert_no_workspace_archives(&fixture).await;
+    let mut native_paths = Vec::new();
+    for app in [&fixture.home, &fixture.workers[0]] {
+        let app = app.lock().await;
+        std::fs::write(
+            app.agent_moves.artifact_path(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+            ),
+            b"crash before unlink",
+        )
+        .unwrap();
+        let native = app.agent_moves.artifact_path(
+            &operation.identity.operation_id,
+            AgentMoveArtifactKind::Native,
+        );
+        std::fs::write(&native, b"preserve native checkpoint").unwrap();
+        native_paths.push(native);
+        app.save_durable_state_snapshot().unwrap();
+    }
+    reboot_app(&fixture.home).await;
+    reboot_worker(&mut fixture).await;
+    assert_no_workspace_archives(&fixture).await;
+    for native in native_paths {
+        assert_eq!(
+            std::fs::read(native).unwrap(),
+            b"preserve native checkpoint"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_partial_upload_releases_source_while_target_is_offline() {
+    use crate::agent_move::{AgentMoveArtifactKind, HomeMovePhase};
+    let (mut fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let HomeMovePhase::Captured { capture } = &operation.phase else {
+        panic!("capture required")
+    };
+    {
+        let worker = fixture.workers[0].lock().await;
+        worker
+            .agent_moves
+            .begin_target(
+                capture.clone(),
+                &fixture.workspace_root.join("offline-target"),
+            )
+            .unwrap();
+        worker
+            .agent_moves
+            .write_chunk(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+                0,
+                b"partial upload",
+            )
+            .unwrap();
+    }
+    let _ = fixture.shutdown[0].send(true);
+    fixture.tasks[1].abort();
+    let _ = (&mut fixture.tasks[1]).await;
+    let cancel = serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}});
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        dispatch_move_value(&fixture, cancel.clone()),
+    )
+    .await
+    .expect("offline upload cleanup must not strand source admission")
+    .unwrap();
+    {
+        let home = fixture.home.lock().await;
+        assert!(!home
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id));
+        assert!(!home
+            .agent_moves
+            .artifact_path(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace
+            )
+            .exists());
+    }
+    reboot_worker(&mut fixture).await;
+    dispatch_move_value(&fixture, cancel).await.unwrap();
+    assert_no_workspace_archives(&fixture).await;
+}

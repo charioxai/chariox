@@ -53,3 +53,12 @@ proves the ordinary prepared provider environment survives Move and any
 first-turn tool catalog refresh.
 Use the environment above and the same 4 GiB scope. This kernel
 acceptance leaves the route picker and its `via` label to PR5.
+
+MP-08 / MP-09 / MP-10 / MP-11: `return-native-conflict.mjs` uses the same
+workspace environment and real TUI/provider path. It advances the remote native
+thread, adds an independent continuation to the original home thread created
+by the fixture, and attempts Return through the public request. The import must
+refuse the divergent history at Bound. Explicit cancellation must preserve both
+native files, restore the source route and workspace, and allow another remote
+turn in the same native thread. Evidence retains hashes and TUI captures; native
+payloads stay outside tool output; disposable kernel state is cleaned up.

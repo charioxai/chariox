@@ -93,10 +93,18 @@ impl AgentMoveStore {
             }
         }
         // A crash can leave the archive after its terminal record was synced.
-        for source in records.sources.values().filter(|source| source.retired) {
+        for source in records
+            .sources
+            .values()
+            .filter(|source| source.retired || source.released)
+        {
             store.remove_workspace_archive(&source.identity.operation_id)?;
         }
-        for target in records.targets.values().filter(|target| target.active) {
+        for target in records
+            .targets
+            .values()
+            .filter(|target| target.active || target.retired)
+        {
             store.remove_workspace_archive(&target.capture.identity.operation_id)?;
         }
         drop(records);
@@ -130,6 +138,15 @@ impl AgentMoveStore {
             .homes
             .values()
             .filter(|operation| operation.phase.is_pending())
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn cancelled(&self) -> Vec<HomeMoveOperation> {
+        self.lock()
+            .homes
+            .values()
+            .filter(|operation| matches!(operation.phase, HomeMovePhase::RolledBack { .. }))
             .cloned()
             .collect()
     }
@@ -238,7 +255,8 @@ impl AgentMoveStore {
         } else {
             "source:prepared"
         };
-        let cleanup_operation = source.retired.then(|| source.identity.operation_id.clone());
+        let cleanup_operation =
+            (source.retired || source.released).then(|| source.identity.operation_id.clone());
         records
             .sources
             .insert(source.identity.operation_id.clone(), source);
@@ -288,9 +306,8 @@ impl AgentMoveStore {
         } else {
             "target:reserved"
         };
-        let cleanup_operation = target
-            .active
-            .then(|| target.capture.identity.operation_id.clone());
+        let cleanup_operation =
+            (target.active || target.retired).then(|| target.capture.identity.operation_id.clone());
         records
             .targets
             .insert(target.capture.identity.operation_id.clone(), target);

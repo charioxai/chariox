@@ -34,6 +34,10 @@ impl KernelRuntimeState {
                 );
             }
         }
+        // A newer generation must not hide staging left by an older cancellation.
+        for operation in self.owned.agent_moves.cancelled() {
+            self.cleanup_agent_move_staging(&operation).await;
+        }
         for operation in self.owned.agent_moves.settled() {
             if matches!(operation.phase, HomeMovePhase::Complete { .. }) {
                 if let Err(error) = self.finish_agent_move_slice_membership(&operation).await {
