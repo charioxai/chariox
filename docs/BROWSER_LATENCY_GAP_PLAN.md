@@ -6,7 +6,7 @@ latfable r1, 2026-10-28. MP-08 / MP-09 / MP-10 / MP-11. Companion: `AUDIT.md` (c
 
 Rules the plan respects (Miguel): strict per-cell parity for keystroke-to-paint and omnibox first paint; other gates P95 <= RTT + 60 with RTT printed; software target <= 1 core at 1920x1080 moving, click/type -> present P95 < 50 ms on the local path, exact settled pixels; beat Selkies in both software (builder) and GPU (owner laptop) modes on latency, scroll fps, CPU, bandwidth, moving quality and settled exactness; DOM mirror primary, video regions inside it, whole-page protected video fallback stays, browser chrome as a protected video region; pinned kernel Chromium; OpenH264 stays; never downgrade to stills. Multi-domain redesign and its display redesign are on hold: each item below is marked INDEPENDENT or BLOCKED-BY-REDESIGN. Nothing below invests in the Selkies-in-slice bridge (`slice-selkies-stream.py`, `room_display.rs`), which current clients no longer use.
 
-Ordering: items that close the most cells per unit of work first. P0 is the rig and must come first because every later item is proven with it. P1-P3 are one connected piece of work on the kernel-browser navigation path and should be done in that order by one implementer. P4 and P10 (slice desktop projection) are PARKED: a separate item, not browser use or latency.
+Ordering: items that close the most cells per unit of work first. P0 is the rig and must come first because every later item is proven with it. P9 (mirror credit cadence) runs right after P0: the quiet-host run on main (`host/MEASURED.md`) shows 6-10 credit round trips (600-700 ms) between the kernel's first mirror packet and the paint of a typed-URL page on the product path, and P9 needs no protocol change. P1-P3 are one connected piece of work on the kernel-browser navigation path and should be done in that order by one implementer. P4 and P10 (slice desktop projection) are PARKED: a separate item, not browser use or latency.
 
 ## P0 — One paired rig for every cell (prerequisite) — INDEPENDENT
 
@@ -105,7 +105,7 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 - Selkies mechanism copied: none (Selkies has no mirror); the model is our own display_pump: credits are a window, not a turn-taking protocol.
 - Target and cells: V-UX-02 add-click P95 <= RTT + 60 at all four densities (today 247-300 vs 146) and key 1920 DPR2 <= gate; MIRROR-P2 kernel delta cost P95 <= 20 ms and idle bytes <= 2 KB/s measured; TR-VIEW type P95 under budget on main.
 - Rig/command: appsfix r14 split method (kernel emit time vs viewer receive time per packet) inside P0; `mirror_next` request stages in `client-request-stages.json`.
-- Expected gain: -1 RTT per extra packet (+62 ms steps observed in RESULTS_R14.md:6-16), so -60..-130 ms on multi-packet interactions.
+- Expected gain: -1 RTT per extra packet (+62 ms steps observed in RESULTS_R14.md:6-16), so -60..-130 ms on multi-packet interactions; on the product navigation path measured on main (host/MEASURED.md B): the typed-URL mirror arrives as 6-10 credit-gated packets one RTT apart after the first (503-542 -> 886-935 ms), so delivering the pending resource batches on the outstanding credits at once is worth 300-600 ms per typed URL and 150-250 ms per link click at RTT 88.
 - Risk: more packets in flight means ordering/apply discipline in the renderer (already in-sequence apply); verify first with the trace that the batching is kernel-side (hypothesis) before changing it.
 - Dependencies: none.
 
@@ -127,7 +127,7 @@ Ordering: items that close the most cells per unit of work first. P0 is the rig 
 
 ## What depends on what
 
-- Start now, in parallel: P0 (rig), then P1 -> P2 -> P3 (one implementer, kernel-browser navigation), P6, P8, P9, P11 (any time, small).
+- Start now: P0 (rig), then P9 (measured 300-600 ms per typed URL on main, no protocol change), then P1 -> P2 -> P3 (one implementer, kernel-browser navigation); P6, P8, P11 any time (small).
 - After P1-P3 land: P5 (needs P2's fast repair), P7 (attributable only after P1-P3). P12 (worker stability) stays, measured on the kernel-browser native display.
 - BLOCKED-BY-REDESIGN: none in the active list (P10, parked, was the only one). Items that would be useless once the new Browser/Apps setup arrives: none of P1-P9 (the kernel browser, its native display, the relay and the viewer stay; the redesign adds the browser on slices and a higher-quality transmission for which P1/P2 are the prerequisites). Explicitly not planned: any work on the Selkies-in-slice bridge (`slice-selkies-stream.py`, `room_display.rs`, `display_tunnel.rs`), already unused by current clients.
 
