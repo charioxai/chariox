@@ -74,3 +74,37 @@ test("MP-08/MP-10/MP-11 exact cancellation admits main491 capability on the actu
   assert.deepEqual(await client.send(legacy), { ok: true })
   assert.deepEqual(seen, [{ RelayStatus: null }, { RelayStatus: null }, request, { RelayStatus: null }, legacy])
 })
+
+test("a cancellation capability probe has its own command identity", async t => {
+  const websocket = new WebSocketServer({ host: "127.0.0.1", port: 0 })
+  await new Promise<void>(resolve => websocket.once("listening", resolve))
+  const address = websocket.address()
+  assert.ok(address && typeof address === "object")
+  const frames: { command_id: string; kernel?: string; request: Record<string, unknown> }[] = []
+  websocket.on("connection", socket => socket.on("message", bytes => {
+    const frame = JSON.parse(String(bytes))
+    frames.push(frame)
+    socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, error: null,
+      response: "RelayStatus" in frame.request
+        ? { RelayStatus: { status: { daemon_id: "worker", machine_id: "machine",
+          capabilities: ["exact_prompt_cancellation_v499"] } } }
+        : { PromptCancelled: {} } }))
+  }))
+  const client = new LocalIpcClient(`ws://127.0.0.1:${address.port}/kernel`, {
+    kernel: "worker", commandId: "cancel-active",
+  })
+  t.after(async () => {
+    client.destroy()
+    for (const socket of websocket.clients) socket.terminate()
+    await new Promise<void>(resolve => websocket.close(() => resolve()))
+  })
+  const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "p" } }
+  await client.send(request)
+  await client.send(request)
+  assert.equal(frames.length, 4)
+  assert.notEqual(frames[0]!.command_id, "cancel-active")
+  assert.notEqual(frames[2]!.command_id, frames[0]!.command_id)
+  assert.equal(frames[1]!.command_id, "cancel-active")
+  assert.equal(frames[3]!.command_id, "cancel-active")
+  assert.ok(frames.every(frame => frame.kernel === "worker"))
+})
