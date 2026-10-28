@@ -53,7 +53,9 @@ impl KernelRuntimeState {
                     tool: tool.clone(),
                     arguments: arguments.clone(),
                 },
-                Duration::from_millis(relay_config.relay_request_timeout_ms),
+                Duration::from_millis(relay_config.relay_request_timeout_ms).max(
+                    Duration::from_secs(tool.timeout_sec.unwrap_or(0).saturating_add(5)),
+                ),
             )
             .await;
         self.unregister_remote_home_extension_invocation(&context, &metadata)

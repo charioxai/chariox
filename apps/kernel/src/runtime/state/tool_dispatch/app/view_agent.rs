@@ -136,6 +136,16 @@ pub(super) fn specs() -> Vec<RuntimeToolSpec> {
     ]
 }
 
+fn view_result(result: Result<Value, ViewError>) -> RuntimeToolResult {
+    match result {
+        Ok(payload) => RuntimeToolResult { ok: true, payload },
+        Err(error) => RuntimeToolResult {
+            ok: false,
+            payload: json!({"code": error.code, "message": error.message}),
+        },
+    }
+}
+
 impl KernelRuntimeState {
     /// The view tools of an agent that holds at least one App grant.
     pub(in crate::runtime::state) fn app_view_tool_specs(
@@ -174,24 +184,29 @@ impl KernelRuntimeState {
         let [run] = runs.as_slice() else {
             return Some(Err(unavailable()));
         };
+        if run
+            .remote_extension_manifest()
+            .home_proxy_tool(name)
+            .is_some_and(|tool| tool.kind == ExtensionKind::App)
+        {
+            return Some(
+                self.try_dispatch_remote_home_extension_runtime_tool_call(run, name, arguments)
+                    .await
+                    .and_then(|result| result.ok_or_else(unavailable)),
+            );
+        }
         let agent = match self.app_agent_for_provider_run(run) {
             Ok(agent) => agent,
             Err(error) => return Some(Err(error)),
         };
-        Some(Ok(
-            match self.app_view_tool(run, &agent, name, arguments).await {
-                Ok(payload) => RuntimeToolResult { ok: true, payload },
-                Err(error) => RuntimeToolResult {
-                    ok: false,
-                    payload: json!({"code": error.code, "message": error.message}),
-                },
-            },
-        ))
+        Some(Ok(view_result(
+            self.app_view_tool(run.id(), &agent, name, arguments).await,
+        )))
     }
 
     async fn app_view_tool(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        run_id: &str,
         agent: &crate::agent::AgentInstance,
         name: &str,
         arguments: Value,
@@ -201,7 +216,7 @@ impl KernelRuntimeState {
             CATALOG => Ok(self.view_catalog(agent).await),
             INVOKE => {
                 let call: InvokeArguments = serde_json::from_value(arguments).map_err(malformed)?;
-                self.view_invoke(run, agent, &call.view, &call.action, call.input)
+                self.view_invoke(run_id, agent, &call.view, &call.action, call.input)
                     .await
             }
             STATE => {
@@ -266,14 +281,14 @@ impl KernelRuntimeState {
 
     async fn view_invoke(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        run_id: &str,
         agent: &crate::agent::AgentInstance,
         view: &str,
         name: &str,
         input: Value,
     ) -> Result<Value, ViewError> {
         let context = self.view_context(agent, view).await?;
-        self.invoke_declared(run, agent, &context, name, input)
+        self.invoke_declared(run_id, agent, &context, name, input)
             .await
     }
 
@@ -281,7 +296,7 @@ impl KernelRuntimeState {
     /// view's turn: every gate comes before the page sees the call.
     async fn invoke_declared(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        run_id: &str,
         agent: &crate::agent::AgentInstance,
         context: &ViewContext,
         name: &str,
@@ -291,7 +306,7 @@ impl KernelRuntimeState {
             declared_actions::find_declared(&context.declared, name).map_err(action_error)?;
         declared_actions::check_input(action, &input).map_err(action_error)?;
         if action.effect == UiActionEffect::Approval {
-            self.approve_view_action(run, agent, context, action, &input)
+            self.approve_view_action(run_id, agent, context, action, &input)
                 .await?;
         }
         let _turn = self.view_turn(context).await?;
@@ -631,14 +646,14 @@ impl KernelRuntimeState {
     /// on every client of the Room; /sudo answers it like any provider permission.
     async fn approve_view_action(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        run_id: &str,
         agent: &crate::agent::AgentInstance,
         context: &ViewContext,
         action: &UiActionDeclaration,
         input: &Value,
     ) -> Result<(), ViewError> {
         let current_turn = || {
-            self.authorize_room_provider_epoch(Some(agent.id()), Some(run.id()))
+            self.authorize_room_provider_epoch(Some(agent.id()), Some(run_id))
                 .map_err(|_| {
                     failure(
                         "approval_expired",
@@ -680,7 +695,7 @@ impl KernelRuntimeState {
             Some(APPROVAL_TIMEOUT_SEC),
             Some("deny".into()),
         )
-        .with_native_origin(self.owned.capture_native_interaction_origin(agent.session_id(), agent.id(), run.id()));
+        .with_native_origin(self.owned.capture_native_interaction_origin(agent.session_id(), agent.id(), run_id));
         let answer = tokio::select! {
             answer = crate::runtime::native_interaction_bridge::request_provider_native_interaction(
                 self, agent.session_id(), interaction, "app_view_action_approval") => {
@@ -716,6 +731,8 @@ impl KernelRuntimeState {
         Ok(())
     }
 }
+
+mod remote;
 
 #[cfg(test)]
 mod tests;
