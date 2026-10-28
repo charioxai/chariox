@@ -60,7 +60,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
+  return ['browser.app.calls','browser.app.respond','browser.app.agent','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||

@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeSet;
 
 mod invocation;
+mod view_agent;
 
 impl KernelRuntimeState {
     pub(super) fn app_runtime_tool_specs_for_auth_token(

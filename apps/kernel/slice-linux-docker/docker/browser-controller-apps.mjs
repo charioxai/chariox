@@ -1,4 +1,5 @@
 import { installAppDrafts } from "./browser-app-drafts.mjs";
+import { createViewActions } from "./browser-app-view-actions.mjs";
 // App views: one tab per installation on its own https origin. The controller
 // serves the kernel-verified UI assets through CDP Fetch interception, so no
 // port is opened and the page is a secure context. Every other request from
@@ -24,6 +25,11 @@ const MAX_ANSWERABLE_CALLS = 1024;
 const FULLSCREEN_CHECK_INTERVAL_MS = 250;
 const CALL_WAIT_MS = 250;
 const BINDING = "__charioxAppCall";
+const AGENT_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const AGENT_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+const AGENT_DEADLINE_MS = 30_000;
+const AGENT_MAX_DEADLINE_MS = 120_000;
+const AGENT_MAX_WAIT_MS = 30_000;
 export const APP_CSP = [
   "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:", "font-src 'self'", "connect-src 'none'", "frame-src 'none'",
@@ -74,8 +80,12 @@ const BRIDGE_SOURCE = `(() => {
     pending.delete(id);
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
+  const viewActions = (${createViewActions.toString()})();
+  Object.defineProperty(globalThis, "__charioxViewAgent", { value: viewActions.agent });
   Object.defineProperty(globalThis, "chariox", { value: Object.freeze({
     call(method, params = {}) { return request(method, params); },
+    action: viewActions.action,
+    view: viewActions.view,
     host: Object.freeze({
       openLink(url) { return request("host.open_link", { url }); },
       writeClipboard(text) { return request("host.clipboard_write", { text }); },
@@ -118,6 +128,41 @@ function assets(raw, entry) {
   }
   if (!map.has(entry)) throw invalid("App entry is not an asset");
   return map;
+}
+
+// One `__charioxViewAgent` call as a page expression. Every value is JSON, so
+// nothing the kernel sends is ever code.
+function agentCall(params) {
+  if (typeof params.agent !== "string" || !AGENT_ID.test(params.agent)) throw invalid("invalid acting agent");
+  const deadline = params.deadline_ms ?? AGENT_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > AGENT_MAX_DEADLINE_MS) throw invalid("invalid deadline");
+  const call = (method, args, answer = "answer") => `(async () => { const view = globalThis.__charioxViewAgent;
+    if (!view) return { ok: false, code: "view_unavailable", message: "The view has not loaded the Chariox bridge" };
+    const answer = await view.${method}(${args.map((arg) => JSON.stringify(arg)).join(", ")});
+    return ${answer}; })()`;
+  let expression;
+  if (params.call === "state") {
+    expression = call("state", []);
+  } else if (params.call === "registrations") {
+    // The only call that answers with a bare list.
+    expression = call("registrations", [], "{ ok: true, value: answer }");
+  } else if (params.call === "invoke") {
+    if (typeof params.name !== "string" || !AGENT_NAME.test(params.name)) throw invalid("invalid action name");
+    const input = params.input ?? {};
+    if (typeof input !== "object" || input === null || Array.isArray(input)
+      || Buffer.byteLength(JSON.stringify(input)) > MAX_CALL_BYTES) throw invalid("invalid action input");
+    expression = call("invoke", [params.name, input]);
+  } else if (params.call === "changes") {
+    const since = params.since ?? 0;
+    const wait = params.wait_ms ?? 0;
+    if (!Number.isSafeInteger(since) || since < 0 || !Number.isSafeInteger(wait) || wait < 0 || wait > AGENT_MAX_WAIT_MS) {
+      throw invalid("invalid change cursor");
+    }
+    expression = call("changes", [since, wait]);
+  } else {
+    throw invalid("unknown view agent call");
+  }
+  return { agent: params.agent, expression, deadline, runsAppCode: params.call === "invoke" || params.call === "state" };
 }
 
 export class AppTabs {
@@ -164,8 +209,60 @@ export class AppTabs {
     app?.agents.add(agent);
   }
 
+  // Apps v2 A2: the kernel's agent reads and drives the page through
+  // `__charioxViewAgent` and nothing else. The call is the agent's input to the
+  // Tab, recorded before the page can run: whatever the handler asks of the
+  // kernel (`chariox.call`) is attributed to that agent, like its clicks. The
+  // kernel queues calls per view and checks the agent's grant and the signed
+  // declarations first. A handler that outlives its deadline keeps running
+  // (a page cannot be interrupted from here), so the view refuses new calls
+  // until it settles instead of letting two handlers interleave.
+  async agent(params) {
+    await this.reconcile();
+    const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
+    if (!entry) throw invalid("unknown App tab");
+    const [sessionId, app] = entry;
+    const { agent, expression, deadline, runsAppCode } = agentCall(params);
+    // Reading the change log or the registrations runs no App code: it neither
+    // attributes the Tab to the agent nor waits for a running handler.
+    if (runsAppCode && app.agentRunning) {
+      return { ok: false, code: "view_busy", message: "An earlier action in this view is still running; retry when it has finished" };
+    }
+    if (runsAppCode) app.agentActor = { kind: "agent", id: agent };
+    const connection = this.connection;
+    const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
+      .finally(() => {
+        if (app.agentRunning === running) {
+          app.agentRunning = null;
+          app.agentActor = undefined;
+        }
+      });
+    if (runsAppCode) app.agentRunning = running;
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = setTimeout(() => resolve("late"), deadline);
+      timer.unref?.();
+    });
+    try {
+      const reply = await Promise.race([running, late]);
+      if (reply === "late") return { ok: false, code: "deadline", message: `The action did not finish within ${deadline} ms` };
+      if (reply.exceptionDetails) return { ok: false, code: "view_error", message: String(reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text).slice(0, 1024) };
+      const answer = reply.result?.value;
+      if (typeof answer?.ok !== "boolean") return { ok: false, code: "view_error", message: "The view answered in an unknown shape" };
+      return answer;
+    } catch {
+      // The document went away mid-call (reload, navigation, closed Tab).
+      return { ok: false, code: "view_reloaded", message: "The view reloaded while the action ran" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // undefined: the person; null: unknown, refused.
   callActor(app) {
+    // The serialized bridge call owns backend calls until its handler settles,
+    // including after its deadline. Catalog reads leave no lasting Tab actor.
+    if (app.agentActor) return app.agentActor;
     if (!app.agents.size) return undefined;
     return app.agents.size === 1 ? { kind: "agent", id: [...app.agents][0] } : null;
   }
@@ -317,6 +414,8 @@ export class AppTabs {
     if (message.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       app.document = message.params?.frame?.loaderId ?? null;
       app.pending.clear();
+      app.agentRunning = null;
+      app.agentActor = undefined;
     } else if (message.method === "Fetch.requestPaused") {
       await this.fulfill(connection, message.sessionId, app, message.params);
     } else if (message.method === "Runtime.bindingCalled" && message.params?.name === BINDING) {

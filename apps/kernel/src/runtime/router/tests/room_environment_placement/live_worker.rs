@@ -12,6 +12,7 @@ mod batch;
 mod cleanup;
 mod computer_input;
 mod controller;
+mod controller_app_views;
 mod controller_cancellation;
 mod controller_compatibility;
 mod controller_configuration;

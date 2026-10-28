@@ -1578,7 +1578,8 @@ export class CdpConnection {
     const caller = {};
     Error.captureStackTrace(caller);
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // App handlers remain owned until CDP answers or the connection retires.
+      const timeout = timeoutMs === null ? null : setTimeout(() => {
         this.pending.delete(id);
         const error = new BrowserControllerError(
           "browser_cdp_timeout",

@@ -1,6 +1,7 @@
 //! Open App view Tabs per session. The kernel, not the page or controller,
 //! decides which owner and installation a view call runs as.
 use crate::session::{AppPanelLayout, AppPanelPlacement};
+mod action_approvals;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -74,6 +75,10 @@ pub(crate) fn resolve_panel(request: PanelRequest, user: UserPanel) -> AppPanelL
 struct SessionViews {
     /// Target → (binding, registration number).
     tabs: HashMap<String, (AppViewBinding, u64)>,
+    /// Target → the queue its agent actions wait in, one at a time.
+    agent_queues: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Existing permission answers, scoped to this session and exact grant.
+    action_approvals: action_approvals::ActionApprovals,
     registrations: u64,
     /// Physical browser identity from the existing authenticated inventory.
     /// CDP connection generations alone do not prove a document was lost.
@@ -390,6 +395,45 @@ impl AppViews {
     }
 
     /// The Tab's binding and whether it is reconnecting, read together.
+    /// The Room's open views, for the agent catalog.
+    pub(crate) fn bound_views(&self, session: &str) -> Vec<(String, AppViewBinding)> {
+        let sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(views) = sessions.get(session) else {
+            return Vec::new();
+        };
+        let mut open: Vec<_> = views
+            .tabs
+            .iter()
+            .filter(|(target, _)| !views.reconnecting.contains(*target))
+            .map(|(target, (binding, _))| (target.clone(), binding.clone()))
+            .collect();
+        open.sort_by(|a, b| a.0.cmp(&b.0));
+        open
+    }
+
+    /// The one queue agent actions on this view wait in, so two never run in
+    /// the page at once. Queues of closed views are dropped here.
+    pub(crate) fn agent_queue(
+        &self,
+        session: &str,
+        target: &str,
+    ) -> Option<Arc<tokio::sync::Mutex<()>>> {
+        let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let views = sessions.get_mut(session)?;
+        if !views.tabs.contains_key(target) {
+            return None;
+        }
+        let tabs = &views.tabs;
+        views.agent_queues.retain(|open, _| tabs.contains_key(open));
+        Some(
+            views
+                .agent_queues
+                .entry(target.to_owned())
+                .or_default()
+                .clone(),
+        )
+    }
+
     pub(crate) fn binding_state(
         &self,
         session: &str,
@@ -539,8 +583,8 @@ impl AppViews {
     /// controller still shows (their calls are answered, as unbound); the last
     /// pass removes the session atomically so a concurrent open restarts it.
     /// The user's revocations outlive the views: a later focus change still
-    /// does not bind a revoked pair. Such an entry holds only the session's
-    /// revoked (agent, App) pairs and stays for the kernel's lifetime.
+    /// does not bind a revoked pair. Lasting action approval answers likewise
+    /// survive closing a view; retained authority still fences revocation.
     pub(crate) fn keep_pumping(&self, session: &str) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(session) {
@@ -550,15 +594,16 @@ impl AppViews {
                 true
             }
             _ => {
-                let revoked = sessions
+                let (revoked, action_approvals) = sessions
                     .remove(session)
-                    .map(|views| views.revoked)
+                    .map(|views| (views.revoked, views.action_approvals))
                     .unwrap_or_default();
-                if !revoked.is_empty() {
+                if !revoked.is_empty() || !action_approvals.is_empty() {
                     sessions.insert(
                         session.to_owned(),
                         SessionViews {
                             revoked,
+                            action_approvals,
                             ..Default::default()
                         },
                     );
@@ -1588,5 +1633,68 @@ mod reconnect_tests {
         views.register("room", "new", recovery_binding("todo"));
         views.observe_browser_identity("room", 2, &["browser-pid-2".into()], &[]);
         assert!(views.cold_start_views("room").is_empty()); // separate Room incarnation
+    }
+}
+
+#[cfg(test)]
+mod agent_view_tests {
+    use super::*;
+
+    fn bound(installation: &str) -> AppViewBinding {
+        AppViewBinding {
+            logical_tab: None,
+            owner: "owner".into(),
+            installation: installation.into(),
+            generation: 3,
+            panel: PanelRequest::default(),
+        }
+    }
+
+    #[test]
+    fn an_agent_sees_a_rooms_open_views_but_not_one_that_is_reconnecting() {
+        let views = AppViews::default();
+        views.register("room", "t2", bound("b"));
+        views.register("room", "t1", bound("a"));
+        views.register("other", "t9", bound("c"));
+        let listed = |room| -> Vec<String> {
+            views
+                .bound_views(room)
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect()
+        };
+        assert_eq!(listed("room"), ["t1", "t2"]);
+        assert_eq!(listed("other"), ["t9"]);
+        assert!(listed("nobody").is_empty());
+        let newer = AppViewBinding {
+            generation: 4,
+            ..bound("b")
+        };
+        assert!(views.claim_reconnect("room", "t2", newer));
+        assert_eq!(
+            listed("room"),
+            ["t1"],
+            "a view reloading onto a new generation is not offered"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_view_runs_one_agent_action_at_a_time_and_a_closed_view_has_no_queue() {
+        let views = AppViews::default();
+        views.register("room", "t1", bound("a"));
+        views.register("room", "t2", bound("b"));
+        let first = views.agent_queue("room", "t1").unwrap();
+        let held = first.clone().lock_owned().await;
+        let second = views.agent_queue("room", "t1").unwrap();
+        assert!(second.try_lock().is_err(), "the same view shares one queue");
+        assert!(
+            views.agent_queue("room", "t2").unwrap().try_lock().is_ok(),
+            "another view does not wait"
+        );
+        drop(held);
+        assert!(second.try_lock().is_ok());
+        views.unbind("room", "t1");
+        assert!(views.agent_queue("room", "t1").is_none());
+        assert!(views.agent_queue("elsewhere", "t1").is_none());
     }
 }

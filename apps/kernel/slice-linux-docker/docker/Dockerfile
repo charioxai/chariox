@@ -257,6 +257,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs /opt/chariox-slice/browser-app-drafts.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs /opt/chariox-slice/browser-app-view-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs

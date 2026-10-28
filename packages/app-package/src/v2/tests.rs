@@ -664,3 +664,44 @@ fn package_policy_cannot_admit_unregistered_worlds_or_migrations() {
     assert_eq!(error.code, ErrorCode::IncompatibleContract);
     assert!(error.message.contains("chariox:app/migration@1.0.0"));
 }
+
+#[test]
+fn ui_action_agreement_vectors_are_stable() {
+    check_vectors("ui-action-agreement.json", |shared, input| {
+        let declared: Vec<UiActionDeclaration> =
+            serde_json::from_value(shared["declared"].clone()).unwrap();
+        let registered: Vec<UiActionDeclaration> =
+            serde_json::from_value(input["registered"].clone()).unwrap();
+        let result = if input["single"].as_bool() == Some(true) {
+            check_registration(&declared, &registered[0])
+        } else {
+            check_agreement(&declared, &registered)
+        };
+        match result {
+            Ok(()) => json!({"agreement": "ok"}),
+            Err(mismatch) => serde_json::to_value(mismatch).unwrap(),
+        }
+    });
+}
+
+#[test]
+fn a_mismatch_names_the_action_and_the_part_that_differs() {
+    let schema = json!({"type":"object","additionalProperties":false});
+    let declared = vec![UiActionDeclaration {
+        name: "add_todo".to_owned(),
+        description: "Add".to_owned(),
+        input_schema: schema,
+        output_schema: None,
+        effect: UiActionEffect::Write,
+        approval_reason: None,
+    }];
+    let mut registered = declared.clone();
+    registered[0].effect = UiActionEffect::Read;
+    let message = check_agreement(&declared, &registered)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("add_todo") && message.contains("effect"),
+        "{message}"
+    );
+}
