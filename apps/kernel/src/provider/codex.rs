@@ -7,6 +7,7 @@ use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
 use self::mcp_config::runtime_mcp_config;
+pub(crate) use self::ports::configured_session_capacity;
 use self::ports::resolve_codex_launch_port;
 use super::executable_resolution::ExecutableResolutionState;
 

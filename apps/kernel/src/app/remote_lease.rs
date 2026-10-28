@@ -20,6 +20,7 @@ mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;
 mod provider_account;
+mod provider_capacity;
 mod provider_run;
 mod relay_context;
 mod skill_sync;
@@ -579,6 +580,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 adapter_key: adapter_key.to_string(),
             });
         }
+        self.ensure_leased_provider_capacity(provider, None)?;
         let worktree = if let Some(placement) = worktree_placement {
             crate::git_worktree_placement::prepare_git_worktree(
                 &placement,
@@ -1423,6 +1425,98 @@ mod tests {
     mod catalog_admission;
     mod profile_admission;
     mod project_environment_setup;
+
+    #[test]
+    fn codex_leased_agent_creation_refuses_endpoint_capacity_before_mutation() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        std::env::set_var("CHARIOX_CODEX_PORT_RANGE", "22020-22020");
+        let (mut app, stub) = leased_agent_fixture(false);
+        let create = |app: &mut DaemonApp| {
+            RemoteLeaseRuntime::new(app).create_leased_agent(
+                &stub.lease_id,
+                "codex",
+                "default",
+                Some("gpt-6-luna".into()),
+                Some("low".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        let account = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Capacity test",
+            )
+            .unwrap()
+            .profile_id;
+        let prepared = RemoteLeaseRuntime::new(&mut app)
+            .prepare_leased_agent_profile(
+                &stub.id,
+                "codex".into(),
+                account.clone(),
+                Some("gpt-6-luna".into()),
+                Some("low".into()),
+            )
+            .unwrap();
+        let first = create(&mut app).expect("first endpoint slot should be available");
+        let sessions_before = app.sessions.list_sessions().len();
+        let agents_before = app.leased_agents.len();
+        let error = create(&mut app)
+            .expect_err("MP-08/MP-09/MP-10/MP-11: excess endpoint must be refused at creation");
+        assert!(
+            matches!(&error, DaemonError::MachineRequest { code, .. } if code == "provider_capacity_reached")
+        );
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "provider_capacity_reached");
+        let remote =
+            crate::transport::kernel_protocol::map_kernel_error(&DaemonError::RelayTransport {
+                operation: "read relay peer response",
+                code: mapped.code.clone(),
+                message: mapped.message.clone(),
+                retryable: false,
+            });
+        assert_eq!(remote.code, mapped.code);
+        assert_eq!(remote.message, mapped.message);
+        assert!(!remote.retryable);
+        assert_eq!(app.leased_agents.len(), agents_before);
+        assert_eq!(app.sessions.list_sessions().len(), sessions_before);
+        assert!(app.leased_agents.contains_key(&first.id));
+        for error in [
+            RemoteLeaseRuntime::new(&mut app)
+                .commit_leased_agent_profile(prepared)
+                .unwrap_err(),
+            RemoteLeaseRuntime::new(&mut app)
+                .update_leased_agent_profile(
+                    &stub.id,
+                    "codex".into(),
+                    account,
+                    Some("gpt-6-luna".into()),
+                    Some("low".into()),
+                )
+                .unwrap_err(),
+        ] {
+            assert!(
+                matches!(error, DaemonError::MachineRequest { code, .. } if code == "provider_capacity_reached")
+            );
+        }
+        assert_eq!(
+            app.leased_agents.get(&stub.id).unwrap().provider,
+            "managed-dev-stub"
+        );
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent(&first.id)
+            .unwrap();
+        assert!(
+            create(&mut app).is_ok(),
+            "removing an agent must free its endpoint slot"
+        );
+    }
 
     #[test]
     fn leased_profile_update_rejects_missing_account_without_retiring_provider() {
