@@ -272,7 +272,7 @@ export class AppTabs {
         expression: `globalThis.__charioxViewInput.begin(${JSON.stringify(token)},${timestamp})`, returnByValue: true,
       }, sessionId);
       if (reply.exceptionDetails) throw invalid("App input caller unavailable; reopen the App");
-      return await dispatch(timestamp);
+      return await dispatch(timestamp, token);
     } finally { finish(); }
   }
 
