@@ -1,3 +1,6 @@
+#[path = "completed_cancellation_tests.rs"]
+mod completed_cancellation_tests;
+
 use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::RelayEnvelope;
