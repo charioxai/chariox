@@ -22,7 +22,7 @@ async function launch(identity, extraArguments = []) {
     await mkdir(join(scratch, "private"))
     const script = [
       "set -Eeuo pipefail",
-      "kernel_relay_env=()",
+      'CLOUD_RELAY_CONFIG_JSON="{}"',
       "KERNEL_LOCAL_AUTH_FILE=\"$ROOT/private/kernel-local-auth.token\"",
       "dd() { printf 'synthetic-local-auth-fixture'; }",
       "sleep() { :; }",
