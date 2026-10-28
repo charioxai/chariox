@@ -12,6 +12,15 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         response_timeout: Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        let response_timeout = if matches!(&request, RelayPeerRequest::InvokeHomeExtensionTool { tool, .. } if Self::is_remote_app_view_tool(tool))
+        {
+            None
+        } else {
+            Some(response_timeout)
+        };
+        #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+        let response_timeout = Some(response_timeout);
         let target = ClientTarget {
             daemon_id: Some(home_kernel_id.to_string()),
             daemon_alias: None,
