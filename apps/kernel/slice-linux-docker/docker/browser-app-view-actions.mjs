@@ -5,7 +5,7 @@
 // `__charioxViewAgent`; this module grants no authority, because the signed
 // declarations decide what a registration may be (`check_agreement` in
 // packages/app-package). Self-contained: it is stringified into the page bridge.
-export function createViewActions(request) {
+export function createViewActions(request, inputs) {
   const NAME = /^[a-z][a-z0-9_]{0,63}$/;
   const EFFECTS = ['read', 'write', 'approval'];
   const FIELDS = new Set(['name', 'description', 'inputSchema', 'outputSchema', 'effect', 'approvalReason']);
@@ -51,7 +51,13 @@ export function createViewActions(request) {
     if (registered.has(descriptor.name)) throw new Error(`chariox.action: "${descriptor.name}" is already registered`);
     registered.set(descriptor.name, { descriptor, handler });
     // The user path calls the very function an agent runs.
-    return input => runHandler(handler, input ?? {});
+    return input => fromInput(handler, input ?? {}, globalThis.event);
+  }
+
+  function fromInput(handler, input, event, token = inputs?.token(event)) {
+    const running = runHandler(handler, input, token);
+    inputs?.track(token, running);
+    return running;
   }
 
   async function runHandler(handler, input, token) {
@@ -72,9 +78,33 @@ export function createViewActions(request) {
     if (element.getAttribute('data-chariox-action') !== null) describe(describeForm(element));
     if (formHandlers.has(element)) throw new Error('chariox.form: this form is already registered');
     formHandlers.set(element, handler);
+    // Native submit events do not retain their click/keyboard timestamp. Carry
+    // the exact source caller through requestSubmit's synchronous validation
+    // and submit dispatch, then drop it before any asynchronous handler resumes.
+    let submitting;
+    const submitFromInput = event => {
+      const token = inputs?.token(event);
+      if (token === undefined || event.defaultPrevented) return;
+      let submitter;
+      if (event.type === 'click') {
+        submitter = event.target.closest?.('button,input');
+        if (submitter?.form !== element || submitter.type !== 'submit') return;
+      } else {
+        if (event.key !== 'Enter' || event.isComposing || event.altKey || event.ctrlKey || event.metaKey
+          || event.target.tagName !== 'INPUT' || event.target.form !== element) return;
+        submitter = [...element.elements].find(control => /^(?:BUTTON|INPUT)$/.test(control.tagName) && control.type === 'submit');
+        if (submitter?.disabled) return;
+      }
+      event.preventDefault();
+      submitting = token;
+      try { element.requestSubmit(submitter); }
+      finally { submitting = undefined; }
+    };
+    element.addEventListener('click', submitFromInput);
+    element.addEventListener('keydown', submitFromInput);
     element.addEventListener('submit', event => {
       event.preventDefault();
-      return runHandler(handler, readForm(element));
+      return fromInput(handler, readForm(element), event, submitting ?? inputs?.token(event));
     });
   }
 
