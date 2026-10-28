@@ -45,6 +45,8 @@ pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
 pub(crate) const PROMPT_SETTLED_AT_MS_METADATA_KEY: &str = "prompt_settled_at_ms";
 pub(crate) const PROMPT_SETTLEMENT_STATUS_METADATA_KEY: &str = "prompt_settlement_status";
 pub(crate) const TURN_OUTCOME_METADATA_KEY: &str = "turn_outcome";
+/// Settlements saved before the turn outcome kept a failure here, as `{ cause, retryable, message }`.
+pub(crate) const PRE_OUTCOME_FAILURE_METADATA_KEY: &str = "prompt_failure";
 const OPERATIONAL_HISTORY_SIZE_BUDGET_CHECK_BYTES: u64 = 1024 * 1024;
 const OPERATIONAL_HISTORY_READ_CONNECTIONS: usize = 4;
 const OPERATIONAL_HISTORY_WRITE_QUEUE_LIMIT: usize = 4096;

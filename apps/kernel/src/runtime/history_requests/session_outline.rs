@@ -926,10 +926,30 @@ fn outline_turn_lifecycle(
 
 fn outline_turn_outcome(events: &[HistoryEvent]) -> Option<crate::provider::TurnOutcome> {
     events.iter().find_map(|event| {
-        let outcome = event
+        if let Some(outcome) = event
             .metadata
-            .get(crate::history::TURN_OUTCOME_METADATA_KEY)?;
-        serde_json::from_value(outcome.clone()).ok()
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+        {
+            return serde_json::from_value(outcome.clone()).ok();
+        }
+        #[derive(serde::Deserialize)]
+        struct PreOutcomeFailure {
+            cause: crate::provider::TurnOutcomeKind,
+            retryable: bool,
+            message: String,
+        }
+        let failure: PreOutcomeFailure = serde_json::from_value(
+            event
+                .metadata
+                .get(crate::history::PRE_OUTCOME_FAILURE_METADATA_KEY)?
+                .clone(),
+        )
+        .ok()?;
+        Some(crate::provider::TurnOutcome::new(
+            failure.cause,
+            failure.retryable,
+            &failure.message,
+        ))
     })
 }
 
