@@ -32,29 +32,8 @@ impl ProcessTree {
     }
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, String> {
-        // A recorded start identity survives exec but never PID recycling.
-        self.owned
-            .retain(|pid, identity| same_process(*pid, identity));
-        self.ids.retain(|pid, _| self.owned.contains_key(pid));
         let rows = process_rows()?;
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for row in &rows {
-                if !self.owned.contains_key(&row.pid) && self.owned.contains_key(&row.parent) {
-                    if let Ok((identity, parent)) = inspect(row.pid) {
-                        if parent == row.parent {
-                            self.owned.insert(row.pid, identity);
-                            self.ids.insert(
-                                row.pid,
-                                format!("process-{:032x}", rand::random::<u128>()),
-                            );
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
+        self.observe(&rows);
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
@@ -72,13 +51,39 @@ impl ProcessTree {
             .collect())
     }
 
+    fn observe(&mut self, rows: &[Row]) {
+        // A recorded start identity survives exec but never PID recycling.
+        self.owned
+            .retain(|pid, identity| same_process(*pid, identity));
+        self.ids.retain(|pid, _| self.owned.contains_key(pid));
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for row in rows {
+                if !self.owned.contains_key(&row.pid) && self.owned.contains_key(&row.parent) {
+                    if let Ok((identity, parent)) = inspect(row.pid) {
+                        if parent == row.parent {
+                            self.owned.insert(row.pid, identity);
+                            self.ids.insert(
+                                row.pid,
+                                format!("process-{:032x}", rand::random::<u128>()),
+                            );
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn stop(
         &mut self,
         process_id: Option<&str>,
         before_root_stop: impl FnOnce(),
         force_domain: impl FnOnce(),
     ) -> Result<Vec<String>, String> {
-        self.sample()?;
+        let rows = read_process_rows()?;
+        self.observe(&rows);
         let target = match process_id {
             None => self.root,
             Some(id) => self
@@ -97,7 +102,6 @@ impl ProcessTree {
         if !same_process(target, identity) {
             return Err("the process identity changed; refresh Health".into());
         }
-        let rows = read_process_rows()?;
         let mut selected = if target == self.root {
             self.owned.keys().copied().collect()
         } else {

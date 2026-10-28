@@ -120,10 +120,9 @@ fn budget() -> Option<Arc<Budget>> {
             .ok_or_else(|| std::io::Error::other("physical memory unavailable"))?
             * 1024;
         let mut inherited = physical;
-        for ancestor in parent
-            .ancestors()
-            .take_while(|path| path.starts_with("/sys/fs/cgroup"))
-        {
+        for ancestor in parent.ancestors().take_while(|path| {
+            path.starts_with("/sys/fs/cgroup") && *path != Path::new("/sys/fs/cgroup")
+        }) {
             let value = std::fs::read_to_string(ancestor.join("memory.max"))?;
             if value.trim() != "max" {
                 inherited =
