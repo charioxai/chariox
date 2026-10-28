@@ -944,8 +944,21 @@ impl KernelRuntimeState {
         let workflow_rendered_prompt = session
             .as_ref()
             .and_then(|session| workflow_turn_rendered_prompt(session, &prompt));
-        let recovery_material =
-            restart_recovery_prompt_material(&prompt, workflow_rendered_prompt.as_deref());
+        let workflow_dispatch_prompt = workflow_rendered_prompt.as_ref().and_then(|rendered| {
+            Some(
+                crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                    session.as_ref()?,
+                    prompt.workflow_run_id()?,
+                    prompt.workflow_node_run_id()?,
+                    rendered,
+                ),
+            )
+        });
+        let recovery_material = restart_recovery_prompt_material(
+            &prompt,
+            workflow_rendered_prompt.as_deref(),
+            workflow_dispatch_prompt.as_deref(),
+        );
         let prompt_text = recovery_material.transcript_match_text.clone();
         let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
             session
@@ -1191,6 +1204,7 @@ struct RestartRecoveryPromptMaterial {
 fn restart_recovery_prompt_material(
     prompt: &crate::session::PromptQueueItem,
     workflow_rendered_prompt: Option<&str>,
+    workflow_dispatch_prompt: Option<&str>,
 ) -> RestartRecoveryPromptMaterial {
     let transcript_match_text = workflow_rendered_prompt
         .unwrap_or_else(|| prompt.prompt())
@@ -1199,7 +1213,8 @@ fn restart_recovery_prompt_material(
         Some(rendered_prompt) => join_restart_recovery_context(
             prompt.hidden_system_context(),
             &format!(
-                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{rendered_prompt}"
+                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{}",
+                workflow_dispatch_prompt.unwrap_or(rendered_prompt)
             ),
         ),
         None => prompt.hidden_system_context().to_string(),
@@ -1500,8 +1515,11 @@ mod tests {
         .with_hidden_system_context("existing hidden context")
         .with_attachments(vec![attachment.clone()]);
 
-        let material =
-            restart_recovery_prompt_material(&prompt, Some("authoritative rendered workflow turn"));
+        let material = restart_recovery_prompt_material(
+            &prompt,
+            Some("authoritative rendered workflow turn"),
+            Some("current delivery copy"),
+        );
 
         assert_eq!(
             material.transcript_match_text,
@@ -1511,6 +1529,9 @@ mod tests {
             .hidden_system_context
             .starts_with("existing hidden context\n\n"));
         assert!(material
+            .hidden_system_context
+            .contains("current delivery copy"));
+        assert!(!material
             .hidden_system_context
             .contains("authoritative rendered workflow turn"));
         assert_eq!(material.attachments, vec![attachment]);

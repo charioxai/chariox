@@ -211,6 +211,112 @@ async fn a12_legacy_workflow_turn_settled_without_a_task_keeps_its_node() {
     );
 }
 
+#[tokio::test]
+async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("legacy-catalog-context"),
+        config,
+        false,
+    );
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    let Outcome::Task(original) = owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: session.owner_user_id().into(),
+            room: fixture.session_id.clone(),
+            agent: fixture.target_agent_id.clone(),
+            prompt: prompt.id().into(),
+            run: Some("legacy-provider-run".into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("task");
+    };
+    assert!(owned
+        .durable_state_store
+        .agent_task_workflow(&original.task_id)
+        .unwrap()
+        .is_none());
+    let agent = owned
+        .agent_store
+        .update_agent_profile(&fixture.target_agent_id, Some("codex".into()), None, None)
+        .unwrap();
+    assert!(
+        fixture
+            .runtime
+            .runtime_catalog_loader_result(
+                &agent,
+                &[],
+                false,
+                serde_json::json!({"loaded": "tools"})
+            )
+            .ok
+    );
+    let (task, _) = owned
+        .settle_agent_task(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            &prompt,
+            "legacy-provider-run",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.task_id, original.task_id);
+    assert_eq!(
+        task.pending_prompt_id,
+        Some(format!("task-catalog:{}", prompt.id()))
+    );
+    assert_eq!(
+        owned.agent_workflow_task_context(&task).unwrap(),
+        Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone())),
+        "catalog reload must retain the existing invocation"
+    );
+    fixture
+        .runtime
+        .dispatch_task_continuation(&task, prompt.source_attachment_id(), "Continue".into())
+        .await
+        .unwrap();
+    let mut projected = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    owned
+        .prompt_state_owner
+        .project_into_session(&mut projected);
+    let continuation = projected
+        .queued_prompts_for_agent(&fixture.target_agent_id)
+        .unwrap()
+        .iter()
+        .find(|queued| Some(queued.id()) == task.pending_prompt_id.as_deref())
+        .unwrap();
+    assert_eq!(
+        continuation.workflow_run_id(),
+        Some(fixture.workflow_run_id.as_str())
+    );
+    assert_eq!(
+        continuation.workflow_node_run_id(),
+        Some(fixture.node_run_id.as_str())
+    );
+    assert_eq!(
+        continuation.source_attachment_id(),
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&fixture.workflow_run_id)
+    );
+    assert!(owned.provider_store.list_runs().is_empty());
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]

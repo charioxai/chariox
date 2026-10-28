@@ -734,6 +734,65 @@ pub(crate) fn workflow_handoff_payloads_from_prompt(prompt: &str) -> Option<Stri
         })
 }
 
+/// Refresh the delivery copy while retaining the saved turn for transcript matching.
+pub(crate) fn refresh_recovered_workflow_prompt(
+    session: &crate::session::RuntimeSession,
+    run_id: &str,
+    node_run_id: &str,
+    prompt: &str,
+) -> String {
+    let Some(run) = session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == run_id)
+    else {
+        return prompt.to_string();
+    };
+    let Some(node) = run.node_runs().iter().find(|node| node.id() == node_run_id) else {
+        return prompt.to_string();
+    };
+    let Some(workflow) = session
+        .workflows()
+        .iter()
+        .find(|workflow| workflow.id() == run.workflow_id())
+    else {
+        return prompt.to_string();
+    };
+    let Some((prefix, rest)) = prompt.split_once("<outgoing-edge-contracts>") else {
+        return prompt.to_string();
+    };
+    let Some((contracts, suffix)) = rest.split_once("</outgoing-edge-contracts>") else {
+        return prompt.to_string();
+    };
+    let mut contracts = contracts.to_string();
+    for edge in workflow
+        .edges()
+        .iter()
+        .filter(|edge| edge.from_node_id() == node.node_id())
+    {
+        let old = format!("- edge {} -> {}", edge.id(), edge.to_node_id());
+        let current = format!(
+            "- edge_id: \"{}\", to_node_id: \"{}\"",
+            edge.id(),
+            edge.to_node_id()
+        );
+        contracts = contracts
+            .split_inclusive('\n')
+            .map(|line| match line.strip_prefix(&old) {
+                Some(tail)
+                    if tail.trim().is_empty()
+                        || tail.starts_with(" (")
+                        || tail.starts_with(", ") =>
+                {
+                    format!("{current}{tail}")
+                }
+                _ => line.to_string(),
+            })
+            .collect();
+    }
+    format!("{prefix}<outgoing-edge-contracts>{contracts}</outgoing-edge-contracts>{suffix}")
+}
+
 pub(crate) fn workflow_outgoing_edge_contract_line(
     workflow: &WorkflowDefinition,
     edge: &WorkflowEdgeDefinition,
