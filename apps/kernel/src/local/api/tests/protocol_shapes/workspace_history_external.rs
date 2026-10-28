@@ -144,6 +144,9 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/created_at_ms")
         .expect("session created_at_ms should encode") = serde_json::json!(42);
     *snapshot
+        .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_activity_at_ms")
+        .expect("session activity should encode") = serde_json::json!(42);
+    *snapshot
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_used_at_ms")
         .expect("session last_used_at_ms should encode") = serde_json::json!(42);
     assert_eq!(
@@ -183,7 +186,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9532c94456dbfaec1a8ea4ec4c1678d9d84f5187c0fcf845b0a10921c7dd3342"
+        "2310a9554cc05659266f076da039e0e5a445bf7de5957a9634e7e3bb3e33099b"
     );
 }
 

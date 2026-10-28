@@ -625,7 +625,17 @@ impl KernelRuntimeOwnedState {
         // Prompt state is mirrored before settlement history is appended. The active turn is
         // the reporter's barrier across that window, so publish a second change only after the
         // turn has been cleared by the completed settlement path.
-        if active_turn.is_some() {
+        if let Some(turn) = active_turn.as_ref() {
+            if let Err(error) = self.record_session_activity(
+                &turn.session_id,
+                observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
+            ) {
+                crate::logging::error_with_fields(
+                    "daemon.activity",
+                    "Could not persist session turn activity",
+                    serde_json::json!({"session_id": turn.session_id, "error": error.to_string()}),
+                );
+            }
             activity_mutation.record_prompt_finish_at(observed_at_ms);
             self.runtime_projection_changes.record_change();
         } else {
@@ -726,6 +736,15 @@ impl KernelRuntimeOwnedState {
                 )
             });
         if let Some(turn) = active_turn {
+            if let Err(error) =
+                self.record_session_activity(&turn.session_id, crate::session::unix_epoch_ms())
+            {
+                crate::logging::error_with_fields(
+                    "daemon.activity",
+                    "Could not persist session turn activity",
+                    serde_json::json!({"session_id": turn.session_id, "error": error.to_string()}),
+                );
+            }
             let activity_mutation = self.begin_managed_activity_mutation();
             self.active_turns.start(turn);
             self.active_turns

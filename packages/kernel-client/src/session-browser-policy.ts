@@ -21,6 +21,7 @@ export type SessionBrowserKeyAction =
   | { action: "handled" }
 
 export type SessionBrowserSession = {
+  id?: string
   status: string
   last_prompt_sent_at_ms?: number | null
   last_activity_at_ms?: number | null
@@ -88,7 +89,7 @@ export function sessionBrowserVisibleSessions<T extends SessionBrowserSession>(
   return sessions
     .filter((session) => options.includeEnded || session.status !== "Ended")
     .slice()
-    .sort((left, right) => waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left))
+    .sort((left, right) => waitingRoomSessionRecencyMs(right) - waitingRoomSessionRecencyMs(left) || (left.created_at_ms ?? 0) - (right.created_at_ms ?? 0) || (left.id ?? "").localeCompare(right.id ?? ""))
 }
 
 export function sessionBrowserPreviewSessions<T extends SessionBrowserSession>(

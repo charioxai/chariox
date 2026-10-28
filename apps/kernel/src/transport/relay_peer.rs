@@ -139,8 +139,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 232 also carries protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
-/// Recipient-initiated, consented independent provider account copies.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 320;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 330;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;

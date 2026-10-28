@@ -1202,6 +1202,7 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
         crate::test_support::expected_local_protocol_version()
     );
     let request = LocalDaemonRequest::ListWaitingRoomSessions(ListWaitingRoomSessionsRequest {
+        inventory_version: None,
         cursor: Some("after-session".into()),
         limit: Some(500),
     });

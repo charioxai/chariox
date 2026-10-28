@@ -2017,7 +2017,8 @@ fn write_entity_checkpoint(
            AND kind IN (
                'session.updated',
                'workflow.runtime.updated',
-               'session.prompt_state.updated'
+               'session.prompt_state.updated',
+               'session.activity.updated'
            )
            AND (
                (

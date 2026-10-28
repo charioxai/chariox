@@ -39,13 +39,13 @@ test("waiting room timestamp label follows IANA daylight-saving transitions", ()
   )
 })
 
-test("waiting room session recency prioritizes prompt, activity, last-used, then created timestamps", () => {
+test("MP-08 session recency reads semantic activity and ignores prompt and last-used fallbacks", () => {
   assert.equal(waitingRoomSessionRecencyMs({
     last_prompt_sent_at_ms: 40,
     last_activity_at_ms: 30,
     last_used_at_ms: 10,
     created_at_ms: 20,
-  }), 40)
+  }), 30)
   assert.equal(waitingRoomSessionRecencyMs({
     last_prompt_sent_at_ms: null,
     last_activity_at_ms: 30,
@@ -57,7 +57,7 @@ test("waiting room session recency prioritizes prompt, activity, last-used, then
     last_activity_at_ms: null,
     last_used_at_ms: 10,
     created_at_ms: 20,
-  }), 10)
+  }), 20)
   assert.equal(waitingRoomSessionRecencyMs({
     last_prompt_sent_at_ms: null,
     last_activity_at_ms: null,

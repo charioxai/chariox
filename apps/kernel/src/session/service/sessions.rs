@@ -524,6 +524,16 @@ impl SessionService {
         Ok(session.clone())
     }
 
+    pub(crate) fn note_session_activity(
+        &mut self,
+        session_id: &str,
+        timestamp_ms: u64,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let session = self.get_session_mut_for_operation(session_id, "note session activity")?;
+        session.note_activity_at(timestamp_ms);
+        Ok(session.clone())
+    }
+
     pub(crate) fn note_prompt_sent(
         &mut self,
         session_id: &str,

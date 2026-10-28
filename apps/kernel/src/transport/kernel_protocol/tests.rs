@@ -805,6 +805,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
 fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSummary {
     WaitingRoomPublicSessionSummary {
         pinned: false,
+        pinned_at_ms: None,
         repository_state: None,
         id: id.to_string(),
         project_id: "project-a".to_string(),
@@ -818,6 +819,7 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
         created_at_ms: 1,
         last_used_at_ms: Some(last_used_at_ms),
         last_prompt_sent_at_ms: None,
+        last_activity_at_ms: last_used_at_ms,
         status: crate::session::SessionStatus::Active,
         connected_cli_count: 0,
         joined_collaborator_count: 0,
@@ -831,6 +833,7 @@ fn session_summary(id: &str, last_used_at_ms: u64) -> WaitingRoomPublicSessionSu
 fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProjectSummary {
     crate::local::WaitingRoomPublicProjectSummary {
         pinned: false,
+        pinned_at_ms: None,
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),

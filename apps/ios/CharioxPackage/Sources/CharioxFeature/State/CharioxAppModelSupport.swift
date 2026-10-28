@@ -357,7 +357,8 @@ extension CharioxAppModel {
       focusedAgentID: agent?.id,
       agents: agents,
       createdAtMs: session.createdAtMs,
-      lastUsedAtMs: session.lastUsedAtMs
+      lastUsedAtMs: session.lastUsedAtMs,
+      lastActivityAtMs: session.lastActivityAtMs
     )
     selectedSessionID = sessionID
   }

@@ -378,4 +378,5 @@ pub use workspace::*;
 /// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
 /// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
 /// Recipient account offers and kernel-owned copy consent.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 770;
+/// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 780;
