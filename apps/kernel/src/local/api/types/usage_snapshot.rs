@@ -9,9 +9,13 @@ pub struct GetAgentUsageSnapshotRequest {
     pub agent_id: String,
 }
 
-/// Usage references deliberately omit profile locations and authentication metadata.
+/// Usage references omit private profile locations and credential material.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderUsageAccount {
+    /// Opaque identity shared by reports of the same provider account.
+    pub account_id: String,
+    pub auth_state: crate::account_profile::ProviderAccountAuthState,
+    pub services: Vec<crate::account_profile::ProviderAccountService>,
     pub provider: String,
     pub profile_id: String,
     pub label: String,
