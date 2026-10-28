@@ -787,6 +787,138 @@ fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
 }
 
 #[test]
+fn validated_handoff_retains_only_its_unambiguous_outgoing_edge() {
+    for binding in ["unique", "shared", "foreign"] {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, agent_id, worktree) =
+            create_scheduler_session_and_agent(&mut app, "validated-route");
+        let (workflow_id, node_id) =
+            create_workflow_node(&mut app, session.id(), "validated-route", &agent_id);
+        let mut targets = Vec::new();
+        for alias in ["first-target", "second-target"] {
+            let agent = crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    CreateAgentRequest::new(session.id(), "dev-stub")
+                        .with_alias(alias)
+                        .with_worktree(worktree.path().display().to_string()),
+                )
+                .unwrap();
+            targets.push(
+                app.sessions_mut()
+                    .add_workflow_node(session.id(), &workflow_id, agent.id())
+                    .unwrap(),
+            );
+        }
+        let selected_schema = worktree.path().join("selected.json");
+        let other_schema = worktree.path().join("other.json");
+        let foreign_schema = worktree.path().join("unrelated.json");
+        let schema = r#"{"type":"object","properties":{"task":{"type":"string"}},"required":["task"],"additionalProperties":false}"#;
+        for path in [&selected_schema, &other_schema, &foreign_schema] {
+            fs::write(path, schema).unwrap();
+        }
+        let selected = app
+            .sessions_mut()
+            .add_workflow_edge(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                targets[0].id(),
+                Some(selected_schema.display().to_string()),
+                Some(WorkflowHandoffValidationPolicy::Halt),
+            )
+            .unwrap();
+        app.sessions_mut()
+            .add_workflow_edge(
+                session.id(),
+                &workflow_id,
+                &node_id,
+                targets[1].id(),
+                Some(
+                    if binding == "shared" {
+                        &selected_schema
+                    } else {
+                        &other_schema
+                    }
+                    .display()
+                    .to_string(),
+                ),
+                Some(WorkflowHandoffValidationPolicy::Halt),
+            )
+            .unwrap();
+        let run = prepare_active_workflow_run(&mut app, session.id(), &workflow_id, &node_id);
+        let node_run_id = run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                run.id(),
+                &node_run_id,
+                "delivery-token".into(),
+                "send the requested handoff".into(),
+                None,
+                None,
+            )
+            .unwrap();
+        let schema_ref = if binding == "foreign" {
+            &foreign_schema
+        } else {
+            &selected_schema
+        };
+        let payload = r#"{"task":"continue existing work"}"#;
+        app.sessions_mut().record_workflow_runtime_tool_call(
+            session.id(), &node_run_id,
+            crate::session::WorkflowRuntimeToolCallEvent::new(
+                crate::transport::runtime_tools::VALIDATE_WORKFLOW_HANDOFF_TOOL,
+                serde_json::json!({"handoff_schema_ref":schema_ref.display().to_string(),"handoff_json":payload}).to_string(),
+                Some(serde_json::json!({"valid":true,"warning":null}).to_string()), true,
+            ),
+        ).unwrap();
+        let current = app.sessions().get_session(session.id()).unwrap();
+        let mut output = crate::history::SessionHistoryEntry::provider_output(
+            session.id(),
+            "node-provider",
+            Some(&agent_id),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some("final-output".into()),
+            "The handoff was validated.",
+        );
+        output.timestamp_ms = crate::session::unix_epoch_ms().saturating_add(1);
+        let snapshot = super::completion::build_workflow_completion_snapshot_from_history(
+            &current,
+            vec![output],
+            session.id(),
+            run.id(),
+            &node_run_id,
+            "node-provider",
+        );
+        if binding != "unique" {
+            assert!(
+                snapshot.is_none(),
+                "{binding} validation cannot select an outgoing edge"
+            );
+            continue;
+        }
+        let snapshot = snapshot.expect("one validated edge has an exact route");
+        let completed = app
+            .sessions_mut()
+            .complete_workflow_node_run(session.id(), run.id(), &node_run_id, Some(snapshot), None)
+            .unwrap();
+        assert_eq!(
+            completed.dispatches.len(),
+            1,
+            "validated payload must never broadcast"
+        );
+        assert_eq!(completed.dispatches[0].node_run.node_id(), targets[0].id());
+        let message: crate::session::WorkflowHandoffPayload =
+            serde_json::from_str(completed.dispatches[0].messages[0].handoff_payload()).unwrap();
+        assert_eq!(message.edge_id(), Some(selected.id()));
+        assert_eq!(
+            message.completion().unwrap().output().unwrap().message(),
+            payload
+        );
+    }
+}
+
+#[test]
 fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent_id, _worktree) =
