@@ -642,6 +642,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)

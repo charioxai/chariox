@@ -9,6 +9,7 @@ const PASSKEY: &str = "Access TEST Passkey";
 const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
 
+mod cover;
 mod credential_authority;
 mod outbound_credentials;
 
@@ -217,6 +218,7 @@ fn kernel_access_client_child() {
             println!("ACCESS_READY");
             std::io::stdout().flush().unwrap();
             let mut descendants = Vec::new();
+            let mut shells = std::collections::BTreeMap::new();
             for line in std::io::stdin().lock().lines() {
                 let line = line.unwrap();
                 if line == "exit" {
@@ -257,6 +259,30 @@ fn kernel_access_client_child() {
                     .unwrap();
                     descendants.push(child);
                     println!("ACCESS {{\"subscriber\":true}}");
+                } else if let Some(label) = line.strip_prefix("background ") {
+                    // Like `nohup tool & chariox access cover --pid $!`: the shell stays
+                    // until `end-shell`, so the process is still a descendant when covered.
+                    let mut shell = Command::new("sh")
+                        .arg("-c")
+                        .arg("\"$0\" kernel_access_background_process --ignored --nocapture --quiet >/dev/null 2>&1 </dev/null & echo $!; read _")
+                        .arg(std::env::current_exe().unwrap())
+                        .env("CHARIOX_ACCESS_TEST_CLIENT", &root)
+                        .env("CHARIOX_ACCESS_TEST_LABEL", label)
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .spawn()
+                        .unwrap();
+                    let mut pid = String::new();
+                    std::io::BufReader::new(shell.stdout.as_mut().unwrap())
+                        .read_line(&mut pid)
+                        .unwrap();
+                    println!("ACCESS {}", serde_json::json!({"pid": pid.trim().parse::<u32>().unwrap()}));
+                    shells.insert(label.to_owned(), shell);
+                } else if let Some(label) = line.strip_prefix("end-shell ") {
+                    let mut shell = shells.remove(label).unwrap();
+                    drop(shell.stdin.take());
+                    shell.wait().unwrap();
+                    println!("ACCESS {{\"shell_ended\":true}}");
                 } else if line == "child" {
                     // A fresh OS descendant opens its own connection and presents nothing.
                     let child = Command::new(std::env::current_exe().unwrap())
@@ -344,6 +370,59 @@ fn kernel_access_descendant_child() {
             assert!(response(&mut socket, "request").await["error"].is_object());
         } else { assert!(result["error"].is_null(), "{result}"); }
     });
+}
+
+/// A process a test shell leaves running in the background. Each file
+/// `bg-<label>-go` holds one request (or nothing: read the session) to send;
+/// the reply lands in `bg-<label>-result`.
+#[test]
+#[ignore = "subprocess entry point"]
+fn kernel_access_background_process() {
+    let (Ok(root), Ok(label)) = (
+        std::env::var("CHARIOX_ACCESS_TEST_CLIENT"),
+        std::env::var("CHARIOX_ACCESS_TEST_LABEL"),
+    ) else {
+        return;
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let root = Path::new(&root);
+            let go = root.join(format!("bg-{label}-go"));
+            let result = root.join(format!("bg-{label}-result"));
+            let started = std::time::Instant::now();
+            while root.join("run/k.sock").exists() && started.elapsed() < Duration::from_secs(90) {
+                if root.join(format!("bg-{label}-exit")).exists() {
+                    return;
+                }
+                let Ok(body) = std::fs::read_to_string(&go) else {
+                    sleep(Duration::from_millis(20)).await;
+                    continue;
+                };
+                let _ = std::fs::remove_file(&go);
+                let request = if body.trim().is_empty() {
+                    serde_json::json!({"GetSessionState": {"session_id": SESSION}})
+                } else {
+                    serde_json::from_str(&body).unwrap()
+                };
+                let (mut socket, _) = client_async(
+                    "ws://localhost/kernel",
+                    tokio::net::UnixStream::connect(root.join("run/k.sock"))
+                        .await
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+                socket
+                    .send(Message::Text(frame(request).to_string().into()))
+                    .await
+                    .unwrap();
+                let reply = response(&mut socket, "request").await;
+                std::fs::write(&result, reply.to_string()).unwrap();
+            }
+        });
 }
 
 #[test]

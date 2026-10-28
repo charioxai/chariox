@@ -68,3 +68,22 @@ test("EA2-01 /kernel access list says when a grant ends: a time, or when its age
   assert.match(notices[0]!, /access-1: .*expires 2026-10-20T20:00:00.000Z/)
   assert.match(notices[0]!, /access-2: .*until the agent exits/)
 })
+
+test("EA2-77 /kernel access list shows the background processes a grant covers", async () => {
+  const notices: string[] = []
+  const grant = { grant_id: "access-1", owner_user_id: "local", holder_pid: 42, holder_executable: "/opt/codex", term: "until_holder_exits" as const }
+  const deps = {
+    isAttached: () => true,
+    sessionState: () => makeSession(),
+    appendNotice: (message: string) => { notices.push(message) },
+    flashFooter: () => {},
+    transitionToNoSession: () => {},
+    listKernelAccessGrants: async () => ({ grants: [
+      { ...grant, covered: [{ pid: 77, start: 9, executable: "/usr/bin/shipper" }] },
+      { ...grant, grant_id: "access-2" },
+    ] }),
+  }
+  await handleKernelSlashCommand(deps, { kind: "kernel", raw: "/kernel access list", args: ["access", "list"] })
+  assert.match(notices[0]!, /access-1: .*until the agent exits, covering "\/usr\/bin\/shipper" \(pid 77\)/)
+  assert.doesNotMatch(notices[0]!, /access-2: .*covering/)
+})

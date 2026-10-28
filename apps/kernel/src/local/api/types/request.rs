@@ -15,6 +15,7 @@ pub enum LocalDaemonRequest {
     ListWorkflowNotifications(ListWorkflowNotificationsRequest),
     DetachWorkflowNotification(DetachWorkflowNotificationRequest),
     RequestKernelAccess(RequestKernelAccessRequest),
+    CoverKernelAccessProcess(CoverKernelAccessProcessRequest),
     RequestKernelSudo(RequestKernelSudoRequest),
     ExtendKernelSudo(ExtendKernelSudoRequest),
     RenewKernelSudoRequester(RenewKernelSudoRequesterRequest),

@@ -208,6 +208,7 @@ response_policies! {
         KernelSudoRequested,
         KernelSudoExtended,
         KernelAccessGranted,
+        KernelAccessCovered,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
