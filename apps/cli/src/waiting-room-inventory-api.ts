@@ -51,6 +51,7 @@ export type WaitingRoomInventory = {
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
   providerAccountCopyOffers?: ProviderAccountCopyOffer[]
+  providerAccountCopyUnavailable?: boolean
   providerAccounts?: ProviderAccountProfile[]
   gitCredentials?: WaitingRoomGitCredentialSummary[]
   managedEnvironmentCatalog?: ManagedEnvironmentCatalog
@@ -61,11 +62,12 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
   const payload = expectVariant<{
     snapshot: WaitingRoomPublicSnapshot
   }>(response, "WaitingRoomPublicSnapshot").snapshot
-  const [slices, managedEnvironmentCatalog, providerAccountCopyOffers] = await Promise.all([
+  const [slices, managedEnvironmentCatalog, accountCopy] = await Promise.all([
     listSlices(client).catch(() => []),
     getManagedCatalog?.(),
     payload.relay_status.connected && payload.relay_status.capabilities?.includes("provider_account_copy_pull_v1")
-      ? listProviderAccountCopyOffers(client) : Promise.resolve([]),
+      ? listProviderAccountCopyOffers(client).then(offers => ({ offers, unavailable: false }), () => ({ offers: [], unavailable: true }))
+      : Promise.resolve({ offers: [], unavailable: false }),
   ])
   const externalProviderSessions = externalProviderSessionPage({
     ...(payload.external_provider_sessions !== undefined ? { sessions: payload.external_provider_sessions } : {}),
@@ -107,7 +109,8 @@ export async function getWaitingRoomInventory(client: LocalIpcClient, getManaged
     externalProviderSessions: externalProviderSessions.sessions,
     externalProviderSessionsHasMore: externalProviderSessions.hasMore,
     externalProviderSessionsNextCursor: externalProviderSessions.nextCursor,
-    providerAccountCopyOffers,
+    providerAccountCopyOffers: accountCopy.offers,
+    providerAccountCopyUnavailable: accountCopy.unavailable,
     providerAccounts: payload.provider_accounts ?? [],
     gitCredentials: payload.git_credentials ?? [],
     ...(managedEnvironmentCatalog ? { managedEnvironmentCatalog } : {}),
