@@ -3,7 +3,7 @@
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
 current release and the previous release (636 and 629), plus the new target
-770 while it is being prepared. Older kernels are
+780 while it is being prepared. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 

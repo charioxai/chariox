@@ -466,6 +466,7 @@ async fn restored_grant_is_in_place_before_event_pumps_look_for_it() {
             holder_harness: None,
             term: KernelAccessTerm::UntilHolderExits,
             expires_at_ms: None,
+            covered: Vec::new(),
         };
         let mut access = state.owned.kernel_access.lock().unwrap();
         state
