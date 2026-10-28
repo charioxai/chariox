@@ -249,10 +249,13 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
         .agent_task_workflow(&original.task_id)
         .unwrap()
         .is_none());
-    let agent = owned
+    let mut agent = owned
         .agent_store
-        .update_agent_profile(&fixture.target_agent_id, Some("codex".into()), None, None)
+        .get_agent(&fixture.target_agent_id)
         .unwrap();
+    // Only the catalog decision needs a provider that caches tools. Keep the
+    // fixture's running dev-stub endpoint for the shared continuation path.
+    agent.set_provider("codex");
     assert!(
         fixture
             .runtime
