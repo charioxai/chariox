@@ -243,6 +243,7 @@ enum DurableWriteOperation {
     RetiredSessionBackfill {
         owner_id: String,
         records: Vec<(String, String, String)>,
+        sequence: u64,
     },
     Event {
         event_id: String,
@@ -1796,9 +1797,11 @@ fn commit_durable_write_batch(
             break;
         }
         let result = match &request.operation {
-            DurableWriteOperation::RetiredSessionBackfill { owner_id, records } => {
-                retired_sessions::commit_backfill(&transaction, owner_id, records)
-            }
+            DurableWriteOperation::RetiredSessionBackfill {
+                owner_id,
+                records,
+                sequence,
+            } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
