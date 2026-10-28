@@ -1994,3 +1994,66 @@ async fn mk03_cancelled_partial_upload_releases_transfer_archives_after_restart(
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk03_abort_partial_upload_releases_source_while_target_is_offline() {
+    use crate::agent_move::{AgentMoveArtifactKind, HomeMovePhase};
+    let (mut fixture, session, _) = crash_fixture().await;
+    interrupt_public_move(&fixture, &session, "captured").await;
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let HomeMovePhase::Captured { capture } = &operation.phase else {
+        panic!("capture required")
+    };
+    {
+        let worker = fixture.workers[0].lock().await;
+        worker
+            .agent_moves
+            .begin_target(
+                capture.clone(),
+                &fixture.workspace_root.join("offline-target"),
+            )
+            .unwrap();
+        worker
+            .agent_moves
+            .write_chunk(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace,
+                0,
+                b"partial upload",
+            )
+            .unwrap();
+    }
+    let _ = fixture.shutdown[0].send(true);
+    fixture.tasks[1].abort();
+    let _ = (&mut fixture.tasks[1]).await;
+    let cancel = serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}});
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        dispatch_move_value(&fixture, cancel.clone()),
+    )
+    .await
+    .expect("offline upload cleanup must not strand source admission")
+    .unwrap();
+    {
+        let home = fixture.home.lock().await;
+        assert!(!home
+            .agent_moves
+            .dispatch_fenced(&session, &fixture.agent_id));
+        assert!(!home
+            .agent_moves
+            .artifact_path(
+                &operation.identity.operation_id,
+                AgentMoveArtifactKind::Workspace
+            )
+            .exists());
+    }
+    reboot_worker(&mut fixture).await;
+    dispatch_move_value(&fixture, cancel).await.unwrap();
+    assert_no_workspace_archives(&fixture).await;
+}
