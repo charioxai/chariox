@@ -7,7 +7,7 @@ import { KernelBrowserHost } from './kernel-browser-host.mjs';
 
 const asset = (name, type, body) => ({ path: name, content_type: type, body_base64: Buffer.from(body).toString('base64') });
 const html = `<!doctype html><button id="human">Human call</button><button id="agent">Action</button>
-<form id="save" data-chariox-action="save_form" data-chariox-effect="write"><input name="title" value="Draft"><button>Save</button></form>
+<input id="filled"><form id="save" data-chariox-action="save_form" data-chariox-effect="write"><input name="title" value="Draft"><button>Save</button></form>
 <form data-chariox-action="unregistered" data-chariox-effect="write"></form><script src="app.js"></script>`;
 const script = `
   let retained;
@@ -18,6 +18,8 @@ const script = `
   chariox.action(spec('compete'), async (input, caller) => { await caller.call('compete'); return {done:true}; });
   chariox.action(spec('throws'), async (input, caller) => { retained = caller; await caller.call('before_throw'); throw new Error('handler refused'); });
   chariox.action(spec('late'), async () => retained.call('late'));
+  const filled = chariox.action(spec('filled'), async (input, caller) => { await caller.call('filled'); await caller.call('after_fill'); });
+  document.addEventListener('input', event => { if (event.target.id === 'filled') return filled({}); }, true);
   document.querySelector('#human').onclick = () => chariox.call('human');
   chariox.form(document.querySelector('#save'), async (input, caller) => { await caller.call('save', input); await caller.call('refresh'); });
   window.ready = true;`;
@@ -67,14 +69,14 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill']]) {
       if (input.startsWith('room_')) {
-        const selector = input === 'room_click' ? '#agent' : '#save input';
+        const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
         const { nodeId } = await connection.send('DOM.querySelector', { nodeId: root.nodeId, selector }, sessionId);
         const { node } = await connection.send('DOM.describeNode', { nodeId }, sessionId);
         const { frameTree } = await connection.send('Page.getFrameTree', {}, sessionId);
-        const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:true};
+        const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:input !== 'room_fill'};
         await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
           node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
       } else if (input === 'click') await browserClick('#agent','agent-one');
