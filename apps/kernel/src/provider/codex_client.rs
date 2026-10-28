@@ -1242,6 +1242,14 @@ mod tests {
                 true,
                 "stream disconnected before completion: error sending request",
             ),
+            // A real interrupted connection can exhaust Codex's reconnect loop
+            // without a more specific error code.
+            (
+                json!({"message": "Reconnecting... waiting for network", "codexErrorInfo": "other"}),
+                Network,
+                true,
+                "Reconnecting... waiting for network",
+            ),
             // Recorded native message from the real empty-home Codex app-server
             // (extagent/r40/first-live/signin/codex-signin-history-turn.json).
             (

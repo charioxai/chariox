@@ -261,6 +261,7 @@ impl TurnOutcome {
             "dns error",
             "timed out",
             "network is unreachable",
+            "waiting for network",
             "stream disconnected",
             "stream closed before",
             "routing discovery failed",
