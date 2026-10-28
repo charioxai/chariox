@@ -238,13 +238,20 @@ impl KernelRuntimeState {
             } => {
                 let installations =
                     environment_app_installations(&self.owned.durable_state_store, owner)?;
+                let agent = self.owned.agent_store.get_agent(agent_id)?;
                 let installation = installations
                     .iter()
-                    .find(|a| {
+                    .filter(|a| {
                         a.app_id == *app_id
                             && a.active
                                 .as_ref()
                                 .is_some_and(|a| a.release.package_digest == *digest)
+                    })
+                    .min_by_key(|installation| {
+                        !agent.has_extension_grant(
+                            crate::extension::ExtensionKind::App,
+                            &installation.installation_id,
+                        )
                     })
                     .ok_or_else(|| environment_error("Admitted App generation unavailable"))?;
                 self.grant_agent_extension(
@@ -323,6 +330,31 @@ mod tests {
                 &format!("000-fill-{index:03}"),
             );
         }
+        let fixture_store = app.durable_state_store();
+        let (bytes, publisher) = crate::durable_state::app_state::fixture_event_package();
+        let package = chariox_app_package::verify(
+            &bytes,
+            &chariox_app_package::VerificationPolicy::new(
+                crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                vec![publisher],
+            ),
+        )
+        .unwrap();
+        chariox_app_runtime::release_store::ReleaseStore::open_or_create(fixture_store.path())
+            .unwrap()
+            .stage(
+                &package,
+                &bytes,
+                chariox_app_runtime::release_store::StageBudget {
+                    max_stage_bytes: 1024 * 1024,
+                    reserved_bytes: 1024 * 1024,
+                    host_reserve_bytes: 1024 * 1024,
+                },
+            )
+            .unwrap();
+        fixture_store
+            .active_app_capabilities("alice", "installed")
+            .unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(root.session_request().with_owner_user_id("alice"))
             .unwrap();
@@ -495,13 +527,33 @@ mod tests {
         } else {
             None
         };
+        let app_grants: Vec<_> = state
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .unwrap()
+            .extension_grants()
+            .iter()
+            .filter(|grant| grant.kind == crate::extension::ExtensionKind::App)
+            .map(|grant| grant.name.clone())
+            .collect();
         state.delete_session_id(session.id()).await.unwrap();
         assert!(
             settled,
             "Apply asked for an existing live Room App grant again"
         );
-        assert_eq!(operation.phase, EnvironmentOperationPhase::Ready);
+        assert_eq!(
+            operation.phase,
+            EnvironmentOperationPhase::Ready,
+            "{:?}",
+            operation.per_item_results
+        );
         assert_eq!(operation.receipts.len(), 1);
+        assert_eq!(
+            app_grants,
+            vec!["installed".to_owned()],
+            "Apply must retain the existing installation binding"
+        );
         let prompt_error = prompt.unwrap().err().map(|error| error.to_string());
         assert!(
             prompt_error.is_none(),
