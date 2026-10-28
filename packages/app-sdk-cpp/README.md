@@ -157,3 +157,13 @@ checks on R3's actual async engine, with R4 install/launch, R5 containment and R
 brokered resources. Real ordinary/managed Linux and macOS clients, hosted relay,
 providers and signed packages remain those lanes' integration gates. No
 MP-08 / MP-09 / MP-10 / MP-11 item closes from these native checks.
+
+
+## Browser UI handlers
+
+This SDK dispatches backend WIT handlers. Browser UI actions receive
+`(input, caller)` and use `await caller.call(method, input)` for backend work
+belonging to that invocation. Ambient `chariox.call` always acts as the human.
+Register async forms with `chariox.form(element, async (input, caller) => {...})`;
+annotated forms without registration are refused. See the
+[view caller and form contract](../app-wit/README.md#view-callers-and-forms).
