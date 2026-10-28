@@ -2133,10 +2133,23 @@ fn r4_envp02b_accept_detected_requirement_in_newly_attached_folder() {
     let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
     let LocalDaemonResponse::ProjectEnvironment { environment: detected } = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"new-folder-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
     assert_eq!(detected.content_digest, saved.content_digest);
-    assert_eq!(
-        environment_draft_for_test(&detected),
-        environment_draft_for_test(&saved)
-    );
+    assert_eq!(detected.project_requirements, saved.project_requirements);
+    for folder in &saved.folders {
+        assert_eq!(
+            detected
+                .folders
+                .iter()
+                .find(|live| live.folder_id == folder.folder_id),
+            Some(folder)
+        );
+    }
+    assert!(detected
+        .folders
+        .iter()
+        .find(|folder| folder.local_workspace_binding == paths[1])
+        .unwrap()
+        .requirements
+        .is_empty());
     let proposal = detected
         .proposals
         .iter()
@@ -2185,20 +2198,14 @@ fn r4_envp02b_accept_detected_requirement_in_newly_attached_folder() {
                 .read_dir()
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
-                .find(|path| path.to_string_lossy().ends_with("revisions.json"))
+                .find(|path| path.to_string_lossy().ends_with("revision-1.json"))
                 .unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        history["revisions"][1]["content_digest"],
-        saved.content_digest
-    );
-    assert_eq!(
-        history["revisions"][1]["folders"].as_array().unwrap().len(),
-        1
-    );
+    assert_eq!(history["content_digest"], saved.content_digest);
+    assert_eq!(history["folders"].as_array().unwrap().len(), 1);
 }
 
 // MP-08 / MP-10 / MP-11: P03 selections are measured by the owner kernel, not trusted from a client.

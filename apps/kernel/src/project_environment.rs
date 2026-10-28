@@ -42,7 +42,6 @@ mod resolver;
 mod review;
 mod revisions;
 mod scope_conflicts;
-mod software_constraints;
 mod specification_validation;
 mod store;
 mod transfer;

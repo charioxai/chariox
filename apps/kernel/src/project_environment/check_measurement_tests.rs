@@ -297,7 +297,7 @@ fn r4_save_rejects_requirement_and_service_cycles_before_check() {
         let error = store
             .save_revision_locked(&current, &save, "owner")
             .expect_err("Save must reject the dependency cycle before Check can publish Ready");
-        assert!(error.to_string().contains("dependency cycle"));
+        assert!(error.to_string().contains("dependencies contain a cycle"));
         assert_eq!(store.snapshot(&project).unwrap().revision, 0);
         save.draft.project_requirements[1].depends_on.clear();
         if let RequirementSpec::Services { depends_on, .. } =
