@@ -195,7 +195,11 @@ pub fn pack(
     }
     let mut sorted: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for review in reviews {
-        let bytes = json::canonical(review)?;
+        let value = serde_json::to_value(review).map_err(|_| {
+            PackageError::new(ErrorCode::InvalidSignature, "review encoding failed")
+        })?;
+        json::check_value(&value, limits)?;
+        let bytes = json::canonical(&value)?;
         let path = format!("{REVIEW_DIR}{}.json", review.key_id);
         if bytes.len() > MAX_REVIEW_BYTES || sorted.insert(path, bytes).is_some() {
             return Err(PackageError::new(

@@ -222,6 +222,7 @@ static app_callback_code_t step(task_t *t) {
       len += snprintf(text + len, cap - len, "%s{\"id\":%llu,\"name\":\"item-%llu\",\"score\":%llu,\"tags\":[\"a\",\"b\",\"c\"]}",
                       i ? "," : "", (unsigned long long) i, (unsigned long long) i, (unsigned long long) ((i * 7919) % 100));
     text[len++] = ']';
+    text[len] = '\0';
     uint64_t sum = 0; size_t out_len = 0;
     for (uint64_t round = 0; round < rounds; round++) {
       sum = 0; out_len = 0; out[out_len++] = '[';

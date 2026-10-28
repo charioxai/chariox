@@ -27,3 +27,9 @@ builtins (`cancel-read`, `drop`) trap on a waitable still joined to a set,
 so a C SDK must remove it first. wasi-libc still imports WASI 0.2 (linked by
 the worker as today). No JSON library, no `fetch`, no async/await: a C SDK
 is a state-machine helper plus the broker calls.
+
+Memory-safety regression: `bash test-transform.sh` with `wit-bindgen` 0.63 and
+native `clang` with ASan/UBSan on PATH. It calls the actual `transform` entry
+point with empty, single-record, filtered and repeated inputs. Broker imports
+are test stubs; this checks C allocation bounds, not the Wasm runtime or sandbox.
+Nonzero allocator fill makes an unterminated scan fail deterministically.
