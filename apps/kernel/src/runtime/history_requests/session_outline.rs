@@ -744,8 +744,8 @@ fn outline_turn_from_events_with_lifecycle(
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
-    let failure = (lifecycle == SessionHistoryOutlineTurnLifecycle::Failed)
-        .then(|| outline_turn_failure(lifecycle_events))
+    let outcome = (lifecycle != SessionHistoryOutlineTurnLifecycle::Open)
+        .then(|| outline_turn_outcome(lifecycle_events))
         .flatten();
     let summary_index = events
         .iter()
@@ -803,7 +803,7 @@ fn outline_turn_from_events_with_lifecycle(
         external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
         lifecycle,
-        failure,
+        outcome,
         completed_at_ms,
         user_prompt,
         entries,
@@ -924,12 +924,12 @@ fn outline_turn_lifecycle(
     SessionHistoryOutlineTurnLifecycle::Completed
 }
 
-fn outline_turn_failure(events: &[HistoryEvent]) -> Option<crate::provider::ProviderFailure> {
+fn outline_turn_outcome(events: &[HistoryEvent]) -> Option<crate::provider::TurnOutcome> {
     events.iter().find_map(|event| {
-        let failure = event
+        let outcome = event
             .metadata
-            .get(crate::history::PROMPT_FAILURE_METADATA_KEY)?;
-        serde_json::from_value(failure.clone()).ok()
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)?;
+        serde_json::from_value(outcome.clone()).ok()
     })
 }
 

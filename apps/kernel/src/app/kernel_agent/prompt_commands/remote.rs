@@ -262,7 +262,7 @@ impl<'a> KernelAgentService<'a> {
                         .and_then(|t| t.failure.clone());
                     let failure = match (native_failure, provider_diagnostic) {
                         (Some(failure), _) => Some(failure),
-                        (None, Some(message)) => Some(crate::provider::ProviderFailure::classify(
+                        (None, Some(message)) => Some(crate::provider::TurnOutcome::classify(
                             self.app.agents.get_agent(&agent_id)?.provider(),
                             &message,
                         )),

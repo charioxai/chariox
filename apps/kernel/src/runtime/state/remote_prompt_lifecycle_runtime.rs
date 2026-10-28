@@ -828,7 +828,7 @@ impl KernelRuntimeState {
             .and_then(|termination| termination.failure.clone())
             .or_else(|| {
                 provider_diagnostic.as_deref().map(|message| {
-                    crate::provider::ProviderFailure::classify(&adapter_key, message)
+                    crate::provider::TurnOutcome::classify(&adapter_key, message)
                 })
             });
         // The worker completion is committed; settle its home receipt even after revocation.
@@ -854,7 +854,7 @@ impl KernelRuntimeState {
                 .or_else(|| {
                     provider_failure
                         .as_ref()
-                        .map(|failure| failure.message.as_str())
+                        .map(|failure| failure.reason.as_str())
                 })
                 .or(provider_diagnostic.as_deref()),
         )

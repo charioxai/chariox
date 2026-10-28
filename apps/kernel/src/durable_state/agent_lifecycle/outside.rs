@@ -22,7 +22,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 }
 
 mod model;
-pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState};
+pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState, SettledTurn};
 mod producers;
 use producers::identity;
 pub(super) use producers::publish_task;
@@ -148,7 +148,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 return Ok(Outcome::Saved);
             };
             for state in states {
-                let failure = state.failure.clone();
+                let turn = state.turn.clone();
                 let event = OutsideEvent {
                     cursor: 0,
                     kernel: kernel.clone(),
@@ -159,14 +159,16 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                         run_state: Some(state.state),
                         task_state: None,
                         reason: None,
-                        failure: failure.clone(),
+                        prompt_id: turn.as_ref().map(|turn| turn.prompt_id.clone()),
+                        turn_id: turn.as_ref().map(|turn| turn.turn_id.clone()),
+                        outcome: turn.as_ref().map(|turn| turn.outcome.clone()),
                     },
-                    summary: match (state.state, &failure) {
+                    summary: match (state.state, &turn) {
                         (crate::local::EventRunState::Working, _) => "working".into(),
                         (crate::local::EventRunState::Idle, _) => "idle".into(),
                         (crate::local::EventRunState::Error, None) => "error".into(),
-                        (crate::local::EventRunState::Error, Some(failure)) => {
-                            format!("error: {}", failure.summary())
+                        (crate::local::EventRunState::Error, Some(turn)) => {
+                            format!("error: {}", turn.outcome.summary())
                         }
                     },
                     at_ms: outside_now_ms()?,

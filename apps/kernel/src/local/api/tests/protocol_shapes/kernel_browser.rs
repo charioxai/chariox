@@ -557,7 +557,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "af8bde261268117047fc49f3ae892ca242c6beba88cdc29921f8834f8091f339"
+        "aad5ee2605cd39e4bb7ddad74b960a09d916880634f03abe816a6cca632faf2c"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -660,7 +660,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "507482906bc7b31d75104675db993789c665ad91684a5820cd301b894e221037"
+        "00d62983ff3d2569319d0ec40c18a98f9375456ea22c89955dfb901669517110"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

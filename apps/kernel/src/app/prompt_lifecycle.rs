@@ -655,7 +655,7 @@ impl DaemonApp {
         agent_id: &str,
         provider_run_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<PromptCompletion, DaemonError> {
         crate::app::KernelAgentService::new(self).fail_active_prompt_with_termination(
             session_id,

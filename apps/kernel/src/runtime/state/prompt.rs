@@ -224,7 +224,7 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: crate::provider::ProviderFailure,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         self.settle_local_prompt_without_advance_if_matches(
             session_id,
@@ -267,7 +267,7 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: Option<&str>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -295,10 +295,8 @@ impl KernelRuntimeOwnedState {
         let Some(completed) = completed else {
             return Ok(None);
         };
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-
+        // The turn's outcome is recorded before the prompt leaves the agent, so the
+        // idle or error state that follows always names the turn it ends.
         let completion_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.provider_store
                 .get_run_for_agent(session_id, agent_id)
@@ -319,6 +317,9 @@ impl KernelRuntimeOwnedState {
             self.agent_store
                 .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         let completion_record_key = provider_run_id.unwrap_or(agent_id);
         if !self.prompt_completion_recorded(completion_record_key) {
             let provider_run_id = completion_provider_run_id
@@ -710,7 +711,7 @@ impl KernelRuntimeOwnedState {
         settled_at_ms: u64,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) {
         if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
             crate::app::clear_claude_context_delivery_for_settled_prompt(

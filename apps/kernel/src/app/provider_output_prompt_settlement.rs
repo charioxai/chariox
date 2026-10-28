@@ -191,7 +191,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             .as_ref()
             .and_then(|termination| termination.failure.clone())
             .unwrap_or_else(|| {
-                crate::provider::ProviderFailure::classify(run.adapter_key(), message)
+                crate::provider::TurnOutcome::classify(run.adapter_key(), message)
             });
         let diagnosed = self
             .provider_store

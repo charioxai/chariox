@@ -769,10 +769,13 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
         .completed_git_turn_snapshots
         .latest_projection_for_agent(session.id(), agent.id())
         .expect("dead-run settlement should remain projected");
+    let outcome = serde_json::to_value(&completed).expect("turn serializes")["outcome"].clone();
     let termination = completed
         .provider_termination
         .expect("dead-run settlement should expose provider termination");
-    assert!(termination.reason.contains("already ended"));
+    assert!(termination.reason.contains("exit was not observed"));
+    assert_eq!(outcome["kind"], "provider_crashed", "{outcome}");
+    assert_eq!(outcome["retryable"], true, "{outcome}");
     assert!(
         !runtime.owned.provider_output_deadlines.contains(run.id()),
         "the prior provider output timer must be cleared"
