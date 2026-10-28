@@ -89,8 +89,18 @@ export function diagramActions(api, persist) {
         ...(width === undefined ? {} : { width }), ...(height === undefined ? {} : { height }) })]));
       for (const e of all()) if (e.type === 'text' && e.containerId && changed.has(e.containerId)) {
         const old = all().find(t => t.id === e.containerId), next = changed.get(e.containerId);
-        changed.set(e.id, newElementWith(e, { x: e.x + next.x - old.x + (next.width - old.width) / 2,
-          y: e.y + next.y - old.y + (next.height - old.height) / 2 }));
+        if (e.originalText && (next.width !== old.width || next.height !== old.height)) {
+          // Reuse Excalidraw's shape-specific wrapping before persisting the candidate.
+          const layout = convertToExcalidrawElements([{ ...next, boundElements: null,
+            label: { ...e, text: e.originalText } }], { regenerateIds: false });
+          const container = layout.find(t => t.id === next.id);
+          const label = layout.find(t => t.type === 'text' && t.containerId === next.id);
+          changed.set(next.id, newElementWith(next, { width: container.width, height: container.height }));
+          changed.set(e.id, newElementWith(e, { text: label.text, x: label.x, y: label.y,
+            width: label.width, height: label.height, angle: label.angle }));
+        } else {
+          changed.set(e.id, newElementWith(e, { x: e.x + next.x - old.x, y: e.y + next.y - old.y }));
+        }
       }
       for (const e of all()) if (e.type === 'arrow' && (changed.has(e.startBinding?.elementId) || changed.has(e.endBinding?.elementId))) {
         const oldFrom = all().find(t => t.id === e.startBinding?.elementId);

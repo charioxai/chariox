@@ -11,7 +11,7 @@ const output = process.env.CHARIOX_EXCALIDRAW_BUNDLE;
 const evidence = process.env.CHARIOX_EXCALIDRAW_EVIDENCE;
 assert(output && evidence, 'set external bundle and evidence paths');
 
-async function fixture(run) {
+async function fixture(run, deviceScaleFactor = 1) {
   const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
   const server = createServer(async (req, res) => {
     try {
@@ -24,7 +24,7 @@ async function fixture(run) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor });
     const page = await context.newPage();
     page.setDefaultTimeout(5000);
     const broker = { scene: null, version: null, saveAttempts: 0, saves: [], fail: false, files: new Map(), writes: [], callers: [], picked: null };
@@ -303,3 +303,28 @@ test('agent persistence uses its caller while a later human save stays human', {
   await draw(600);
   assert(broker.callers.some(call=>call.name==='save_scene'&&call.token===null));
 }));
+
+for (const dpr of [1, 2]) test(`resizing a labelled container reflows persisted text at DPR${dpr}`, { timeout: 30_000 }, () => fixture(async ({ page, broker, invoke }) => {
+  const originalText = 'A labelled container must wrap every word when narrowed and unwrap again when widened.';
+  await invoke('add_elements', { elements: [{ id: 'labelled', type: 'rectangle', x: 350, y: 250, width: 420, height: 240, label: originalText }] });
+  const original = broker.scene.elements.find(e => e.containerId === 'labelled');
+  const retained = e => ({ id: e.id, containerId: e.containerId, originalText: e.originalText, fontSize: e.fontSize,
+    fontFamily: e.fontFamily, lineHeight: e.lineHeight, textAlign: e.textAlign, verticalAlign: e.verticalAlign, strokeColor: e.strokeColor });
+  let narrowLines;
+  for (const width of [130, 540]) {
+    const result = await invoke('update_elements', { ids: ['labelled'], width });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const container = broker.scene.elements.find(e => e.id === 'labelled');
+    const label = broker.scene.elements.find(e => e.id === original.id);
+    assert.deepEqual(retained(label), retained(original));
+    assert.equal(label.text.replace(/\s+/g, ' ').trim(), originalText);
+    assert(label.width <= container.width - 10, `label width ${label.width} exceeds container ${container.width}`);
+    assert(label.height <= container.height - 10);
+    assert(container.boundElements.some(e => e.id === original.id && e.type === 'text'));
+    const lines = label.text.split('\n').length;
+    if (width === 130) { narrowLines = lines; assert(lines > original.text.split('\n').length); }
+    else assert(lines < narrowLines);
+    assert(label.version > original.version);
+    await page.screenshot({ path: join(evidence, `label-${width}-dpr${dpr}.png`) });
+  }
+}, dpr));
