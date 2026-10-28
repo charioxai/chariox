@@ -1,0 +1,26 @@
+--- a/crates/runtime/src/task.rs
++++ b/crates/runtime/src/task.rs
+@@ -370 +370 @@
+-    ) -> rquickjs::Result<()> {
++    ) -> rquickjs::Result<bool> {
+@@ -372,8 +372,6 @@
+-            return Ok(());
+-        }
+-        let matches = self.with(|inner| {
+-            inner.pending.get(&handle).is_some_and(|entry| {
+-                if entry.cancel {
+-                    return false;
+-                }
+-                matches!(&entry.op, Pending::ImportCall { token: active, .. } if Rc::ptr_eq(active, token))
++            return Ok(false);
++        }
++        let (matches, requested) = self.with(|inner| {
++            inner.pending.get(&handle).map_or((false, false), |entry| {
++                let matches = matches!(&entry.op, Pending::ImportCall { token: active, .. } if Rc::ptr_eq(active, token));
++                (matches, entry.cancel)
+@@ -382 +380 @@
+-        if matches {
++        if matches && !requested {
+@@ -385 +383 @@
+-        Ok(())
++        Ok(matches)
