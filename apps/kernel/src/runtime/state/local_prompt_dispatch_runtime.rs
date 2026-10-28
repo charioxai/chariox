@@ -764,7 +764,7 @@ impl KernelRuntimeState {
                 .provider_store
                 .get_run(&dispatch.provider_run_id)?;
             let message = error.to_string();
-            let failure = crate::provider::ProviderFailure::classify(run.adapter_key(), &message);
+            let failure = crate::provider::TurnOutcome::classify(run.adapter_key(), &message);
             if self
                 .try_provider_auth_recovery(&run, &message, failure, Some(&dispatch.prompt_id))
                 .await?
@@ -5268,7 +5268,12 @@ pub(in crate::runtime::state) mod tests {
         );
 
         runtime
-            .finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
+            .finalize_cancelled_local_prompt_after_restart(
+                &session_id,
+                &agent_id,
+                &prompt,
+                super::prompt_cancellation_owned_state::PromptEnding::Cancelled,
+            )
             .await
             .expect("restart recovery should finish the durable failure intent");
         assert_eq!(
