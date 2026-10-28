@@ -81,7 +81,7 @@ impl KernelRuntimeState {
                 self.dispatch_home_app_tool(&context, &tool, arguments),
             )
             .await
-            .and_then(enforce_home_extension_runtime_result_limit),
+            .and_then(|result| enforce_home_app_runtime_result_limit(&tool, result)),
             crate::extension::ExtensionKind::Script => with_home_extension_timeout(
                 &tool,
                 "home script proxy",
@@ -588,6 +588,19 @@ fn home_extension_invocation_matches_cancel(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+pub(in crate::runtime::state::tool_dispatch) fn enforce_home_app_runtime_result_limit(
+    tool: &crate::extension::RemoteExtensionTool,
+    result: crate::transport::runtime_tools::RuntimeToolResult,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    if KernelRuntimeState::is_remote_app_view_tool(tool) {
+        // The View bridge bounds each action and the kernel bounds batch steps.
+        Ok(result)
+    } else {
+        enforce_home_extension_runtime_result_limit(result)
+    }
+}
 
 pub(in crate::runtime::state::tool_dispatch) fn enforce_home_extension_runtime_result_limit(
     result: crate::transport::runtime_tools::RuntimeToolResult,
