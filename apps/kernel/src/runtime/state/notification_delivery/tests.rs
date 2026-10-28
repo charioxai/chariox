@@ -6,6 +6,7 @@ use crate::session::*;
 
 #[cfg(unix)]
 mod native_pty;
+mod retry;
 
 async fn fixture(
     app_event: bool,

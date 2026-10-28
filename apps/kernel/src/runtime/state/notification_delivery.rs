@@ -267,7 +267,7 @@ impl KernelRuntimeOwnedState {
                     item.notification_invocation_mut().unwrap().caller["notification_steer"] = serde_json::json!({"prompt_id":active.id(),"provider_run_id":provider_run_id});
                     let dispatch = crate::app::KernelPromptDispatch {
                         session_id: session_id.into(), provider_run_id, agent_id: active.target_agent_id().into(),
-                        prompt_id: id.into(), target_active_prompt_id: Some(active.id().into()),
+                        prompt_id: notification_send_id(&queued).into(), target_active_prompt_id: Some(active.id().into()),
                         source_attachment_id: active.source_attachment_id().into(), prompt: queued.prompt().unwrap_or_default().into(),
                         hidden_system_context: String::new(), attachments: vec![], prompt_origin: active.prompt_origin(),
                         external_provider: None, external_provider_session_id: None, external_provider_turn_id: None, steering: true,
@@ -385,9 +385,13 @@ impl KernelRuntimeOwnedState {
             let item = after.notification_prompt_mut(&id).unwrap();
             if retry {
                 item.mark_queued_for_retry();
-                if let Some(caller) = item.notification_invocation_mut().and_then(|i| i.caller.as_object_mut()) {
-                    caller.remove("notification_steer");
-                }
+                let caller = item.notification_invocation_mut().unwrap().caller.as_object_mut().unwrap();
+                caller.remove("notification_steer");
+                // The worker retains its unresolved receipt. A user-requested
+                // resend must have a distinct provider/worker identity.
+                caller.insert("notification_send_id".into(), serde_json::json!(
+                    format!("notification-retry:{id}:{:032x}", rand::random::<u128>())
+                ));
             } else {
                 item.mark_cancelled();
             }
@@ -423,6 +427,7 @@ impl KernelRuntimeOwnedState {
             &self.session_store,
             session_id,
             injection.queued.id(),
+            &injection.dispatch.prompt_id,
             &injection.run_id,
             accepted,
         )?;
@@ -452,6 +457,7 @@ impl KernelRuntimeOwnedState {
                     .ok_or_else(|| notification_error("injection disappeared"))?;
                 if item.status() != WorkflowQueuedPromptStatus::Running
                     || item.workflow_run_id() != Some(injection.run_id.as_str())
+                    || notification_send_id(item) != injection.dispatch.prompt_id
                 {
                     return Err(notification_error("injection changed"));
                 }
@@ -557,7 +563,7 @@ impl KernelRuntimeState {
             super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
                 self,
                 &identity.agent_id,
-                id,
+                notification_send_id(item),
                 &identity.worker_kernel_id,
                 &identity.worker_machine_id,
                 &identity.leased_agent_id,
@@ -609,7 +615,7 @@ impl KernelRuntimeOwnedState {
             || binding.worker_machine_id != identity.worker_machine_id
             || binding.leased_agent_id != identity.leased_agent_id
             || binding.execution_lease_id != identity.execution_lease_id
-            || receipt.home_prompt_id != id
+            || receipt.home_prompt_id != notification_send_id(item)
             || receipt.target_home_prompt_id.as_deref()
                 != Some(identity.target_home_prompt_id.as_str())
             || receipt.worker_provider_run_id != identity.worker_provider_run_id
@@ -639,7 +645,7 @@ impl KernelRuntimeOwnedState {
                 &identity.target_home_prompt_id,
                 source_attachment,
                 &identity.agent_id,
-                id,
+                &receipt.home_prompt_id,
                 item.prompt().unwrap_or_default(),
                 &[],
             )?;
@@ -649,6 +655,7 @@ impl KernelRuntimeOwnedState {
             &self.session_store,
             session_id,
             id,
+            &receipt.home_prompt_id,
             item.workflow_run_id()
                 .ok_or_else(|| notification_error("injection run missing"))?,
             accepted,
@@ -668,10 +675,15 @@ pub(crate) fn finish_structured_notification_submit(
     let Some(item) = snapshot
         .workflow_queued_prompts()
         .iter()
-        .find(|q| q.id() == finished.prompt_id)
+        .find(|q| q.id() == notification_queue_id(&finished.prompt_id))
     else {
         return Ok(false);
     };
+    // A late result for a superseded send belongs to this item, but cannot
+    // acknowledge a retry that the user explicitly requested afterward.
+    if notification_send_id(item) != finished.prompt_id {
+        return Ok(true);
+    }
     let Some(saved) = item
         .publication_invocation()
         .and_then(|i| i.caller.get("notification_steer"))
@@ -714,6 +726,7 @@ pub(crate) fn finish_structured_notification_submit(
             store,
             sessions,
             &finished.session_id,
+            item.id(),
             &finished.prompt_id,
             item.workflow_run_id()
                 .ok_or_else(|| notification_error("injection run missing"))?,
@@ -723,11 +736,28 @@ pub(crate) fn finish_structured_notification_submit(
     Ok(true)
 }
 
+// Legacy sends use the queue ID. Explicit retries persist a distinct provider
+// identity while receipts and queue actions keep referring to the same item.
+fn notification_send_id(item: &WorkflowQueuedPrompt) -> &str {
+    item.publication_invocation()
+        .and_then(|invocation| invocation.caller.get("notification_send_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| item.id())
+}
+
+fn notification_queue_id(send_id: &str) -> &str {
+    send_id
+        .strip_prefix("notification-retry:")
+        .and_then(|identity| identity.rsplit_once(':'))
+        .map_or(send_id, |(queue_id, _)| queue_id)
+}
+
 fn settle_injection(
     store: &DurableKernelStateStore,
     sessions: &SessionStateStore,
     session_id: &str,
     id: &str,
+    send_id: &str,
     run_id: &str,
     accepted: bool,
 ) -> Result<(), DaemonError> {
@@ -739,6 +769,7 @@ fn settle_injection(
         };
         if item.status() != WorkflowQueuedPromptStatus::Running
             || item.workflow_run_id() != Some(run_id)
+            || notification_send_id(item) != send_id
         {
             return Ok(());
         }
