@@ -810,3 +810,16 @@ test("a completed login copy never selects its profile on a newly selected kerne
   }
   await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
 })
+
+test("a login copy never selects its profile after the same kernel connection is replaced", async () => {
+  let connection = {}
+  const deps = Object.assign({
+    currentProviderId: () => "claude", flashFooter() {}, appendNotice() {},
+    listProviderAccountCopyOffers: async () => [{ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }],
+    copyProviderAccountFromKernel: async () => ({ operation_id: "op", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" }),
+    getRelayStatus: async () => ({ daemon_id: "b" }),
+    refreshWaitingRoomInventory: async () => { connection = {} },
+    applyAccountSelection: async () => { assert.fail("the copy belongs to the previous connection") },
+  } satisfies ProviderCommandHandlerDeps, { accountCopyBinding: () => connection })
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
+})

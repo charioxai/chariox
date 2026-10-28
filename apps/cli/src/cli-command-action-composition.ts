@@ -608,6 +608,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
     refreshWaitingRoomInventory: async () => { await refreshWaitingRoomData() },
     listProviderAccountCopyOffers: () => listProviderAccountCopyOffers(client),
+    accountCopyBinding: () => (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client,
     copyProviderAccountFromKernel: offer => {
       const source = (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client
       const operations = copyOperations.get(source) ?? new Map<string, string>()

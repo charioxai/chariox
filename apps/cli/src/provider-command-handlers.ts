@@ -43,6 +43,7 @@ export type ProviderCommandHandlerDeps = {
   applyAccountSelection?: (value: string) => Promise<void>
   listProviderAccountCopyOffers?: () => Promise<import("@chariox/kernel-client").ProviderAccountCopyOffer[]>
   copyProviderAccountFromKernel?: (offer: import("@chariox/kernel-client").ProviderAccountCopyOffer) => Promise<import("@chariox/kernel-client").ProviderAccountCopyReceipt>
+  accountCopyBinding?: () => object
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
   linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
@@ -367,6 +368,8 @@ async function handleProviderAccountsCommand(
   const [action = "list", provider, profile, ...rest] = args
   if (action === "copy") {
     if (!deps.listProviderAccountCopyOffers || !deps.copyProviderAccountFromKernel) throw new Error("Update this client to copy a login")
+    const binding = deps.accountCopyBinding?.()
+    const current = () => !deps.accountCopyBinding || deps.accountCopyBinding() === binding
     const offers = await deps.listProviderAccountCopyOffers()
     const offer = offers.find(offer => offer.source_kernel_id === provider && offer.account_profile === profile)
     if (!provider || !profile) {
@@ -374,11 +377,12 @@ async function handleProviderAccountsCommand(
       return
     }
     if (!offer) throw new Error("This login is no longer offered by the source machine. Open /provider accounts copy again.")
+    if (!current()) throw new Error("The kernel connection changed. Open /provider accounts copy again.")
     deps.flashFooter(`Copying ${offer.label} from ${offer.source_label}; answer the kernel approval`, "info")
     const receipt = await deps.copyProviderAccountFromKernel(offer)
-    if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id) {
+    if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) {
       await deps.refreshWaitingRoomInventory?.()
-      if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id) await deps.applyAccountSelection?.(receipt.account_profile)
+      if ((await deps.getRelayStatus?.())?.daemon_id === receipt.target_kernel_id && current()) await deps.applyAccountSelection?.(receipt.account_profile)
     }
     deps.appendNotice("Login copied to this machine. The source machine keeps its own login.")
     return
