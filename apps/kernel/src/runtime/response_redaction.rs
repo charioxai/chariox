@@ -891,6 +891,41 @@ mod tests {
     }
 
     #[test]
+    fn trigger_replies_hide_the_session_trigger_prompts_of_other_users() {
+        let session = session_with_a_private_trigger_firing();
+        let trigger = session.agent_triggers()[0].clone();
+        for response in [
+            LocalDaemonResponse::AgentTriggerCreated {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+            LocalDaemonResponse::AgentTriggerUpdated {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+            LocalDaemonResponse::AgentTriggerDeleted {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+        ] {
+            let (LocalDaemonResponse::AgentTriggerCreated { session, .. }
+            | LocalDaemonResponse::AgentTriggerUpdated { session, .. }
+            | LocalDaemonResponse::AgentTriggerDeleted { session, .. }) = redact_response_for_user(
+                response,
+                "member",
+                &ProviderRunProjectionStore::default(),
+                None,
+                None,
+            )
+            .expect("trigger response should redact")
+            else {
+                panic!("unexpected response")
+            };
+            assert_no_private_trigger_state(&session);
+        }
+    }
+
+    #[test]
     fn the_owner_keeps_their_trigger_prompts_in_both_replies() {
         for response in [
             LocalDaemonResponse::TriggerDeliveryResent {
