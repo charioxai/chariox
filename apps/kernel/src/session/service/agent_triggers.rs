@@ -176,6 +176,26 @@ impl SessionService {
         Ok(Some(trigger.clone()))
     }
 
+    /// Releases a claim whose agent could not take the firing; a one-shot
+    /// trigger stays pending.
+    pub(crate) fn defer_agent_trigger(
+        &mut self,
+        session_id: &str,
+        trigger_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<AgentTrigger>, DaemonError> {
+        let session = self.agent_trigger_session_mut(session_id)?;
+        let Some(trigger) = session
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|trigger| trigger.id() == trigger_id)
+        else {
+            return Ok(None);
+        };
+        trigger.defer_dispatch(now_ms);
+        Ok(Some(trigger.clone()))
+    }
+
     pub(crate) fn mark_agent_trigger_coalesced(
         &mut self,
         session_id: &str,

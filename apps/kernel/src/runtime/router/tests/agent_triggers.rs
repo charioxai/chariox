@@ -806,3 +806,78 @@ async fn archiving_an_agent_removes_its_triggers_and_unarchive_starts_nothing() 
         "unarchive must not start a turn"
     );
 }
+
+#[tokio::test]
+async fn a_firing_seen_while_its_agent_is_archived_releases_its_claim() {
+    let worktree = crate::test_support::TestWorktree::new("agent-triggers-archive-window");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Queue,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("schedule trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+    let due_at_ms = trigger.next_run_at_ms();
+    // An archive whose durable write fails is rolled back: a tick in between
+    // sees the agent archived while its triggers still exist.
+    let set_archived = |archived: bool| {
+        router
+            .runtime_state
+            .set_agent_archived_without_cleanup_for_test(agent.id(), archived)
+    };
+    set_archived(true);
+    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    set_archived(false);
+    let deferred = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .unwrap()
+        .agent_triggers()
+        .iter()
+        .find(|candidate| candidate.id() == trigger.id())
+        .cloned()
+        .expect("the trigger outlives the rolled-back archive");
+    assert!(!deferred.dispatch_in_flight(), "the claim is released");
+    assert_eq!(deferred.fired(), 0, "no firing reached the archived agent");
+
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_triggers(deferred.next_run_at_ms())
+    })
+    .await;
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot
+            .active_prompt_for_agent(agent.id())
+            .and_then(|prompt| prompt.agent_trigger_id()),
+        Some(trigger.id()),
+        "the trigger fires again once the agent is back"
+    );
+}

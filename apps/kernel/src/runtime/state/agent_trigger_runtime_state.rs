@@ -11,6 +11,8 @@ enum AgentTriggerFiring {
     },
     Coalesced,
     AgentGone,
+    /// The agent is archived: nothing fires, and the trigger waits for its next run.
+    Deferred,
     Skipped,
 }
 
@@ -224,6 +226,19 @@ impl KernelRuntimeState {
         }
     }
 
+    /// The window between an archive's state change and its trigger cleanup.
+    #[cfg(test)]
+    pub(crate) fn set_agent_archived_without_cleanup_for_test(
+        &self,
+        agent_id: &str,
+        archived: bool,
+    ) {
+        self.owned
+            .agent_store
+            .archive_agent(agent_id, archived, &mut self.owned.session_store.write())
+            .expect("agent archive state should change");
+    }
+
     pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
         let dispatches = self
             .owned
@@ -252,6 +267,11 @@ impl KernelRuntimeState {
                         &dispatch.trigger_id,
                         now_ms,
                     ),
+                Ok(AgentTriggerFiring::Deferred) => self
+                    .owned
+                    .session_store
+                    .write()
+                    .defer_agent_trigger(&dispatch.session_id, &dispatch.trigger_id, now_ms),
                 Ok(AgentTriggerFiring::Skipped) => continue,
                 Ok(AgentTriggerFiring::AgentGone) => {
                     self.record_agent_trigger_notice(
@@ -308,8 +328,9 @@ impl KernelRuntimeState {
         match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Err(DaemonError::AgentNotFound { .. }) => return Ok(AgentTriggerFiring::AgentGone),
             // Archive removes the agent's triggers; a firing claimed just
-            // before that must not start a turn.
-            Ok(agent) if agent.archived() => return Ok(AgentTriggerFiring::Skipped),
+            // before that, or during an archive that is rolled back, must not
+            // start a turn and must not keep its claim.
+            Ok(agent) if agent.archived() => return Ok(AgentTriggerFiring::Deferred),
             result => result.map(|_| ())?,
         }
         let session = self.owned.session_store.get_session(&dispatch.session_id)?;

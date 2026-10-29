@@ -207,6 +207,11 @@ impl AgentTrigger {
         self.schedule_next_run(now_ms, 0);
     }
 
+    pub(crate) fn defer_dispatch(&mut self, now_ms: u64) {
+        self.dispatch_in_flight = false;
+        self.schedule_next_run(now_ms, 1);
+    }
+
     pub(crate) fn mark_coalesced(&mut self, now_ms: u64) {
         self.dispatch_in_flight = false;
         self.coalesced = self.coalesced.saturating_add(1);
