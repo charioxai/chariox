@@ -420,6 +420,57 @@ async fn sudo_operations_workspace_extension_reuses_task_consent() {
     assert!(result.is_none());
 }
 
+#[tokio::test]
+async fn sudo_operations_room_app_self_binding_reuses_task_consent() {
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
+    crate::durable_state::app_state::fixture_catalog(&f.state.owned.durable_state_store);
+    let turn = running(&f);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let prompts = &f.state.owned.prompt_state_owner;
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+        .unwrap();
+    let attachment = f
+        .state
+        .owned
+        .attachment_store
+        .get_attachment(&f.request.attachment_id)
+        .unwrap();
+    let mut owner_request = active.clone().with_source_attachment(&attachment);
+    owner_request.set_status(crate::session::PromptStatus::Running);
+    assert!(prompts.replace_active_prompt_if_matches(
+        &session,
+        &turn.agent_id,
+        &active,
+        owner_request
+    ));
+    let agent = f.state.owned.agent_store.get_agent(&turn.agent_id).unwrap();
+    assert!(f.state.owner_requested_prompt(&agent).is_some());
+    assert!(
+        f.state
+            .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
+            .await
+    );
+    let permit = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.state.authorize_agent_app_binding(
+            &turn.session_id,
+            &turn.agent_id,
+            &turn.agent_id,
+            "installed",
+        ),
+    )
+    .await
+    .expect("covered Room App self binding asked again")
+    .unwrap();
+    assert!(permit.is_some());
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sudo_operations_claude_watched_command_reuses_task_consent() {
