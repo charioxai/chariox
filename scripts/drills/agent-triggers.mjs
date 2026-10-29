@@ -126,6 +126,8 @@ try {
     const page = await (await fetch(`${state.http_url}history`)).json()
     const longPrompt = page.entries.filter(entry => entry.role === 'user' && entry.text.includes('LONG_BODY_OK')).map(entry => entry.text.length)
     expect('long-prompt-shown-whole', longPrompt.some(length => length > 20_000), { lengths: longPrompt })
+    // The ingress admits three requests, then one every ten seconds; let the bucket refill before the next invocations.
+    await delay(30_000)
 
     // AT-04 QUEUE while busy: a long turn, two HTTP invocations queue in order.
     await prompt('Run the shell command `sleep 30` and wait for it to finish. Then reply with exactly: STORY_DONE')
