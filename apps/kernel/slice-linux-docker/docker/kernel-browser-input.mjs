@@ -38,7 +38,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
@@ -129,7 +129,20 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       }
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        await sendInput("Input.insertText", { text: input.text });
+        if (inputToken && input.text) {
+          await admitInput();
+          const endDispatch = onDispatch?.();
+          try {
+            // insertText has no timestamp field. Use the same synchronous native
+            // edit as Room fills so only this exact input event inherits the caller.
+            const reply = await connection.send("Runtime.evaluate", {
+              expression: `globalThis.__charioxViewInput.edit(document.activeElement,${JSON.stringify(input.text)},${JSON.stringify(inputToken)})`,
+              returnByValue: true,
+            }, sessionId);
+            if (reply.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App text edit failed");
+            assertNotCancelled(signal);
+          } finally { endDispatch?.(); }
+        } else await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
         // Shift only with focus/selection keys: Shift+Tab moves focus back, Shift+Arrow/Home/End extend the selection.
