@@ -172,7 +172,7 @@ fn check_journal_grows_atomically_and_reuses_slots() {
 fn check_journal_rejects_symlinks_and_hardlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks {
+    let checks = EnvironmentChecks {
         folder_binding_digest: "current".into(),
         ..EnvironmentChecks::default()
     };
