@@ -3,7 +3,7 @@
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
 current release and the previous release (636 and 629), plus the new target
-770 while it is being prepared. Older kernels are
+910 while it is being prepared. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
@@ -5215,7 +5215,7 @@ Clients use these requests only with protocol 588 or newer. Protocol 567 clients
 continue to work; web clients attached to a 567 kernel keep Room stars in their
 own browser storage. This feature does not raise the general client minimum.
 
-### MP-08 / MP-09 / MP-10 / MP-11 — tool result images (910 / peer 239)
+### MP-08 / MP-09 / MP-10 / MP-11 — tool result images (910 / peer 361)
 
 The `ProviderTool` payload gains two optional fields. `images` is a list of
 `data:image/{png,jpeg,gif,webp};base64,…` URLs from a tool result (up to 4 per
