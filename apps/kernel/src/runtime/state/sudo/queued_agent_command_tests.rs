@@ -168,9 +168,10 @@ async fn assert_queued_prompt(cancel: bool, replace: bool, include_run: bool, co
             "queued prompt borrowed a different turn: {result:?}"
         );
         let after = f.state.owned.session_snapshot(&window.session_id).unwrap();
+        // Only identity: delivery of the window's own prompt may still advance.
         assert_eq!(
-            after.active_prompt_for_agent(&target),
-            before.active_prompt_for_agent(&target)
+            after.active_prompt_for_agent(&target).map(|p| p.id().to_owned()),
+            before.active_prompt_for_agent(&target).map(|p| p.id().to_owned())
         );
         assert_eq!(
             after.queued_prompts_for_agent(&target),
