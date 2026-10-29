@@ -375,4 +375,7 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 636;
+/// Allocated 880 adds owner-scoped listing and replay of the webhooks an integration received
+/// (`ListEventConnectionEvents`, `ReplayEventConnectionEvent`); the predecessor list keeps only the
+/// current release (636) and the one before it (629).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 880;

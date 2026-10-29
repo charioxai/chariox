@@ -5654,3 +5654,26 @@ The Web dialog presentation depends on 630 and feature-detects the optional
 field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
+
+### Integration received events — local 880 / relay peer 430
+
+`ListEventConnectionEvents { connection_id, limit }` returns
+`EventConnectionEvents { page }` with the webhooks the integration's generator
+received for the calling owner, newest first (`limit` defaults to 50, at most
+200). Each event carries its delivery id, event type, `connection_scope`, a short
+`subject` such as `#1026`, `received_at_ms`, `published_at_ms`, `attempts`,
+`publication_count`, `last_error` and one `status`: `pending` (stored, still being
+retried), `published`, `unmatched` (no active trigger was left to receive it) or
+`failed` (retries ran out; `last_error` names why). The provider payload, prompt
+and reply context are never part of the view.
+`ReplayEventConnectionEvent { connection_id, delivery_id }` publishes one stored
+event again with a fresh attempt budget and returns `EventConnectionEventReplayed
+{ result: { event } }`; AEDS dedupes on the occurrence id, so replaying an event it
+already holds starts no second run. A replay of an event that another attempt is
+publishing right now is refused with a conflict; an unknown delivery id, or one of
+another owner, answers not found.
+Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥880
+(`integrationReceivedEventsMinimumProtocolVersion`). Relay peer 430 only pairs the
+embedded local response union with local 880. The managed-upgrade predecessor list
+holds the current release (636) and the one before it (629).

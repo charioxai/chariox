@@ -17,10 +17,3 @@ test('MP-08/MP-10/MP-11: page placement has its allocated 529/137 floor and pinn
  assert.deepEqual(Object.keys(command.target).sort(),['document_id','kind','mirror_subscription_id','region_id','sequence']);
  assert.deepEqual(result.region_offset,{x:10.5,y:5.25});
 });
-
-
-test('MP-08/MP-10/MP-11: placement upgrade retains the preceding 528 release',()=>{
- const transitions=JSON.parse(readFileSync(new URL('../apps/kernel/managed-upgrade-protocol-transitions.json',import.meta.url)));
- assert(transitions.upgradeFrom.includes(528));
- assert(transitions.rollbackTo.includes(528));
-});

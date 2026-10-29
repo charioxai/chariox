@@ -1279,12 +1279,12 @@ test("managed kernel upgrade accepts the schema 3 receipt a Path-1 kernel writes
 
 // MP-07/MP-10/MP-11: use the shipped policy verbatim so normalization cannot
 // hide stale release metadata. This fixture does not prove live state migration.
-test("MP-07/MP-10/MP-11 signed predecessor 552 to current runtime upgrade and rollback use the shipped policy", async (context) => {
+test("MP-07/MP-10/MP-11 signed predecessor 629 to current runtime upgrade and rollback use the shipped policy", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
   const harness = await makeHarness(context, {
-    currentProtocol: 552,
+    currentProtocol: 629,
     targetProtocol: runtimeProtocol,
     targetTransitionPolicy: repositoryPolicy,
   })
@@ -1299,41 +1299,6 @@ test("MP-07/MP-10/MP-11 signed predecessor 552 to current runtime upgrade and ro
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
     `releases/${harness.current.digest.slice("sha256:".length)}`)
 })
-
-// This signed installer fixture is not proof of real-binary state migration.
-for (const [currentProtocol, targetProtocol] of [[410, 411], [411, 415], [415, 416], [472, 493], [487, 493]]) {
-test(`managed kernel upgrade accepts the signed repository ${currentProtocol} to ${targetProtocol} fixture transition and rollback`, async (context) => {
-  const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
-  const harness = await makeHarness(context, {
-    currentProtocol,
-    currentTransitionPolicy: { ...repositoryPolicy, protocol: currentProtocol,
-      upgradeFrom: repositoryPolicy.upgradeFrom.filter(version => version <= currentProtocol),
-      rollbackTo: repositoryPolicy.rollbackTo.filter(version => version <= currentProtocol) },
-    targetProtocol,
-    targetTransitionPolicy: { ...repositoryPolicy, protocol: targetProtocol,
-      upgradeFrom: repositoryPolicy.upgradeFrom.filter(version => version <= targetProtocol),
-      rollbackTo: repositoryPolicy.rollbackTo.filter(version => version <= targetProtocol) },
-  })
-  const result = harness.run()
-  assert.equal(result.status, 0, result.stderr)
-  assert.equal(
-    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
-    `releases/${harness.target.digest.slice("sha256:".length)}`,
-  )
-  const rollback = harness.run({}, [
-    harness.current.rootfs,
-    harness.target.digest,
-    harness.current.digest,
-    harness.trustedKey,
-  ])
-  assert.equal(rollback.status, 0, rollback.stderr)
-  assert.equal(
-    await readlink(join(harness.installRoot, "usr/lib/chariox/current")),
-    `releases/${harness.current.digest.slice("sha256:".length)}`,
-  )
-})
-
-}
 
 test("managed kernel upgrade rejects signed ambiguous protocol 351 before stopping services", async (context) => {
   const repositoryPolicy = JSON.parse(await readFile(join(repositoryRoot, "apps/kernel/managed-upgrade-protocol-transitions.json"), "utf8"))
