@@ -76,7 +76,7 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill'],['text_pointer','filled','after_fill'],['text_shift','filled','after_fill'],['text_arrow','filled','after_fill']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill'],['text_pointer','filled','after_fill'],['text_shift','filled','after_fill'],['text_arrow','filled','after_fill'],['text_ctrl_c','filled','after_fill'],['text_cancelled','filled','after_fill']]) {
       if (input.startsWith('room_')) {
         const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
@@ -92,7 +92,16 @@ test('caller attribution and registered form completion through Chromium', async
         const send = connection.send;
         let moved = false;
         if (input.startsWith('text_')) {
-          if (input === 'text_pointer') await evaluate(`window.interveningPointer = []; for (const type of ['pointermove','mousemove']) document.addEventListener(type, event => window.interveningPointer.push({type:event.type,trusted:event.isTrusted,focused:document.activeElement.id}), {once:true})`);
+          await evaluate(`window.beforeTokens = []; if (!window.recordTokens) { window.recordTokens = true; document.querySelector('#filled').addEventListener('beforeinput', event => window.beforeTokens.push({data:event.data,token:__charioxViewInput.token(event)??null})); }`);
+          if (input === 'text_cancelled') {
+            // A person holds h and the App cancels that key's edit. Its key
+            // stays down while the queued agent text, also "h", is inserted.
+            await evaluate(`document.querySelector('#filled').addEventListener('beforeinput', event => event.preventDefault(), {once:true})`);
+            await send.call(connection, 'Input.dispatchKeyEvent', {type:'keyDown',key:'h',code:'KeyH',text:'h',windowsVirtualKeyCode:72}, sessionId);
+            assert.equal(await evaluate("document.querySelector('#filled').value"), '');
+            assert.deepEqual(await evaluate('window.beforeTokens'), [{data:'h',token:null}]);
+            moved = true;
+          } else if (input === 'text_pointer') await evaluate(`window.interveningPointer = []; for (const type of ['pointermove','mousemove']) document.addEventListener(type, event => window.interveningPointer.push({type:event.type,trusted:event.isTrusted,focused:document.activeElement.id}), {once:true})`);
           else await evaluate(`document.addEventListener('keydown', event => window.interveningKey = {key:event.key,trusted:event.isTrusted,focused:document.activeElement.id,value:event.target.value,start:event.target.selectionStart,end:event.target.selectionEnd}, {once:true})`);
           connection.send = async function(method, params, ...rest) {
             const reply = await send.call(this, method, params, ...rest);
@@ -100,7 +109,10 @@ test('caller attribution and registered form completion through Chromium', async
               // Inject native, trusted browser input in the exact gap between
               // arming the caller and the host's queued text insertion.
               if (input === 'text_pointer') await send.call(this, 'Input.dispatchMouseEvent', {type:'mouseMoved',x:700,y:300}, sessionId);
-              else {
+              else if (input === 'text_ctrl_c') {
+                // A trusted copy shortcut stays held; it edits nothing.
+                await send.call(this, 'Input.dispatchKeyEvent', {type:'keyDown',key:'c',code:'KeyC',modifiers:2,windowsVirtualKeyCode:67}, sessionId);
+              } else if (input !== 'text_cancelled') {
                 const key = input === 'text_shift' ? 'Shift' : 'ArrowLeft';
                 await send.call(this, 'Input.dispatchKeyEvent', {type:'keyDown',key,code:key,windowsVirtualKeyCode:key === 'Shift' ? 16 : 37}, sessionId);
               }
@@ -110,7 +122,7 @@ test('caller attribution and registered form completion through Chromium', async
           };
         }
         try {
-          await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:input === 'text_shift' ? 'Shift' : input === 'text_arrow' ? 'ArrowLeft' : 'Inserted'},'agent-one');
+          await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:{text_shift:'Shift',text_arrow:'ArrowLeft',text_ctrl_c:'c',text_cancelled:'h'}[input] ?? 'Inserted'},'agent-one');
         } finally { connection.send = send; }
         if (input.startsWith('text_')) assert.equal(moved, true, 'native input intervenes after armText acknowledges');
         if (input === 'text_shift' || input === 'text_arrow') assert.deepEqual(await evaluate('window.interveningKey'), {key:input === 'text_shift' ? 'Shift' : 'ArrowLeft',trusted:true,focused:'filled',value:'',start:0,end:0});
@@ -118,6 +130,14 @@ test('caller attribution and registered form completion through Chromium', async
           assert.deepEqual(await evaluate('window.interveningPointer'), [
             {type:'pointermove',trusted:true,focused:'filled'}, {type:'mousemove',trusted:true,focused:'filled'},
           ]);
+        }
+        if (input === 'text_ctrl_c' || input === 'text_cancelled') {
+          const text = input === 'text_ctrl_c' ? 'c' : 'h';
+          assert.equal(await evaluate("document.querySelector('#filled').value"), text);
+          const tokens = await evaluate('window.beforeTokens');
+          assert.equal(tokens.at(-1).token?.length > 0, true, 'the queued insertion carries the agent caller');
+          assert.deepEqual(tokens.map(({data}) => data), input === 'text_cancelled' ? ['h','h'] : ['c']);
+          if (input === 'text_cancelled') assert.equal(tokens[0].token, null, 'the cancelled human edit stays human');
         }
         if (input === 'text' || input === 'transform') {
           assert.deepEqual(await evaluate('window.beforeEdit'), {data:'Inserted',trusted:true,cancellable:true});
