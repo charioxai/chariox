@@ -347,6 +347,54 @@ mod tests {
     }
 
     #[test]
+    fn http_call_error_does_not_echo_a_query_credential() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind 401 fixture");
+        let address = listener.local_addr().expect("read 401 fixture address");
+        let fixture = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept 401 request");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).expect("read 401 request");
+            stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write 401 response");
+        });
+        let secret = "vault-value-7f3a9c";
+        let request = ConnectorAdapterRequest {
+            id: "call-1".to_string(),
+            request_type: chariox_adapters::protocol::ConnectorAdapterRequestType::Call,
+            connector: "fixture".to_string(),
+            operation: Some("get".to_string()),
+            arguments: None,
+            config: Some(serde_json::json!({
+                "base_url": format!("http://{address}"),
+                "method": "GET",
+                "path": "/resource",
+            })),
+            operations: Vec::new(),
+            credential: Some(chariox_adapters::protocol::ConnectorAdapterCredential {
+                id: "api-key".to_string(),
+                secret: secret.to_string(),
+                injection: UserCredentialInjectionConfig::Query {
+                    name: "api_key".to_string(),
+                },
+                allowed_hosts: Vec::new(),
+            }),
+            timeout_ms: 1_000,
+            max_response_bytes: 1_024,
+        };
+
+        let error = call_request(request).expect_err("401 must be an adapter error");
+        fixture.join().expect("401 fixture thread");
+        assert!(
+            !error.contains(secret),
+            "model-bound connector error echoes the Vault value: {}",
+            error.replace(secret, "<SECRET>")
+        );
+    }
+
+    #[test]
     fn http_config_rejects_non_http_and_embedded_credentials() {
         let config = |base_url: &str| HttpConfig {
             base_url: base_url.to_string(),
