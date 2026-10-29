@@ -143,6 +143,8 @@ mod platform {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
 
+    use crate::runtime::owned_process_signals::OwnedProcessSignals;
+
     pub(super) trait Pipe: AsRawFd {}
     impl<T: AsRawFd> Pipe for T {}
 
@@ -152,14 +154,22 @@ mod platform {
 
     pub(super) struct Process {
         pub(super) child: Child,
+        owned: OwnedProcessSignals,
     }
 
     impl Process {
         pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
             command.process_group(0);
-            let process = Self {
-                child: command.spawn()?,
+            let mut child = command.spawn()?;
+            let owned = match OwnedProcessSignals::for_child(&child) {
+                Ok(owned) => owned,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
             };
+            let process = Self { child, owned };
             for fd in [
                 process.child.stdout.as_ref().unwrap().as_raw_fd(),
                 process.child.stderr.as_ref().unwrap().as_raw_fd(),
@@ -179,8 +189,11 @@ mod platform {
         fn drop(&mut self) {
             // MP-08/MP-10/MP-11: the child group and both pipe readers have
             // one lifetime on success, timeout, read error and wait error.
-            unsafe {
-                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            // After the leader is reaped its PID may belong to anyone, so only
+            // processes whose start identity was recorded are signalled.
+            if self.owned.refresh().is_ok() {
+                let _ = self.owned.kill_group();
+                let _ = self.owned.kill_owned_processes();
             }
             let _ = self.child.kill();
             let _ = self.child.wait();
