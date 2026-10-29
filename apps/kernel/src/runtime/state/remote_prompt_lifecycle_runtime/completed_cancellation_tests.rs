@@ -205,6 +205,7 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
                         completed_at_ms: 1,
                         home_prompt_id: Some(prompt_id.clone()),
                         provider_termination: None,
+                    failure: None,
                     }],
                 },
             ),
