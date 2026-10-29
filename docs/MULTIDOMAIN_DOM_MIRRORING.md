@@ -169,7 +169,10 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   observer (ids and resource keys rebased per frame slot; stylesheets its CSSOM
   cannot read are read through the child's CDP session). Every field of a
   child record, op and delta is rebased by a declared schema; an unnamed field
-  is refused. Nested or unattachable frames, canvas/video/plugins are opaque
+  is refused. A cross-origin frame inside a child (an ad slot's safeframe and
+  its creative) is attached from its host's world the same way, up to four
+  levels and the stream's 16 frames; a nested frame with no area, one deeper
+  than that, or an unattachable one, and canvas/video/plugins are opaque
   regions, stills at most 1 Hz until video regions land: a canvas bitmap or a
   video frame travels as the element's own pixels (overlays above it stay
   mirrored DOM); tainted media, plugins, closed roots and unattached frames are

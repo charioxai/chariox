@@ -2210,3 +2210,77 @@ for (const kind of ['click','scroll']) test(`MP-08/MP-10 resized iframe opaque r
     }finally{await lease.close();}
   },{'/region':{type:'text/html',body:'<!doctype html><style>body{margin:0}</style><canvas width="100" height="60"></canvas><script>const c=document.querySelector("canvas");c.getContext("2d").fillRect(0,0,100,60);c.onclick=()=>parent.postMessage("click","*");c.onwheel=e=>{e.preventDefault();parent.postMessage("scroll","*")}</script>'}}
 ));
+
+// bbcframes: ad creatives sit in frames nested under the page's own frames (GPT slot, safeframe). Each nesting shape must reach the viewer as DOM, not as an opaque region.
+const creativeIds = async next => { const seen = new Set(); for (let n = 0; n < 12; n++) { const packet = await next(n ? 400 : 0, n === 0); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); if (seen.has("creative")) break; await settle(150); } return seen; };
+const creativePage = { type: "text/html", body: '<!doctype html><body><b id="creative">Truth matters</b>' };
+test("bbcframes: a cross-origin frame inside a same-origin script-written slot frame is mirrored", () => mirrored(
+  '<iframe id="slot" style="width:400px;height:120px"></iframe><script>const d=slot.contentDocument;d.open();d.write(\'<iframe src="http://localhost:PORT/creative" style="width:300px;height:90px"></iframe>\');d.close()</script>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the creative inside the slot frame is DOM"); }, { "/creative": creativePage }));
+test("bbcframes: a cross-origin frame inside a cross-origin frame is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the inner creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>' }, "/creative": creativePage }));
+test("bbcframes: a cross-origin frame inside a same-origin frame of a cross-origin frame is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><iframe id="slot" style="width:350px;height:150px"></iframe><script>const d=slot.contentDocument;d.open();d.write(\'<iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>\');d.close()</script>' }, "/creative": creativePage }));
+// Page script receives what a nested creative posts up through its hosts.
+const relay = '<script>addEventListener("message",e=>parent.postMessage(e.data,"*"))</script>';
+const nestedButton = { type: "text/html", body: '<!doctype html><body style="margin:0"><button id="creative" style="width:80px;height:30px" onclick="parent.postMessage(\'hit\',\'*\')">go</button><input id="field">' };
+const nestedOuter = { type: "text/html", body: `<!doctype html><body style="margin:20px">${relay}<iframe src="http://a.localhost:PORT/creative" style="width:200px;height:100px;border:0"></iframe>` };
+test("bbcframes: a click inside a nested cross-origin frame lands on its button", () => mirrored(
+  '<script>window.hits=[];addEventListener("message",e=>hits.push(e.data))</script><iframe src="http://localhost:PORT/outer" style="margin:30px;width:400px;height:200px;border:0"></iframe>',
+  async ({ next, evaluate, input }) => {
+    await creativeIds(next);
+    const snapshot = await next(0, true), [button] = elements(snapshot).find(([id, tag, attrs]) => tag === "button" && attrs.id === "creative" && Number(id.slice(1)) >= 2e9) ?? [];
+    assert(button, "the nested frame's button is mirrored in its own slot");
+    await input(snapshot.sequence, { kind: "click", node_id: button, x: 5, y: 5 });
+    for (let n = 0; n < 20 && !(await evaluate("hits.length")); n++) await settle(50);
+    assert.deepEqual(await evaluate("hits"), ["hit"]);
+  }, { "/outer": nestedOuter, "/creative": nestedButton }));
+test("bbcframes: typing reaches a field inside a nested cross-origin frame", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, input }) => {
+    await creativeIds(next);
+    const snapshot = await next(0, true), [field] = elements(snapshot).find(([id, tag, attrs]) => tag === "input" && attrs.id === "field" && Number(id.slice(1)) >= 2e9) ?? [];
+    assert(field, "the nested frame's field is mirrored in its own slot");
+    await input(snapshot.sequence, { kind: "text", node_id: field, text: "hi" });
+    const forms = []; for (let n = 0; n < 6 && !forms.length; n++) forms.push(...(await next(500)).ops.filter(op => op.op === "form").map(op => [op.id, op.form.value]));
+    assert.deepEqual(forms, [[field, "hi"]]);
+  }, { "/outer": nestedOuter, "/creative": nestedButton }));
+test("bbcframes: a cross-origin frame added to a cross-origin frame later is mirrored", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => { assert((await creativeIds(next)).has("creative"), "the late creative is DOM"); },
+  { "/outer": { type: "text/html", body: '<!doctype html><body><p id="host">host</p><script>setTimeout(()=>{const f=document.createElement("iframe");f.src="http://a.localhost:PORT/creative";document.body.append(f)},700)</script>' }, "/creative": creativePage }));
+test("bbcframes: a nested frame that navigates is mirrored again, and its host's navigation drops it", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, evaluate }) => {
+    assert((await creativeIds(next)).has("creative"));
+    await evaluate("frames[0].postMessage('go','*');true");
+    const seen = new Set(); for (let n = 0; n < 16 && !seen.has("second"); n++) { const packet = await next(400); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); }
+    assert(seen.has("second"), "the navigated nested document is mirrored");
+    await evaluate("frames[0].postMessage('leave','*');true");
+    const host = new Set(); for (let n = 0; n < 16 && !host.has("left"); n++) { const packet = await next(400); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) host.add(attrs.id); }
+    assert(host.has("left"), "the host's new document replaces its nested frame");
+  }, { "/outer": { type: "text/html", body: '<!doctype html><body><iframe id="n" src="http://a.localhost:PORT/creative"></iframe><script>addEventListener("message",e=>{if(e.data==="go")n.src="http://b.localhost:PORT/second";if(e.data==="leave")location.href="http://localhost:PORT/left"})</script>' }, "/creative": creativePage, "/second": { type: "text/html", body: '<!doctype html><b id="second">two</b>' }, "/left": { type: "text/html", body: '<!doctype html><b id="left">left</b>' } }));
+test("bbcframes: frames nested deeper than the attach limit stay opaque regions", () => mirrored(
+  '<iframe src="http://localhost:PORT/l1" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => {
+    const seen = new Set(); for (let n = 0; n < 12; n++) { const packet = await next(n ? 400 : 0, n === 0); for (const nodes of [packet.nodes ?? [], ...packet.ops.filter(op => op.op === "children").map(op => op.nodes)]) for (const [, , attrs] of elements({ nodes })) if (attrs.id) seen.add(attrs.id); }
+    assert(seen.has("l4"), "four levels are DOM"); assert(!seen.has("l5"), "the fifth level stays an opaque region");
+  }, Object.fromEntries([1, 2, 3, 4, 5].map(level => [`/l${level}`, { type: "text/html", body: `<!doctype html><b id="l${level}">${level}</b>${level < 5 ? `<iframe src="http://${"abcd"[level - 1]}.localhost:PORT/l${level + 1}"></iframe>` : ""}` }]))));
+test("bbcframes: a nested frame without area stays opaque and does not use the frame budget", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next, host, subscription_id }) => {
+    assert((await creativeIds(next)).has("creative"), "the visible creative is DOM");
+    const urls = [...host.mirror.streams.get(subscription_id).frames.values()].map(entry => new URL(entry.child.frame.url).pathname);
+    assert.deepEqual(urls, ["/outer", "/creative"], "the 0x0 tracker frame is not attached");
+  }, { "/outer": { type: "text/html", body: '<!doctype html><body><iframe src="http://b.localhost:PORT/tracker" style="border:0;width:0;height:0"></iframe><iframe src="http://a.localhost:PORT/creative" style="width:300px;height:90px"></iframe>' }, "/creative": creativePage, "/tracker": { type: "text/html", body: '<!doctype html><b id="tracker">t</b>' } }));
+test("bbcframes: a web font used inside a nested cross-origin frame is delivered", () => mirrored(
+  '<iframe src="http://localhost:PORT/outer" style="width:400px;height:200px"></iframe>',
+  async ({ next }) => {
+    const delivered = []; for (let n = 0; n < 12; n++) { const packet = await next(n ? 500 : 0, n === 0); delivered.push(...packet.resources.map(r => [r.key, r.mime_type])); if (delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6)) break; }
+    assert(delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6), `the nested frame's font arrived in its own slot (${JSON.stringify(delivered)})`);
+  }, { "/outer": nestedOuter2("/inner"), "/inner": { type: "text/html", body: '<!doctype html><style>@font-face{font-family:T;src:url(http://a.localhost:PORT/t.woff2) format("woff2")}b{font-family:T}</style><b id="creative">Truth matters</b>' }, "/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) } }));
+function nestedOuter2(path) { return { type: "text/html", body: `<!doctype html><body><iframe src="http://a.localhost:PORT${path}" style="width:300px;height:90px"></iframe>` }; }
