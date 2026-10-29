@@ -1089,6 +1089,31 @@ async fn a_steer_whose_acknowledgement_is_lost_is_not_replayed_when_the_turn_end
 
 #[tokio::test]
 async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_turn_ends() {
+    let (trigger, due) =
+        restart_with_pending_steer(crate::session::AgentTriggerRepeat::Every).await;
+    let trigger = trigger.expect("a recurring trigger stays and waits for its next interval");
+    assert_eq!(trigger.fired(), 1, "the steered occurrence is counted once");
+    assert!(
+        trigger.next_run_at_ms() > due,
+        "the next occurrence is a later interval"
+    );
+}
+
+#[tokio::test]
+async fn a_one_shot_steer_pending_across_a_restart_never_runs_a_second_time() {
+    let (trigger, _) = restart_with_pending_steer(crate::session::AgentTriggerRepeat::Once).await;
+    assert!(
+        trigger.is_none(),
+        "a one-shot whose steer the provider may hold is done"
+    );
+}
+
+/// Restarts the kernel while a trigger's steer awaits the provider receipt,
+/// finishes the recovered turn, runs the scheduler at the occurrence's due
+/// time and returns the trigger left behind with that due time.
+async fn restart_with_pending_steer(
+    repeat: crate::session::AgentTriggerRepeat,
+) -> (Option<crate::session::AgentTrigger>, u64) {
     let worktree = crate::test_support::TestWorktree::new("trigger-steer-restart-fence");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1111,15 +1136,23 @@ async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_tur
         "lost-ack-structured",
     );
     let prompt_owner = start_running_turn(&app, &session, &agent);
+    let session_store = app.session_state_store();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
         .runtime_state
         .create_agent_trigger(
-            every_minute(
-                &session,
-                &agent,
-                crate::session::AgentTriggerBusyPolicy::Steer,
-            ),
+            {
+                let mut request = every_minute(
+                    &session,
+                    &agent,
+                    crate::session::AgentTriggerBusyPolicy::Steer,
+                );
+                request.source = crate::local::AgentTriggerSourceRequest::Schedule {
+                    interval_seconds: 60,
+                    repeat,
+                };
+                request
+            },
             agent.owner_user_id(),
         )
         .await
@@ -1127,9 +1160,9 @@ async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_tur
     else {
         panic!("unexpected trigger response");
     };
+    let due = trigger.next_run_at_ms();
     let dispatching = {
         let runtime_state = router.runtime_state.clone();
-        let due = trigger.next_run_at_ms();
         tokio::spawn(async move {
             boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
         })
@@ -1152,8 +1185,10 @@ async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_tur
     .expect("the steer should be in flight");
     let (active, _) = prompt_owner.state_parts(&session, agent.id());
 
-    // A restart keeps only what was persisted: rebuild the queue from the
-    // durable private state, with no reservation of this process.
+    // A restart keeps only what was persisted: rebuild the session from its
+    // durable records, with no reservation or claim of this process.
+    dispatching.abort();
+    let _ = dispatching.await;
     let private: crate::session::DurablePromptPrivateState = serde_json::from_value(
         serde_json::to_value(
             crate::session::DurablePromptPrivateState::from_prompt(session.id(), &in_flight)
@@ -1167,37 +1202,57 @@ async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_tur
     restored_queued.restore_durable_private_state(&private);
     let restored_active: crate::session::PromptQueueItem =
         serde_json::from_value(serde_json::to_value(active.as_ref().unwrap()).unwrap()).unwrap();
-    let mut restored_session = session.clone();
+    let mut restored_session: crate::session::RuntimeSession = serde_json::from_value(
+        serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap(),
+    )
+    .unwrap();
     restored_session.mirror_agent_prompt_state(
         agent.id(),
         Some(restored_active),
         std::collections::VecDeque::from([restored_queued]),
     );
-    let restarted = crate::runtime::prompt_state::PromptStateOwner::default();
-    restarted.restore_session_state(&restored_session);
+    restored_session.reconcile_after_kernel_restart();
+    prompt_owner.restore_session_state(&restored_session);
+    session_store.restore_session(restored_session.clone());
 
     assert!(
-        restarted
+        prompt_owner
             .peek_next_queued_prompt(&restored_session, agent.id())
             .is_none(),
         "the restored firing must stay held while the recovered turn runs"
     );
-    restarted
+    prompt_owner
         .complete_active_prompt_only(&restored_session, agent.id())
         .expect("the recovered turn should finish");
     assert!(
-        restarted
+        prompt_owner
             .activate_next_queued_prompt_for_dispatch(&restored_session, agent.id(), None)
             .unwrap()
             .is_none(),
         "the firing the provider may hold must not run again as a fresh prompt"
     );
-    let (_, queued) = restarted.state_parts(&restored_session, agent.id());
+    let (_, queued) = prompt_owner.state_parts(&restored_session, agent.id());
     assert!(
         queued.is_empty(),
         "the unconfirmed firing is resolved, not kept"
     );
-    dispatching.await.expect("dispatch task should finish");
+
+    // The occurrence the provider may already hold is settled: the scheduler
+    // must not admit it a second time once the fence is gone.
+    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due)).await;
+    let (active, queued) = prompt_owner.state_parts(&restored_session, agent.id());
+    assert!(
+        active.is_none() && queued.is_empty(),
+        "the due occurrence must not be admitted again after the restart"
+    );
+    let left_behind = session_store
+        .get_session(session.id())
+        .unwrap()
+        .agent_triggers()
+        .iter()
+        .find(|candidate| candidate.id() == trigger.id())
+        .cloned();
+    (left_behind, due)
 }
 
 #[tokio::test]

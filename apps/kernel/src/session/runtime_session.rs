@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_triggers::{AgentTrigger, AgentTriggers};
+use super::agent_triggers::{AgentTrigger, AgentTriggerOutcome, AgentTriggers};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -364,6 +364,34 @@ impl RuntimeSession {
             .iter()
             .position(|trigger| trigger.id() == trigger_id)?;
         Some(self.agent_triggers.0.remove(index))
+    }
+
+    /// A kernel that died while a trigger steer awaited its provider receipt
+    /// leaves that occurrence due. The persisted delivery fence says the
+    /// provider may already hold it, so the occurrence is settled as steered
+    /// here, before the fence can ever be dropped; a one-shot is done.
+    pub(crate) fn settle_trigger_steers_in_doubt(&mut self, now_ms: u64) -> usize {
+        let in_doubt: BTreeSet<String> = self
+            .prompt_runtime
+            .prompt_states()
+            .values()
+            .flat_map(|state| state.queued_prompts())
+            .filter(|prompt| prompt.local_steer_fence_orphaned())
+            .filter_map(|prompt| prompt.agent_trigger_id().map(str::to_owned))
+            .collect();
+        let mut settled = Vec::new();
+        for trigger in self.agent_triggers.0.iter_mut() {
+            if in_doubt.contains(trigger.id()) {
+                trigger.mark_fired(now_ms, AgentTriggerOutcome::Steered, None);
+                settled.push((trigger.id().to_owned(), trigger.is_one_shot()));
+            }
+        }
+        for (trigger_id, one_shot) in &settled {
+            if *one_shot {
+                self.remove_agent_trigger(trigger_id);
+            }
+        }
+        settled.len()
     }
 
     pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {

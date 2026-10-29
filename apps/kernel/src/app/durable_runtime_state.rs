@@ -1096,6 +1096,7 @@ impl DaemonApp {
                     "removed_terminal_workflow_prompt_count": reconciliation.removed_terminal_workflow_prompt_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
+                    "settled_trigger_steer_count": reconciliation.settled_trigger_steer_count,
                 }),
             );
         }
