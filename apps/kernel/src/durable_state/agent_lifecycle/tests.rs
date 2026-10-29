@@ -3587,3 +3587,43 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
     assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: finished tasks and outside inbox rows stay in the ledger,
+// so the lookups made on every turn and every sweep must read an index, not the history.
+#[test]
+fn per_turn_task_lookups_read_an_index() {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let plan = |query: &str| -> String {
+        db.prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("; ")
+    };
+    let waiting = plan("SELECT task_id FROM agent_tasks WHERE state='waiting' OR state IS NULL");
+    assert!(waiting.contains("agent_tasks_state"), "{waiting}");
+    let pending = plan(
+        "SELECT task_id FROM agent_tasks WHERE pending_prompt_id='p' AND room_id='r' AND agent_id='a'",
+    );
+    assert!(
+        pending.contains("agent_tasks_pending_prompt") || pending.contains("agent_task"),
+        "{pending}"
+    );
+    assert!(!pending.starts_with("SCAN agent_tasks"), "{pending}");
+    db.execute(
+        "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES('t','r','a','p','{\"state\":\"waiting\",\"pending_prompt_id\":\"next\"}')",
+        [],
+    )
+    .unwrap();
+    let indexed: (String, String) = db
+        .query_row(
+            "SELECT state,pending_prompt_id FROM agent_tasks WHERE task_id='t'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(indexed, ("waiting".into(), "next".into()));
+}

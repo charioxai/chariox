@@ -102,6 +102,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    index_task_lookups(db)?;
     outside::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
@@ -480,14 +481,68 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
     }
     Ok(())
 }
+/// Tasks are kept after they finish, so the lookups that run on every turn and every sweep
+/// read an index instead of decoding the whole ledger. An unreadable payload indexes as NULL.
+fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
+    let columns: Vec<String> = db
+        .prepare("PRAGMA table_xinfo(agent_tasks)")
+        .map_err(sql)?
+        .query_map([], |r| r.get(1))
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    for (column, path) in [
+        ("state", "$.state"),
+        ("pending_prompt_id", "$.pending_prompt_id"),
+    ] {
+        if !columns.iter().any(|c| c == column) {
+            db.execute_batch(&format!(
+                "ALTER TABLE agent_tasks ADD COLUMN {column} TEXT GENERATED ALWAYS AS \
+                 (CASE WHEN json_valid(payload) THEN json_extract(payload,'{path}') END) VIRTUAL"
+            ))
+            .map_err(sql)?;
+        }
+    }
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);",
+    )
+    .map_err(sql)
+}
 fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, "1", [])
+}
+/// Waiting tasks, and unreadable ones so they are quarantined as before.
+fn waiting_tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, "state='waiting' OR state IS NULL", [])
+}
+/// The task that holds `prompt` as its pending continuation.
+fn pending_continuation(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<Option<AgentTaskExecution>, DaemonError> {
+    Ok(tasks_where(
+        tx,
+        "pending_prompt_id=?1 AND room_id=?2 AND agent_id=?3",
+        params![prompt, room, agent],
+    )?
+    .into_iter()
+    .next())
+}
+fn tasks_where(
+    tx: &Transaction<'_>,
+    filter: &str,
+    values: impl rusqlite::Params,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     let mut q = tx
-        .prepare(
-            "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks ORDER BY rowid",
-        )
+        .prepare(&format!(
+            "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+        ))
         .map_err(sql)?;
     let rows = q
-        .query_map([], |r| {
+        .query_map(values, |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,

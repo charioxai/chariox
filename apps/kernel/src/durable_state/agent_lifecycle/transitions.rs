@@ -116,11 +116,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task.revision += 1;
                 task
             } else {
-                let resumed = tasks(tx)?.into_iter().find(|t| {
-                    t.room_id == room
-                        && t.agent_id == agent
-                        && t.pending_prompt_id.as_deref() == Some(&prompt)
-                });
+                let resumed = pending_continuation(tx, &room, &agent, &prompt)?;
                 if let Some(mut t) = resumed {
                     if t.state != ExecutionState::Working {
                         return Err(error(
