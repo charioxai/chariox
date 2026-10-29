@@ -36,6 +36,7 @@ const env = { PATH: process.env.PATH, IS_SANDBOX: '1', SHELL: '/bin/bash', HOME:
   CHARIOX_HOME: join(root, 'chariox'), CHARIOX_LOG_DIR: join(root, 'logs'), CHARIOX_SESSION_HISTORY_DIR: join(root, 'history'),
   CHARIOX_DAEMON_SOCKET: join(root, 'daemon.sock'), CHARIOX_DAEMON_ALIAS: 'responsiveness', CHARIOX_MACHINE_ALIAS: 'responsiveness',
   CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
+  ...(args.has('--multi-agent-load') ? { CHARIOX_PROVIDER_DEV_STUB: '1' } : {}),
   ...(args.has('--preload') ? { LD_PRELOAD: resolve(args.get('--preload')), CHARIOX_SYNC_STALL_ROOT: root } : {}) }
 const probe = openSync(join(root, 'sync-probe'), 'w', 0o600), syncProbe = []
 for (let i = 0; i < 100; i++) { writeFileSync(probe, 'x'); const at = performance.now(); fsyncSync(probe); syncProbe.push(performance.now()-at) }
@@ -117,8 +118,22 @@ async function beginLoad() {
   return startProviderLoad({ rpc, root, profilePath: process.env.KR_CODEX_PROFILE,
     count: Number(args.get('--load-agents')), objects: Number(args.get('--load-objects') ?? 1000), report: output, save })
 }
+async function multiAgentLoad() {
+  const { measureMultiAgentLoad } = await import('./kernel-responsiveness/multi-agent-load.mjs')
+  const number = (flag, fallback) => args.has(flag) ? Number(args.get(flag)) : fallback
+  const result = await measureMultiAgentLoad({ rpc, root, mcpUrl: `http://127.0.0.1:${ports[1]}/mcp`, pid: () => child.pid, stop, start, report: output, save, distribution,
+    connect: () => new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env }), logPath: join(root, 'logs'),
+    options: { seconds: Number(args.get('--multi-agent-load')), lanes: number('--lanes', 10), leftover: number('--leftover', 500), padding: number('--padding', 1024),
+      subscriptions: args.has('--subscriptions') ? args.get('--subscriptions').split(',').filter(Boolean).map(Number) : [30, 24, 20, 2],
+      churnPerMin: number('--churn-per-min', 60), readers: number('--readers', 3), readerHz: number('--reader-hz', 8), toggleHz: number('--toggle-hz', 3),
+      promptIntervalMs: number('--prompt-interval-ms', 3000), idleSeconds: number('--idle-seconds', 30) } })
+  console.log(`multi-agent load: ${result.verdict} ${result.red.join(' ')}`)
+  output.completed = true; save()
+  process.exitCode = result.verdict === 'GREEN' ? 0 : 1
+}
 try {
   output.startup_ms = await start()
+  if (args.has('--multi-agent-load')) { await multiAgentLoad() } else {
   const warmup = Number(args.get('--warmup') ?? 0)
   for (let i = 0; i < warmup; i++) await cycle(false, true)
   output.warmup_deleted_sessions = warmup
@@ -161,6 +176,7 @@ try {
   output.history_readable_after_restart = !!(await rpc({ GetSessionState: { session_id: lastId } })).SessionState
   await checkpoint(cycles)
   output.completed = true; save()
+  }
 } finally {
   for (const agent of output.provider_load?.agents ?? []) {
     try { await rpc({ EndSession: { session_id: agent.session_id } }) } catch { output.provider_cleanup_failed = true }
