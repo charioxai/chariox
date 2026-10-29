@@ -167,7 +167,10 @@ fn local_slice_provider_sandbox_compatibility_is_on_unless_the_user_opts_out() {
 #[test]
 fn an_unset_provider_sandbox_compatibility_stays_unset_through_a_config_round_trip() {
     let parsed = toml::from_str::<CharioxUserConfig>("version = 1").unwrap();
-    assert_eq!(parsed.slices.linux.allow_provider_sandbox_compatibility, None);
+    assert_eq!(
+        parsed.slices.linux.allow_provider_sandbox_compatibility,
+        None
+    );
     let written = toml::to_string(&CharioxUserConfig::default()).unwrap();
     let reloaded = toml::from_str::<CharioxUserConfig>(&written).unwrap();
     assert_eq!(
