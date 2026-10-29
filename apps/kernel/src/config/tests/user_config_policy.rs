@@ -143,6 +143,28 @@ fn mp01_mp08_local_slice_security_relaxation_requires_opt_in() {
 }
 
 #[test]
+fn local_slice_provider_sandbox_compatibility_is_on_unless_the_user_opts_out() {
+    // Owner decision 2026-10-14: compatibility stays on by default for local
+    // Docker slices; only an explicit false opts out.
+    let mut config = DaemonConfig::for_tests();
+    config.user_config = CharioxUserConfig::default();
+    assert!(
+        crate::slice::LocalDockerSliceOptions::from_config(&config)
+            .allow_provider_sandbox_compatibility,
+        "a fresh local slice must launch providers without an opt-in"
+    );
+    config
+        .user_config
+        .slices
+        .linux
+        .allow_provider_sandbox_compatibility = Some(false);
+    assert!(
+        !crate::slice::LocalDockerSliceOptions::from_config(&config)
+            .allow_provider_sandbox_compatibility
+    );
+}
+
+#[test]
 fn provider_sandbox_compatibility_preserves_the_explicit_opt_out() {
     // Persistence must not use another fixture's ambient CHARIOX_HOME.
     let mut config = DaemonConfig::for_tests();
