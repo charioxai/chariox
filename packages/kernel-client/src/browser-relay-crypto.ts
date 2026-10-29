@@ -1,3 +1,4 @@
+import { RelayFrameReceiver, relayTransportUrl } from "./relay-frame-transport.js"
 import type { EncryptedRelayPayload as RelayPayload } from "./kernel-transport-frames.js"
 
 // Existing Cloud WebCrypto implementation, exposed for browser-side clients.
@@ -7,17 +8,31 @@ const relayInfo = new TextEncoder().encode("chariox-relay-v1")
 export type EncryptedRelayPayload = Readonly<Omit<RelayPayload, "ciphertext"> & { ciphertext: string | Uint8Array }>
 
 // MP-08/MP-10: browser websocket negotiation exposes the accepted protocol.
-// A legacy relay cannot echo v96, so retry its existing connection contract.
-export async function connectRelaySocket(url: string, binary = true): Promise<WebSocket> {
+// The returned connection also handles bounded binary chunks before event decoding.
+export type RelaySocketConnection = {
+  readonly socket: WebSocket
+  receive(data: unknown): string | ReturnType<typeof decodeBinaryRelayEvent> | null
+}
+// One socket-local receiver owns chunk ordering and sends transport receipts.
+// Pass each socket message's data here before dispatching its completed envelope.
+export async function connectRelaySocket(url: string, binary = true): Promise<RelaySocketConnection> {
   const connect = (offer: boolean) => new Promise<WebSocket>((resolve, reject) => {
-    const socket = offer ? new WebSocket(url, ["chariox-relay-binary-v96"]) : new WebSocket(url)
+    const socket = offer ? new WebSocket(relayTransportUrl(url), ["chariox-relay-binary-v97"]) : new WebSocket(relayTransportUrl(url))
     socket.binaryType = "arraybuffer"
     const timer = setTimeout(() => { socket.close(); reject(new Error("relay handshake timeout")) }, 10000)
     socket.onopen = () => { clearTimeout(timer); resolve(socket) }
     socket.onerror = () => { clearTimeout(timer); socket.close(); reject(new Error("relay handshake failed")) }
   })
-  if (binary) { try { return await connect(true) } catch { /* Legacy negotiation fallback. */ } }
-  return connect(false)
+  const socket = await connect(binary)
+  const receiver = new RelayFrameReceiver(socket), receipt = (frame: string) => socket.send(frame)
+  return { socket, receive(data) {
+    if (data instanceof ArrayBuffer) {
+      const bytes = receiver.receiveBinary(data, receipt)
+      return bytes === null ? null : decodeBinaryRelayEvent(new Uint8Array(bytes))
+    }
+    if (typeof data !== "string") throw Error("invalid relay frame type")
+    return receiver.receive(data, receipt)
+  } }
 }
 
 export function decodeBinaryRelayEvent(bytes: Uint8Array): {

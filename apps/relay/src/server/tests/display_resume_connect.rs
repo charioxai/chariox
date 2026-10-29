@@ -2,7 +2,7 @@
 use super::*;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>;
-const CAPABILITY: &str = "chariox-room-display-resume-v553";
+const CAPABILITY: &str = "chariox-room-display-resume-v721";
 
 struct Fixture {
     url: String,

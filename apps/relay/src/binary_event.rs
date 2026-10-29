@@ -1,12 +1,12 @@
-//! MP-08/MP-10/MP-11: peer-96 opaque encrypted events. Only routing metadata
+//! MP-08/MP-10/MP-11: relay-97 opaque encrypted events. Only routing metadata
 //! is decoded here; ciphertext is never interpreted or decrypted by the relay.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{EncryptedRelayPayload, RelayEnvelope};
 
-pub const PROTOCOL_VERSION: u32 = 96;
-pub const CAPABILITY: &str = "chariox-relay-binary-v96";
+pub const PROTOCOL_VERSION: u32 = 97;
+pub const CAPABILITY: &str = "chariox-relay-binary-v97";
 pub const VERSION_HEADER: &str = "x-chariox-relay-protocol";
 const HEADER_LIMIT: usize = 4096;
 const PAYLOAD_LIMIT: usize = 1024 * 1024;
@@ -25,7 +25,7 @@ pub fn connection_request(
     let mut request = url.into_client_request()?;
     request
         .headers_mut()
-        .insert(VERSION_HEADER, "96".parse().unwrap());
+        .insert(VERSION_HEADER, "97".parse().unwrap());
     Ok(request)
 }
 
@@ -136,7 +136,7 @@ pub fn legacy_client_envelope(bytes: &[u8]) -> Result<RelayEnvelope, std::io::Er
 mod tests {
     use super::*;
     #[test]
-    fn mp08_peer96_binary_event_is_bounded_and_downgrades_without_reading_plaintext() {
+    fn mp08_relay97_binary_event_is_bounded_and_downgrades_without_reading_plaintext() {
         let header = EventHeader {
             kind: "client_event".into(),
             subscription_id: "route".into(),
@@ -145,7 +145,7 @@ mod tests {
             nonce: "abcdefghijklmnop".into(),
         };
         let ciphertext: Vec<_> = (0..65536).map(|n| (n % 256) as u8).collect();
-        assert_eq!(PROTOCOL_VERSION, 96);
+        assert_eq!(PROTOCOL_VERSION, 97);
         let wire = encode(&header, &ciphertext).unwrap();
         use sha2::{Digest, Sha256};
         assert_eq!(
@@ -178,6 +178,6 @@ mod tests {
         assert_eq!(request.uri().port_u16(), Some(1234));
         assert_eq!(request.uri().path(), "/");
         assert_eq!(request.uri().query(), None);
-        assert_eq!(request.headers()[VERSION_HEADER], "96");
+        assert_eq!(request.headers()[VERSION_HEADER], "97");
     }
 }

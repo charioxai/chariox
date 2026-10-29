@@ -375,4 +375,5 @@ pub use workspace::*;
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 720;
+/// MP-08/MP-09/MP-10/MP-11: 721 pairs bounded raw binary relay chunks with relay capability 97.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 721;

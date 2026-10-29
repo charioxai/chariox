@@ -143,7 +143,7 @@ pub(crate) async fn handle_connection(
                 || request
                     .headers()
                     .get(crate::binary_event::VERSION_HEADER)
-                    .is_some_and(|version| version == "96");
+                    .is_some_and(|version| version == "97");
             if initial_resume_negotiated {
                 response.headers_mut().insert(
                     "sec-websocket-protocol",
@@ -160,7 +160,7 @@ pub(crate) async fn handle_connection(
             if binary_events {
                 response
                     .headers_mut()
-                    .insert(crate::binary_event::VERSION_HEADER, "96".parse().unwrap());
+                    .insert(crate::binary_event::VERSION_HEADER, "97".parse().unwrap());
             }
             Ok(response)
         },

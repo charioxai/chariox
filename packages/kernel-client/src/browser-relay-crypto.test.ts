@@ -144,7 +144,7 @@ test('MP-08/MP-10/MP-11 peer96 binary relay events retain authenticated cipherte
 });
 
 
-test('MP-08/MP-10 peer96 browser negotiation retries the existing connection on a legacy relay', async () => {
+test('MP-08/MP-10 binary negotiation failure propagates without silently changing transport', async () => {
   const original = globalThis.WebSocket;
   const offers: unknown[][] = [];
   class Socket {
@@ -157,9 +157,32 @@ test('MP-08/MP-10 peer96 browser negotiation retries the existing connection on 
   }
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
   try {
-    const socket = await browser.connectRelaySocket('wss://example/relay');
-    assert.equal(socket.protocol, '');
-    assert.deepEqual(offers, [['wss://example/relay',['chariox-relay-binary-v96']],['wss://example/relay',undefined]]);
-    assert.equal(socket.binaryType,'arraybuffer');
+    await assert.rejects(browser.connectRelaySocket('wss://example/relay'),/relay handshake failed/);
+    assert.deepEqual(offers, [['wss://example/relay?chariox_transport=chunks-v2',['chariox-relay-binary-v97']]]);
   } finally { globalThis.WebSocket=original }
+});
+
+
+test('MP-08/MP-09/MP-10/MP-11 negotiated browser connections reassemble and acknowledge raw events before decoding', async()=>{
+ const originalSocket=globalThis.WebSocket,receipts:string[]=[];
+ class Socket {
+  onopen?:()=>void;onerror?:()=>void;binaryType='';
+  constructor(url:string,protocols?:string[]){assert.equal(url,'wss://example/relay?chariox_transport=chunks-v2');assert.deepEqual(protocols,['chariox-relay-binary-v97']);queueMicrotask(()=>this.onopen?.())}
+  close(){} send(frame:string){receipts.push(frame)}
+ }
+ globalThis.WebSocket=Socket as unknown as typeof WebSocket;
+ try{
+  const connection=await browser.connectRelaySocket('wss://example/relay');assert.equal(connection.socket.binaryType,'arraybuffer');
+  const header={kind:'client_event',subscription_id:'display',event_id:1,sender_public_key:'opaque',nonce:'AAAAAAAAAAAAAAAA'},metadata=new TextEncoder().encode(JSON.stringify(header)),payload=new Uint8Array(100*1024).fill(0xfe),event=new Uint8Array(8+metadata.length+payload.length);
+  event.set(new TextEncoder().encode('CXR1'));new DataView(event.buffer).setUint32(4,metadata.length);event.set(metadata,8);event.set(payload,8+metadata.length);
+  let complete:ReturnType<typeof connection.receive>=null;
+  for(let offset=0;offset<event.length;offset+=16368){
+   const part=event.subarray(offset,offset+16368),wire=new Uint8Array(16+part.length),view=new DataView(wire.buffer);
+   wire.set(new TextEncoder().encode('CXB1'));view.setUint32(4,1);view.setUint32(8,offset);view.setUint32(12,event.length);wire.set(part,16);
+   complete=connection.receive(wire.buffer);
+   if(offset+part.length<event.length)assert.equal(complete,null);
+  }
+  assert(complete&&typeof complete==='object');assert.deepEqual(complete.encrypted_event.ciphertext,payload);
+  assert.equal(JSON.parse(receipts.at(-1)!).offset,event.length);
+ }finally{globalThis.WebSocket=originalSocket}
 });
