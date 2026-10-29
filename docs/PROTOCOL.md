@@ -5055,7 +5055,7 @@ triggers. 901 removes the `/wait` schedule shape: `CreateAgentPromptSchedule`,
 `/wait` schedules from earlier kernels are not migrated. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
-Allocated 901 (relay peer unchanged) makes every trigger firing a labelled prompt and lets a person
+Allocated 901 (relay peer 450) makes every trigger firing a labelled prompt and lets a person
 resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
 `schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
 the provider write, so it exists even if the kernel stops first. A steered firing that the provider
@@ -5066,6 +5066,8 @@ last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `Trigger
 {session}`: it admits one more labelled prompt under the entry's `busy_policy` (queue or steer)
 and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
 durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
+Relay peer 450 carries the new `schedule` and `notification` origins in a leased prompt's
+`prompt_origin`: a worker below 450 cannot read them, so the home refuses it instead of sending one.
 Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
 or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
 pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
