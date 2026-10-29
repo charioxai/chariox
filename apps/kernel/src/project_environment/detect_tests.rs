@@ -378,7 +378,11 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     store.save_detection(&cache).unwrap();
     let reloaded = store.load_detection("project").unwrap().unwrap();
     assert!(detection
-        .model_folders(Some(&reloaded), &["folder".into()], std::slice::from_ref(&folder))
+        .model_folders(
+            Some(&reloaded),
+            &["folder".into()],
+            std::slice::from_ref(&folder)
+        )
         .is_empty());
     write(&root, "package.json", r#"{"engines":{"node":"24"}}"#);
     let changed = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
