@@ -335,6 +335,7 @@ fn room_controller_protocol_shapes_are_versioned() {
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
+                agent_id: Some("agent-1".into()),
                 execution_id: "11111111111111111111111111111111".into(),
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
@@ -347,12 +348,13 @@ fn room_controller_protocol_shapes_are_versioned() {
                 },
                 timeout_ms: 500,
             },
-            serde_json::json!({"kind":"action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
+            serde_json::json!({"kind":"action","agent_id":"agent-1","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false,"expected_document_url":"https://example.test/login"},"timeout_ms":500}),
         ),
         (
             RoomBrowserControllerCommand::RecoverAction {
+                agent_id: Some("agent-1".into()),
                 execution_id: "11111111111111111111111111111111".into(),
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
@@ -365,7 +367,7 @@ fn room_controller_protocol_shapes_are_versioned() {
                 },
                 timeout_ms: 500,
             },
-            serde_json::json!({"kind":"recover_action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
+            serde_json::json!({"kind":"recover_action","agent_id":"agent-1","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false},"timeout_ms":500}),
         ),
@@ -1165,5 +1167,33 @@ fn mp08_room_computer_449_peer92_shapes() {
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
         "c4e8985c29cfd4a19c858e84b756de7ebe1555659f0ae042acad481858206f65"
+    );
+}
+
+// MP-08/MP-10/MP-11: the agent request crosses the local and peer Room boundary.
+#[test]
+fn app_view_agent_protocol_645_peer_244_is_versioned_and_hashed() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 645);
+        assert!(RELAY_PEER_PROTOCOL_VERSION >= 244);
+    };
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        RELAY_PEER_PROTOCOL_VERSION,
+        crate::test_support::expected_relay_peer_protocol_version()
+    );
+    let wire = serde_json::json!({"kind":"app_view","request":{
+        "op":"agent","target_id":"target-1","agent":"agent-7","call":"invoke",
+        "name":"add_todo","input":{"text":"milk"},"deadline_ms":20000
+    }});
+    let command: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "ecb41a73c645f63c0947091cdba7d8fd8cd2f8e0bd50541b4d6ea81295e923e8"
     );
 }

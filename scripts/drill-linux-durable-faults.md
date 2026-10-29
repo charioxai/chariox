@@ -7,12 +7,12 @@ verification, extraction, pending approval, supervisor preparation and SQLite
 activation. Preparation uses a test-supplied policy decision; real worker health
 and human approval must be exercised separately on the qualification candidate.
 
-Build on the Linux builder with Rust 1.88.0 and admission:
+Build on the Linux builder with Rust 1.99.0 and admission:
 
 ```sh
-slot-run cargo +1.88.0 test -p chariox-app-runtime --test durable_faults --no-run
-slot-run cargo +1.88.0 test -p chariox-app-runtime --lib --no-run
-slot-run cargo +1.88.0 build -p chariox-app-runtime --bin chariox-app-storage
+slot-run cargo +1.99.0 test -p chariox-app-runtime --test durable_faults --no-run
+slot-run cargo +1.99.0 test -p chariox-app-runtime --lib --no-run
+slot-run cargo +1.99.0 build -p chariox-app-runtime --bin chariox-app-storage
 ```
 
 Run `scripts/drill-linux-durable-faults.sh TEST_BINARY SCRATCH KEY EVIDENCE` as an

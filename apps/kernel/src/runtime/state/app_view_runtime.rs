@@ -1,7 +1,7 @@
 //! App views: the installation's signed UI runs as a managed Tab in the
 //! session's Room browser, so people and agents share one DOM and profile.
-//! `window.chariox.call(tool, input)` runs the App's own tool as the human
-//! owner through the same catalog, validation and durable path as agent calls.
+//! `window.chariox.call(tool, input)` runs the App's own tool as the
+//! controller-bound input actor through the shared catalog and durable path.
 use super::KernelRuntimeState;
 #[path = "app_view_recovery.rs"]
 mod recovery;
@@ -175,7 +175,7 @@ impl KernelRuntimeState {
     /// Room command holds it (that rejection means it never ran; an Open is
     /// not idempotent, and a Reload refused this way would unbind a working
     /// view). An answer is idempotent, so any failure is retried.
-    async fn app_view_command<T: serde::de::DeserializeOwned>(
+    pub(in crate::runtime::state) async fn app_view_command<T: serde::de::DeserializeOwned>(
         &self,
         session_id: &str,
         request: BrowserAppViewRequest,
@@ -582,13 +582,7 @@ impl KernelRuntimeState {
             }
             Some((binding, false)) if binding.installation == call.installation_id => {
                 match self
-                    .invoke_app_view_tool(
-                        ViewCaller::Owner(Some(&session_id)),
-                        &binding,
-                        &call.method,
-                        call.params,
-                        &mut tracked,
-                    )
+                    .invoke_room_app_view_tool(&session_id, &binding, &call, &mut tracked)
                     .await
                 {
                     // Built for an older generation: reload it with the current one.
@@ -756,6 +750,41 @@ impl KernelRuntimeState {
                 tokio::spawn(async move { state.pump_app_view_calls(session_id).await });
             }
         }
+    }
+
+    /// A controller actor names an existing agent in this Room, never an
+    /// owner substitute. The common invocation retains and rechecks its grant.
+    async fn invoke_room_app_view_tool(
+        &self,
+        session: &str,
+        binding: &AppViewBinding,
+        call: &BrowserAppViewCall,
+        tracked: &mut ViewCall,
+    ) -> Result<Value, BrowserAppViewError> {
+        let agent = match &call.actor {
+            None => None,
+            Some(actor) if actor.kind == "agent" => {
+                let agent = self
+                    .owned
+                    .agent_store
+                    .get_agent(&actor.id)
+                    .map_err(|_| agent_not_granted())?;
+                if agent.id() != actor.id
+                    || agent.session_id() != session
+                    || agent.owner_user_id() != binding.owner
+                {
+                    return Err(agent_not_granted());
+                }
+                Some(agent)
+            }
+            Some(_) => return Err(agent_not_granted()),
+        };
+        let caller = match &agent {
+            Some(agent) => ViewCaller::Agent(agent),
+            None => ViewCaller::Owner(Some(session)),
+        };
+        self.invoke_app_view_tool(caller, binding, &call.method, call.params.clone(), tracked)
+            .await
     }
 
     pub(super) async fn invoke_app_view_tool(

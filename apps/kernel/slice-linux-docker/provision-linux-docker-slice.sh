@@ -577,6 +577,8 @@ refresh_slice_support_files() {
   run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 0644 /opt/chariox-slice/browser-app-restore.mjs \
     || fail "failed to set permissions on safe App session restore overlay"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-drafts.mjs" "Browser Controller App drafts"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-input-callers.mjs" "Browser Controller App input callers"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-app-view-actions.mjs" "Browser Controller App view actions"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-events.mjs" \
     || fail "failed to refresh required slice support overlay: Browser Controller events"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-files.mjs" \

@@ -2,6 +2,10 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
+// A definitive text refusal holds no keys/buttons and needs no browser reset.
+export class TextInsertionRefused extends BrowserActionError {
+  constructor() { super('stale_element_reference', 'App text target changed before insertion; observe it again and retry'); }
+}
 const canonicalViewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
@@ -38,7 +42,7 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
     assertNotCancelled(signal);
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
@@ -97,11 +101,14 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       await check(true);
       await mirrorGuard?.();
     };
-    const sendInput = async (method, params) => {
+    const stamp = inputTimestamp === undefined ? {} : { timestamp: inputTimestamp };
+    const sendInput = async (method, params, prepare) => {
       await admitInput();
+      if (prepare) await prepare();
+      assertNotCancelled(signal);
       const endDispatch = onDispatch?.();
       try {
-        const result = await connection.send(method, params, sessionId);
+        const result = await connection.send(method, method === "Input.dispatchMouseEvent" || method === "Input.dispatchKeyEvent" ? { ...params, ...stamp } : params, sessionId);
         assertNotCancelled(signal);
         return result;
       } finally { endDispatch?.(); }
@@ -128,7 +135,32 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       }
       if (input.kind === "text") {
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
-        await sendInput("Input.insertText", { text: input.text });
+        if (inputToken && input.text) {
+          await admitInput();
+          const reply = await connection.send("Runtime.evaluate", {
+            expression: `globalThis.__charioxViewInput.armText(${JSON.stringify(input.text)},${JSON.stringify(inputToken)})`,
+            returnByValue: true,
+          }, sessionId);
+          if (reply.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
+          try {
+            // Chromium owns beforeinput, cancellation and the no-op on a
+            // noneditable target. Attribution must not replace native editing.
+            const claim = async method => {
+              const reply = await connection.send("Runtime.evaluate", {
+                expression: `globalThis.__charioxViewInput.${method}(${JSON.stringify(inputToken)})`, returnByValue: true,
+              }, sessionId);
+              if (reply.exceptionDetails || typeof reply.result?.value !== 'boolean')
+                throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
+              if (!reply.result.value) throw new TextInsertionRefused();
+            };
+            await sendInput("Input.insertText", { text: input.text }, () => claim('startText'));
+            await claim('finishText');
+          } finally {
+            await connection.send("Runtime.evaluate", {
+              expression: `globalThis.__charioxViewInput.clearText(${JSON.stringify(inputToken)})`, returnByValue: true,
+            }, sessionId);
+          }
+        } else await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);
         // Shift only with focus/selection keys: Shift+Tab moves focus back, Shift+Arrow/Home/End extend the selection.
@@ -167,8 +199,8 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         // navigation cannot strand the key or replay the press.
         const endDispatch = onDispatch?.();
         try {
-          const press = connection.send("Input.dispatchKeyEvent", down, sessionId);
-          const release = connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, sessionId);
+          const press = connection.send("Input.dispatchKeyEvent", { ...down, ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchKeyEvent", { type: "keyUp", ...key, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;
@@ -195,8 +227,8 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // matching release before awaiting the frame-paced press reply. Once
           // admitted, navigation/cancellation must not strand a pressed button.
           onDispatch?.();
-          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, sessionId);
-          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, sessionId);
+          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;

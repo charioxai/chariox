@@ -80,3 +80,16 @@ test('MP-08/MP-10 an oversized CDP reply fails only its own request', async () =
  assert.deepEqual(await next,{product:'Chrome'});
  await connection.close();
 });
+
+// MP-08/MP-10/MP-11: an App handler owns its request until reply or connection loss.
+test('private CDP can wait for a handler beyond the default round trip', async () => {
+ const {input,output,connection}=pipe();
+ const pending=connection.send('Runtime.evaluate',{},'s',{timeoutMs:null});
+ try {
+  const observed=pending.then(result=>({result}),error=>({error}));
+  await new Promise(resolve=>setTimeout(resolve,80));
+  const wire=JSON.parse(input.read().toString().slice(0,-1));
+  output.write(JSON.stringify({id:wire.id,result:{done:true}})+'\0');
+  assert.deepEqual(await observed,{result:{done:true}});
+ } finally { await connection.close(); }
+});

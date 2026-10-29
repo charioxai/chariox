@@ -39,6 +39,32 @@ fn config(root: &std::path::Path, name: &str) -> DaemonConfig {
 }
 
 async fn check() {
+    check_versions(
+        &[
+            102,
+            114,
+            121,
+            128,
+            FLOOR - 1,
+            FLOOR,
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ],
+        false,
+    )
+    .await;
+}
+
+#[test]
+fn app_view_agent_rejects_protocol_239_worker_before_dispatch() {
+    crate::test_support::isolated_env_test!();
+    run_async_with_large_test_stack("app-agent-peer-version", check_app_agent_compatibility);
+}
+
+async fn check_app_agent_compatibility() {
+    check_versions(&[239], true).await;
+}
+
+async fn check_versions(advertisements: &[u32], app_agent: bool) {
     let _guard = relay_client_test_guard().await;
     let _home = RelayTestHome::new();
     let workspace = crate::test_support::TestWorktree::new("browser-peer-version");
@@ -139,7 +165,7 @@ async fn check() {
                                 &home_private_key, &encrypted,
                             ).unwrap();
                             let mut response: serde_json::Value = serde_json::from_slice(&clear.plaintext).unwrap();
-                            if response["kind"] == "execution_lease_created" {
+                            if response["kind"] == "execution_lease_created" || response["kind"] == "pong" {
                                 response["relay_peer_protocol_version"] = version.load(Ordering::SeqCst).into();
                             }
                             relay_crypto::encrypt_payload_for_peer(&worker_config.relay_private_key,
@@ -156,17 +182,26 @@ async fn check() {
     wait_for_daemon_registration(registry, &worker_config.daemon_id).await;
     let assertions = std::panic::AssertUnwindSafe(async {
         let minimum = crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION;
-        for advertised in [
-            102,
-            114,
-            121,
-            128,
-            minimum - 1,
-            minimum,
-            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        ] {
+        for &advertised in advertisements {
             version.store(advertised, Ordering::SeqCst);
             requests.lock().await.clear();
+            if app_agent {
+                let error = room_app_agent_request(home_config.clone(), workspace.path())
+                    .await
+                    .expect_err("old worker must refuse at the version check");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("App view agent actions require relay peer protocol"),
+                    "{error}"
+                );
+                assert_eq!(
+                    *requests.lock().await,
+                    ["ping"],
+                    "never serialize the new App-agent request to the old worker"
+                );
+                continue;
+            }
             let config = home_config.clone();
             let workspace = workspace.path().to_path_buf();
             let result = tokio::task::spawn_blocking(move || {
@@ -247,4 +282,107 @@ async fn check() {
     if let Err(panic) = assertions {
         std::panic::resume_unwind(panic);
     }
+}
+
+// Only discovery/provisioning state is synthetic; this uses the real Room route
+// and encrypted relay, with a worker advertising the base peer protocol.
+async fn room_app_agent_request(
+    config: DaemonConfig,
+    workspace: &std::path::Path,
+) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, DaemonError> {
+    use crate::runtime::browser_controller_app_view::{BrowserAppViewRequest, ViewAgentCallKind};
+    use crate::slice::{
+        CreateSliceInput, SliceBackendKind, SliceDisplayBackend, SliceDisplayMode, SliceStatus,
+    };
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let room = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.display().to_string(),
+            workspace.display().to_string(),
+        ))
+        .unwrap()
+        .0;
+    let slice = app
+        .slices()
+        .create(
+            &config.daemon_id,
+            &config.host_machine_id,
+            CreateSliceInput {
+                source_slice_ref: None,
+                name: "app-agent-worker".into(),
+                backend: SliceBackendKind::LocalDocker,
+                os: "linux".into(),
+                display_mode: SliceDisplayMode::Headed,
+                display_backend: SliceDisplayBackend::default(),
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: Some("artifact-version-worker".into()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .unwrap();
+    app.slices()
+        .set_relay_endpoint(
+            &slice.id,
+            Some(crate::slice::SliceRelayEndpoint {
+                url: config.relay_url.clone().unwrap(),
+                private: false,
+            }),
+            crate::session::unix_epoch_ms(),
+        )
+        .unwrap();
+    app.slices()
+        .set_worker_presence(
+            &slice.id,
+            Some("artifact-version-worker".into()),
+            Some("artifact-version-machine".into()),
+            Vec::new(),
+            crate::session::unix_epoch_ms(),
+        )
+        .unwrap();
+    app.slices()
+        .set_status(
+            &slice.id,
+            SliceStatus::Running,
+            crate::session::unix_epoch_ms(),
+        )
+        .unwrap();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        2,
+    );
+    let state = router.runtime_state();
+    state
+        .bind_room_environment_slice(
+            crate::local::BindRoomEnvironmentSliceRequest {
+                session_id: room.id().into(),
+                slice_ref: slice.id,
+            },
+            room.owner_user_id(),
+        )
+        .unwrap();
+    let result = state
+        .room_browser_controller_command(
+            room.id(),
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::AppView {
+                request: BrowserAppViewRequest::Agent {
+                    target_id: "view-1".into(),
+                    agent: "agent-7".into(),
+                    call: ViewAgentCallKind::State,
+                    name: None,
+                    input: None,
+                    since: None,
+                    wait_ms: None,
+                    deadline_ms: 20_000,
+                },
+            },
+        )
+        .await;
+    router.shutdown_cleanup().await.unwrap();
+    result
 }

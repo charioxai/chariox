@@ -96,6 +96,13 @@ installation, native echo/restart/cache-hit, eviction, damaged/stale input and
 offline rebuild process drills. These supplement client/kernel/provider drills
 and do not establish R5 containment or full Stage 1 acceptance.
 
+On the R4+A2 integration, run `scripts/installed-ui-actions-drill.sh` through
+the compile slot with an external `CHARIOX_WORKER_DRILL_DIR`. It installs the
+signed source App with UI actions, reopens its stored catalog, starts the native
+Wasm worker and checks the actions exposed by A2's agent view catalog. It does
+not inject declarations into a view context. The browserless drill supplements
+real client/provider acceptance; it does not establish page action execution.
+
 The installed kernel keeps the `worker.ready` response pending until activation.
 The worker serves lifecycle calls while awaiting that response, so precommit
 `health_check` can finish without granting the App broker effects early.

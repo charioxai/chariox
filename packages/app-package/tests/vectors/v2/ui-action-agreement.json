@@ -1,0 +1,954 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "agreement": "ok"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "exact-match"
+    },
+    {
+      "expected": {
+        "agreement": "ok"
+      },
+      "input": {
+        "registered": [
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          },
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ]
+      },
+      "name": "order-of-registration-is-free"
+    },
+    {
+      "expected": {
+        "agreement": "ok"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1.0,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "schema-key-order-and-number-spelling-are-not-differences"
+    },
+    {
+      "expected": {
+        "action": "wipe_all",
+        "mismatch": "undeclared"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          },
+          {
+            "description": "x",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "wipe_all"
+          }
+        ]
+      },
+      "name": "undeclared-action"
+    },
+    {
+      "expected": {
+        "action": "clear_done",
+        "mismatch": "missing"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ]
+      },
+      "name": "declared-action-never-registered"
+    },
+    {
+      "expected": {
+        "action": "list_todos",
+        "mismatch": "duplicate"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ]
+      },
+      "name": "duplicate-registration"
+    },
+    {
+      "expected": {
+        "action": "add_todo",
+        "field": "description",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add anything anywhere",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "description-differs"
+    },
+    {
+      "expected": {
+        "action": "add_todo",
+        "field": "input_schema",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "input-schema-differs"
+    },
+    {
+      "expected": {
+        "action": "add_todo",
+        "field": "output_schema",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo"
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "output-schema-removed"
+    },
+    {
+      "expected": {
+        "action": "list_todos",
+        "field": "output_schema",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos",
+            "outputSchema": {
+              "type": "array"
+            }
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "output-schema-added"
+    },
+    {
+      "expected": {
+        "action": "clear_done",
+        "field": "effect",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "description": "Remove finished todos",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "effect-escalation-approval-to-write"
+    },
+    {
+      "expected": {
+        "action": "add_todo",
+        "field": "effect",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "effect-weakened-write-to-read"
+    },
+    {
+      "expected": {
+        "action": "clear_done",
+        "field": "approval_reason",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "Add a todo to the current list",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Something else",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "approval-reason-differs"
+    },
+    {
+      "expected": {
+        "action": "add_todo",
+        "field": "effect",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "changed",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "text": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "name": "add_todo",
+            "outputSchema": {
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            }
+          },
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          },
+          {
+            "approvalReason": "Deletes every finished todo",
+            "description": "Remove finished todos",
+            "effect": "approval",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "clear_done"
+          }
+        ]
+      },
+      "name": "effect-reported-before-other-differences"
+    },
+    {
+      "expected": {
+        "agreement": "ok"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "List the todos",
+            "effect": "read",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ],
+        "single": true
+      },
+      "name": "single-registration-ignores-missing-actions"
+    },
+    {
+      "expected": {
+        "action": "wipe_all",
+        "mismatch": "undeclared"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "x",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "wipe_all"
+          }
+        ],
+        "single": true
+      },
+      "name": "single-registration-undeclared"
+    },
+    {
+      "expected": {
+        "action": "list_todos",
+        "field": "effect",
+        "mismatch": "differs"
+      },
+      "input": {
+        "registered": [
+          {
+            "description": "List the todos",
+            "effect": "write",
+            "inputSchema": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "name": "list_todos"
+          }
+        ],
+        "single": true
+      },
+      "name": "single-registration-differs"
+    }
+  ],
+  "shared": {
+    "declared": [
+      {
+        "description": "Add a todo to the current list",
+        "effect": "write",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "type": "object"
+        },
+        "name": "add_todo",
+        "outputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "List the todos",
+        "effect": "read",
+        "inputSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "name": "list_todos"
+      },
+      {
+        "approvalReason": "Deletes every finished todo",
+        "description": "Remove finished todos",
+        "effect": "approval",
+        "inputSchema": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "name": "clear_done"
+      }
+    ]
+  }
+}

@@ -527,6 +527,36 @@ async fn sudo_operations_never_authorize_new_origin_or_arbitrary_approval() {
 }
 
 #[tokio::test]
+async fn sudo_operations_answer_the_approval_of_an_app_view_action() {
+    let f = fixture();
+    let turn = running(&f);
+    let interaction = RuntimeInteraction::new(
+        "app-view-action-1",
+        &turn.agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Approve wipe in an App view?".into()),
+        "an agent asks to run wipe",
+        vec![
+            RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
+            RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+        ],
+        None,
+        Some(300),
+        None,
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::Prompt {
+        provider_run_id: f.run.id().into(),
+        prompt_id: turn.prompt_id.clone().unwrap(),
+    }));
+    let resolution = f
+        .state
+        .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
+        .expect("a sudo turn covers its own agent's App action approvals");
+    assert_eq!(resolution.choice_id.as_deref(), Some("allow_once"));
+}
+
+#[tokio::test]
 async fn sudo_operations_new_extension_source_and_no_sudo_write_still_ask() {
     let f = fixture();
     let turn = running(&f);

@@ -550,6 +550,17 @@ fn registration_failure(error: crate::runtime::app_worker::AppWorkerError) -> Li
     }
 }
 
+fn wasm_preparation_error(
+    error: chariox_app_runtime::worker_process::WorkerError,
+) -> LifecycleError {
+    use chariox_app_runtime::worker_process::WorkerError;
+    match error {
+        WorkerError::Storage("app_aot_busy") => LifecycleError::Busy,
+        WorkerError::Storage(code) => LifecycleError::Wasm(code),
+        _ => LifecycleError::Preparation,
+    }
+}
+
 #[cfg(test)]
 mod registration_failure_tests {
     use super::*;
@@ -577,16 +588,5 @@ mod registration_failure_tests {
             registration_failure(AppWorkerError::Invalid).to_string(),
             "app_lifecycle_registration"
         );
-    }
-}
-
-fn wasm_preparation_error(
-    error: chariox_app_runtime::worker_process::WorkerError,
-) -> LifecycleError {
-    use chariox_app_runtime::worker_process::WorkerError;
-    match error {
-        WorkerError::Storage("app_aot_busy") => LifecycleError::Busy,
-        WorkerError::Storage(code) => LifecycleError::Wasm(code),
-        _ => LifecycleError::Preparation,
     }
 }

@@ -151,7 +151,7 @@ impl DurableKernelStateStore {
     ) -> Result<(String, serde_json::Value), ActiveReleaseError> {
         let release = self.active_app_release(owner, installation)?;
         let verified = release.verify()?;
-        let capabilities = serde_json::to_value(&verified.manifest().capabilities)
+        let capabilities = serde_json::to_value(verified.manifest().capabilities)
             .map_err(|_| ActiveReleaseError::Invalid)?;
         Ok((verified.package_digest().to_owned(), capabilities))
     }
@@ -221,7 +221,7 @@ impl DurableKernelStateStore {
         if verified.package_digest() != package_digest {
             return Err(ActiveReleaseError::Invalid);
         }
-        serde_json::to_value(&verified.manifest().capabilities)
+        serde_json::to_value(verified.manifest().capabilities)
             .map_err(|_| ActiveReleaseError::Invalid)
     }
 

@@ -740,7 +740,8 @@ test("MD-3: bound stream captures a document-bound source rather than annotating
 test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]])};
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
+    async input(app, agent, dispatch) { assert.equal(agent, 'agent-7'); return dispatch(12345); }};
   const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
   const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {

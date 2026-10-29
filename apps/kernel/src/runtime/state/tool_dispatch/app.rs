@@ -9,6 +9,7 @@ use crate::{
 use std::collections::BTreeSet;
 
 mod invocation;
+mod view_agent;
 
 impl KernelRuntimeState {
     pub(super) fn app_runtime_tool_specs_for_auth_token(
@@ -263,6 +264,12 @@ impl KernelRuntimeState {
         tool: &RemoteExtensionTool,
         input: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
+        if let Some(result) = self
+            .dispatch_home_app_view_tool(context, tool, input.clone())
+            .await
+        {
+            return result;
+        }
         // MP-08/MP-10/MP-11 D1: the home kernel owns App authority for every placement.
         let agent = super::home_extension_authorizer::HomeExtensionAuthorizationService::new(self)
             .authorize_granted_agent(context, tool)?;
@@ -281,6 +288,9 @@ impl KernelRuntimeState {
         context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
         hinted: &RemoteExtensionTool,
     ) -> Result<RemoteExtensionTool, DaemonError> {
+        if let Some(result) = self.authorize_forwarded_app_view_tool(context, hinted) {
+            return result;
+        }
         let permit = self
             .app_control()
             .try_admit()

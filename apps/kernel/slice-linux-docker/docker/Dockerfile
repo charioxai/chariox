@@ -2,7 +2,7 @@
 FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS ca-bundle
 RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc/ssl/certs/ca-certificates.crt' | sha256sum --check --strict
 
-FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
+FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS rust-builder
 WORKDIR /opt/chariox-source
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -40,9 +40,12 @@ COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
+COPY packages/app-wit packages/app-wit
+COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt
+RUN cargo metadata --locked --no-deps --format-version 1 > /dev/null
 ARG CHARIOX_PREBUILT_RUNTIME=0
 ARG CARGO_PROFILE_RELEASE_OPT_LEVEL=3
 ARG CHARIOX_RUNTIME_BUILD_PROFILE=release
@@ -233,6 +236,8 @@ RUN groupadd --gid 1001 slice \
 
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-kernel /opt/chariox-slice/bin/chariox-kernel
 COPY --from=rust-builder --chown=slice:slice /opt/chariox-runtime-bin/chariox-relay /opt/chariox-slice/bin/chariox-relay
+COPY --chmod=0555 apps/kernel/slice-linux-docker/docker/check-runtime.sh /opt/chariox-slice/check-runtime.sh
+RUN /opt/chariox-slice/check-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/install-display-codec.py apps/kernel/slice-linux-docker/docker/display-codec-pin.json /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
@@ -257,6 +262,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-bar.mjs /opt/chariox-slice/browser-controller-bar.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-restore.mjs /opt/chariox-slice/browser-app-restore.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-drafts.mjs /opt/chariox-slice/browser-app-drafts.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-input-callers.mjs /opt/chariox-slice/browser-app-input-callers.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-view-actions.mjs /opt/chariox-slice/browser-app-view-actions.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs

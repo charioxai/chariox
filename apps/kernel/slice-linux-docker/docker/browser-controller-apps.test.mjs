@@ -162,7 +162,7 @@ test("bridge call ids differ between documents, so a late answer cannot match a 
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const firstIds = () => {
     const sent = [];
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => sent.push(JSON.parse(payload).id) });
     vm.runInContext(bridge, context);
     vm.runInContext("chariox.call('list_todos')", context);
     return sent[0];
@@ -240,7 +240,7 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -571,7 +571,7 @@ test("view host helpers only queue the shared copy/link methods, never operate t
   const { connection } = await opened();
   const bridge = connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument").params.source;
   const sent = [];
-  const context = vm.createContext({ crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
+  const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: payload => sent.push(JSON.parse(payload)),
     navigator: { clipboard: { writeText() { assert.fail("App view must not copy directly"); } } },
     open() { assert.fail("App view must not open directly"); } });
   vm.runInContext(bridge, context);
@@ -666,7 +666,37 @@ test("user-domain instances of one App have independent targets and do not adopt
 
 const bindingCall = (tabs, connection, call) => tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId: "s1",
   params: { name: "__charioxAppCall", payload: JSON.stringify({ params: {}, ...call }) } });
-const takeActors = async tabs => (await tabs.takeCalls()).calls.map(call => call.actor ?? null);
+const takeActors = async (tabs) => (await tabs.takeCalls()).calls.map((call) => call.actor ?? null);
+
+test("ambient calls stay human while a scoped invocation waits and after it settles", async () => {
+  const { tabs, connection } = await opened();
+  const send = connection.send.bind(connection);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  connection.send = async (method, params, session) => {
+    if (method === 'Runtime.evaluate' && params.awaitPromise) {
+      entered(); return new Promise(resolve => { release = () => resolve({ result: { value: { ok: true, value: null } } }); });
+    }
+    return send(method, params, session);
+  };
+  const running = tabs.agent({ target_id: 't1', agent: 'agent-7', call: 'invoke', name: 'save' });
+  await started;
+  await bindingCall(tabs, connection, { id: 'human:1', method: 'save', actor: { kind: 'agent', id: 'agent-8' } });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  const token = tabs.apps.get('s1').invocation.token;
+  await bindingCall(tabs, connection, { id: `invocation:${token}:document:1`, method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [{ kind: 'agent', id: 'agent-7' }]);
+  assert.equal((await tabs.agent({ target_id: 't1', agent: 'agent-8', call: 'invoke', name: 'save' })).code, 'view_busy');
+  release(); await running;
+  for (const value of [token, 'unknown']) {
+    const id = `invocation:${value}:document:2`;
+    await bindingCall(tabs, connection, { id, method: 'save' });
+    assert.match(connection.sent.at(-1).params.expression, /APP_INVOCATION_EXPIRED/);
+  }
+  await bindingCall(tabs, connection, { id: 'human:2', method: 'save' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+});
+
 
 test('ambient backend calls always act as the human, including after navigation', async () => {
   const {tabs,connection}=await opened();
@@ -795,6 +825,32 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert.deepEqual(again,result);assert(connection.sent.some(x=>x.method==='Target.activateTarget'));
  assert(!connection.sent.some(x=>['Page.navigate','Page.reload'].includes(x.method)),'an unchanged focus must not invalidate current input references');
  assert.equal([...tabs.apps.values()][0].ready,true);
+});
+
+test('a token that retires while document lookup waits cannot admit a backend call', async () => {
+  const {tabs,connection} = await opened();
+  const send = connection.send.bind(connection);
+  let finishAction, finishDocument, enteredAction, enteredDocument;
+  const actionStarted = new Promise(resolve=>{enteredAction=resolve;});
+  const documentStarted = new Promise(resolve=>{enteredDocument=resolve;});
+  connection.send = async (method,params,session) => {
+    if(method==='Runtime.evaluate'&&params.awaitPromise) {
+      enteredAction(); return new Promise(resolve=>{finishAction=()=>resolve({result:{value:{ok:true,value:null}}});});
+    }
+    if(method==='Page.getFrameTree') {
+      enteredDocument(); return new Promise(resolve=>{finishDocument=()=>resolve({frameTree:{frame:{loaderId:'document-found'}}});});
+    }
+    return send(method,params,session);
+  };
+  // The first binding can arrive before the initial loader event.
+  tabs.apps.get('s1').document=null;
+  const running=tabs.agent({target_id:'t1',agent:'agent-one',call:'invoke',name:'save'});
+  await actionStarted;
+  const token=tabs.apps.get('s1').invocation.token;
+  const sending=bindingCall(tabs,connection,{id:`invocation:${token}:document:1`,method:'save'});
+  await documentStarted;
+  finishAction(); await running;
+  finishDocument(); await sending;
 });
 
 test('an unknown invocation token is refused before the action bridge is available', async () => {

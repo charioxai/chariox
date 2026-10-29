@@ -61,6 +61,24 @@ const chromium = {
       persist();
       announceDocument();
     }
+    // MP-08/MP-10/MP-11: external App renderer fixture; Room transport is real.
+    if (existsSync(join(dirname(pidFile), "app-view-mode"))) {
+      if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { left: 0, top: 0, width: 1280, height: 800, windowState: "normal" } };
+      if (method === "Browser.getWindowBounds") return { bounds: { windowState: "fullscreen" } };
+      if (["Fetch.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument"].includes(method)) return {};
+      if (method === "Target.createTarget") { state.appTarget = true; return { targetId: "worker-app" }; }
+      if (method === "Target.attachToTarget" && params.targetId === "worker-app") return { sessionId: "worker-app-session" };
+      if (method === "Page.navigate" && sessionId === "worker-app-session") {
+        state.appUrl = params.url;
+        emit({ method: "Page.frameNavigated", sessionId, params: { frame: { id: "app-frame", loaderId: "app-document", url: params.url } } });
+        return {};
+      }
+      if (method === "Runtime.evaluate" && params.expression.includes("__charioxViewAgent")) {
+        writeFileSync(join(dirname(pidFile), "app-handler-started"), "started");
+        await new Promise(resolve => setTimeout(resolve, 16000));
+        return { result: { value: { ok: true, value: { completed: true } } } };
+      }
+    }
     switch (method) {
       case "SystemInfo.getProcessInfo": return (await uploadBrowser.ensure()).processInfo;
       case "Target.getTargets": {
@@ -88,6 +106,7 @@ const chromium = {
         state.tabsClosed = false;
         return { targetInfos: [
         { type: "page", targetId: "worker-tab", url: state.url, title: "Worker browser" },
+        ...(state.appTarget ? [{ type: "page", targetId: "worker-app", url: state.appUrl ?? "about:blank", title: "App" }] : []),
         ...(state.popup ? [{ type: "page", targetId: "worker-popup", url: "https://popup.worker.test/", title: "Worker popup" }] : []),
         ] };
       }

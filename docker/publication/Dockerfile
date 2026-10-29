@@ -36,9 +36,9 @@ COPY docker/publication/Dockerfile docker/publication/Dockerfile
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
-FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
+FROM rust:1.99.0-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS rust-builder
 ARG CARGO_BUILD_JOBS=1
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=636
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=645
 WORKDIR /opt/chariox
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
@@ -60,6 +60,8 @@ COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
+COPY packages/app-wit packages/app-wit
+COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
 COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
@@ -77,7 +79,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.159.3
 ARG CHARIOX_OPENCODE_VERSION=1.19.0
 ARG CHARIOX_CLAUDE_VERSION=2.1.212
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=636
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=645
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

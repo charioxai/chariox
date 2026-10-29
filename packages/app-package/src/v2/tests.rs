@@ -76,18 +76,6 @@ fn policy() -> PolicyV2 {
     )
 }
 
-#[test]
-fn generic_verifier_refuses_ui_actions_without_a_runtime() {
-    let fixture = base();
-    let bytes = packed(&fixture, &[]);
-    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
-    let error = crate::verify_app(&bytes, &generic)
-        .err()
-        .expect("R4 has no UI-action runtime");
-    assert_eq!(error.code, ErrorCode::IncompatibleProtocol);
-    assert!(error.message.contains("ui-actions"), "{}", error.message);
-}
-
 struct Fixture {
     manifest: ManifestV2,
     files: BTreeMap<String, Vec<u8>>,
@@ -584,6 +572,47 @@ fn the_dev_identity_is_a_distinct_principal() {
 }
 
 #[test]
+fn ui_action_agreement_vectors_are_stable() {
+    check_vectors("ui-action-agreement.json", |shared, input| {
+        let declared: Vec<UiActionDeclaration> =
+            serde_json::from_value(shared["declared"].clone()).unwrap();
+        let registered: Vec<UiActionDeclaration> =
+            serde_json::from_value(input["registered"].clone()).unwrap();
+        let result = if input["single"].as_bool() == Some(true) {
+            check_registration(&declared, &registered[0])
+        } else {
+            check_agreement(&declared, &registered)
+        };
+        match result {
+            Ok(()) => json!({"agreement": "ok"}),
+            Err(mismatch) => serde_json::to_value(mismatch).unwrap(),
+        }
+    });
+}
+
+#[test]
+fn a_mismatch_names_the_action_and_the_part_that_differs() {
+    let schema = json!({"type":"object","additionalProperties":false});
+    let declared = vec![UiActionDeclaration {
+        name: "add_todo".to_owned(),
+        description: "Add".to_owned(),
+        input_schema: schema,
+        output_schema: None,
+        effect: UiActionEffect::Write,
+        approval_reason: None,
+    }];
+    let mut registered = declared.clone();
+    registered[0].effect = UiActionEffect::Read;
+    let message = check_agreement(&declared, &registered)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("add_todo") && message.contains("effect"),
+        "{message}"
+    );
+}
+
+#[test]
 fn signed_unknown_component_import_is_refused_before_install() {
     let mut fixture = base();
     fixture.files.insert(
@@ -736,4 +765,50 @@ fn idempotent_tool_policy_rejects_undeclared_names_and_changes_signed_content() 
         fixture.manifest.idempotent_tools = names.into_iter().map(String::from).collect();
         assert!(fixture.manifest.validate(&Limits::default()).is_err());
     }
+}
+
+#[test]
+fn generic_verifier_accepts_declared_ui_actions() {
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    let verified = crate::verify_app(&bytes, &generic).unwrap();
+    assert!(!crate::VerifiedApp::ui_actions(&verified).is_empty());
+}
+
+#[test]
+fn generic_verifier_refuses_a_signed_unknown_required_feature() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use ed25519_dalek::Signer;
+    use sha2::Digest;
+    let fixture = base();
+    let bytes = packed(&fixture, &[]);
+    let entries = archive::parse(&bytes, &Limits::default()).unwrap();
+    let mut manifest: Value = serde_json::from_slice(entries[0].data).unwrap();
+    manifest["requiredFeatures"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("future-not-advertised"));
+    let inventory =
+        read_inventory(entries[1].data, INTEGRITY_SCHEMA_V2, &Limits::default()).unwrap();
+    let subject = signing_bytes_for(SIGNATURE_SCHEMA_V2, &manifest, &inventory).unwrap();
+    let signature = json!({"key_id":manifest["publisher"]["keyId"],"algorithm":"ed25519","digest":format!("sha256:{:x}",sha2::Sha256::digest(&subject)),"value":STANDARD.encode(key().sign(&subject).to_bytes())});
+    let manifest = serde_json_canonicalizer::to_vec(&manifest).unwrap();
+    let signature = serde_json_canonicalizer::to_vec(&signature).unwrap();
+    let mut forged = vec![
+        (archive::CONTROL_PATHS[0], manifest.as_slice()),
+        (archive::CONTROL_PATHS[1], entries[1].data),
+        (archive::CONTROL_PATHS[2], signature.as_slice()),
+    ];
+    forged.extend(
+        entries[3..]
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.data)),
+    );
+    let bytes = archive::encode(&forged, &Limits::default()).unwrap();
+    let generic = crate::VerificationPolicy::new(500, policy().trusted_publishers.clone());
+    assert_eq!(
+        code(crate::verify_app(&bytes, &generic)),
+        crate::ErrorCode::InvalidManifest
+    );
 }
