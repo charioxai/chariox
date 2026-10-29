@@ -489,22 +489,24 @@ fn envp05a_status_refresh_preserves_reviewed_locator_ownership() {
     }
 }
 
-fn reviewed_locators_after_status_refresh(status: ProjectEnvironmentEntryStatus) {
-    let root = crate::test_support::TestWorktree::new("envp05-locator");
+fn unlocked_fixture_vault_config(root: &std::path::Path) -> crate::config::DaemonConfig {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::CharioxEncrypted;
-    config.user_config.credential_vault.path = root
-        .path()
-        .join("fixture-vault.json")
-        .to_string_lossy()
-        .into();
+    config.user_config.credential_vault.path =
+        root.join("fixture-vault.json").to_string_lossy().into();
     crate::secret::unlock_chariox_encrypted_vault(
         &config.user_config.credential_vault.path,
         "synthetic-fixture-passphrase",
         crate::secret::VaultUnlockLease::KernelShutdown,
     )
     .unwrap();
+    config
+}
+
+fn reviewed_locators_after_status_refresh(status: ProjectEnvironmentEntryStatus) {
+    let root = crate::test_support::TestWorktree::new("envp05-locator");
+    let config = unlocked_fixture_vault_config(root.path());
     let vault = crate::secret::project_environment_vault(&config).unwrap();
     vault
         .set_secret("fixture-service", "first", "synthetic-first")
@@ -600,6 +602,67 @@ fn reviewed_locators_after_status_refresh(status: ProjectEnvironmentEntryStatus)
     assert!(
         apply_scoped_binding(&store, &config, &env, &public).is_err(),
         "unrelated legacy conflicts remain protected"
+    );
+    crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path).unwrap();
+}
+
+// MP-08 / MP-10 / MP-11: GitHub tokens are ordinary Project credentials when the Vault holds them.
+#[test]
+fn envp05a_github_vault_binding_applies_and_reaches_provider_launch() {
+    let root = crate::test_support::TestWorktree::new("envp05-github-vault");
+    let config = unlocked_fixture_vault_config(root.path());
+    crate::secret::project_environment_vault(&config)
+        .unwrap()
+        .set_secret("fixture-service", "github", "synthetic-github-value")
+        .unwrap();
+    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    let project = crate::session::RuntimeProject::new(
+        "github",
+        "owner",
+        root.path().to_string_lossy(),
+        "GitHub",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let mut env = store.snapshot(&project).unwrap();
+    let mut secret = requirement("github");
+    secret.spec = RequirementSpec::Secrets {
+        name: "GH_TOKEN".into(),
+        vault: Some(EnvironmentVaultReference {
+            service: "fixture-service".into(),
+            key: "github".into(),
+        }),
+    };
+    env.project_requirements = vec![secret.clone()];
+    apply_scoped_binding(&store, &config, &env, &secret)
+        .expect("an authorized GitHub Vault binding must apply");
+    let launch = project_launch_environment(
+        &config,
+        project.id(),
+        &root.path().to_string_lossy(),
+        root.path(),
+    )
+    .expect("a resolved GitHub Vault entry must reach provider launch");
+    assert!(launch
+        .iter()
+        .any(|(name, value)| name == "GH_TOKEN" && value == "synthetic-github-value"));
+    let mut public = requirement("public-github");
+    public.spec = RequirementSpec::Variables {
+        name: "GITHUB_TOKEN".into(),
+        locator: ProjectEnvironmentLocator::EnvFile {
+            path: "public-input".into(),
+            key: "PUBLIC_INPUT".into(),
+        },
+    };
+    std::fs::write(
+        root.path().join("public-input"),
+        "PUBLIC_INPUT=public-value\n",
+    )
+    .unwrap();
+    env.project_requirements = vec![public.clone()];
+    let refused = apply_scoped_binding(&store, &config, &env, &public).unwrap_err();
+    assert!(
+        refused.to_string().contains("Protected launch binding"),
+        "a public binding cannot carry a GitHub token: {refused}"
     );
     crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path).unwrap();
 }

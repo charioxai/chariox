@@ -230,9 +230,9 @@ pub(super) fn validate_typed_requirement(r: &Requirement) -> Result<(), DaemonEr
         }
         RequirementSpec::Variables { name, locator } => {
             text(name)?;
-            if project_environment_protected_name(name)
+            if project_environment_public_name_protected(name)
                 || project_environment_source_name(locator)
-                    .is_some_and(project_environment_protected_name)
+                    .is_some_and(project_environment_public_name_protected)
             {
                 return Err(environment_error(format!(
                     "protected kernel/provider variable cannot be declared for requirement `{}`",
