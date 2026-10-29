@@ -2095,6 +2095,23 @@ mod tests {
             .agent_store
             .update_agent_profile(&agent_id, Some("dev-stub".into()), None, None)
             .unwrap();
+        let run = runtime
+            .with_app_side_effect(|app| {
+                let run = app.launch_provider(
+                    LaunchProviderRequest::new(
+                        &session_id,
+                        "dev-stub",
+                        "dev-stub",
+                        "default",
+                        "sonnet",
+                    )
+                    .with_agent_id(&agent_id),
+                )?;
+                app.update_provider_run_projection(run.clone());
+                Ok::<_, DaemonError>(run)
+            })
+            .await
+            .unwrap();
         let mut prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: session_id.clone(),
             prompt: PromptQueueItem::new(
@@ -2104,7 +2121,7 @@ mod tests {
                 "Continue",
                 PromptStatus::Queued,
             ),
-            force_queue: false,
+            force_queue: true,
             refresh_projection: true,
         };
         prepared
@@ -2113,8 +2130,24 @@ mod tests {
         let started = runtime.submit_prepared_prompt(prepared).await.unwrap();
         assert!(matches!(
             started.outcome,
-            crate::session::PromptSubmissionOutcome::Started { .. }
+            crate::session::PromptSubmissionOutcome::Queued { .. }
         ));
+        assert!(started
+            .session
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+        let dispatch = runtime
+            .owned
+            .advance_next_queued_prompt_dispatch(&session_id, &agent_id, run.id())
+            .unwrap()
+            .expect("the queued owner turn promotes when the provider is ready");
+        assert!(runtime
+            .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+            .await
+            .unwrap());
         let retired = runtime
             .owned
             .durable_state_store
@@ -2133,13 +2166,6 @@ mod tests {
             .session_store
             .get_session(&session_id)
             .unwrap()
-            .active_interactions()
-            .iter()
-            .any(|interaction| interaction
-                .id()
-                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
-        assert!(!started
-            .session
             .active_interactions()
             .iter()
             .any(|interaction| interaction
