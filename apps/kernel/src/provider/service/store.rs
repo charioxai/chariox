@@ -633,6 +633,17 @@ impl ProviderProcessServiceStore {
             );
     }
 
+    #[cfg(test)]
+    pub(crate) fn bind_opencode_runtime_for_test(
+        &self,
+        run_id: &str,
+        endpoint: &str,
+        session_id: &str,
+    ) {
+        self.write()
+            .bind_opencode_runtime_for_test(run_id, endpoint, session_id);
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,

@@ -268,6 +268,8 @@ pub(super) fn codex_turn_id_from_start_response(response: &Value) -> Option<Stri
 mod cancellation_tests;
 
 #[cfg(test)]
+mod refusal_tests;
+#[cfg(test)]
 mod turn_attribution_tests;
 
 #[cfg(test)]

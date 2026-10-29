@@ -137,6 +137,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         provider_run_id: &str,
         message: &str,
+        failure: Option<crate::provider::ProviderFailure>,
     ) -> Result<Option<bool>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
@@ -184,11 +185,25 @@ impl KernelRuntimeOwnedState {
         // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
         // before dispatch creates prompt activity. Preserve this dispatch's
         // run identity if the failed provider was already retired.
-        self.cancel_active_prompt_only_for_provider_run(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        match failure {
+            Some(failure) => {
+                self.fail_local_prompt_without_advance_with_termination_if_matches(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                    Some(prompt_id),
+                    None,
+                    failure,
+                )?;
+            }
+            None => {
+                self.cancel_active_prompt_only_for_provider_run(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                )?;
+            }
+        }
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         let released_claim = self.clear_prompt_activity(provider_run_id);

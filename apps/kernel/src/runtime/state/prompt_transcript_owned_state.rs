@@ -123,6 +123,31 @@ impl KernelRuntimeOwnedState {
         self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
     }
 
+    /// A refused dispatch shows the owner the provider's own failure when it
+    /// reported one; a kernel-side error stays an internal diagnostic.
+    pub(super) fn record_dispatch_failure_output(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        adapter_key: &str,
+        error: &DaemonError,
+    ) -> Option<crate::provider::ProviderFailure> {
+        let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
+        match &failure {
+            Some(failure) => {
+                self.record_provider_failure_notice(session_id, provider_run_id, agent_id, failure)
+            }
+            None => self.record_provider_failure_output(
+                session_id,
+                provider_run_id,
+                agent_id,
+                &format!("Provider prompt dispatch failed: {error}"),
+            ),
+        }
+        failure
+    }
+
     fn append_provider_failure_entry(
         &self,
         session_id: &str,

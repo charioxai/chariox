@@ -114,9 +114,14 @@ impl CodexClient {
             }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
-                    return Err(self
-                        .protocol_error(method, error)
-                        .steer_not_submitted(method == "turn/steer"));
+                    // The app-server's own answer to a turn request is the
+                    // provider's refusal; every other method stays a protocol fault.
+                    let failure = if matches!(method, "turn/start" | "turn/steer") {
+                        DaemonError::ProviderRefusal { message: error }
+                    } else {
+                        self.protocol_error(method, error)
+                    };
+                    return Err(failure.steer_not_submitted(method == "turn/steer"));
                 }
                 let result = message.result.ok_or_else(|| {
                     self.protocol_error(method, "Codex returned no response payload".to_string())
