@@ -78,7 +78,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // an idle inbox attempt race its admission into a second task.
             if target.is_none()
                 && e.kind != "message"
-                && tasks(tx)?.iter().any(|t| {
+                && continuing_tasks(tx, &room, &agent)?.iter().any(|t| {
                     t.room_id == room
                         && t.agent_id == agent
                         && t.pending_prompt_id.is_some()
@@ -100,7 +100,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             save_event(tx, &e)?;
             super::wakes::record_delivery(tx, &e)?;
             // Wake retains the original task. Progress is not an ACK/cursor or deadline edit.
-            for mut t in tasks(tx)? {
+            for mut t in live_tasks(tx, &room, &agent)? {
                 if t.room_id == room
                     && t.agent_id == agent
                     && t.state == ExecutionState::Waiting
@@ -285,7 +285,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // of its goal continuation. Keep it deliverable through the shared owner.
             if e.state == "pending"
                 && matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck")
-                && tasks(tx)?.iter().any(|task| {
+                && live_tasks(tx, &room, &agent)?.iter().any(|task| {
                     task.goal.is_some()
                         && task.state == ExecutionState::Waiting
                         && task.room_id == room
@@ -321,7 +321,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             // A recurring check-in ACK is bookkeeping, not useful progress.
             // The existing three-no-progress-wake guard requires owner action.
             if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
-                for mut t in tasks(tx)? {
+                for mut t in live_tasks(tx, &room, &agent)? {
                     if t.room_id != room
                         || t.agent_id != agent
                         // MP-08/MP-10/MP-11: a loss ACK cannot override the owner's Blocked decision.
@@ -377,7 +377,7 @@ fn revert_refused_wake(
     agent: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
-    for mut t in tasks(tx)? {
+    for mut t in live_tasks(tx, room, agent)? {
         if t.room_id == room
             && t.agent_id == agent
             && t.state == ExecutionState::Working

@@ -298,7 +298,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
-                    for mut t in tasks(tx)? {
+                    for mut t in live_tasks(tx, &e.room_id, &e.agent_id)? {
                         if t.room_id == e.room_id
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)

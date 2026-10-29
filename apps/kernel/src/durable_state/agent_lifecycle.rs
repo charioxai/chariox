@@ -506,6 +506,7 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
     }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
          CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);",
     )
     .map_err(sql)
@@ -516,6 +517,30 @@ fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
 /// Waiting tasks, and unreadable ones so they are quarantined as before.
 fn waiting_tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
     tasks_where(tx, "state='waiting' OR state IS NULL", [])
+}
+/// An agent's unfinished tasks, and unreadable ones so they are quarantined.
+fn live_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2 AND (state IN ('working','waiting','blocked') OR state IS NULL)",
+        params![room, agent],
+    )
+}
+/// An agent's tasks that hold a pending continuation.
+fn continuing_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2 AND pending_prompt_id IS NOT NULL",
+        params![room, agent],
+    )
 }
 /// The task that holds `prompt` as its pending continuation.
 fn pending_continuation(

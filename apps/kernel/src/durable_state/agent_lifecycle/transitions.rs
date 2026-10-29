@@ -728,12 +728,15 @@ fn yield_refusal(
         .iter()
         .any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"));
     if !foreign.is_empty() && !unresolved {
-        for other in tasks(tx)?.into_iter().filter(|o| {
-            o.task_id != t.task_id
-                && o.room_id == t.room_id
-                && o.agent_id == t.agent_id
-                && o.state == ExecutionState::Waiting
-        }) {
+        for other in live_tasks(tx, &t.room_id, &t.agent_id)?
+            .into_iter()
+            .filter(|o| {
+                o.task_id != t.task_id
+                    && o.room_id == t.room_id
+                    && o.agent_id == t.agent_id
+                    && o.state == ExecutionState::Waiting
+            })
+        {
             let theirs = registrations(tx, &other.task_id)?;
             if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
                 return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());
