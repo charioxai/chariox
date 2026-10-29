@@ -321,6 +321,7 @@ mod tests {
         let root = crate::test_support::TestWorktree::new("r4-room-app-apply");
         let mut config = crate::config::DaemonConfig::for_tests();
         config.room_agent_tools = true;
+        let _mcp = crate::test_support::TestRuntimeMcp::serve(&mut config);
         let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
         crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
         for index in 0..100 {
