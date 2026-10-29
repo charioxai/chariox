@@ -1,5 +1,4 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: a launch-bound HOME owns the Claude profile it starts.
-use super::super::*;
 use crate::config::DaemonConfig;
 use crate::provider::{
     LaunchProviderRequest, ProviderClientInterface, ProviderCredentialEnvironment,
