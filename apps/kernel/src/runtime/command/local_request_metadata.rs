@@ -1094,6 +1094,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::RefreshEventConnection(_) => "event_connection.refresh",
         LocalDaemonRequest::TestEventConnection(_) => "event_connection.test",
+        LocalDaemonRequest::ListEventConnectionEvents(_) => "event_connection.events.list",
+        LocalDaemonRequest::ReplayEventConnectionEvent(_) => "event_connection.events.replay",
         LocalDaemonRequest::ReconnectEventConnection(_) => "event_connection.reconnect",
         LocalDaemonRequest::ListEventConnectionResources(_) => "event_connection.resources.list",
         LocalDaemonRequest::ListEventConnectionDependencies(_) => {

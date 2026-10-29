@@ -558,6 +558,8 @@ pub enum LocalDaemonResponse {
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
     EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
+    EventConnectionEvents { page: chariox_event_protocol::AegsReceivedEventPage, },
+    EventConnectionEventReplayed { result: chariox_event_protocol::AegsReceivedEventReplayResponse, },
     EventConnectionDependencies { connection_id: String, dependencies: Vec<EventConnectionDependency>, },
     EventConnectionRemoved { connection: EventConnection, },
     EventDeliveryStatus { status: EventDeliveryStatus, },

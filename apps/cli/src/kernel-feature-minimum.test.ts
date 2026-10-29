@@ -76,6 +76,14 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
+test("integration received-event listing and replay require protocol 880", () => {
+  for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
+    { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 636), /Integration received events needs protocol ≥880/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 880))
+  }
+})
+
 // MP-08 / MP-10: VERSION(P01).
 test("standalone and reserved Project Environment operations require protocol 487", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {

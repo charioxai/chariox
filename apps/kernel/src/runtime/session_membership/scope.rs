@@ -903,6 +903,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
         | LocalDaemonRequest::RefreshEventConnection(_)
         | LocalDaemonRequest::TestEventConnection(_)
+        | LocalDaemonRequest::ListEventConnectionEvents(_)
+        | LocalDaemonRequest::ReplayEventConnectionEvent(_)
         | LocalDaemonRequest::ReconnectEventConnection(_)
         | LocalDaemonRequest::ListEventConnectionResources(_)
         | LocalDaemonRequest::ListEventConnectionDependencies(_)

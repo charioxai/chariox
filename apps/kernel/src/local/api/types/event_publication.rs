@@ -121,6 +121,25 @@ pub struct TestEventConnectionRequest {
     pub event_type: Option<String>,
 }
 
+/// The webhooks the integration's generator received for this user, newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListEventConnectionEventsRequest {
+    pub connection_id: String,
+    #[serde(default = "default_received_event_limit")]
+    pub limit: u32,
+}
+
+fn default_received_event_limit() -> u32 {
+    50
+}
+
+/// Publishes a stored webhook to the event service again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayEventConnectionEventRequest {
+    pub connection_id: String,
+    pub delivery_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReconnectEventConnectionRequest {
     pub connection_id: String,
