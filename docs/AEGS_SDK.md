@@ -211,6 +211,27 @@ baseline inspection, but it intentionally does not claim that provider health
 was checked or that test events are supported. A test event must use the same
 subscription match and AEDS publication path as a real webhook.
 
+## Durable webhook inbox
+
+The SDK server stores every webhook that passed `normalize_webhook` (signature checked)
+before it answers `202`, then publishes to AEDS from the stored copy: once inline, then
+from a retry worker with exponential backoff (5 s doubling to 10 min, 8 attempts). AEDS
+dedupes on the occurrence ID, so retries and replays are safe. An AEDS outage therefore
+never discards an event and no longer turns into a `502` for the sender. After the
+attempts run out the event stays `failed` until it is replayed.
+
+- `webhook_delivery_id` returns the provider's unique delivery ID (GitHub:
+  `X-GitHub-Delivery`). The inbox stores each ID once, so a provider redelivery is
+  acknowledged without a second publication. Without it every request is its own entry.
+- `recent_deliveries` and `redeliver` let the SDK sweep (every 5 min, 6 h back, 2 min
+  grace, at most 50 requests per sweep and 3 per delivery) for deliveries the provider
+  logged but this server never stored, and ask the provider to send them again. A
+  redelivery takes the normal webhook path. GitHub implements them with the App's
+  `GET /app/hook/deliveries` and `POST /app/hook/deliveries/{id}/attempts`.
+- `POST /v1/events/query` and `POST /v1/events/replay` (management protocol, owner
+  scoped) expose the stored events; the kernel serves them as
+  `/notifications connection events|replay <connection-id>`.
+
 The OSS repository intentionally contains no production AEDS and no
 Chariox-maintained production provider implementation. Those components live in
 the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
