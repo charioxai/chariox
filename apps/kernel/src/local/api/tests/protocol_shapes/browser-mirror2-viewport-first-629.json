@@ -3,8 +3,8 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 780,
-  "peer_protocol": 330,
+  "local_protocol": 811,
+  "peer_protocol": 361,
   "allocation": "coordinator-allocated local 593, relay peer unchanged: additive viewport-first snapshot (viewport_first, deferred, snapshot_viewport_complete)",
   "subscribe": {
     "KernelBrowser": {

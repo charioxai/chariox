@@ -118,5 +118,5 @@ mod waiting_room_workspace;
 mod room_pin;
 mod usage_snapshot;
 
-mod session_activity;
 mod provider_login;
+mod session_activity;

@@ -53,7 +53,7 @@ fn mp08_mp10_mp11_room_display_carry_525_133_snapshot_hash() {
     let bytes = include_bytes!("room-shared-display-525.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2992b9a6951f5ba8b5b44619af39e9e91231f60e802694c56a4527fb635d066b"
+        "4ab88d1f4af63bc8a5983a3122c83b4b5bf9336f090b98f31fca0a1f510c0e02"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], 525);
@@ -101,7 +101,7 @@ fn mp08_mp10_mp11_display_registration_535_143_snapshot_hash() {
     let bytes = include_bytes!("display-registration-535.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "bd3b96605c2cc8c92f6b1322217abb768aaf62f16a133e6b842e7825d660f45f"
+        "fdae5c81558be3a917803063d694839c6ba77fba7d505252d8aa393e9f1ed4bd"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     // The registration shape introduced at 535/143 is carried unchanged by later versions.
@@ -135,7 +135,7 @@ fn mp08_mp10_mp11_display_connect_553_161_snapshot_hash() {
     let bytes = include_bytes!("display-connect-553.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "f20f5d967f65a3524beea6f17acb99bb9b6f4d7f06a4ae9bbef92b61ff7eb3d8"
+        "b1940d0d35def538a7ef7eb48a7e7504b9d6925421399bce4560cbdb27528ad6"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], 553);

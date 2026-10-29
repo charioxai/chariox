@@ -1619,7 +1619,9 @@ mod tests {
         (worktree, router.runtime_state(), session_id, agent_id)
     }
 
-    fn runtime_with_queued_workflow_prompt(published: bool) -> (KernelRuntimeState, String, String) {
+    fn runtime_with_queued_workflow_prompt(
+        published: bool,
+    ) -> (KernelRuntimeState, String, String) {
         runtime_with_workflow_prompt(published, false)
     }
 

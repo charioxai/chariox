@@ -1,6 +1,6 @@
 {
-  "local_protocol": 535,
-  "peer_protocol": 143,
+  "local_protocol": 811,
+  "peer_protocol": 361,
   "registration": {
     "kind": "client_subscribe",
     "request_id": "delivery-request",

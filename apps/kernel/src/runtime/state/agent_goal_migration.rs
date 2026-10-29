@@ -27,22 +27,6 @@ impl KernelRuntimeOwnedState {
                 session
                     .workflows()
                     .iter()
-                    .find(|w| w.id() == run.workflow_id())
-                else {
-                    continue;
-                };
-                if !is_legacy_goal_template(workflow) {
-                    continue;
-                }
-                if self
-                    .owned
-                    .durable_state_store
-                    .agent_tasks(Some(session.id()), None)?
-                    .iter()
-                    .any(|t| {
-                        t.goal
-                            .as_ref()
-                            .is_some_and(|g| g.legacy_run_id.as_deref() == Some(run.id()))
                     .find(|w| w.id() == r.workflow_id())
                     .and_then(|w| w.alias())
                     .is_some_and(|a| {

@@ -531,7 +531,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     let bytes = include_bytes!("browser-display-placement-529.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1396cbd02821e79f5fa2f4166548d9d1f4c1ca554cf7100873d556205cbae47b"
+        "03bc735de1f624775bc8e24f11f8104c827cacb2bb52e3b46a29a022ce385158"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -558,7 +558,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "66558eb75c26af7cb370f6ce7315de04889028cbc9485f9328dc62c52218a8e7"
+        "3f22ceac818b16c69533c203519d3fb9f2a58e41a36c841a63cd6cc67e99855d"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -585,7 +585,7 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     let bytes = include_bytes!("browser-visible-page-536.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "867f99b3a87658e32c893b7030ac6c0d20b05ab001e336563081b8ab5892e588"
+        "b30af298d530e6da6206f30ecd2e7bc7ef6441129f295351e059d2957a8ea25a"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for value in snapshot["requests"].as_array().unwrap() {
@@ -661,7 +661,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "9acf1d0106225e9cc5b3f3b6e2d820c0c0e6014f3be52bfce1129cb50bd5e739"
+        "74ff413c9cdb2c57dcfc85bcd77f16ea17a14bf88518e8e6a66431d16f75691a"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -677,7 +677,7 @@ fn browser_dialog_protocol630_snapshot() {
     let bytes = include_bytes!("browser-dialog-630.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+        "f09652681a92d96b2f38b7eae399020b56c17b83c50454024923818d04f9eb43"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
