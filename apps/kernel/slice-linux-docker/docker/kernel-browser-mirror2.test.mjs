@@ -622,6 +622,14 @@ test('MP-11 retained sheet advertisements are bounded before issuing a credit', 
  assert.equal((await mirror.next(stream,{known_sheets:['a'.repeat(24)]},'scope')).sequence,1);
 });
 
+test('MP-08/MP-09/MP-10/MP-11 a reset credit lists the retained sheets and later credits keep that list until they change it', async () => {
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0},a='a'.repeat(24),b='b'.repeat(24);mirror.packet=async()=>({sequence:1});
+ await mirror.next(stream,{after_sequence:0,known_sheets:[a]},'scope');assert.deepEqual(stream.knownSheets,[a]);
+ await mirror.next(stream,{after_sequence:1},'scope');assert.deepEqual(stream.knownSheets,[a],'an unchanged list is not repeated on every credit');
+ await mirror.next(stream,{after_sequence:1,known_sheets:[a,b]},'scope');assert.deepEqual(stream.knownSheets,[a,b]);
+ await mirror.next(stream,{after_sequence:0},'scope');assert.deepEqual(stream.knownSheets,[],'a reset without a list means the viewer retains nothing');
+});
+
 test('MP-10 independent sheet bodies overlap in batches of at most four and retain cascade order', async () => {
  const mirror=new Mirror2({host:{}});let active=0,peak=0;
  mirror.crossOriginSheet=async(_world,url)=>{peak=Math.max(peak,++active);await new Promise(resolve=>setTimeout(resolve,2));active--;return url;};
@@ -1078,4 +1086,23 @@ for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region 
     await assert.rejects(lease.resolveInput(command,'scope'),/region_retired/,'a resize still retires the old lease');
     await assert.rejects(mirror.resolveInput(stream,tab,{subscription_id:'s',sequence:1,action:{kind,node_id:region,x:4,y:8,delta_x:0,delta_y:120}},'scope'),/changed mirror input target/,'the committed smaller viewport remains the input bound');
   } finally {await lease.close();}
+});
+// P9: a settling document's remaining work used to cost one credit round trip per sheet and per resource batch.
+test('P9: without recent input every due full sheet rides one packet within the packet budget', async () => {
+  const mirror = new Mirror2({ host: {} });let fullCalls=0;
+  mirror.evaluate = async (w, expression) => { assert.match(expression, /fullSheet/); fullCalls++; return { id: 'f', css: 'p{}' }; };
+  const sheet = (id, size) => ({ op: 'css', id, css: 'x'.repeat(size) });
+  const stream = { deferredSheets: [sheet('a', 10), sheet('b', 10), sheet('c', 10)], fullPending: 1, inputAt: 0, resources: new Map() };
+  assert.deepEqual((await mirror.dueSheets({ ref: 'm' }, stream, new Set(['b']))).map(op => op.id), ['a', 'c', 'f']);
+  assert.equal(fullCalls, 1);assert.equal(stream.fullPending, 0);
+  const large = { deferredSheets: [sheet('a', 200_000), sheet('b', 200_000), sheet('c', 10)], fullPending: 0, inputAt: 0, resources: new Map() };
+  assert.deepEqual((await mirror.dueSheets({ ref: 'm' }, large, new Set())).map(op => op.id), ['a', 'b'], 'the 256 KB budget bounds the packet');
+  assert.equal(large.deferredSheets.length, 1);
+});
+test('P9: resource bytes ride DOM changes only without recent input', () => {
+  const mirror = new Mirror2({ host: {} });
+  const stream = { resources: new Map(), header: {}, ownScrolls: new Map(), inputAt: 0 }, source = { ops: [{ op: 'text' }] };
+  assert.equal(mirror.resourcesRide(stream, source), true, 'a settling document carries its images with its DOM');
+  stream.inputAt = Date.now();
+  assert.equal(mirror.resourcesRide(stream, source), false, 'an echo never queues behind resource bytes');
 });

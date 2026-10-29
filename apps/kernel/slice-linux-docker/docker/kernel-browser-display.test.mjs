@@ -230,6 +230,19 @@ test('MD-DISPLAY same source recovery key is delivered before a later dependent 
  try{assert.equal((await stream.frame(source,'d',0)).key,true);assert.equal((await stream.frame(source,'d',1)).key,true);assert.equal(stream.sequence,2);assert.equal((await stream.frame({...source,encoded:{key:false,data_base64:'delta'}},'d',2)).key,false)}finally{await stream.close()}
 });
 
+test('MP-08/MP-10 a new document key ships once; only a dropped delta re-encodes its raster',async()=>{
+ const stream=new DisplayStream(binding,{encoder:{close:async()=>{}},now:()=>0,wait:async()=>{}});
+ const reencoded=[];stream.producer={invalidate(reoffer=true){reencoded.push(reoffer)},retireUnsent(){},async close(){}};
+ const source=(key,data)=>({generation:1,width:1134,height:592,motion:true,data_base64:data,encoded:{key,data_base64:data}});
+ try{
+  assert.equal((await stream.frame(source(true,'old'),'a',0)).key,true);reencoded.length=0;
+  assert.equal((await stream.frame(source(true,'new'),'b',1)).key,true);
+  assert.deepEqual(reencoded,[],'the shipped key restarts the chain; re-encoding its raster sends the same IDR twice');
+  assert.equal(await stream.frame(source(false,'next'),'c',2),null);
+  assert.deepEqual(reencoded,[true],'a delta of another document is dropped and its raster re-encoded as a key');
+ }finally{stream.producer=null;await stream.close()}
+});
+
 test('MD-DISPLAY legacy codec offers stay independent; dependencies require explicit admission',async()=>{
  for(const dependencies of [false,true]){
   const resets=[];const s=new DisplayStream({...binding,dependencies},{encoder:{encode:async(p,b,key)=>{resets.push(key);return{key,data_base64:'YWJj'}},close:async()=>{}},now:()=>0,wait:async()=>{}});

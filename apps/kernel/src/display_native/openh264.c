@@ -36,14 +36,23 @@ int cx_openh264_available(void) {pthread_once(&once,load);return ready;}
  * the visible echo. Like x264 (row_vbv), each frame here must fit a VBV of
  * 1.5 frames at the negotiated rate: RC is off and the frame QP is the lowest
  * whose predicted size fits, from the luma activity of the changed
- * macroblocks and a bits-per-activity model learned from encoded frames. */
-struct Encoder {ISVCEncoder *e;SEncParamExt p;uint8_t *previous;double fill,*model;int qp,max_qp;};
+ * macroblocks and a bits-per-activity model learned from encoded frames.
+ * An IDR (a new document or geometry) may spend CX_IDR_FRAMES of the rate: at
+ * 1.5 frames a page IDR sits at QP 51 and cannot be read; the frames after it
+ * repay the VBV before they refine. A key taken before the new document painted (Chrome shows
+ * white or old tiles until then) leaves the budget to the first changed frame after it: a cap, not a spend.
+ * A page settles in steps (first paint, then fonts and images reflow it), so the first mostly changed
+ * frame within a second of the key gets one more budget instead of a new key. */
+struct Encoder {ISVCEncoder *e;SEncParamExt p;uint8_t *previous;double fill,*model;int qp,max_qp,fresh;};
 void cx_openh264_close(void *encoder) {
     struct Encoder *h=encoder;
     if (h) {(*h->e)->Uninitialize(h->e);destroy_encoder(h->e);free(h->previous);free(h);}
 }
 #define CX_QP_MIN 24
 #define CX_QP_MAX 51
+#define CX_IDR_FRAMES 5
+/* A refinement frame (nothing changed) lowers the QP this much while the VBV has room. */
+#define CX_REFINE_STEP 4
 static double frame_bits(const struct Encoder *h) {return h->p.iTargetBitrate/60.;}
 #if defined(__SSE2__)
 #include <emmintrin.h>
@@ -126,6 +135,10 @@ void *cx_openh264_open(int width,int height,int bitrate,int threads,int max_qp,d
     h->fill=1.5*frame_bits(h);
     return h;
 }
+/* MP-08/MP-10 (P2): the picture is still coarse; an unchanged readback would refine it. */
+int cx_openh264_refining(void *encoder) {return ((struct Encoder *)encoder)->qp>CX_QP_MIN;}
+/* The largest IDR this encoder means to send: its budget plus the model's error. */
+int cx_openh264_key_bytes(void *encoder) {return (int)(1.25*CX_IDR_FRAMES*frame_bits(encoder)/8);}
 int cx_openh264_rate(void *encoder,int bitrate) {
     struct Encoder *h=encoder;
     h->p.iTargetBitrate=h->p.sSpatialLayers[0].iSpatialBitrate=bitrate;
@@ -148,11 +161,21 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     /* A mostly changed frame costs about an intra frame. */
     int intra=!sequence||changed*5>=blocks*4;
     double rate=h->model[!intra];
-    h->fill=fmin(1.5*frame_bits(h),h->fill+frame_bits(h));
-    /* Refining a coarse reference costs more than its activity: an inter
-     * frame's QP falls by one per frame. */
-    int qp=intra?CX_QP_MIN:h->qp-1<CX_QP_MIN?CX_QP_MIN:h->qp-1;
-    while (qp<h->max_qp&&rate*busy*scale(qp)>h->fill) qp++;
+    h->fill=sequence?fmin(1.5*frame_bits(h),h->fill+frame_bits(h)):CX_IDR_FRAMES*frame_bits(h);
+    if (!sequence) h->fresh=2;
+    else if (changed&&h->fresh&&sequence<=60&&(intra||h->fresh==2)) {h->fresh--;h->fill=fmax(h->fill,CX_IDR_FRAMES*frame_bits(h));}
+    int qp;
+    if (!changed) {
+        /* Refinement of an unchanged picture: its cost is the coarse reference, not its activity, so it
+         * steps down only while the VBV has room and otherwise holds the QP (a nearly empty frame). */
+        qp=h->fill>0?h->qp-CX_REFINE_STEP:h->qp;
+        if (qp<CX_QP_MIN) qp=CX_QP_MIN;
+    } else {
+        /* Refining a coarse reference costs more than its activity: an inter
+         * frame's QP falls by one per frame. */
+        qp=intra?CX_QP_MIN:h->qp-1<CX_QP_MIN?CX_QP_MIN:h->qp-1;
+        while (qp<h->max_qp&&rate*busy*scale(qp)>h->fill) qp++;
+    }
     if (qp>h->max_qp) qp=h->max_qp;
     if (qp!=h->qp) {
         h->p.sSpatialLayers[0].iDLayerQp=qp;
@@ -161,7 +184,8 @@ int cx_openh264_encode(void *encoder,uint8_t *const planes[3],const int strides[
     }
     if ((*e)->EncodeFrame(e,&picture,&info)!=cmResultSuccess) return -1;
     double bits=8.*info.iFrameSizeInBytes;
-    h->fill=fmax(h->fill-bits,-1.5*frame_bits(h));
+    /* A refinement repays all it spent: the descent then paces itself at the negotiated rate. */
+    h->fill=changed?fmax(h->fill-bits,-1.5*frame_bits(h)):h->fill-bits;
     if (busy>0&&bits>0) {double *m=&h->model[!intra];*m=(*m+bits/(busy*scale(qp)))/2;}
     if (info.eFrameType==videoFrameTypeSkip||info.eFrameType==videoFrameTypeInvalid||info.iFrameSizeInBytes<=0||info.iFrameSizeInBytes>1024*1024) return -1;
     if (*capacity<(size_t)info.iFrameSizeInBytes) {

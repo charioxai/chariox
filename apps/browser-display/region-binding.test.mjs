@@ -49,3 +49,11 @@ test('MP-08/MP-11 negotiated wide Chrome crops use the native physical-pixel bou
  const presenter=new BrowserDisplayPresenter(canvas(),binding);
  try{assert.equal(presenter.validate({...binding,sequence:1,width:1920,height:86},0),true)}finally{presenter.close()}
 });
+test('MP-08/MP-10/MP-11 a Tab display binding admits the Tab\'s next document, never other geometry',()=>{
+ const presenter=new BrowserDisplayPresenter(canvas(),{...lease,tab_display:true});
+ try{
+  assert.equal(presenter.validate({...frame,document_id:'next'},0),true);
+  for(const change of [{css_width:319,width:638},{device_scale_factor:1,width:320,height:180}])
+   assert.throws(()=>presenter.validate({...frame,document_id:'next',...change},0),/geometry\/binding/);
+ }finally{presenter.close()}
+});

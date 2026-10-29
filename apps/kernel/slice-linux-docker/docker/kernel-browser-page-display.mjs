@@ -43,13 +43,20 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
    !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor))refuse();
   // MP-08/MP-10/MP-11: the mirror and its native preview use the same
   // event-bound document owner. Stored state may lag a committed navigation.
-  const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation,document=tab.document_id;
+  const tab=await (host.mirrorTarget??host.displayTarget).call(host,command),policy=host.protection,generation=host.generation;
+  let document=tab.document_id;
   const window=host.chromeWindows.current().tabbed;
   const frameProof=host.browser.currentPageFrame?.(tab.target_id);
   const {connection,sessionId}=frameProof??await host.browser.resolvePageTarget(tab.target_id);
-  const documentCurrent=()=>host.tabs.get(tab.tab_id)?.target_id===tab.target_id&&(frameProof
-   ?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document
-   :host.tabs.get(tab.tab_id)?.document_id===document);
+  // P1 (protocol 720): a Tab display keeps this binding for the Tab's later documents on the same connection and
+  // session; its source follows each commit (LinuxCapture.followDocument) and this lease follows the source. Between a
+  // navigation's start and its commit the page still shows the committed document, so that document stays current.
+  const follows=command.tab_display===true&&typeof host.browser.committedPageDocument==='function';
+  const documentCurrent=()=>{
+   if(host.tabs.get(tab.tab_id)?.target_id!==tab.target_id)return false;
+   if(follows){const committed=host.browser.committedPageDocument(tab.target_id);return committed?.connection===connection&&committed.sessionId===sessionId&&committed.document_id===document;}
+   return frameProof?host.browser.currentPageFrame?.(tab.target_id)===frameProof&&frameProof.frame.loaderId===document:host.tabs.get(tab.tab_id)?.document_id===document;
+  };
   const browser=host.browser,metrics=browser.viewportByTarget?.get(tab.target_id);
   const reads=layouts.get(browser)??new Map(),key=JSON.stringify([metrics??null,window.window_generation,window.page_rect]);layouts.set(browser,reads);
   // A crop served from the last read is retired when the renderer's delayed read disagrees.
@@ -82,8 +89,13 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   if(!await current())refuse();
   // Publication reuses the layout read while a page-side observer proves it current. A native-state guard already answers
   // without a read; the observer installs in the background so a busy renderer delays nothing.
-  let observer=null,observerClosed=false;
-  const closeObserver=()=>{observerClosed=true;observer?.close();observer=null;};
+  let observer=null,observerClosed=false,observerEpoch=0;
+  // A document's observer ends with it: a followed document installs its own.
+  const installObserver=()=>{
+   const epoch=++observerEpoch;observer?.close();observer=null;
+   if(!viewportGuard)observeLayout(connection,sessionId).then(o=>{if(observerClosed||epoch!==observerEpoch)o?.close();else observer=o;});
+  };
+  const closeObserver=()=>{observerClosed=true;observerEpoch++;observer?.close();observer=null;};
   const layoutRead=async()=>JSON.stringify(await measure())===JSON.stringify(viewport);
   const publishLayout=()=>viewportGuard?viewportGuard():observer?observer.valid()||observer.confirm(layoutRead):layoutRead();
   // A refused publication fences the source (a new attach follows): the mark names the check that refused.
@@ -101,12 +113,20 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
    prove:()=>{const proven=proofs.get(connection)??new Map();proven.set(tab.target_id,proofKey);proofs.set(connection,proven);}};
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{closed=true;closeObserver();}};
-  if(!viewportGuard)observeLayout(connection,sessionId).then(o=>{if(observerClosed)o?.close();else observer=o;});
-  try{return await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,attestation,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
+  installObserver();
+  try{
+   const result=await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
+   args:{window,viewport,attestation,followsDocument:follows,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
-   }},window,tab,policy,generation,Capture});}catch(error){closeObserver();throw error;}
+   }},window,tab,policy,generation,Capture});
+   if(!follows)return result;
+   const stream=host.displays.get(result.subscription_id);
+   // The commit unparks the display: the new document's first frame leaves without waiting for the viewer.
+   stream.regionSource.onDocument(next=>{document=next;lease.document_id=next;installObserver();stream.park(false);});
+   stream.tabDisplay=true;
+   return {...result,tab_display:true};
+  }catch(error){closeObserver();throw error;}
 
  });
 }

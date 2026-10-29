@@ -373,6 +373,9 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
+/// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
+/// docs/BROWSER_LATENCY_GAP_PLAN.md).
+/// MP-08/MP-09/MP-10/MP-11: 721 pairs bounded raw binary relay chunks with relay capability 97.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity (public snapshot schema 14).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

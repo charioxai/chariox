@@ -310,6 +310,8 @@ export class Mirror2 {
   }
   async next(stream, command, scope, { signal } = {}) {
     if (command.known_sheets !== undefined && (!Array.isArray(command.known_sheets) || command.known_sheets.length > 128 || command.known_sheets.some(digest => typeof digest !== 'string' || !/^[a-f0-9]{24}$/.test(digest)))) throw new Error('MP-11: invalid mirror sheet dictionary');
+    // A viewer lists its retained sheets with a reset credit and again only when the list changes: a reset the kernel starts itself uses the last list.
+    if (command.known_sheets !== undefined || command.after_sequence === 0) stream.knownSheets = command.known_sheets ?? [];
     if (command.wait_ms !== undefined && (!Number.isInteger(command.wait_ms) || command.wait_ms < 0 || command.wait_ms > MAX_WAIT_MS)) throw new Error('MP-11: invalid mirror wait');
     // Credits are answered in order; each packet's base is its predecessor.
     // A queued credit's wait starts when its predecessor is answered (expired
@@ -375,8 +377,6 @@ export class Mirror2 {
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
       scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
-    // The viewer answers this packet with a native page display: start it now, while the packet travels.
-    this.host.navigationDisplays?.start(scope, tabId, documentId);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
   }
@@ -481,7 +481,7 @@ export class Mirror2 {
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, policy, '', patience);
         const snapshotAt = timestamp();
-        const snap = await this.snapshotOnce(world, policy, patience, command.known_sheets ?? [], this.snapshotOptions(stream, world));
+        const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
         if (snap.resync) return snap;
         await this.markClosedHosts(world, snap);
@@ -489,7 +489,7 @@ export class Mirror2 {
         const sheetsAt = timestamp();
         const sheetOps = await this.sheetOps(world, snap.sheets, true);
         // A pruned sheet's full text follows on a quiet packet; a viewer that retains it gets it by reference now.
-        const known = new Set(command.known_sheets ?? []);
+        const known = new Set(stream.knownSheets ?? []);
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
         stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
@@ -538,10 +538,9 @@ export class Mirror2 {
       }
       // An opted-in viewer can prepare DOM/CSS before the font bytes arrive;
       // its positive native-font requirements still fence the paint handover.
-      // Legacy viewers retain first-packet fonts. Resource bytes otherwise
-      // travel only without DOM changes, so an echo never queues behind them.
+      // Legacy viewers retain first-packet fonts; other resource bytes follow resourcesRide.
       const fontsAt = timestamp();
-      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.empty(stream, source) || this.streamingRest(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
+      resources = reset ? stream.fontRequirements === true ? [] : await this.materialize(world, stream, 'font', source.loaded) : this.resourcesRide(stream, source) ? await this.materialize(world, stream, null, source.loaded) : this.fontsDue(stream) ? await this.materialize(world, stream, 'font', source.loaded) : [];
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
@@ -577,11 +576,7 @@ export class Mirror2 {
     if (!reset && !fallback) {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
       stream.deferredSheets = (stream.deferredSheets ?? []).filter(op => !replaced.has(op.id));
-      if (!resources.length && this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) {
-        let full = stream.deferredSheets.shift();
-        if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
-        if (full && !replaced.has(full.id)) sheets.push({ op: 'css', id: full.id, css: full.css });
-      }
+      if (this.sheetsDue(stream) && (this.emptyDom(stream, source) || Date.now() - stream.deferredAt > 1000)) sheets.push(...await this.dueSheets(world, stream, replaced));
     }
     let tiles = [];
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
@@ -622,7 +617,7 @@ export class Mirror2 {
     for (const record of [...(packet.nodes ?? []), ...(packet.ops ?? []).flatMap(op => op.op === 'children' ? op.nodes : [])]) if (!stream.introduced.has(record.id)) stream.introduced.set(record.id, sequence);
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr' && TARGET_ATTRIBUTES.has(op.name)).map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.identity.set(id, sequence);
     this.regions.record(stream, packet);
-    if (reset) stream.sheetRefs = new Set(command.known_sheets ?? []);
+    if (reset) stream.sheetRefs = new Set(stream.knownSheets ?? []);
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
@@ -691,6 +686,19 @@ export class Mirror2 {
   // for the on-screen images: their bytes travel with the rest's chunks unless viewer input is recent.
   streamingRest(stream, source) { return stream.viewportFirst && source.snapshot_viewport_complete === true && source.snapshot_complete !== true && !this.recentInput(stream); }
   // A packet's resource budget; smaller within a second of viewer input.
+  // Resource bytes ride a packet without DOM changes, a streaming viewport-first rest, or (P9) any packet without recent
+  // input: a settling document's images then follow its DOM in the same packets, and an echo never queues behind them.
+  resourcesRide(stream, source) { return this.empty(stream, source) || this.streamingRest(stream, source) || !this.recentInput(stream); }
+  // P9: every due full sheet rides one packet up to the packet budget; each used to cost a credit round trip.
+  async dueSheets(world, stream, replaced) {
+    const sheets = []; let budget = this.packetBytes(stream);
+    do {
+      let full = stream.deferredSheets.shift();
+      if (!full) { stream.fullPending--; full = await this.evaluate(world, `${world.ref}.fullSheet()`); }
+      if (full && !replaced.has(full.id)) { sheets.push({ op: 'css', id: full.id, css: full.css }); budget -= full.css.length; }
+    } while (budget > 0 && this.sheetsDue(stream));
+    return sheets;
+  }
   packetBytes(stream) { return this.recentInput(stream) ? INPUT_PACKET_BYTES : RESOURCE_PACKET_BYTES; }
   sheetsDue(stream) { return (stream.deferredSheets?.length > 0 || stream.fullPending > 0) && !this.recentInput(stream); }
   recentInput(stream) { return Date.now() - (stream.inputAt ?? 0) < QUIET_MS; }

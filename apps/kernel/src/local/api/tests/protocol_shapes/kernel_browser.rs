@@ -177,6 +177,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             bitrate: 2_000_000,
             device_scale_factor: 2,
             initial_push: false,
+            tab_display: false,
         },
         Command::DisplayNext {
             subscription_id: "s".into(),

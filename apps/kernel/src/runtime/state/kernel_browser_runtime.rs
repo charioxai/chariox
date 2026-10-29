@@ -50,6 +50,7 @@ pub(crate) enum KernelBrowserDisplayRequest {
         bitrate: u32,
         device_scale_factor: u32,
         initial_push: bool,
+        tab_display: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -65,6 +66,11 @@ pub(crate) enum KernelBrowserDisplayRequest {
     Suspend {
         subscription_id: String,
         generation: u64,
+    },
+    Park {
+        subscription_id: String,
+        generation: u64,
+        parked: bool,
     },
     Resume {
         subscription_id: String,
@@ -120,6 +126,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayNext { .. }
             | KernelBrowserCommand::DisplaySuspend { .. }
             | KernelBrowserCommand::DisplayResume { .. }
+            | KernelBrowserCommand::DisplayPark { .. }
             | KernelBrowserCommand::DisplayAck { .. }
             | KernelBrowserCommand::DisplayInput { .. }
             | KernelBrowserCommand::DisplayTakeover { .. }
@@ -207,6 +214,7 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -215,6 +223,7 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -239,6 +248,15 @@ impl KernelRuntimeState {
             } => KernelBrowserDisplayRequest::Resume {
                 subscription_id,
                 generation,
+            },
+            KernelBrowserCommand::DisplayPark {
+                subscription_id,
+                generation,
+                parked,
+            } => KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked,
             },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
@@ -563,8 +581,12 @@ impl KernelRuntimeState {
                 bitrate,
                 device_scale_factor,
                 initial_push,
+                tab_display,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
+                if tab_display {
+                    params["tab_display"] = true.into();
+                }
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)
                         .map_err(|_| host_error("MP-11: invalid display target".into()))?;
@@ -604,6 +626,13 @@ impl KernelRuntimeState {
                 generation,
             } => {
                 serde_json::json!({"op":"display_resume","subscription_id":subscription_id,"generation":generation})
+            }
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked,
+            } => {
+                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked})
             }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})
@@ -1215,7 +1244,7 @@ mod document_tests {
     }
     #[test]
     fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {
-        for op in ["display_suspend", "display_resume"] {
+        for op in ["display_suspend", "display_resume", "display_park"] {
             assert!(browser_tool_params(serde_json::json!({"command":{
                 "op":op,"subscription_id":"human-display","generation":7
             }}))

@@ -4368,12 +4368,37 @@ segments, then the raw segment bytes in order. JSON plaintexts never start with
 `display_subscribe` or a relay subscribe with scope `kernel_browser_display`. Clients
 that never register display delivery never receive `CXD1`. Peer 96 adds an
 optional `CXR1` WebSocket binary relay envelope, negotiated with the
-`chariox-relay-binary-v96` subprotocol: `CXR1`, a big-endian u32 header length,
+`chariox-relay-binary-v98` subprotocol: `CXR1`, a big-endian u32 header length,
 a JSON routing header of at most 4 KiB, then 16 B to 1 MiB of ciphertext. The
 relay reads only the routing header. Kernels fall back to JSON/base64 for older
 relays or receivers and for events over 1 MiB. Rollout: deploy a web bundle
 that decodes `CXD1` before kernels at 466 or later serve it Browser display;
 an older bundle cannot parse these frames.
+
+Protocol 722 / relay capability 98 keeps a negotiated CXR1 event binary above
+16 KiB. Bounded `CXB1` frames contain four magic bytes, then big-endian u32
+transfer ID, byte offset and total logical binary byte length, then raw event bytes. The
+whole frame is at most 16 KiB; every non-final payload is exactly 16,368 bytes.
+Text and binary transfers share the existing four-transfer / 128 MiB assembly
+budget and monotonic transfer IDs. Receipts remain text `transport_ack` frames
+with the accepted next byte offset. A complete CXR1 event of at most 16 KiB
+retains its following zero-byte text checkpoint. No fragment enters event
+admission or decryption. The relay stays opaque to ciphertext, and negotiated
+binary events never become JSON/base64 envelopes merely to cross the chunk
+boundary. Non-binary connections retain their encrypted JSON transport.
+
+Protocol 722 / capability 98 also carries successful encrypted RPC replies as
+`CXR2`: four magic bytes, a big-endian u32 JSON header length, a strict header
+of at most 4 KiB, then raw ciphertext (at least the 16-byte authentication tag).
+The whole logical message is bounded by the existing 64 MiB limit and uses the
+same CXB1 credits and acknowledgements. The daemon header names `relay_request_id`;
+the client header names `request_id`. Both include `kind`, `sender_public_key`
+and the 16-character base64 nonce. Identifiers are nonempty and at most 1,024
+bytes, keys at most 256 bytes. Errors remain JSON. The relay normalizes the
+daemon reply through the existing pending-request owner check before replacing
+the relay request ID with the client request ID. It never decrypts ciphertext.
+No encrypted peer protocol shape changes; peer version stays 239.
+
 
 The shared presenter accepts desktop pixels only at the exact admitted physical
 geometry, with CSS dimensions divided by the selected DPR. It converts viewer
@@ -4446,9 +4471,9 @@ remain unchanged. Source tests do not establish the ≤ 1 s live repaint gate.
 
 MP-08 / MP-10 / MP-11: allocation 553/161 composes
 client admission and one initial resume registration. The client offers
-WebSocket subprotocol `chariox-room-display-resume-v553` alongside the existing
-binary-v96 protocol. Selection of the new subprotocol positively advertises
-both initial registration and binary-v96 events; a legacy selection retains
+WebSocket subprotocol `chariox-room-display-resume-v722` alongside the existing
+binary-v98 protocol. Selection of the new subprotocol positively advertises
+both initial registration and binary-v98 events; a legacy selection retains
 the existing connect-then-subscribe exchange. Kernel version alone does not
 advertise relay support.
 
@@ -5053,7 +5078,7 @@ kernels ignore nothing: they refuse unknown fields, so viewers send them only on
 `browser_mirror2_layout_560_shape_is_pinned`).
 
 MP-08 / MP-10 / MP-11: the 535 browser delivery client also negotiates the
-existing relay-96 `chariox-relay-binary-v96` capability. Bounded CXR1 routing
+relay capability 98 `chariox-relay-binary-v98`. Bounded CXR1 routing
 metadata enters the same sender-authenticated display decrypt/binding path;
 text chunks remain compatible with peers that do not select that capability.
 No additional resume, input, or relay authority is introduced.
