@@ -64,11 +64,16 @@ pub struct HttpRequestWithCredentialArgs {
     pub max_response_bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SendSecretToTerminalArgs {
-    pub credential_id: String,
-    #[serde(default = "default_append_newline")]
-    pub append_newline: bool,
+pub const TERMINAL_SECRET_REFUSAL: &str = "Vault secrets are not typed into terminals. Vault fills work in the browser today (paste_secret_to_slice / paste_secret_to_computer); terminal fills arrive with the Chariox terminal.";
+
+pub fn terminal_secret_refusal() -> RuntimeToolResult {
+    RuntimeToolResult {
+        ok: false,
+        payload: serde_json::json!({
+            "error": TERMINAL_SECRET_REFUSAL,
+            "tool": SEND_SECRET_TO_TERMINAL_TOOL,
+        }),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,10 +360,6 @@ pub struct SliceBrowserWaitForIdleArgs {
     pub timeout_ms: Option<u64>,
 }
 
-fn default_append_newline() -> bool {
-    true
-}
-
 fn default_browser_event_limit() -> u16 {
     100
 }
@@ -447,7 +448,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_SECRET_TO_TERMINAL_TOOL.to_string(),
-            description: "Write a terminal credential directly to the current provider PTY stdin. The secret value is not returned, recorded as terminal input, or placed in model context.".to_string(),
+            description: format!("Not available: {TERMINAL_SECRET_REFUSAL}"),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],

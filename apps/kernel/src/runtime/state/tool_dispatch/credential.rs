@@ -268,38 +268,6 @@ impl KernelRuntimeState {
                     })?,
                 })
             }
-            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
-                let _vault_unlock = self
-                    .ensure_vault_unlocked_for_provider_run(
-                        provider_run,
-                        "runtime_tool_send_secret_to_terminal",
-                    )
-                    .await?;
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SendSecretToTerminalArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_send_secret_to_terminal",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                let mut input = service.terminal_secret_input(&args.credential_id)?;
-                if args.append_newline {
-                    input.push('\n');
-                }
-                let provider_run_id = provider_run.id().to_string();
-                self.with_app_side_effect(move |app| {
-                    app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
-                })
-                .await?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "submitted": true,
-                        "credential_id": args.credential_id,
-                        "target": "current_provider_run",
-                    }),
-                })
-            }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
                     crate::transport::runtime_tools::ManageCredentialVaultArgs,
@@ -633,7 +601,9 @@ impl KernelRuntimeState {
                     timeout_ms: args.timeout_ms,
                     max_response_bytes: args.max_response_bytes,
                 };
-                let response = self.forwarded_credential_http_request(context, service, request).await?;
+                let response = self
+                    .forwarded_credential_http_request(context, service, request)
+                    .await?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {
@@ -645,18 +615,11 @@ impl KernelRuntimeState {
                 })
             }
             crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL => {
-                Err(DaemonError::LocalTransport {
-                    operation: "home credential proxy",
-                    message:
-                        "send_secret_to_terminal must resolve the secret on home and inject on the worker"
-                            .to_string(),
-                })
+                Ok(crate::transport::runtime_tools::terminal_secret_refusal())
             }
             crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL => {
-                self.dispatch_forwarded_home_computer_secret_input_tool(
-                    &context, &agent, arguments,
-                )
-                .await
+                self.dispatch_forwarded_home_computer_secret_input_tool(&context, &agent, arguments)
+                    .await
             }
             crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL => {
                 let args = serde_json::from_value::<
@@ -718,10 +681,12 @@ impl KernelRuntimeState {
                     }),
                 }
             }
-            crate::transport::runtime_tools::REQUEST_POPUP_TOOL => Err(DaemonError::LocalTransport {
-                operation: "home credential proxy",
-                message: "request_popup is not a credential vault operation".to_string(),
-            }),
+            crate::transport::runtime_tools::REQUEST_POPUP_TOOL => {
+                Err(DaemonError::LocalTransport {
+                    operation: "home credential proxy",
+                    message: "request_popup is not a credential vault operation".to_string(),
+                })
+            }
             _ => Err(DaemonError::LocalTransport {
                 operation: "home credential proxy",
                 message: format!("unknown credential runtime tool `{tool_name}`"),
@@ -736,6 +701,15 @@ impl KernelRuntimeState {
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
     ) -> Result<(String, String), DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
+        if matches!(
+            injection,
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "home_credential_secret_resolve",
+                message: crate::transport::runtime_tools::TERMINAL_SECRET_REFUSAL.into(),
+            });
+        }
         let service = self.home_runtime_secret_service()?;
         match &injection {
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
@@ -744,7 +718,7 @@ impl KernelRuntimeState {
                 service.validate_browser_secret_input_for_target_url(&credential_id, target_url)?
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
-                service.validate_terminal_secret_input(&credential_id)?
+                unreachable!("terminal secret resolution was rejected before Vault access")
             }
             crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
                 return Err(DaemonError::LocalTransport {
@@ -767,12 +741,10 @@ impl KernelRuntimeState {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
                     } => service.browser_secret_input_for_target_url(&credential_id, &target_url),
-                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
-                        service.terminal_secret_input(&credential_id)
-                    }
-                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty
+                    | crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
                         unreachable!(
-                            "unbound Computer secret resolution was rejected before Vault access"
+                            "terminal and Computer secret resolution was rejected before Vault access"
                         )
                     }
                 })?;

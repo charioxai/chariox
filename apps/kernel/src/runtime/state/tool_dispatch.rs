@@ -673,6 +673,10 @@ impl KernelRuntimeState {
                     ))
                     .await;
             }
+            if canonical_tool_name == crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
+            {
+                return Ok(crate::transport::runtime_tools::terminal_secret_refusal());
+            }
             if is_home_credential_runtime_tool(canonical_tool_name) {
                 let provider_run =
                     provider_run.expect("non-workflow tool should have provider run");
@@ -904,6 +908,71 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn send_secret_to_terminal_refuses_and_writes_nothing_to_the_pty() {
+        crate::test_support::isolated_env_test!();
+        let (worktree, runtime, _, _, _, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt().await;
+        std::env::set_var("CHARIOX_HOME", worktree.path());
+        std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+        std::env::set_var("CHARIOX_TEST_TERMINAL_FILL", "terminal-fill-secret");
+        crate::credential::CharioxCredentialRegistry::new(worktree.path().join("credentials"))
+            .upsert(crate::config::UserCredentialConfig {
+                id: "ssh_password".to_string(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Env {
+                    name: "CHARIOX_TEST_TERMINAL_FILL".to_string(),
+                },
+                allowed_hosts: Vec::new(),
+                allowed_uses: vec![crate::config::UserCredentialUse::Pty],
+                injection: crate::config::UserCredentialInjectionConfig::Pty,
+                metadata: None,
+            })
+            .expect("credential registers");
+        let token = runtime
+            .runtime_mcp_auth_token_for_provider_run(&run_id)
+            .expect("run has a runtime MCP token");
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            runtime.dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
+                serde_json::json!({"credential_id": "ssh_password"}),
+            ),
+        )
+        .await
+        .expect("the tool must refuse at once, not enter the fill path")
+        .expect("the refusal is a tool result, not a transport error");
+        assert!(!result.ok);
+        assert!(result.payload["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("terminal fills arrive with the Chariox terminal")));
+        for arguments in [
+            serde_json::json!({}),
+            serde_json::Value::Null,
+            serde_json::json!({"credential_id": "not-registered"}),
+        ] {
+            let refused = runtime
+                .dispatch_authenticated_runtime_tool_call(
+                    &token,
+                    crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL,
+                    arguments,
+                )
+                .await
+                .expect("terminal refusal must not parse arguments or look up credentials");
+            assert_eq!(refused, result);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let output = runtime
+            .with_app_side_effect(|app| app.drain_provider_pty_output_for_runtime(&run_id))
+            .await
+            .unwrap_or_default();
+        assert!(output
+            .iter()
+            .all(|chunk| !String::from_utf8_lossy(&chunk.bytes).contains("terminal-fill-secret")));
+        std::env::remove_var("CHARIOX_TEST_TERMINAL_FILL");
+    }
+
     #[test]
     fn every_advertised_slice_tool_uses_the_slice_dispatch_path() {
         for spec in crate::transport::runtime_tools::slice_runtime_tool_specs() {

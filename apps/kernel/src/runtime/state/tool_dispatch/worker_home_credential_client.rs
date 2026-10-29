@@ -15,11 +15,6 @@ impl KernelRuntimeState {
         if tool_name == crate::transport::runtime_tools::REQUEST_POPUP_TOOL {
             return Ok(None);
         }
-        if tool_name == crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL {
-            return self
-                .try_dispatch_remote_home_terminal_secret_input(provider_run, arguments)
-                .await;
-        }
         let Some(context) = self
             .remote_credential_context_for_provider_run(provider_run)
             .await
@@ -86,46 +81,6 @@ impl KernelRuntimeState {
                 message: format!("unexpected home credential secret response: {other:?}"),
             }),
         }
-    }
-
-    async fn try_dispatch_remote_home_terminal_secret_input(
-        &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
-        arguments: serde_json::Value,
-    ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
-        let args = serde_json::from_value::<
-            crate::transport::runtime_tools::SendSecretToTerminalArgs,
-        >(arguments)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "runtime_tool_send_secret_to_terminal",
-            message: format!("invalid tool arguments: {error}"),
-        })?;
-        let Some(mut input) = self
-            .resolve_remote_home_credential_secret(
-                provider_run,
-                &args.credential_id,
-                crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        if args.append_newline {
-            input.push('\n');
-        }
-        let provider_run_id = provider_run.id().to_string();
-        self.with_app_side_effect(move |app| {
-            app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
-        })
-        .await?;
-        Ok(Some(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "submitted": true,
-                "credential_id": args.credential_id,
-                "target": "current_provider_run",
-            }),
-        }))
     }
 
     async fn remote_credential_context_for_provider_run(
