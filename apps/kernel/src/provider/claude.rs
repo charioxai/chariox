@@ -16,6 +16,7 @@ mod catalog;
 mod launch_args;
 mod mcp_config;
 mod native_tui;
+mod state_path;
 mod usage_capture;
 mod usage_probe;
 
@@ -319,27 +320,28 @@ pub(crate) fn prepare_vaulted_claude_native_onboarding(
 fn ensure_claude_headless_onboarding_state(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(), DaemonError> {
-    let selected_config_dir = request
-        .and_then(|request| request.provider_account_env.get(CLAUDE_CONFIG_DIR_ENV))
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os(CLAUDE_CONFIG_DIR_ENV)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        });
-    let state_path = if let Some(config_dir) = selected_config_dir {
-        config_dir.join(CLAUDE_HEADLESS_STATE_FILE)
-    } else {
-        let home = env::var_os("HOME").ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: "HOME is unavailable".to_string(),
-        })?;
-        PathBuf::from(home).join(CLAUDE_HEADLESS_STATE_FILE)
-    };
-    ensure_claude_headless_onboarding_state_at(&state_path)
+    let state_path = state_path::for_launch(request)?;
+    ensure_claude_headless_onboarding_state_at(&state_path).map_err(|error| match error {
+        DaemonError::LocalTransport {
+            operation,
+            mut message,
+        } => {
+            if let Some(request) = request {
+                // HOME may be a private launch binding. Keep its value out of errors.
+                for (name, value) in request.provider_credential_env.iter() {
+                    if name == "HOME" && !value.is_empty() {
+                        message = message.replace(
+                            &state_path.display().to_string(),
+                            "[selected Claude profile state]",
+                        );
+                        message = message.replace(value, "[redacted]");
+                    }
+                }
+            }
+            DaemonError::LocalTransport { operation, message }
+        }
+        other => other,
+    })
 }
 
 pub(super) fn ensure_claude_headless_onboarding_state_at(
@@ -1427,3 +1429,7 @@ fn mp11_claude_onboarding_fifo_is_rejected_without_waiting() {
         ensure_claude_headless_onboarding_state_at(&path).is_err()
     });
 }
+
+#[cfg(test)]
+#[path = "claude/state_path_tests.rs"]
+mod state_path_tests;
