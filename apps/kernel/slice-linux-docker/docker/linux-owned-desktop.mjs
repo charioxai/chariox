@@ -40,7 +40,9 @@ async function firstLine(stream, child) {
   });
 }
 export class LinuxOwnedDesktop {
-  constructor(root, { environment = process.env, commands = {} } = {}) {
+  constructor(root, { environment = process.env, commands = {}, size = {width:1280,height:800} } = {}) {
+    if(!size||![size.width,size.height].every(n=>Number.isSafeInteger(n)&&n>0&&n<=4096))throw new Error('MP-08: invalid owned desktop dimensions');
+    this.size=Object.freeze({width:size.width,height:size.height});
     this.root = root; this.source = environment; this.uid = process.getuid?.(); this.commands = commands;
     this.children = []; this.known = new Map(); this.browserKnown = new Map(); this.current = null; this.starting = null;
   }
@@ -160,7 +162,7 @@ export class LinuxOwnedDesktop {
       // Its exclusive bind also keeps displayfd allocation safe across kernels.
       const x = await this.launch('bwrap', [
         '--dev-bind', '/', '/', '--bind', this.runtime, '/tmp', '--die-with-parent', '--',
-        this.commands.Xvfb ?? 'Xvfb', '-displayfd', '3', '-screen', '0', '1280x800x24',
+        this.commands.Xvfb ?? 'Xvfb', '-displayfd', '3', '-screen', '0', `${this.size.width}x${this.size.height}x24`,
         '-auth', '/tmp/Xauthority', '-nolisten', 'tcp', '-noreset',
       ], { ...env, TMPDIR: '/tmp', XAUTHORITY: '/tmp/Xauthority' }, ['ignore', 'ignore', 'ignore', 'pipe']);
       const display = await firstLine(x.stdio[3], x);
@@ -195,7 +197,7 @@ export class LinuxOwnedDesktop {
       await delay(100);
       const failed=this.children.find(({child,core}) => core && (child.exitCode !== null || child.signalCode !== null));
       if(failed)throw new Error(`MP-08: desktop failed to become ready (${failed.name}, exit ${failed.child.exitCode ?? 'signal'})`);
-      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, width: 1280, height: 800, environment: Object.freeze(env) });
+      this.current = Object.freeze({ surface_id: `desktop-${randomUUID()}`, generation: randomUUID(), ownedProcesses: () => this.ownedProcesses(), browserProcesses: () => this.browserProcesses(), renderProcesses: () => this.renderProcesses(), browser: () => this.browser?.() ?? null, ...this.size, environment: Object.freeze(env) });
       readyDesktops.add(this);
       return this.current;
     } catch (error) { await this.stop(); throw error; }

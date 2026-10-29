@@ -7,6 +7,13 @@ import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
 import {policyNamespaceAvailable} from './kernel-browser-linux.mjs';
+import {pageLimit,chromeBandHeight} from './kernel-browser-geometry.mjs';
+
+test('MP-08/MP-10 the kernel browser screen fits its largest page and Chrome band',{skip:process.platform!=='linux'},()=>{
+ const host=new HostChromium('/unstarted');
+ assert.deepEqual(host.desktop.size,{width:pageLimit.width,height:pageLimit.height+chromeBandHeight});
+ assert.equal(host.scale,1,'screen capacity never selects DSF2 rendering');
+});
 // MP-08/MP-11 union seam (2026-10-15): the bounded TMPDIR (/proc/<kernel pid>/fd/<n>) cannot be opened
 // from Chromium's private policy namespace, so every managed launch aborted ("Failed to create socket directory").
 const chromium=process.env.CHARIOX_TEST_CHROMIUM;
