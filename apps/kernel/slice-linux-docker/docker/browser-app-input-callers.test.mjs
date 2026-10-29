@@ -81,64 +81,111 @@ test('native key defaults retain only the stamped source, and human input clears
   assert.equal(dispatch(event('input')),undefined,'retired source cannot tag delayed input');
 });
 
-test('CDP text claims its native beforeinput and synchronous transform only', async () => {
-  const listeners = new Map(), timers = new Map(), element = {};
+function textFixture() {
+  const listeners = new Map(), timers = new Map();
+  const element = {value:'',selectionStart:0,selectionEnd:0,selectionDirection:'none',isConnected:true};
+  const document = {activeElement:element};
   let timer = 0;
   const inputs = vm.runInNewContext(`(${createInputCallers.toString()})()`, {
-    document:{activeElement:element},performance:{timeOrigin:0,now:()=>1},
+    document,performance:{timeOrigin:0,now:()=>1},
     addEventListener(type,fn){listeners.set(type,fn);},
     setTimeout(fn){timers.set(++timer,fn);return timer;},clearTimeout(id){timers.delete(id);},
   });
-  const event = (type, overrides = {}) => ({type,target:element,isTrusted:true,inputType:'insertText',data:'Edit',...overrides});
-  const dispatch = value => {listeners.get(value.type)(value);return inputs.token(value);};
-  const flush = () => { for (const [id,fn] of timers) {timers.delete(id);fn();} };
+  const event = (type, overrides = {}) => ({type,target:element,isTrusted:true,timeStamp:50,inputType:'insertText',data:'Edit',
+    preventDefault(){this.defaultPrevented = true;},stopImmediatePropagation(){this.stopped = true;},...overrides});
+  const dispatch = value => {listeners.get(value.type)?.(value);return inputs.token(value);};
+  const insert = (transform = text => text) => {
+    const before = event('beforeinput'), caller = dispatch(before);
+    if (before.defaultPrevented) return {before,caller};
+    element.value += transform(before.data);
+    const input = event('input',{data:transform(before.data)});
+    return {before,caller,input,after:dispatch(input)};
+  };
+  const flush = () => { for (const [id,fn] of [...timers]) {timers.delete(id);fn();} };
   inputs.begin('caller',10);
-  inputs.armText('Edit','caller');
-  assert.equal(dispatch(event('beforeinput',{isTrusted:false})),undefined);
-  assert.equal(dispatch(event('beforeinput')),'caller');
-  assert.equal(dispatch(event('input',{data:'EDIT'})),'caller','the editor may synchronously transform the native edit');
-  assert.equal(dispatch(event('input')),undefined,'consumed once');
-  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','focusout']) {
-    inputs.armText('Edit','caller'); dispatch(event(type,{timeStamp:50}));
-    assert.equal(dispatch(event('beforeinput')),undefined,type+' retires the claim');
-    assert.equal(dispatch(event('input')),undefined);
+  return {inputs,element,document,event,dispatch,insert,flush,timers};
+}
+
+test('queued text checks state rather than physical event classes', () => {
+  const f = textFixture();
+  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend',
+    'focusout','focusin','pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keyup','wheel']) {
+    f.inputs.armText('Edit','caller');
+    assert.equal(f.dispatch(f.event(type)),undefined);
+    assert.equal(f.inputs.startText('caller'),true,type+' without a state change preserves insertion');
+    const edit = f.insert(text => text.toUpperCase());
+    assert.equal(edit.caller,'caller');assert.equal(edit.after,'caller');
+    assert.equal(f.inputs.finishText('caller'),true);
+    f.inputs.clearText('caller');
+    assert.equal(f.dispatch(f.event('input')),undefined,'acknowledged edit cannot tag later input');
   }
-  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','focusout','focusin','beforeinput','input']) {
-    inputs.armText('Edit','caller'); dispatch(event(type,{isTrusted:false,target: type === 'focusin' ? {} : element}));
-    assert.equal(dispatch(event('beforeinput')),'caller','untrusted '+type+' cannot consume the claim');
-    inputs.clearText('caller');
+});
+
+test('competing human edits stay unscoped and refuse the queued insertion', () => {
+  const f = textFixture();
+  f.inputs.armText('Edit','caller');
+  const human = f.insert();
+  assert.equal(human.caller,undefined,'even identical human text before dispatch is unscoped');
+  assert.equal(human.after,undefined);
+  assert.equal(f.inputs.startText('caller'),false);
+  assert.equal(f.element.value,'Edit','the stale insertion is never dispatched');
+});
+
+for (const change of [f => { f.element.value = 'changed'; }, f => { f.document.activeElement = {}; },
+  f => { f.element.selectionStart = 1; }, f => { f.element.selectionEnd = 1; },
+  f => { f.element.selectionDirection = 'backward'; }, f => { f.element.isConnected = false; }]) {
+  test('focus/content/selection changes refuse before dispatch and at the native insertion boundary', () => {
+    for (const late of [false,true]) {
+      const f = textFixture();f.inputs.armText('Edit','caller');
+      if (late) assert.equal(f.inputs.startText('caller'),true);
+      change(f);
+      const value = f.element.value;
+      if (late) {
+        const refused = f.insert();
+        assert.equal(refused.before.defaultPrevented,true);assert.equal(refused.before.stopped,true);
+        assert.equal(refused.caller,undefined);assert.equal(refused.input,undefined);
+        assert.equal(f.inputs.finishText('caller'),false);
+      } else assert.equal(f.inputs.startText('caller'),false);
+      assert.equal(f.element.value,value);
+      f.inputs.clearText('caller');assert.equal(f.timers.size,0);
+    }
+  });
+}
+
+test('contenteditable fingerprint includes DOM and selection node identities', () => {
+  for (const mutate of [(element, selection) => {element.innerHTML = '<b>changed</b>';},
+    (element, selection) => {selection.anchorNode = {};},(element, selection) => {selection.focusOffset++;}]) {
+    const f = textFixture(), selection = {anchorNode:{},anchorOffset:0,focusNode:{},focusOffset:0};
+    delete f.element.value;f.element.innerHTML = 'Draft';f.element.ownerDocument = {getSelection:()=>selection};
+    f.inputs.armText('Edit','caller');mutate(f.element,selection);
+    assert.equal(f.inputs.startText('caller'),false);
+    f.inputs.clearText('caller');
   }
-  for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keyup','wheel']) {
-    inputs.armText('Edit','caller');
-    assert.equal(dispatch(event(type,{timeStamp:50})),undefined,type+' itself is unscoped');
-    assert.equal(dispatch(event('beforeinput')),'caller',type+' preserves the queued insertion');
-    assert.equal(dispatch(event('input')),'caller');
-  }
-  inputs.armText('Edit','caller'); dispatch(event('focusin'));
-  assert.equal(dispatch(event('beforeinput')),'caller','focus on the claimed element is unchanged');
-  inputs.clearText('caller');
-  inputs.armText('Edit','caller'); dispatch(event('focusin',{target:{}}));
-  assert.equal(dispatch(event('beforeinput')),undefined,'focus away retires the claim');
-  inputs.armText('Edit','caller'); dispatch(event('input'));
-  assert.equal(dispatch(event('beforeinput')),undefined,'a competing human input retires the claim');
-  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','beforeinput','input']) {
-    inputs.armText('Edit','caller'); dispatch(event(type,{target:{},timeStamp:50}));
-    assert.equal(dispatch(event('beforeinput')),'caller',type+' on another element cannot consume the focused insertion');
-    inputs.clearText('caller');
-  }
-  for (const override of [{data:'Human'},{inputType:'insertFromPaste'}]) {
-    inputs.armText('Edit','caller');
-    assert.equal(dispatch(event('beforeinput',override)),undefined);
-    assert.equal(dispatch(event('input')),undefined);
-  }
-  inputs.armText('Edit','caller'); assert.equal(dispatch(event('beforeinput')),'caller');
-  flush(); assert.equal(dispatch(event('input')),undefined,'a cancelled beforeinput cannot label a later task');
-  inputs.armText('Edit','caller'); flush();
-  assert.equal(dispatch(event('beforeinput')),undefined,'an unused claim expires');
-  inputs.armText('Edit','caller'); inputs.clearText('other');
-  assert.equal(dispatch(event('beforeinput')),'caller');
-  inputs.clearText('caller'); assert.equal(dispatch(event('input')),undefined);
-  inputs.armText('Edit','caller'); await inputs.end('caller');
-  assert.equal(timers.size,0); assert.equal(dispatch(event('beforeinput')),undefined);
-  assert.throws(()=>inputs.armText('Edit','caller'),/expired/);
+});
+
+test('cancel, expiry, acknowledgement and invocation end cannot lend a text caller', async () => {
+  const f = textFixture();
+  f.inputs.armText('Edit','caller');assert.equal(f.inputs.startText('caller'),true);
+  const before = f.event('beforeinput');assert.equal(f.dispatch(before),'caller');before.preventDefault();
+  assert.equal(f.inputs.finishText('caller'),true,'native cancellation is a successful no-op');
+  f.flush();assert.equal(f.dispatch(f.event('input')),undefined,'no caller crosses a task after cancellation');
+  f.inputs.clearText('caller');
+  f.inputs.armText('Edit','caller');f.flush();assert.equal(f.inputs.startText('caller'),false,'expired before dispatch');
+  f.inputs.armText('Edit','caller');assert.equal(f.inputs.startText('caller'),true);f.flush();
+  assert.equal(f.insert().before.defaultPrevented,true,'expiry during dispatch retains only the refusal fence');
+  assert.equal(f.inputs.finishText('caller'),false);f.inputs.clearText('caller');
+  f.inputs.armText('Edit','caller');f.inputs.clearText('other');assert.equal(f.inputs.startText('caller'),true);
+  await f.inputs.end('caller');
+  assert.equal(f.insert().before.defaultPrevented,true,'ended invocation cannot dispatch as human');
+  assert.equal(f.inputs.finishText('caller'),false);f.inputs.clearText('caller');assert.equal(f.timers.size,0);
+  assert.throws(()=>f.inputs.armText('Edit','caller'),/expired/);
+});
+
+test('an identical physical key edit during dispatch remains human and refuses the later CDP insertion', () => {
+  const f = textFixture();f.inputs.armText('Edit','caller');assert.equal(f.inputs.startText('caller'),true);
+  f.dispatch(f.event('keydown',{key:'Edit'}));f.dispatch(f.event('keypress',{key:'Edit'}));
+  const human = f.insert();assert.equal(human.caller,undefined);assert.equal(human.after,undefined);
+  const agent = f.insert();assert.equal(agent.before.defaultPrevented,true);assert.equal(agent.caller,undefined);
+  assert.equal(f.element.value,'Edit');assert.equal(f.inputs.finishText('caller'),false);
+  f.inputs.clearText('caller');
 });

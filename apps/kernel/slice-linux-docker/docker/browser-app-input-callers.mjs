@@ -9,35 +9,46 @@ export function createInputCallers() {
   let source;
   let textEdit;
   const clearText = () => { if (textEdit) clearTimeout(textEdit.timer); textEdit = undefined; };
+  const fingerprint = element => {
+    if (typeof element.value === 'string') return [element.value, element.selectionStart, element.selectionEnd, element.selectionDirection];
+    const selection = element.ownerDocument.getSelection();
+    return [element.innerHTML, selection?.anchorNode, selection?.anchorOffset, selection?.focusNode, selection?.focusOffset];
+  };
+  const currentText = edit => entries.get(edit.token)?.timestamp != null && !edit.expired
+    && edit.element.isConnected && document.activeElement === edit.element
+    && fingerprint(edit.element).every((value, index) => value === edit.fingerprint[index]);
   globalThis.addEventListener('beforeinput', event => {
-    if (!event.isTrusted) return;
     const edit = textEdit;
-    if (!edit || edit.element !== event.target) return;
-    clearText();
-    if (event.inputType !== 'insertText' || event.data !== edit.text) return;
+    if (!event.isTrusted || !edit || !['inserting', 'accepted'].includes(edit.state) || event.inputType !== 'insertText' || event.data !== edit.text) return;
+    // A physical key's own default edit has its own source, even when its
+    // text equals the queued CDP text. It must not consume that insertion.
+    if (source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target && source.key === event.data) return;
+    // This check runs in the native insertion task, before App listeners and
+    // the edit itself. A change after host admission must still type nothing.
+    if (edit.state === 'accepted' || edit.element !== event.target || !currentText(edit)) {
+      edit.state = 'refused';
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    edit.state = 'accepted';
     callers.set(event, edit.token);
-    // Native insertion and a synchronous editor transform both emit input in
-    // this task. A cancelled edit leaves no caller for a later input event.
-    textEdit = { ...edit, before: event, timer: setTimeout(clearText, 0) };
+    edit.before = event;
+    clearTimeout(edit.timer);
+    // Native input and synchronous editor transforms share this task. A
+    // cancelled beforeinput must not lend its caller to a later human input.
+    edit.timer = setTimeout(() => { edit.before = undefined; }, 0);
   }, true);
   globalThis.addEventListener('input', event => {
     const edit = textEdit;
-    if (event.isTrusted && edit?.element === event.target) clearText();
     const key = source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target ? source : null;
     const token = edits.get(event.target) ?? (edit?.before && edit.element === event.target ? edit.token : key && callers.get(key));
     if (event.isTrusted && entries.get(token)?.timestamp != null) callers.set(event, token);
+    if (event.isTrusted && edit?.before && edit.element === event.target) {
+      clearTimeout(edit.timer);
+      edit.before = undefined;
+    }
     if (key) source = undefined;
-  }, true);
-  for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'paste', 'cut', 'drop']) {
-    globalThis.addEventListener(type, event => {
-      if (event.isTrusted && textEdit?.element === event.target) clearText();
-    }, true);
-  }
-  globalThis.addEventListener('focusout', event => {
-    if (event.isTrusted && textEdit?.element === event.target) clearText();
-  }, true);
-  globalThis.addEventListener('focusin', event => {
-    if (event.isTrusted && textEdit?.element !== event.target) clearText();
   }, true);
   globalThis.addEventListener('submit', event => {
     const origin = source;
@@ -56,14 +67,11 @@ export function createInputCallers() {
   for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keydown','keypress','keyup','wheel']) {
     globalThis.addEventListener(type, event => {
       if (!event.isTrusted) return;
-      // Pointer activity can occur between armText and Input.insertText
-      // without changing focus or content. Only a competing edit retires it.
-      if ((type === 'keydown' || type === 'keypress') && textEdit?.element === event.target) clearText();
       // The native default action follows propagation. Keep its exact source
       // until its generated input/submit or the next physical event, including
       // an unclaimed human event. There is no wall-clock attribution window.
       const previous = source;
-      source = undefined;
+      source = type === 'keydown' ? event : type === 'keypress' && previous?.type === 'keydown' ? previous : undefined;
       // Enter's native implicit submission clicks the default button without
       // the CDP timestamp. It is still part of that key's default action.
       if (type === 'click' && event.detail === 0 && previous?.type === 'keydown'
@@ -86,9 +94,27 @@ export function createInputCallers() {
     armText(text, token) {
       if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
       clearText();
-      // Input.insertText has no timestamp. Consume only its matching native
-      // beforeinput; a competing edit or focus change retires this claim.
-      textEdit = { element: document.activeElement, text, token, timer: setTimeout(clearText, 30_000) };
+      // Arming records intent, not an event caller. Human input before the
+      // dispatch guard remains unscoped, even if it inserts the same text.
+      const element = document.activeElement;
+      const edit = textEdit = { element, fingerprint: fingerprint(element), text, token, state: 'armed' };
+      edit.timer = setTimeout(() => {
+        // An in-flight native command still needs a refusal fence until its
+        // acknowledgement; expiry removes attribution, never that fence.
+        if (edit.state === 'armed') clearText();
+        else { edit.expired = true; edit.before = undefined; }
+      }, 30_000);
+    },
+    startText(token) {
+      const edit = textEdit;
+      if (!edit || edit.token !== token || edit.state !== 'armed' || !currentText(edit)) return false;
+      edit.state = 'inserting';
+      return true;
+    },
+    finishText(token) {
+      const edit = textEdit;
+      return Boolean(edit && edit.token === token && !edit.expired && entries.get(token)?.timestamp != null
+        && (edit.state === 'accepted' || edit.state === 'inserting' && currentText(edit)));
     },
     clearText(token) { if (textEdit?.token === token) clearText(); },
     token(event) {
@@ -132,7 +158,10 @@ export function createInputCallers() {
       // Dispatch has acknowledged every event. No later event gets this caller;
       // the handlers already holding it retain it until their promises settle.
       entry.timestamp = null;
-      if (textEdit?.token === token) clearText();
+      if (textEdit?.token === token) {
+        if (textEdit.state === 'armed') clearText();
+        else { clearTimeout(textEdit.timer); textEdit.expired = true; textEdit.before = undefined; }
+      }
       if (source && callers.get(source) === token) source = undefined;
       await Promise.allSettled([...entry.handlers]);
       entries.delete(token);
