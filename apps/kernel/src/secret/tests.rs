@@ -1164,3 +1164,40 @@ fn mp11_vault_rollback_failure_is_explicit_and_does_not_keep_replacement_cached(
         "failed rollback kept a replacement credential cached"
     );
 }
+
+// MP-11: dev identity creation is internal, stable, scoped to the kernel, and never rotates on a read error.
+#[test]
+fn app_dev_key_stays_in_the_vault_and_invalid_storage_is_not_replaced() {
+    let vault = Arc::new(MemoryVaultStore::default());
+    let service = RuntimeSecretService::with_vault_store(Vec::new(), "app-dev-test", vault.clone());
+    let first = service
+        .app_dev_signing_key("kernel-a")
+        .unwrap()
+        .verifying_key();
+    assert_eq!(
+        service
+            .app_dev_signing_key("kernel-a")
+            .unwrap()
+            .verifying_key(),
+        first
+    );
+    assert_ne!(
+        service
+            .app_dev_signing_key("kernel-b")
+            .unwrap()
+            .verifying_key(),
+        first
+    );
+    assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+    for value in vault.secrets.lock().unwrap().values_mut() {
+        *value = "invalid-test-value".into();
+    }
+    assert!(service.app_dev_signing_key("kernel-a").is_err());
+    assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+    assert!(vault
+        .secrets
+        .lock()
+        .unwrap()
+        .values()
+        .all(|value| value == "invalid-test-value"));
+}

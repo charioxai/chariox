@@ -23,9 +23,10 @@ pub enum UpdateChannel {
 
 /// Where the bytes came from. Provenance only: every source reaches the same
 /// staging coordinator (§4 of the contract) and none writes installation rows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AcquisitionSource {
+    #[default]
     LocalFile,
     DevPush,
     Register,

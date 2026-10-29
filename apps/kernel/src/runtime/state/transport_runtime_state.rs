@@ -88,6 +88,9 @@ impl KernelRuntimeState {
         self.app_control().publishers().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
+        if let Err(error) = self.sync_dev_app_bindings().await {
+            tracing::warn!(%error, "MP-08/MP-10/MP-11: dev App binding failed; retrying after the next maintenance pass");
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .lifecycle()

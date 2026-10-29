@@ -40,10 +40,16 @@ fn binding_requires_owned_verified_active_installation_without_a_worker() {
     let fixture = Fixture::new();
     let store = fixture.open();
     let _catalog = crate::durable_state::app_state::fixture_catalog(&store);
-    let active = store.check_app_binding("alice", "installed").unwrap();
+    let active = store
+        .check_app_binding_in_room("alice", "installed", None)
+        .unwrap();
     assert_eq!(active.generation, 1);
-    assert!(store.check_app_binding("bob", "installed").is_err());
-    assert!(store.check_app_binding("alice", "missing").is_err());
+    assert!(store
+        .check_app_binding_in_room("bob", "installed", None)
+        .is_err());
+    assert!(store
+        .check_app_binding_in_room("alice", "missing", None)
+        .is_err());
 
     // Legacy metadata-only activation is not package verification evidence.
     let AppRegistryOutcome::Update(record) = store
@@ -85,9 +91,13 @@ fn binding_requires_owned_verified_active_installation_without_a_worker() {
     ] {
         store.mutate_app_installation("alice", mutation).unwrap();
     }
-    assert!(store.check_app_binding("alice", "unverified").is_err());
+    assert!(store
+        .check_app_binding_in_room("alice", "unverified", None)
+        .is_err());
     assert_eq!(
-        store.check_app_binding("alice", "installed").unwrap(),
+        store
+            .check_app_binding_in_room("alice", "installed", None)
+            .unwrap(),
         active
     );
 }
@@ -112,7 +122,9 @@ fn unchanged_generation_does_not_survive_publisher_revoke_or_reenrollment() {
             },
         )
         .unwrap();
-    assert!(store.check_app_binding("alice", "installed").is_err());
+    assert!(store
+        .check_app_binding_in_room("alice", "installed", None)
+        .is_err());
     store
         .mutate_app_publisher(
             "alice",
@@ -131,7 +143,9 @@ fn unchanged_generation_does_not_survive_publisher_revoke_or_reenrollment() {
             .generation,
         1
     );
-    assert!(store.check_app_binding("alice", "installed").is_err());
+    assert!(store
+        .check_app_binding_in_room("alice", "installed", None)
+        .is_err());
 }
 
 #[test]
@@ -140,9 +154,11 @@ fn removed_installations_and_malformed_identity_do_not_poison_the_writer() {
     let store = fixture.open();
     let _catalog = crate::durable_state::app_state::fixture_catalog(&store);
     for id in ["", "has space", "line\nfeed"] {
-        assert!(store.check_app_binding("alice", id).is_err());
+        assert!(store.check_app_binding_in_room("alice", id, None).is_err());
     }
-    assert!(store.check_app_binding("alice", "installed").is_ok());
+    assert!(store
+        .check_app_binding_in_room("alice", "installed", None)
+        .is_ok());
     store
         .mutate_app_installation(
             "alice",
@@ -153,6 +169,8 @@ fn removed_installations_and_malformed_identity_do_not_poison_the_writer() {
             },
         )
         .unwrap();
-    assert!(store.check_app_binding("alice", "installed").is_err());
+    assert!(store
+        .check_app_binding_in_room("alice", "installed", None)
+        .is_err());
     assert!(store.list_app_installations("alice", None, 10).is_ok());
 }

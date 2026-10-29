@@ -88,6 +88,12 @@ static void finish_cleanup(task_t *t) {
   }
   exports_chariox_app_handlers_future_string_drop_readable(t->cancel);
   app_waitable_set_drop(t->set);
+  // The state import transfers its result to this task; transact only borrows
+  // the write. Keep both buffers alive until the task finishes or is cancelled.
+  if (t->tool == T_COUNTER) {
+    if (!t->got.is_err && t->got.val.ok.is_some) app_string_free(&t->got.val.ok.val.value);
+    app_string_free(&t->write.val.put.f1);
+  }
   free(t->input);
   free(t->buf);
   free(t);

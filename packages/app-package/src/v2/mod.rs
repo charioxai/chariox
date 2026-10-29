@@ -12,7 +12,7 @@ mod view_agent;
 mod world;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use identity::{
     registration_outcome, AppId, Namespace, RegistrationOutcome, RegistrationRefusal,

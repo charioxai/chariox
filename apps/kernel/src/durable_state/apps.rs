@@ -169,6 +169,52 @@ impl DurableKernelStateStore {
         Ok(owned_installation(&registry, owner_id, installation_id)?)
     }
 
+    /// Durable owner revocations override automatic dev selection. A later
+    /// explicit grant records the owner's choice under the grant/revoke lock.
+    pub(crate) fn dev_app_automatic_binding_enabled(
+        &self,
+        agent: &str,
+        installation: &str,
+    ) -> Result<bool, DaemonError> {
+        let connection = self.lock_connection("durable_state.dev_binding_decision")?;
+        use rusqlite::OptionalExtension as _;
+        let latest: Option<String> = connection
+            .query_row(
+                "SELECT kind FROM durable_state_events
+                 WHERE subject_id=?1
+                   AND kind IN ('app.binding.owner_revoked','app.binding.owner_granted')
+                   AND json_extract(payload_json,'$.installation_id')=?2
+                 ORDER BY sequence DESC LIMIT 1",
+                rusqlite::params![agent, installation],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| DaemonError::InternalInvariant {
+                operation: "apps.dev_bindings",
+                message: error.to_string(),
+            })?;
+        Ok(latest.as_deref() != Some("app.binding.owner_revoked"))
+    }
+
+    pub(crate) fn active_dev_app_installations(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        let connection = self.lock_connection("durable_state.dev_app_installations")?;
+        let mut statement = connection.prepare("SELECT owner_id,dev_room_id,installation_id FROM app_installations WHERE channel='dev' AND active_json IS NOT NULL ORDER BY installation_id")
+            .map_err(|error| DaemonError::InternalInvariant {operation:"apps.dev_bindings", message:error.to_string()})?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(|error| DaemonError::InternalInvariant {
+                operation: "apps.dev_bindings",
+                message: error.to_string(),
+            })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| DaemonError::InternalInvariant {
+                operation: "apps.dev_bindings",
+                message: error.to_string(),
+            })
+    }
+
     pub(crate) fn list_app_installations(
         &self,
         owner_id: &str,
@@ -467,4 +513,62 @@ fn forget_data(
     }
     transaction.commit()?;
     InstallationRegistry::new(connection).get(installation_id)
+}
+
+#[cfg(test)]
+mod dev_binding_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn dev_app_owner_revocation_survives_restart_until_an_explicit_grant() {
+        let root = crate::test_support::TestWorktree::new("dev-binding-revocation");
+        let path = root.path().join("kernel.sqlite");
+        let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+        assert!(store
+            .dev_app_automatic_binding_enabled("agent-a", "dev")
+            .unwrap());
+        store
+            .append_event(
+                "app.binding.owner_revoked",
+                Some("agent-a".into()),
+                json!({"installation_id":"dev"}),
+            )
+            .unwrap();
+        assert!(!store
+            .dev_app_automatic_binding_enabled("agent-a", "dev")
+            .unwrap());
+        assert!(store
+            .dev_app_automatic_binding_enabled("agent-b", "dev")
+            .unwrap());
+        assert!(store
+            .dev_app_automatic_binding_enabled("agent-a", "release")
+            .unwrap());
+        // A grant audit can be delayed until after the owner revokes. It
+        // records history, not the serialized owner's choice.
+        store
+            .append_event(
+                "home_extension.grant.created",
+                Some("agent-a".into()),
+                json!({"grant":{"kind":"app","name":"dev"}}),
+            )
+            .unwrap();
+        store.fence_writer().unwrap();
+        drop(store);
+        let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+        assert!(!store
+            .dev_app_automatic_binding_enabled("agent-a", "dev")
+            .unwrap());
+        store
+            .append_event(
+                "app.binding.owner_granted",
+                Some("agent-a".into()),
+                json!({"installation_id":"dev"}),
+            )
+            .unwrap();
+        assert!(store
+            .dev_app_automatic_binding_enabled("agent-a", "dev")
+            .unwrap());
+        store.fence_writer().unwrap();
+    }
 }

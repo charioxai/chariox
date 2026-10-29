@@ -22,6 +22,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[path = "verified_staging/upgrades.rs"]
+mod upgrades;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Database(PathBuf);
 impl Database {
@@ -784,4 +787,94 @@ fn plain_commit_cannot_bypass_current_or_revoked_stage_trust() {
     assert_eq!(before.generation, 1);
     assert_eq!(before.pending_generation, Some(second.token.generation));
     assert!(before.admission_paused);
+}
+
+// MP-08 / MP-10 / MP-11: declaration order is not new authority.
+#[test]
+fn reordered_capabilities_reuse_authority_without_changing_release_fingerprints() {
+    let database = Database::new();
+    let mut connection = database.open();
+    let mut package = Package::new();
+    package.manifest.capabilities.clipboard = vec![
+        chariox_app_package::ClipboardAccess::Read,
+        chariox_app_package::ClipboardAccess::Write,
+    ];
+    let trust = enroll(&mut connection, "alice", &package, 0, "enroll");
+    let before = package.candidate(&trust);
+    package.manifest.capabilities.clipboard.reverse();
+    let after = package.candidate(&trust);
+    assert_ne!(
+        before.release_metadata().package_digest,
+        after.release_metadata().package_digest
+    );
+    assert_ne!(
+        before.release_metadata().capabilities_digest,
+        after.release_metadata().capabilities_digest
+    );
+    assert_eq!(
+        before.review_metadata()["authoritySet"],
+        after.review_metadata()["authoritySet"]
+    );
+    let tx = connection.transaction().unwrap();
+    before.stage_first_in(&tx, "alice", "first", 1).unwrap();
+    after.stage_first_in(&tx, "alice", "second", 1).unwrap();
+    let stored = |id| {
+        tx.query_row(
+        "SELECT authority_json FROM app_installation_authority WHERE installation_id=?1 AND generation=1",
+        [id], |r| r.get::<_, String>(0)
+    ).unwrap()
+    };
+    assert_eq!(stored("first"), stored("second"));
+    let authority: serde_json::Value = serde_json::from_str(&stored("first")).unwrap();
+    assert_eq!(authority, before.review_metadata()["authoritySet"]);
+}
+
+// MP-08 / MP-10 / MP-11: dev data and signer never replace the release lane.
+#[test]
+fn dev_staging_has_its_own_installation_room_and_principal() {
+    let database = Database::new();
+    let mut connection = database.open();
+    let mut package = Package::new();
+    let publisher = enroll(&mut connection, "alice", &package, 0, "publisher");
+    let release = package.candidate(&publisher);
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    release.stage_first_in(&tx, "alice", "release", 1).unwrap();
+    tx.commit().unwrap();
+    package.manifest.publisher.id = "local_dev".into();
+    package.manifest.publisher.key_id = "kernel-dev".into();
+    let mut registry = Publishers::new(&mut connection);
+    registry
+        .bind_dev_identity("alice", package.key.verifying_key().to_bytes())
+        .unwrap();
+    let trust = registry
+        .trusted_publisher("alice", "local_dev", "kernel-dev")
+        .unwrap();
+    let dev = package.candidate(&trust);
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    assert!(dev
+        .stage_first_in(&tx, "alice", "forged-release", 1)
+        .is_err());
+    assert!(release
+        .stage_dev_first_in(&tx, "alice", "forged-dev", "room-a", 1)
+        .is_err());
+    dev.stage_dev_first_in(&tx, "alice", "dev-a", "room-a", 1)
+        .unwrap();
+    assert!(dev
+        .stage_dev_first_in(&tx, "alice", "duplicate", "room-a", 1)
+        .is_err());
+    dev.stage_dev_first_in(&tx, "alice", "dev-b", "room-b", 1)
+        .unwrap();
+    tx.commit().unwrap();
+    let release = Installations::new(&mut connection).get("release").unwrap();
+    let dev = Installations::new(&mut connection).get("dev-a").unwrap();
+    assert_eq!(release.app_id, dev.app_id);
+    assert_ne!(release.installation_id, dev.installation_id);
+    assert!(release.visible_in_room(Some("room-b")));
+    assert!(dev.visible_in_room(Some("room-a")));
+    assert!(!dev.visible_in_room(Some("room-b")));
+    assert!(!dev.visible_in_room(None));
 }

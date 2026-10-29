@@ -44,7 +44,9 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
         let owner = match request {
-            LocalDaemonRequest::OpenAppView(_) | LocalDaemonRequest::SetAppViewPanel(_) => {
+            LocalDaemonRequest::OpenAppView(_)
+            | LocalDaemonRequest::SetAppViewPanel(_)
+            | LocalDaemonRequest::InspectAppView(_) => {
                 match crate::runtime::app_control::owner(command) {
                     Ok(owner) => owner,
                     Err(code) => return Some(Ok(crate::runtime::app_control::failed(code))),
@@ -53,6 +55,9 @@ impl KernelRuntimeState {
             _ => return None,
         };
         Some(match request {
+            LocalDaemonRequest::InspectAppView(request) => {
+                self.inspect_app_view(owner, request).await
+            }
             LocalDaemonRequest::OpenAppView(request) => {
                 self.open_app_view(owner, &request.session_id, &request.installation_id)
                     .await
@@ -128,7 +133,15 @@ impl KernelRuntimeState {
     ) -> Result<BrowserAppViewOpened, DaemonError> {
         let store = self.owned.durable_state_store.clone();
         let (view_owner, view_installation) = (owner.to_owned(), installation.to_owned());
+        let room = session_id.to_owned();
         let view = tokio::task::spawn_blocking(move || {
+            if !store
+                .get_app_installation(&view_owner, &view_installation)
+                .map_err(|_| crate::durable_state::app_view_assets::AppViewAssetsError::NotFound)?
+                .visible_in_room(Some(&room))
+            {
+                return Err(crate::durable_state::app_view_assets::AppViewAssetsError::NotFound);
+            }
             store.app_view_assets(&view_owner, &view_installation)
         })
         .await

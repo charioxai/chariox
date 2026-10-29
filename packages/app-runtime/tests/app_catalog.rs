@@ -22,6 +22,8 @@ mod owned;
 mod readiness;
 #[path = "app_catalog/ui_actions.rs"]
 mod ui_actions;
+#[path = "app_catalog/upgrades.rs"]
+mod upgrades;
 
 struct Package {
     manifest: Manifest,

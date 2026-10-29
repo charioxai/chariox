@@ -239,6 +239,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::CallUserAppView(_)
             | LocalDaemonRequest::SubscribeUserAppViews(_)
             | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+            | LocalDaemonRequest::InspectAppView(_)
             | LocalDaemonRequest::OpenAppView(_)
             | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)

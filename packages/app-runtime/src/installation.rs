@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod activation;
 pub mod channel;
+mod release_versions;
 mod verified;
 pub use verified::{StageTrustBinding, VerifiedInstallCandidate, VerifiedStageError};
 
@@ -143,6 +144,8 @@ pub struct Installation {
     pub installation_id: String,
     pub app_id: String,
     pub owner_id: String,
+    pub channel: channel::InstallationChannel,
+    pub dev_room_id: Option<String>,
     pub generation: u64,
     pub active: Option<ActiveGeneration>,
     pub pending_generation: Option<u64>,
@@ -153,6 +156,9 @@ pub struct Installation {
 }
 
 impl Installation {
+    pub fn visible_in_room(&self, room: Option<&str>) -> bool {
+        self.channel == channel::InstallationChannel::Release || self.dev_room_id.as_deref() == room
+    }
     /// The release the installation's data belongs to: the active one, or the
     /// retained one after an uninstall.
     pub fn data_release(&self) -> Option<&ActiveGeneration> {
@@ -230,6 +236,31 @@ impl<'a> InstallationRegistry<'a> {
             self.connection
                 .execute_batch("ALTER TABLE app_installations ADD COLUMN retained_json TEXT;")?;
         }
+        for (name, declaration) in [
+            (
+                "channel",
+                "TEXT NOT NULL DEFAULT 'release' CHECK(channel IN ('dev','release'))",
+            ),
+            ("dev_room_id", "TEXT"),
+        ] {
+            let exists: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_installations') WHERE name=?1)",
+                [name],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                self.connection.execute_batch(&format!(
+                    "ALTER TABLE app_installations ADD COLUMN {name} {declaration};"
+                ))?;
+            }
+        }
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS app_installation_authority (
+                installation_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                authority_json TEXT NOT NULL, PRIMARY KEY(installation_id,generation)
+             );",
+        )?;
+        release_versions::initialize(self.connection)?;
         crate::managed_state::migration::initialize(self.connection)?;
         Ok(())
     }
@@ -284,7 +315,7 @@ impl<'a> InstallationRegistry<'a> {
         }
         let mut statement = self.connection.prepare(
             "SELECT installation_id, app_id, owner_id, generation, active_json,
-                pending_generation, admission_paused, retained_json FROM app_installations
+                pending_generation, admission_paused, retained_json, channel, dev_room_id FROM app_installations
              WHERE owner_id = ?1 AND installation_id > ?2
              ORDER BY installation_id LIMIT ?3",
         )?;
@@ -618,7 +649,7 @@ pub(crate) fn load_installation(connection: &Connection, id: &str) -> Result<Ins
     let row = connection
         .query_row(
             "SELECT app_id, owner_id, generation, active_json, pending_generation,
-            admission_paused, retained_json FROM app_installations WHERE installation_id = ?1",
+            admission_paused, retained_json, channel, dev_room_id FROM app_installations WHERE installation_id = ?1",
             [id],
             |row| stored_installation_row(row, 0),
         )
@@ -635,6 +666,8 @@ type StoredInstallation = (
     Option<i64>,
     bool,
     Option<String>,
+    String,
+    Option<String>,
 );
 
 fn stored_installation_row(
@@ -649,6 +682,8 @@ fn stored_installation_row(
         row.get(start + 4)?,
         row.get(start + 5)?,
         row.get(start + 6)?,
+        row.get(start + 7)?,
+        row.get(start + 8)?,
     ))
 }
 
@@ -657,6 +692,12 @@ fn installation_from_fields(id: &str, row: StoredInstallation) -> Result<Install
         installation_id: id.into(),
         app_id: row.0,
         owner_id: row.1,
+        channel: match row.7.as_str() {
+            "dev" => channel::InstallationChannel::Dev,
+            "release" => channel::InstallationChannel::Release,
+            _ => return Err(InstallationError::Invalid("installation channel")),
+        },
+        dev_room_id: row.8,
         generation: stored_generation(row.2)?,
         active: row.3.map(|json| serde_json::from_str(&json)).transpose()?,
         pending_generation: row.4.map(stored_generation).transpose()?,

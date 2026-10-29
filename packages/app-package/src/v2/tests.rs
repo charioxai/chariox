@@ -7,7 +7,7 @@ use std::{
 use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
-mod components;
+pub(crate) mod components;
 
 use super::*;
 use crate::{archive, read_inventory, signing_bytes_for, ErrorCode, Limits, TrustedPublisher};

@@ -675,6 +675,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListAppAutomations(_) => "app.automation.list",
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
+        LocalDaemonRequest::InspectAppView(_) => "app.view.inspect",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
         LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
         LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",

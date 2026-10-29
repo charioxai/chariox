@@ -45,6 +45,8 @@ pub(super) fn stage_update(
             "alice",
             request,
             InstallInput {
+                source: Default::default(),
+                expected_upload_digest: None,
                 session_id: "session".into(),
                 upload_handle: format!("upload_{}", "b".repeat(64)),
                 update: Some(UpdateTarget {

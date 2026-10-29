@@ -39,6 +39,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::InspectAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

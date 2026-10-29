@@ -97,7 +97,7 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
             && args[1] == "--help"
             && matches!(
                 args[0].as_str(),
-                "create" | "keygen" | "manifest" | "pack" | "validate" | "inspect"
+                "create" | "keygen" | "manifest" | "pack" | "dev-pack" | "validate" | "inspect"
             ))
     {
         return Ok(json!({"usage":usage()}));
@@ -194,6 +194,20 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
             write_manifest(Path::new(args.required("--output")?), &manifest, &limits)?;
             Ok(
                 json!({"status":"manifest-created","manifest":manifest,"output":args.required("--output")?}),
+            )
+        }
+        "dev-pack" => {
+            let args = Arguments::parse(
+                rest,
+                &["--bundle", "--manifest", "--output", "--kernel-protocol"],
+                0,
+            )?;
+            args.protocol()?;
+            super::pack_dev_directory(
+                Path::new(args.required("--bundle")?),
+                Path::new(args.required("--manifest")?),
+                Path::new(args.required("--output")?),
+                &limits,
             )
         }
         "pack" => {

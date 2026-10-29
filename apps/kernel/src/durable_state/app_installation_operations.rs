@@ -51,6 +51,10 @@ pub(crate) enum InstallOperationError {
     CommitUnknown,
     #[error("app_update_schema_downgrade")]
     SchemaDowngrade,
+    #[error("app_register_new_version_required")]
+    ImmutableVersion,
+    #[error("app_register_publisher_conflict")]
+    PublisherConflict,
 }
 type Result<T> = std::result::Result<T, InstallOperationError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,8 +81,13 @@ pub(crate) struct InstallOperation {
     /// The owner approved its capabilities (recorded with the staged release).
     pub(crate) approved: bool,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InstallInput {
+    #[serde(default)]
+    pub(crate) source: chariox_app_runtime::installation::channel::AcquisitionSource,
+    /// Dev signing changes the archive digest; retries retain the uploaded revision.
+    #[serde(default)]
+    pub(crate) expected_upload_digest: Option<String>,
     pub(crate) session_id: String,
     pub(crate) upload_handle: String,
     /// A local replacement of an existing installation; `None` installs anew.
@@ -87,13 +96,13 @@ pub(crate) struct InstallInput {
     /// (`upload_handle` is empty).
     pub(crate) deployment: Option<DeploymentInstall>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DeploymentInstall {
     /// The interaction of the owner's deployment consent.
     pub(crate) consent: String,
     pub(crate) deployment_id: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct UpdateTarget {
     pub(crate) installation_id: String,
     pub(crate) expected_generation: u64,
@@ -215,3 +224,6 @@ pub(super) fn execute(
     let _ = request.response.send(result);
     disposition
 }
+
+mod authority;
+mod registration;
