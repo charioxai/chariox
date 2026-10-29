@@ -98,12 +98,35 @@ test('CDP text claims its native beforeinput and synchronous transform only', as
   assert.equal(dispatch(event('beforeinput')),'caller');
   assert.equal(dispatch(event('input',{data:'EDIT'})),'caller','the editor may synchronously transform the native edit');
   assert.equal(dispatch(event('input')),undefined,'consumed once');
-  for (const type of ['keydown','pointerdown','paste','compositionstart','focusin']) {
+  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','focusout']) {
     inputs.armText('Edit','caller'); dispatch(event(type,{timeStamp:50}));
     assert.equal(dispatch(event('beforeinput')),undefined,type+' retires the claim');
     assert.equal(dispatch(event('input')),undefined);
   }
-  for (const override of [{target:{}},{data:'Human'},{inputType:'insertFromPaste'}]) {
+  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','focusout','focusin','beforeinput','input']) {
+    inputs.armText('Edit','caller'); dispatch(event(type,{isTrusted:false,target: type === 'focusin' ? {} : element}));
+    assert.equal(dispatch(event('beforeinput')),'caller','untrusted '+type+' cannot consume the claim');
+    inputs.clearText('caller');
+  }
+  for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keyup','wheel']) {
+    inputs.armText('Edit','caller');
+    assert.equal(dispatch(event(type,{timeStamp:50})),undefined,type+' itself is unscoped');
+    assert.equal(dispatch(event('beforeinput')),'caller',type+' preserves the queued insertion');
+    assert.equal(dispatch(event('input')),'caller');
+  }
+  inputs.armText('Edit','caller'); dispatch(event('focusin'));
+  assert.equal(dispatch(event('beforeinput')),'caller','focus on the claimed element is unchanged');
+  inputs.clearText('caller');
+  inputs.armText('Edit','caller'); dispatch(event('focusin',{target:{}}));
+  assert.equal(dispatch(event('beforeinput')),undefined,'focus away retires the claim');
+  inputs.armText('Edit','caller'); dispatch(event('input'));
+  assert.equal(dispatch(event('beforeinput')),undefined,'a competing human input retires the claim');
+  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend','beforeinput','input']) {
+    inputs.armText('Edit','caller'); dispatch(event(type,{target:{},timeStamp:50}));
+    assert.equal(dispatch(event('beforeinput')),'caller',type+' on another element cannot consume the focused insertion');
+    inputs.clearText('caller');
+  }
+  for (const override of [{data:'Human'},{inputType:'insertFromPaste'}]) {
     inputs.armText('Edit','caller');
     assert.equal(dispatch(event('beforeinput',override)),undefined);
     assert.equal(dispatch(event('input')),undefined);

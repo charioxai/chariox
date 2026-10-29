@@ -12,8 +12,9 @@ export function createInputCallers() {
   globalThis.addEventListener('beforeinput', event => {
     if (!event.isTrusted) return;
     const edit = textEdit;
+    if (!edit || edit.element !== event.target) return;
     clearText();
-    if (!edit || edit.element !== event.target || event.inputType !== 'insertText' || event.data !== edit.text) return;
+    if (event.inputType !== 'insertText' || event.data !== edit.text) return;
     callers.set(event, edit.token);
     // Native insertion and a synchronous editor transform both emit input in
     // this task. A cancelled edit leaves no caller for a later input event.
@@ -21,15 +22,23 @@ export function createInputCallers() {
   }, true);
   globalThis.addEventListener('input', event => {
     const edit = textEdit;
-    if (event.isTrusted) clearText();
+    if (event.isTrusted && edit?.element === event.target) clearText();
     const key = source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target ? source : null;
     const token = edits.get(event.target) ?? (edit?.before && edit.element === event.target ? edit.token : key && callers.get(key));
     if (event.isTrusted && entries.get(token)?.timestamp != null) callers.set(event, token);
     if (key) source = undefined;
   }, true);
-  for (const type of ['compositionstart', 'paste', 'cut', 'drop', 'focusin']) {
-    globalThis.addEventListener(type, event => { if (event.isTrusted) clearText(); }, true);
+  for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'paste', 'cut', 'drop']) {
+    globalThis.addEventListener(type, event => {
+      if (event.isTrusted && textEdit?.element === event.target) clearText();
+    }, true);
   }
+  globalThis.addEventListener('focusout', event => {
+    if (event.isTrusted && textEdit?.element === event.target) clearText();
+  }, true);
+  globalThis.addEventListener('focusin', event => {
+    if (event.isTrusted && textEdit?.element !== event.target) clearText();
+  }, true);
   globalThis.addEventListener('submit', event => {
     const origin = source;
     source = undefined;
@@ -47,7 +56,9 @@ export function createInputCallers() {
   for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keydown','keypress','keyup','wheel']) {
     globalThis.addEventListener(type, event => {
       if (!event.isTrusted) return;
-      clearText();
+      // Pointer activity can occur between armText and Input.insertText
+      // without changing focus or content. Only a competing edit retires it.
+      if ((type === 'keydown' || type === 'keypress') && textEdit?.element === event.target) clearText();
       // The native default action follows propagation. Keep its exact source
       // until its generated input/submit or the next physical event, including
       // an unclaimed human event. There is no wall-clock attribution window.
@@ -76,7 +87,7 @@ export function createInputCallers() {
       if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
       clearText();
       // Input.insertText has no timestamp. Consume only its matching native
-      // beforeinput; any intervening physical input retires this claim.
+      // beforeinput; a competing edit or focus change retires this claim.
       textEdit = { element: document.activeElement, text, token, timer: setTimeout(clearText, 30_000) };
     },
     clearText(token) { if (textEdit?.token === token) clearText(); },
