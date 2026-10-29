@@ -751,3 +751,65 @@ async fn a_firing_seen_while_its_agent_is_archived_releases_its_claim() {
         "the trigger fires again once the agent is back"
     );
 }
+
+#[tokio::test]
+async fn destroying_an_agent_settles_its_requested_reply() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation};
+    let worktree = crate::test_support::TestWorktree::new("reply-agent-destroy");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, parent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let child = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "codex"))
+        .unwrap();
+    let store = app.durable_state_store();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: session.id().into(),
+            agent: parent.id().into(),
+            prompt: "parent-task".into(),
+            run: Some("parent-run".into()),
+            now: 1,
+        })
+        .unwrap();
+    let mut request = occurrence(
+        session.id(),
+        child.id(),
+        parent.id(),
+        "request",
+        "message",
+        serde_json::json!({"message": "answer"}),
+    );
+    request.reply_requested = true;
+    store
+        .agent_lifecycle(Operation::Send {
+            task: "parent-task".into(),
+            prompt: "parent-task".into(),
+            event: request,
+        })
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let request = LocalDaemonRequest::DestroyAgent(crate::local::DestroyAgentRequest {
+        session_id: session.id().into(),
+        agent_id: child.id().into(),
+    });
+    let command =
+        KernelCommand::from_local_request("destroy-reply-recipient", None, None, &request);
+    boxed_schedule_future(|| router.dispatch(command, request))
+        .await
+        .unwrap();
+    let tasks = store
+        .agent_tasks(Some(session.id()), Some(parent.id()))
+        .unwrap();
+    let reply = tasks[0]
+        .obligations
+        .iter()
+        .find(|o| o.kind == "reply")
+        .unwrap();
+    assert_eq!(reply.status, "failed");
+    let inbox = store.agent_inbox(session.id(), parent.id(), 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "source_lost");
+}

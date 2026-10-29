@@ -4,8 +4,11 @@ import { unconfirmedHtml } from "./agent-trigger-unconfirmed.js"
 import { applyOutputRecords, reconcileSnapshot } from "./agent-trigger-live.js"
 const main = document.querySelector<HTMLElement>("main[data-trigger-base]")!
 const base = main.dataset.triggerBase!
+const csrf = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content
+const csrfHeaders: Record<string, string> = csrf ? { "x-csrf-token": csrf } : {}
 const output = document.querySelector<HTMLElement>("#conversation")!
 const status = document.querySelector<HTMLElement>("#status")!
+const offlineHint = document.querySelector<HTMLElement>("#offline-hint")!
 const notice = document.querySelector<HTMLElement>("#notice")!
 const unconfirmed = document.querySelector<HTMLElement>("#unconfirmed")!
 const form = document.querySelector<HTMLFormElement>("form")!
@@ -32,6 +35,7 @@ function apply(value: Conversation, older = false) {
   more.hidden = !nextCursor
   unconfirmed.innerHTML = unconfirmedHtml(value.unconfirmed)
   status.textContent = !value.enabled ? "trigger disabled" : !value.online ? "agent offline" : value.busy ? "working" : "idle"
+  offlineHint.hidden = value.online
   input.disabled = send.disabled = !value.online || !value.enabled
   render()
 }
@@ -54,7 +58,7 @@ unconfirmed.addEventListener("click", async event => {
   if (!button) return
   button.disabled = true
   try {
-    const response = await fetch(`${base}resend`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ prompt_id: button.dataset.resend }) })
+    const response = await fetch(`${base}resend`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...csrfHeaders }, body: JSON.stringify({ prompt_id: button.dataset.resend }) })
     if (!response.ok) throw Error(((await response.json()) as { error?: string }).error ?? "The message was not sent again.")
     notice.textContent = "Message sent again."
   } catch (error) { notice.textContent = error instanceof Error ? error.message : String(error); button.disabled = false }
@@ -71,7 +75,7 @@ form.addEventListener("submit", async event => {
   if (!input.value.trim()) return
   send.disabled = true
   try {
-    const response = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ prompt: input.value }) })
+    const response = await fetch(base, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...csrfHeaders }, body: JSON.stringify({ prompt: input.value }) })
     const result = await response.json() as { error?: string; outcome?: string }
     if (!response.ok) throw Error(result.error ?? "The message was not accepted.")
     input.value = ""; notice.textContent = `Message ${result.outcome ?? "accepted"}.`

@@ -97,6 +97,10 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
 }
 
 fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode, String> {
+    if args == ["prepare"] {
+        ensure_server_built(workspace_root)?;
+        return Ok(ExitCode::SUCCESS);
+    }
     if args.first().map(String::as_str) == Some("--help")
         || args.first().map(String::as_str) == Some("-h")
     {
@@ -328,6 +332,7 @@ fn print_serve_help() {
         [
             "usage: chariox serve <publication-package-or-publication.json> <port> [options]",
             "       chariox serve source <session-id> <publication-id> <port> [options]",
+            "       chariox serve prepare    Build the local gateway before starting it",
             "",
             "Options:",
             "  --host <host>              Bind host (default: 127.0.0.1)",
@@ -626,6 +631,33 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn serve_prepare_finishes_without_launching_a_server() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-serve-prepare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        for directory in ["apps/server", "packages/kernel-client"] {
+            let directory = root.join(directory);
+            fs::create_dir_all(directory.join("src")).unwrap();
+            fs::write(directory.join("package.json"), "{}").unwrap();
+            fs::write(directory.join("tsconfig.json"), "{}").unwrap();
+        }
+        fs::create_dir_all(root.join("apps/server/dist")).unwrap();
+        fs::write(
+            root.join("apps/server/dist/index.js"),
+            "throw Error('must not launch');",
+        )
+        .unwrap();
+        let result = super::run_serve_command(&root, &["prepare".into()]);
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(result.unwrap(), std::process::ExitCode::SUCCESS);
+    }
 
     #[test]
     fn freshness_requires_build_when_dist_output_is_missing() {

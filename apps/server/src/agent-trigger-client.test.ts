@@ -49,3 +49,19 @@ test("MP-08/MP-10: a trigger prompt in history keeps the origin the kernel label
     user_prompt: prompt, entries: [], summary: row(2, "provider_output", "Done."), blobs: [] }], new Map())
   assert.deepEqual(entries.map(entry => entry.promptOrigin ?? null), ["schedule", null])
 })
+
+
+test("separate HTTP viewers keep separate kernel attachments", async () => {
+  const { AgentTriggerClient: GatewayClient } = await import("@chariox/agent-trigger-gateway")
+  const ids: string[] = []
+  const kernel = {
+    async send<T>(request: unknown): Promise<T> {
+      ids.push((request as {AttachToSession: {client_id: string}}).AttachToSession.client_id)
+      return {SessionAttached: {attachment: {id: String(ids.length)}}} as T
+    },
+    async subscribeToKernelEvents() {}, onKernelEvent() { return () => {} }, async close() {},
+  }
+  await new GatewayClient("session", "trigger", kernel).subscribe()
+  await new GatewayClient("session", "trigger", kernel).subscribe()
+  assert.equal(new Set(ids).size, 2)
+})

@@ -79,6 +79,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@chariox/agent-trigger-gateway':
+        specifier: workspace:*
+        version: link:../../packages/agent-trigger-gateway
       '@chariox/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
@@ -98,6 +101,19 @@ importers:
       '@chariox/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
+
+  packages/agent-trigger-gateway:
+    dependencies:
+      '@chariox/transcript-view':
+        specifier: workspace:*
+        version: link:../transcript-view
+      fastify:
+        specifier: ^5.1.0
+        version: 5.8.2
+    devDependencies:
+      esbuild:
+        specifier: 0.28.0
+        version: 0.28.0
 
   packages/app-sdk: {}
 
