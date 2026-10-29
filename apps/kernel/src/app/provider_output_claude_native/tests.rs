@@ -3736,3 +3736,5 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert!(!context.contains("Attachment 1"));
     assert!(context.len() < 48_000, "{}", context.len());
 }
+
+mod workspace_scope;

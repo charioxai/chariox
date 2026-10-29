@@ -23,6 +23,23 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+    if value
+        .strip_prefix("accepted:")
+        .is_some_and(|id| !id.is_empty())
+    {
+        // Acknowledgement belongs to this launch's fresh runtime directory.
+        let _ = fs::write(
+            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+            "accepted",
+        );
+    }
+}
+
+pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
+    fs::read_to_string(
+        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+    )
+    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
@@ -136,21 +153,26 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
         .filter(|interaction_id| !interaction_id.is_empty())
 }
 
-pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+pub(super) fn write_claude_workspace_trust_selection_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
     write_claude_native_marker(
         context_file,
         &format!(
-            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}:{interaction_id}",
             unix_epoch_ms()
         ),
     );
 }
 
 pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
-    claude_headless_workspace_trust_interaction_id(context_file)?
-        .strip_prefix("select-yes:")?
-        .parse()
-        .ok()
+    let marker = claude_headless_workspace_trust_interaction_id(context_file)?;
+    let (started_at, interaction_id) = marker.strip_prefix("select-yes:")?.split_once(':')?;
+    if interaction_id.is_empty() {
+        return None;
+    }
+    started_at.parse().ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
@@ -628,6 +650,12 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
                 Some('[') => {
                     for next in chars.by_ref() {
                         if ('@'..='~').contains(&next) {
+                            // Ink uses cursor movement for word separators.
+                            if matches!(next, 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'f')
+                                && !output.ends_with(' ')
+                            {
+                                output.push(' ');
+                            }
                             break;
                         }
                     }
@@ -653,13 +681,9 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
             }
             continue;
         }
-        if ch.is_whitespace() {
-            if !output.ends_with(' ') {
-                output.push(' ');
-            }
-        } else {
-            output.push(ch);
-        }
+        // Only terminal/control separators are normalized; literal path
+        // characters, including repeated or Unicode spaces, stay exact.
+        output.push(ch);
     }
     output
 }

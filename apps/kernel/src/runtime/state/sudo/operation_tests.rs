@@ -123,7 +123,7 @@ async fn sudo_operations_forwarded_worker_permissions_use_projected_home_task() 
             },
         ),
         make(
-            "claude-workspace-trust-forwarded",
+            "claude-selected-workspace-trust-forwarded",
             NativeInteractionOrigin::ProviderStartup {
                 provider_run_id: "worker-run".into(),
             },
@@ -335,7 +335,7 @@ async fn sudo_operations_startup_trust_requires_approved_workspace_launch() {
         "approved startup is not a live tool turn"
     );
     let interaction = RuntimeInteraction::new(
-        "claude-workspace-trust-covered",
+        "claude-selected-workspace-trust-covered",
         &turn.agent_id,
         RuntimeInteractionKind::Permission,
         RuntimeInteractionLevel::Warning,
@@ -610,5 +610,146 @@ async fn sudo_operations_watched_command_refused_without_linux_process_groups() 
     assert!(
         message.contains("Linux process-group ownership"),
         "{message}"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: provider output must prove the scope before
+// the actual sudo consent seam can consume the owner's launch authorization.
+#[tokio::test]
+async fn sudo_startup_trust_keeps_selected_workspace_scope() {
+    use crate::app::StartupTrustBridge;
+    let f = fixture();
+    let turn = running(&f);
+    let selected = f.run.working_directory().unwrap().as_path();
+    let own = selected.join("agent-worktree");
+    std::fs::create_dir(&own).unwrap();
+    let home = selected.join("profile-home");
+    std::fs::create_dir(&home).unwrap();
+    let mut failures = Vec::new();
+    for (name, cwd, displayed, worktree, expected) in [
+        ("selected", selected, selected, selected, true),
+        (
+            "ancestor",
+            selected,
+            selected.parent().unwrap(),
+            selected,
+            false,
+        ),
+        (
+            "own_worktree",
+            own.as_path(),
+            own.as_path(),
+            own.as_path(),
+            true,
+        ),
+        ("session_root", selected, selected, own.as_path(), false),
+    ] {
+        let native = selected.join(name);
+        std::fs::create_dir(&native).unwrap();
+        let context = native.join("context.txt");
+        let events = native.join("events.jsonl");
+        std::fs::write(&context, "").unwrap();
+        std::fs::write(&events, "").unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            &turn.session_id,
+            "claude",
+            "claude-headless",
+            "default",
+            "haiku",
+        )
+        .with_agent_id(&turn.agent_id)
+        .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            f.run.id(),
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "scope-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: std::collections::BTreeMap::from([
+                    ("HOME".into(), home.display().to_string()),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_CONTEXT".into(),
+                        context.display().to_string(),
+                    ),
+                    (
+                        "CHARIOX_CLAUDE_NATIVE_EVENTS".into(),
+                        events.display().to_string(),
+                    ),
+                ]),
+                pty_env_remove: vec![],
+                working_directory: Some(cwd.to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        let bridge = StartupTrustBridge::default();
+        let native_bridge: std::sync::Arc<dyn crate::provider::ProviderNativeInteractionBridge> =
+            std::sync::Arc::new(bridge.clone());
+        {
+            let mut app = f.app.lock().await;
+            app.agents_mut()
+                .update_agent_config(
+                    &turn.agent_id,
+                    None,
+                    None,
+                    None,
+                    Some(Some(worktree.display().to_string())),
+                )
+                .unwrap();
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers()
+                .set_native_interaction_bridge(native_bridge.clone());
+            app.process_claude_native_terminal_output_bridge_for_runtime(
+                &turn.session_id, run.id(), &run,
+                &format!("Accessing workspace:\n{}\nQuick safety check\nDo you trust this folder?\n❯ 1. Yes, I trust this folder\n2. No, exit", displayed.display()),
+            ).unwrap();
+        }
+        let interaction = bridge.wait_for_interaction_with_pump(|| {});
+        bridge.resolve_default_no();
+        let answer =
+            f.state
+                .sudo_native_permission_resolution(&turn.session_id, &interaction, None);
+        if answer.is_some() != expected {
+            failures.push(name);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "sudo consumed trust outside its selected folder: {failures:?}"
+    );
+}
+
+#[tokio::test]
+async fn sudo_startup_trust_without_selected_folder_proof_asks_the_owner() {
+    let f = fixture();
+    let turn = running(&f);
+    let interaction = RuntimeInteraction::new(
+        "claude-workspace-trust-unvalidated",
+        &turn.agent_id,
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        None,
+        "Trust a folder without a selected-folder proof",
+        vec![RuntimeInteractionChoice::new(
+            "allow_once",
+            "Trust folder",
+            "allow",
+            None,
+        )],
+        None,
+        Some(300),
+        None,
+    )
+    .with_native_origin(Some(NativeInteractionOrigin::ProviderStartup {
+        provider_run_id: f.run.id().into(),
+    }));
+    assert!(
+        f.state
+            .sudo_native_permission_resolution(&turn.session_id, &interaction, None)
+            .is_none(),
+        "an unvalidated worker startup must use the ordinary owner decision"
     );
 }
