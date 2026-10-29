@@ -36,6 +36,18 @@ impl Drop for RemoteQueuedPromptSteerReservation {
     }
 }
 
+/// A definitive refusal means the provider never held the message, so the
+/// firing may be replayed. A fence that cannot be cleared only makes a later
+/// restart drop the entry, never replay it.
+fn release_steer_fence(
+    owned: &KernelRuntimeOwnedState,
+    prepared: &super::prompt_queue_owned_state::LocalQueuedPromptSteerPreparation,
+) {
+    if let Err(error) = owned.release_local_queued_prompt_steer_fence(prepared) {
+        tracing::warn!(?error, "could not release a refused queued steer fence");
+    }
+}
+
 fn advance_next_remote_prompt_if_idle(
     app: &mut crate::app::DaemonApp,
     session_id: &str,
@@ -1025,6 +1037,9 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&prepared.dispatch.provider_run_id)
                 .await;
+            // Persisted before the provider can see the message, so a kernel
+            // restart while the receipt is pending cannot replay the firing.
+            owned.fence_local_queued_prompt_steer(&prepared)?;
             let delivery = match self
                 .enqueue_prompt_dispatch_with_receipt(&prepared.dispatch, SteerReceipt::Awaited)
                 .await
@@ -1036,12 +1051,16 @@ impl KernelRuntimeState {
                     TriggerSteerDelivery::Unconfirmed
                 }
                 Ok(false) => {
+                    release_steer_fence(owned, &prepared);
                     return Err(DaemonError::LocalTransport {
                         operation: "steer queued prompt",
                         message: "provider did not accept the queued prompt steer".into(),
                     });
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    release_steer_fence(owned, &prepared);
+                    return Err(error);
+                }
             };
             owned.finish_local_queued_prompt_steer(&prepared)?;
             Ok(delivery)

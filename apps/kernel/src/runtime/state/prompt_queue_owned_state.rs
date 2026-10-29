@@ -1207,6 +1207,72 @@ impl KernelRuntimeOwnedState {
         .map(Some)
     }
 
+    /// Persists the delivery fence on the durable queue entry. It must land
+    /// before the provider write: after a restart the entry then stays held
+    /// instead of running again as an ordinary queued prompt.
+    pub(super) fn fence_local_queued_prompt_steer(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+    ) -> Result<(), DaemonError> {
+        self.set_local_queued_prompt_steer_fence(prepared, true)
+    }
+
+    /// A definitive provider rejection releases the fence for automatic replay.
+    pub(super) fn release_local_queued_prompt_steer_fence(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+    ) -> Result<(), DaemonError> {
+        self.set_local_queued_prompt_steer_fence(prepared, false)
+    }
+
+    fn set_local_queued_prompt_steer_fence(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+        fenced: bool,
+    ) -> Result<(), DaemonError> {
+        let session_id = &prepared.dispatch.session_id;
+        let agent_id = &prepared.dispatch.agent_id;
+        let prompt_id = &prepared.dispatch.prompt_id;
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, mut queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        let Some(current_prompt) = queued_prompts
+            .iter_mut()
+            .find(|prompt| prompt.id() == prompt_id)
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist queued prompt steer fence",
+                message: format!("queued prompt `{prompt_id}` disappeared before its steer fence"),
+            });
+        };
+        let updated = if fenced {
+            current_prompt.fence_local_steer(prepared.reservation)
+        } else {
+            current_prompt.clear_local_steer_fence(prepared.reservation)
+        };
+        if !updated {
+            return Err(DaemonError::LocalTransport {
+                operation: "persist queued prompt steer fence",
+                message: format!(
+                    "queued prompt `{prompt_id}` no longer owns its steer reservation"
+                ),
+            });
+        }
+        let persisted = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        );
+        if fenced && persisted.is_err() {
+            prepared
+                .context
+                .queued_prompt
+                .clear_local_steer_fence(prepared.reservation);
+        }
+        persisted
+    }
+
     pub(super) fn finish_local_queued_prompt_steer(
         &self,
         prepared: &LocalQueuedPromptSteerPreparation,

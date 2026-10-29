@@ -1088,6 +1088,119 @@ async fn a_steer_whose_acknowledgement_is_lost_is_not_replayed_when_the_turn_end
 }
 
 #[tokio::test]
+async fn a_steer_pending_across_a_restart_is_not_replayed_when_the_recovered_turn_ends() {
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-restart-fence");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    install_structured_run(
+        &mut app,
+        &session,
+        &agent,
+        run.id(),
+        "dev-stub",
+        "lost-ack-structured",
+    );
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+    let dispatching = {
+        let runtime_state = router.runtime_state.clone();
+        let due = trigger.next_run_at_ms();
+        tokio::spawn(async move {
+            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
+        })
+    };
+
+    // The provider holds the steer and its acknowledgement is still pending.
+    let in_flight = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+            if let Some(prompt) = queued
+                .front()
+                .filter(|prompt| prompt.remote_steer_reserved())
+            {
+                break prompt.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the steer should be in flight");
+    let (active, _) = prompt_owner.state_parts(&session, agent.id());
+
+    // A restart keeps only what was persisted: rebuild the queue from the
+    // durable private state, with no reservation of this process.
+    let private: crate::session::DurablePromptPrivateState = serde_json::from_value(
+        serde_json::to_value(
+            crate::session::DurablePromptPrivateState::from_prompt(session.id(), &in_flight)
+                .expect("the fence must be persisted before the provider write"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut restored_queued: crate::session::PromptQueueItem =
+        serde_json::from_value(serde_json::to_value(&in_flight).unwrap()).unwrap();
+    restored_queued.restore_durable_private_state(&private);
+    let restored_active: crate::session::PromptQueueItem =
+        serde_json::from_value(serde_json::to_value(active.as_ref().unwrap()).unwrap()).unwrap();
+    let mut restored_session = session.clone();
+    restored_session.mirror_agent_prompt_state(
+        agent.id(),
+        Some(restored_active),
+        std::collections::VecDeque::from([restored_queued]),
+    );
+    let restarted = crate::runtime::prompt_state::PromptStateOwner::default();
+    restarted.restore_session_state(&restored_session);
+
+    assert!(
+        restarted
+            .peek_next_queued_prompt(&restored_session, agent.id())
+            .is_none(),
+        "the restored firing must stay held while the recovered turn runs"
+    );
+    restarted
+        .complete_active_prompt_only(&restored_session, agent.id())
+        .expect("the recovered turn should finish");
+    assert!(
+        restarted
+            .activate_next_queued_prompt_for_dispatch(&restored_session, agent.id(), None)
+            .unwrap()
+            .is_none(),
+        "the firing the provider may hold must not run again as a fresh prompt"
+    );
+    let (_, queued) = restarted.state_parts(&restored_session, agent.id());
+    assert!(
+        queued.is_empty(),
+        "the unconfirmed firing is resolved, not kept"
+    );
+    dispatching.await.expect("dispatch task should finish");
+}
+
+#[tokio::test]
 async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
     use crate::session::AgentTriggerOutcome;
     let worktree = crate::test_support::TestWorktree::new("trigger-steer-waits-for-provider");
