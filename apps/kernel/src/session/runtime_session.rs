@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_prompt_scheduling::AgentPromptSchedule;
+use super::agent_triggers::{AgentTrigger, AgentTriggers};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -134,8 +134,8 @@ pub struct RuntimeSession {
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    agent_prompt_schedules: Vec<AgentPromptSchedule>,
+    #[serde(flatten)]
+    agent_triggers: AgentTriggers,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -286,7 +286,7 @@ impl RuntimeSession {
             sudo_windows: Vec::new(),
             agent_wakes: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
-            agent_prompt_schedules: Vec::new(),
+            agent_triggers: AgentTriggers::default(),
             agent_output_read_state: BTreeMap::new(),
             pinned: false,
             config_state: SessionConfigState::default(),
@@ -344,31 +344,34 @@ impl RuntimeSession {
         self.alias = alias;
     }
 
-    pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {
-        &self.agent_prompt_schedules
+    pub fn agent_triggers(&self) -> &[AgentTrigger] {
+        &self.agent_triggers.0
     }
 
-    pub(crate) fn agent_prompt_schedules_mut(&mut self) -> &mut Vec<AgentPromptSchedule> {
-        &mut self.agent_prompt_schedules
+    pub(crate) fn agent_triggers_mut(&mut self) -> &mut Vec<AgentTrigger> {
+        &mut self.agent_triggers.0
     }
 
-    pub(crate) fn add_agent_prompt_schedule(
-        &mut self,
-        schedule: AgentPromptSchedule,
-    ) -> AgentPromptSchedule {
-        self.agent_prompt_schedules.push(schedule.clone());
-        schedule
+    pub(crate) fn add_agent_trigger(&mut self, trigger: AgentTrigger) -> AgentTrigger {
+        self.agent_triggers.0.push(trigger.clone());
+        trigger
     }
 
-    pub(crate) fn remove_agent_prompt_schedule(
-        &mut self,
-        schedule_id: &str,
-    ) -> Option<AgentPromptSchedule> {
+    pub(crate) fn remove_agent_trigger(&mut self, trigger_id: &str) -> Option<AgentTrigger> {
         let index = self
-            .agent_prompt_schedules
+            .agent_triggers
+            .0
             .iter()
-            .position(|schedule| schedule.id() == schedule_id)?;
-        Some(self.agent_prompt_schedules.remove(index))
+            .position(|trigger| trigger.id() == trigger_id)?;
+        Some(self.agent_triggers.0.remove(index))
+    }
+
+    pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {
+        let (removed, kept) = std::mem::take(&mut self.agent_triggers.0)
+            .into_iter()
+            .partition(|trigger| trigger.agent_id() == agent_id);
+        self.agent_triggers.0 = kept;
+        removed
     }
 
     pub fn workspace_id(&self) -> &str {

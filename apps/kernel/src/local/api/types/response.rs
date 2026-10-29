@@ -385,6 +385,9 @@ pub enum LocalDaemonResponse {
     PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
     AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
     AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
+    AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

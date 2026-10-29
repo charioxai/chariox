@@ -398,8 +398,9 @@ impl AgentService {
             || session_focused_agent_id.as_deref() == Some(agent_id);
 
         self.publish_outside_membership(&agent, crate::local::EventSessionState::AgentRemoved)?;
-        // Remove the agent
+        // Remove the agent and what fires prompts into it
         self.store.remove(agent_id);
+        sessions.remove_agent_triggers_for_agent(&session_id, agent_id)?;
 
         // Recalculate positions for remaining agents
         let mut remaining_agents: Vec<_> = self

@@ -1,5 +1,5 @@
 mod agent_config;
-mod agent_prompt_scheduling;
+mod agent_triggers;
 mod internal_prompts;
 pub(crate) use internal_prompts::{
     is_agent_inbox_prompt_id, is_internal_prompt_echo_id, is_internal_prompt_turn,
@@ -145,8 +145,9 @@ pub(crate) fn is_false(value: &bool) -> bool {
 pub(crate) fn is_zero(value: &usize) -> bool {
     *value == 0
 }
-pub use agent_prompt_scheduling::{
-    AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
+pub use agent_triggers::{
+    AgentPromptSchedule, AgentPromptScheduleKind, AgentTrigger, AgentTriggerBusyPolicy,
+    AgentTriggerDispatch, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

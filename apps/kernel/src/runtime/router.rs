@@ -213,7 +213,7 @@ mod tests {
 
     mod agent_archive;
     mod agent_messaging;
-    mod agent_prompt_schedules;
+    mod agent_triggers;
     mod app_bindings;
     mod app_capability_grants;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

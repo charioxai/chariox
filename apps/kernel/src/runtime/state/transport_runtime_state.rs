@@ -118,7 +118,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
-        self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
+        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms())
             .await;
     }
 
@@ -369,7 +369,6 @@ impl KernelRuntimeState {
         idle_interval_ms: u64,
         now_ms: u64,
     ) -> u64 {
-        let archived_agent_ids = self.owned.archived_agent_ids();
         let next_runtime_due_at_ms = [
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
@@ -384,7 +383,7 @@ impl KernelRuntimeState {
             self.owned
                 .session_store
                 .read()
-                .next_scheduled_runtime_wake_at_ms(&archived_agent_ids),
+                .next_scheduled_runtime_wake_at_ms(),
             now_ms,
             active_interval_ms,
             idle_interval_ms,

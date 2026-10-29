@@ -340,6 +340,19 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("agent_prompt_schedule.cancel", Interactive)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::CreateAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.create", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::UpdateAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.update", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::DeleteAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.delete", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CancelActivePrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.cancel", Interactive)
                 .session(&request.session_id)
@@ -995,6 +1008,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CompletePrompt(_) => "prompt.complete",
         LocalDaemonRequest::CreateAgentPromptSchedule(_) => "agent_prompt_schedule.create",
         LocalDaemonRequest::CancelAgentPromptSchedule(_) => "agent_prompt_schedule.cancel",
+        LocalDaemonRequest::CreateAgentTrigger(_) => "agent_trigger.create",
+        LocalDaemonRequest::UpdateAgentTrigger(_) => "agent_trigger.update",
+        LocalDaemonRequest::DeleteAgentTrigger(_) => "agent_trigger.delete",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",

@@ -30,6 +30,23 @@ pub(super) struct RemoteQueuedPromptSteerReceiptQuery {
     pub(super) leased_agent_id: String,
 }
 
+pub(super) struct LocalQueuedPromptSteerPreparation {
+    context: QueuedPromptSteerContext,
+    attachment_id: String,
+    reservation: u64,
+    pub(super) dispatch: crate::app::KernelPromptDispatch,
+}
+
+impl Drop for LocalQueuedPromptSteerPreparation {
+    fn drop(&mut self) {
+        let _ = self
+            .context
+            .queued_prompt
+            .release_remote_steer(self.reservation);
+    }
+}
+
+#[derive(Clone)]
 struct QueuedPromptSteerContext {
     session: crate::session::RuntimeSession,
     agent: crate::agent::AgentInstance,
@@ -1155,21 +1172,13 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        let dispatch = dispatch_locally.then(|| crate::app::KernelPromptDispatch {
-            session_id: session_id.to_string(),
-            provider_run_id: context.provider_run_id,
-            agent_id: agent_id.to_string(),
-            prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: Some(target_active_prompt_id),
-            source_attachment_id,
-            prompt: prompt.prompt().to_string(),
-            hidden_system_context: prompt.hidden_system_context().to_string(),
-            attachments: prompt.attachments().to_vec(),
-            prompt_origin: prompt.prompt_origin(),
-            external_provider: prompt.external_provider().map(str::to_string),
-            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
-            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-            steering: true,
+        let dispatch = dispatch_locally.then(|| {
+            Self::queued_prompt_steer_dispatch(
+                session_id,
+                agent_id,
+                &context,
+                &source_attachment_id,
+            )
         });
         Ok(crate::app::KernelQueuedPromptSteer {
             dispatch,
@@ -1185,20 +1194,99 @@ impl KernelRuntimeOwnedState {
         attachment_id: &str,
         prompt_id: &str,
     ) -> Result<Option<crate::app::KernelQueuedPromptSteer>, DaemonError> {
-        let context =
-            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
-        if context.agent.remote_execution().is_some() {
-            return Ok(None);
-        }
+        let prepared =
+            self.prepare_local_queued_prompt_steer(session_id, agent_id, attachment_id, prompt_id)?;
         self.commit_queued_prompt_steer(
             session_id,
             agent_id,
             attachment_id,
             prompt_id,
-            context,
+            prepared.context.clone(),
             true,
         )
         .map(Some)
+    }
+
+    pub(super) fn finish_local_queued_prompt_steer(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+    ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
+        self.commit_queued_prompt_steer(
+            &prepared.dispatch.session_id,
+            &prepared.dispatch.agent_id,
+            &prepared.attachment_id,
+            &prepared.dispatch.prompt_id,
+            prepared.context.clone(),
+            false,
+        )
+    }
+
+    fn queued_prompt_steer_dispatch(
+        session_id: &str,
+        agent_id: &str,
+        context: &QueuedPromptSteerContext,
+        source_attachment_id: &str,
+    ) -> crate::app::KernelPromptDispatch {
+        let prompt = &context.queued_prompt;
+        crate::app::KernelPromptDispatch {
+            session_id: session_id.to_string(),
+            provider_run_id: context.provider_run_id.clone(),
+            agent_id: agent_id.to_string(),
+            prompt_id: prompt.id().to_string(),
+            target_active_prompt_id: Some(context.active_prompt.id().to_string()),
+            source_attachment_id: source_attachment_id.to_string(),
+            prompt: prompt.prompt().to_string(),
+            hidden_system_context: prompt.hidden_system_context().to_string(),
+            attachments: prompt.attachments().to_vec(),
+            prompt_origin: prompt.prompt_origin(),
+            external_provider: prompt.external_provider().map(str::to_string),
+            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+            steering: true,
+        }
+    }
+
+    pub(super) fn prepare_local_queued_prompt_steer(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        attachment_id: &str,
+        prompt_id: &str,
+    ) -> Result<LocalQueuedPromptSteerPreparation, DaemonError> {
+        let context =
+            self.queued_prompt_steer_context(session_id, agent_id, attachment_id, prompt_id, None)?;
+        if context.agent.remote_execution().is_some() {
+            return Err(DaemonError::LocalTransport {
+                operation: "steer queued prompt",
+                message: "agent moved to a remote worker before local steer preparation".into(),
+            });
+        }
+        let source_attachment_id = self.promoted_prompt_source_attachment_id(
+            session_id,
+            context.queued_prompt.source_attachment_id(),
+        )?;
+        let dispatch = Self::queued_prompt_steer_dispatch(
+            session_id,
+            agent_id,
+            &context,
+            &source_attachment_id,
+        );
+        // The existing queue-owner reservation prevents completion from promoting
+        // this firing while delivery waits for the provider lane. The durable
+        // queue entry remains present until acceptance; dropping preparation on
+        // any refusal or cancellation releases the reservation.
+        let reservation = self.prompt_state_owner.reserve_queued_prompt_remote_steer(
+            &context.session,
+            agent_id,
+            context.active_prompt.id(),
+            &context.queued_prompt,
+        )?;
+        Ok(LocalQueuedPromptSteerPreparation {
+            context,
+            attachment_id: attachment_id.to_string(),
+            reservation,
+            dispatch,
+        })
     }
 
     #[expect(
