@@ -2289,8 +2289,10 @@ fn review0440_restored_project_alias_reuses_identity_and_workspace_session_refs(
             RuntimeProjectKind::Default,
         );
         service.restore_projects(vec![project.clone()]);
+        // This service commits only prepared identities; filesystem alias discovery
+        // belongs to the runtime's metadata worker, which supplies this saved binding.
         let resolved = service
-            .prepare_project_resolution(None, folder.to_str().unwrap(), "owner", false, None)
+            .prepare_project_resolution(Some(project.id()), &alias, "owner", false, None)
             .unwrap()
             .expect("legacy Project must remain discoverable");
         assert_eq!(resolved.id(), project.id());
@@ -2300,10 +2302,7 @@ fn review0440_restored_project_alias_reuses_identity_and_workspace_session_refs(
             "keep Environment folder identity stable"
         );
         let session = service
-            .create_session(
-                CreateSessionRequest::new(folder.to_str().unwrap(), folder.to_str().unwrap())
-                    .with_owner_user_id("owner"),
-            )
+            .create_session(CreateSessionRequest::new(&alias, &alias).with_owner_user_id("owner"))
             .unwrap();
         assert_eq!(session.project_id(), project.id());
         assert_eq!(

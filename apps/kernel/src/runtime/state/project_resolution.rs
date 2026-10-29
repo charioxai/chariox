@@ -683,5 +683,56 @@ char *realpath(const char *path, char *resolved) {
         );
     }
 
-
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r6_environment_restored_alias_lookup_runs_through_preparation() {
+        let root = crate::test_support::TestWorktree::new("r6-prepared-project-alias");
+        let folder = root.path().join("source");
+        std::fs::create_dir(&folder).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&folder, &alias).unwrap();
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let saved = crate::session::RuntimeProject::new(
+            "restored-alias",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            alias.to_str().unwrap(),
+            "Saved",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![saved.clone()]);
+        let response = r4_dispatch(
+            &router,
+            "r6-lookup-restored-alias",
+            crate::local::LocalDaemonRequest::ResolveProject(crate::local::ResolveProjectRequest {
+                project_id: None,
+                workspace_id: folder.to_str().unwrap().into(),
+                create_if_missing: false,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let LocalDaemonResponse::ProjectResolved {
+            project: Some(resolved),
+        } = response
+        else {
+            panic!("saved Project expected")
+        };
+        assert_eq!(resolved.id(), saved.id());
+        assert_eq!(resolved.workspace_id(), saved.workspace_id());
+        assert!(state
+            .owned
+            .session_store
+            .write()
+            .sessions_in_project(saved.id())
+            .is_empty());
+    }
 }
