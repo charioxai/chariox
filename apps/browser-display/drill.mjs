@@ -230,21 +230,19 @@ drill: try {
  await page.evaluate(async({ready,bitrate,pngOnly,creditWindow,requestedCodec,dpr,defaultDpr,protectedFixture,dynamicProtection,stripes,legacyRelay,requireBinary,layoutProtocol})=>{
   if(pngOnly)globalThis.VideoDecoder=undefined;
   const api=await import('/browser-relay-crypto.mjs');
-  const framing=await import('/relay-frame-transport.mjs');
   const sender=await api.createRelayKeypair();
   const bootstrap=await (await fetch('/relay-bootstrap')).json();
-  let socket,daemonKey,relayFrames,relayProtocolVersion=0;
+  let socket,connection,daemonKey,relayProtocolVersion=0;
   for(let attempt=0;attempt<100;attempt++){
     try {
-     socket=await api.connectRelaySocket(framing.relayTransportUrl(bootstrap.relay_url),!legacyRelay);
-     relayFrames=new framing.RelayFrameReceiver(socket);
-     const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{try{const text=relayFrames.receive(event.data,receipt=>socket.send(receipt));if(text===null)return;const m=JSON.parse(text);m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))}catch(error){reject(error)}};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
+     connection=await api.connectRelaySocket(bootstrap.relay_url,!legacyRelay);socket=connection.socket;
+     const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{try{const received=connection.receive(event.data);if(received===null)return;const m=typeof received==='string'?JSON.parse(received):received;m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))}catch(error){reject(error)}};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
      socket.send(JSON.stringify({kind:'client_connect',auth_token:bootstrap.client_token,target:{daemon_id:bootstrap.daemon_id}}));
-     const admitted=await connected;daemonKey=admitted.daemon_public_key;relayProtocolVersion=socket.protocol==='chariox-relay-binary-v96'?96:0;break;
+     const admitted=await connected;daemonKey=admitted.daemon_public_key;relayProtocolVersion=socket.protocol==='chariox-relay-binary-v97'?97:0;break;
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
    }
   if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
-  if(requireBinary&&relayProtocolVersion<96)throw Error('MP-08/MP-10: binary relay96 was not negotiated');
+  if(requireBinary&&relayProtocolVersion<97)throw Error('MP-08/MP-10: binary relay97 was not negotiated');
   window.mdRelayProtocolVersion=relayProtocolVersion;window.mdBinaryRelayFrames=0;
   let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];window.mdPresentations=[];window.mdTimings=[];
   const stamp=()=>performance.timeOrigin+performance.now();
@@ -253,9 +251,9 @@ drill: try {
    const binary=event.data instanceof ArrayBuffer;
    if(binary)window.mdBinaryRelayFrames++;
    window.mdWireBytes+=binary?event.data.byteLength:new TextEncoder().encode(event.data).length;
-   const arrived=stamp(),text=binary?null:relayFrames.receive(event.data,receipt=>socket.send(receipt));
-   if(!binary&&text===null)return;
-   const message=binary?api.decodeBinaryRelayEvent(new Uint8Array(event.data)):JSON.parse(text);
+   const arrived=stamp(),received=connection.receive(event.data);
+   if(received===null)return;
+   const message=typeof received==='string'?JSON.parse(received):received;
    if(message.kind==='client_response'){
      const p=pending.get(message.request_id);pending.delete(message.request_id);
      if(!p)return;
@@ -264,7 +262,7 @@ drill: try {
      timing('event_received',arrived);
      const value=await api.decryptRelayEvent(sender.privateKey,message.encrypted_event,daemonKey);
      timing('client_event_decrypt',arrived);
-     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?event.data.byteLength:event.data.length,arrived_ms:arrived,key:value.frame.kind==='png'||value.frame.kind==='video'&&value.frame.key===true||value.frame.kind==='stripes'&&value.frame.stripes?.length===8&&value.frame.stripes.every(row=>row.key)});for(const listener of listeners)listener(value);
+     window.mdFrames.push({sequence:value.frame.sequence,kind:value.frame.kind,codec:value.frame.codec??null,bytes:binary?message.encrypted_event.ciphertext.byteLength:event.data.length,byteScope:binary?'ciphertext payload; socket total includes all chunk headers':'text event envelope',arrived_ms:arrived,key:value.frame.kind==='png'||value.frame.kind==='video'&&value.frame.key===true||value.frame.kind==='stripes'&&value.frame.stripes?.length===8&&value.frame.stripes.every(row=>row.key)});for(const listener of listeners)listener(value);
    }
   };
   const control=(value,reserved)=>new Promise((resolve,reject)=>{const key=reserved??String(++id),timer=setTimeout(()=>{pending.delete(key);reject(Error('MD-DISPLAY request timeout'))},20000);pending.set(key,{resolve:value=>{clearTimeout(timer);resolve(value)},reject:error=>{clearTimeout(timer);reject(error)}});socket.send(JSON.stringify({request_id:key,...value}))});
