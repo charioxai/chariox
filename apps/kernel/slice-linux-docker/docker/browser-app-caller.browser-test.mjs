@@ -19,6 +19,13 @@ const script = `
   chariox.action(spec('throws'), async (input, caller) => { retained = caller; await caller.call('before_throw'); throw new Error('handler refused'); });
   chariox.action(spec('late'), async () => retained.call('late'));
   const filled = chariox.action(spec('filled'), async (input, caller) => { await caller.call('filled'); await caller.call('after_fill'); });
+  document.querySelector('#filled').addEventListener('beforeinput', event => {
+    window.beforeEdit = {data:event.data, trusted:event.isTrusted, cancellable:event.cancelable};
+    if (window.transformEdit) {
+      event.preventDefault();
+      document.execCommand('insertText', false, event.data.toUpperCase());
+    }
+  });
   document.addEventListener('input', event => { if (event.target.id === 'filled') return filled({}); }, true);
   document.querySelector('#human').onclick = () => chariox.call('human');
   chariox.form(document.querySelector('#save'), async (input, caller) => { await caller.call('save', input); await caller.call('refresh'); });
@@ -69,7 +76,7 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill']]) {
       if (input.startsWith('room_')) {
         const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
@@ -79,9 +86,14 @@ test('caller attribution and registered form completion through Chromium', async
         const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:input !== 'room_fill'};
         await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
           node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
-      } else if (input === 'text' || input === 'printable') {
+      } else if (input === 'text' || input === 'printable' || input === 'transform') {
+        await evaluate(`window.transformEdit = ${input === 'transform'}; document.querySelector('#filled').value = ''`);
         await browserClick('#filled');
-        await browserInput(input === 'text' ? {kind:'text',text:'Inserted'} : {kind:'key',key:'a'},'agent-one');
+        await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:'Inserted'},'agent-one');
+        if (input === 'text' || input === 'transform') {
+          assert.deepEqual(await evaluate('window.beforeEdit'), {data:'Inserted',trusted:true,cancellable:true});
+          assert.equal(await evaluate("document.querySelector('#filled').value"),input === 'transform' ? 'INSERTED' : 'Inserted');
+        }
       } else if (input === 'click') await browserClick('#agent','agent-one');
       else if (input === 'form_click') await browserClick('#save button','agent-one');
       else {
@@ -158,3 +170,61 @@ test('caller attribution and registered form completion through Chromium', async
     }
   } finally { await host.stop(); await rm(root,{recursive:true,force:true}); }
 });
+
+for (const focus of ['button', 'readonly', 'body', 'cancel', 'transform']) {
+  test(`claimed text on ${focus} keeps the browser and another App tab live`, async () => {
+    assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'explicit disposable root required');
+    const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'app-text-'));
+    const host = new KernelBrowserHost(root);
+    let request = 0;
+    const handle = (method, params) => host.handle({id:++request,method,params});
+    try {
+      const assets = [asset('index.html','text/html',`<!doctype html><body tabindex="-1">
+        <button id="button">Button</button><input id="readonly" readonly value="Fixed"><input id="cancel"><input id="transform"><input id="editable">
+        <script src="app.js"></script>`), asset('app.js','text/javascript',`window.edits = []; document.querySelector('#cancel').addEventListener('beforeinput', event => {
+          window.edits.push({data:event.data,trusted:event.isTrusted,cancellable:event.cancelable}); event.preventDefault();
+        }); document.querySelector('#transform').addEventListener('beforeinput', event => {
+          window.edits.push({data:event.data,trusted:event.isTrusted,cancellable:event.cancelable}); event.preventDefault();
+          document.execCommand('insertText', false, event.data.toUpperCase());
+        }); window.ready = true;`)];
+      const opened = await handle('browser.app.open',{origin_label:'text-test',installation_id:'text-test',assets});
+      assert.equal(opened.ok,true,JSON.stringify(opened));
+      const target = opened.result.target_id;
+      const other = await handle('browser.app.open',{origin_label:'other-app',installation_id:'other-app',assets});
+      assert.equal(other.ok,true,JSON.stringify(other));
+      const {connection,sessionId} = await host.browser.resolvePageTarget(target);
+      const otherSession = (await host.browser.resolvePageTarget(other.result.target_id)).sessionId;
+      const evaluate = async (expression, session = sessionId) => {
+        const reply = await connection.send('Runtime.evaluate',{expression,returnByValue:true},session);
+        assert.equal(reply.exceptionDetails,undefined,JSON.stringify(reply.exceptionDetails));
+        return reply.result.value;
+      };
+      for (const session of [sessionId, otherSession]) {
+        for (let i=0;i<100 && !await evaluate('window.ready === true',session);i++) await delay(20);
+        assert.equal(await evaluate('window.ready === true',session),true);
+      }
+      const selector = focus === 'body' ? 'body' : '#'+focus;
+      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus(); document.activeElement === document.querySelector(${JSON.stringify(selector)})`),true);
+      const tab = [...host.tabs.values()].find(tab => tab.target_id === target);
+      const generation = host.generation;
+      const input = async text => {
+        const reply = await handle('host.browser',{op:'input',tab_id:tab.tab_id,generation,
+          document_id:tab.document_id,input:{kind:'text',text},_agent_input:true,observed_by:'agent:agent-one',_app_view_tab:tab.tab_id});
+        assert.equal(reply.ok,true,JSON.stringify(reply));
+      };
+      await input('Refused');
+      assert.equal(connection.isOpen(),true,'the original Chromium connection stays open');
+      assert.equal(host.generation,generation,'no browser restart');
+      assert.equal(await evaluate('window.ready === true',otherSession),true,'another App stays live');
+      assert.equal(await evaluate("document.querySelector('#readonly').value"),'Fixed');
+      assert.equal(await evaluate("document.querySelector('#cancel').value"),'');
+      if (focus === 'transform') assert.equal(await evaluate("document.querySelector('#transform').value"),'REFUSED');
+      if (focus === 'cancel' || focus === 'transform') assert.deepEqual(await evaluate('window.edits'),[{data:'Refused',trusted:true,cancellable:true}]);
+      assert.equal(await evaluate('document.body.textContent.includes("Refused")'),false);
+      await evaluate("document.querySelector('#editable').focus()");
+      await input('Following edit');
+      assert.equal(await evaluate("document.querySelector('#editable').value"),'Following edit');
+      assert.equal(await evaluate('window.ready === true',otherSession),true);
+    } finally { await host.stop(); await rm(root,{recursive:true,force:true}); }
+  });
+}
