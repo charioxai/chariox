@@ -209,10 +209,11 @@ pub(crate) async fn execute_create_pairing_invite_request(
             operation: "create pairing invite",
             message: "relay token must be configured before creating an invite".to_string(),
         })?;
-    if config
-        .cloud_relay
-        .as_ref()
-        .is_some_and(|profile| profile.kernel_credential.is_some())
+    if (crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
+        && config
+            .cloud_relay
+            .as_ref()
+            .is_some_and(|profile| profile.kernel_credential.is_some()))
         || super::self_host_terminal_grants::pairing_transport_token(relay_token.clone())
             != relay_token
     {
@@ -283,11 +284,12 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
     // Enrollment can issue a CLIENT grant only after the receiving terminal
     // supplies its key. Bootstrap belongs to that terminal's own client profile.
     let relay_token = if config.cloud_relay.as_ref().is_some_and(|profile| {
-        profile.relay_url == relay_url && profile.kernel_credential.is_some()
+        crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
+            && profile.kernel_credential.is_some()
     }) {
         "cloud-client-token-required".into()
     } else if let Some(profile) = config.cloud_relay.clone().filter(|profile| {
-        profile.relay_url == relay_url
+        crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
             && (profile.cloud_session_token.is_some() || profile.machine_credential.is_some())
     }) {
         // A refused receiving terminal grant does not revoke the issuer.
@@ -452,10 +454,11 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
         });
     }
     let config = config_projection.snapshot();
-    if config
-        .cloud_relay
-        .as_ref()
-        .is_some_and(|profile| profile.kernel_credential.is_some())
+    if crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
+        && config
+            .cloud_relay
+            .as_ref()
+            .is_some_and(|profile| profile.kernel_credential.is_some())
         && (token.target_daemon_id != config.daemon_id
             || config.relay_url.as_deref() != Some(token.relay_url.as_str())
             || request.public_key_thumbprint.is_none())
@@ -626,6 +629,106 @@ fn current_unix_ms() -> u64 {
 #[cfg(test)]
 mod self_host_invite_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn private_relay_with_retained_cloud_profile_requires_terminal_grants() {
+        // MP-08 / MP-10 / MP-11: enrollment cannot bypass private-relay admission.
+        use crate::runtime::self_host_terminal_grants as grants;
+        use std::sync::Arc;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-loginux-review-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.relay_url = Some("ws://operator-relay".into());
+        config.relay_token = Some("synthetic-operator-transport".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://cloud-relay".into(),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            ..Default::default()
+        });
+        assert!(grants::admit(&config, "unpaired-terminal-key").is_err());
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let projection = app.config_projection_store();
+        let catalog = app.provider_catalog_projection_store();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let runtime = router.runtime_state();
+        let created = execute_create_terminal_pairing_link_request(
+            &runtime,
+            &projection,
+            serde_json::from_value(serde_json::json!({})).unwrap(),
+        )
+        .await
+        .unwrap();
+        let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } = created else {
+            panic!("expected terminal pairing link");
+        };
+        assert_eq!(grants::entries(&config).unwrap().len(), 1);
+        let join = JoinTerminalPairingLinkRequest {
+            pairing_link: pairing.pairing_link.clone(),
+            terminal_id: Some(pairing.terminal_id.clone()),
+            public_key_thumbprint: Some(public_key_thumbprint("terminal-key")),
+            alias: None,
+            terminal_type: Some(TerminalType::Cli),
+        };
+        let mut other = config.clone();
+        other.daemon_id = "other-kernel".into();
+        assert!(execute_join_terminal_pairing_link_request(
+            &runtime,
+            &DaemonConfigProjectionStore::new(other),
+            join.clone(),
+        )
+        .await
+        .is_err());
+        let joined = execute_join_terminal_pairing_link_request(&runtime, &projection, join)
+            .await
+            .unwrap();
+        assert!(matches!(
+            joined,
+            LocalDaemonResponse::TerminalPairingLinkJoined {
+                relay_token: None,
+                kernel_pairing: true,
+                ..
+            }
+        ));
+        assert!(grants::admit(&config, "terminal-key").unwrap().is_some());
+        for request in [
+            LocalDaemonRequest::ListTerminals(crate::local::ListTerminalsRequest),
+            LocalDaemonRequest::ListPairedClients(crate::local::ListPairedClientsRequest),
+        ] {
+            let response = execute_pairing_request(&runtime, &projection, &catalog, request)
+                .await
+                .unwrap();
+            match response {
+                LocalDaemonResponse::TerminalsListed { terminals } => {
+                    assert_eq!(terminals.len(), 1)
+                }
+                LocalDaemonResponse::PairedClientsListed { clients } => {
+                    assert_eq!(clients.len(), 1)
+                }
+                _ => panic!("expected paired terminal inventory"),
+            }
+        }
+        execute_pairing_request(
+            &runtime,
+            &projection,
+            &catalog,
+            LocalDaemonRequest::RevokePairedClient(
+                serde_json::from_value(serde_json::json!({ "client_id": pairing.terminal_id }))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(grants::admit(&config, "terminal-key").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn cloud_generic_invites_cannot_export_kernel_transport_tokens() {

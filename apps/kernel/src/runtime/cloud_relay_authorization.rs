@@ -14,8 +14,9 @@ pub(crate) fn authorize_kernel_cloud_request(
     // MP-08 / MP-10 / MP-11: a paired remote caller can renew its own
     // identity only. Otherwise a revoked CLIENT could request an unregistered
     // attached-local subject with the same still-valid delegated token.
-    if config.cloud_relay.is_some() && command.caller.caller_kind == KernelCallerKind::RemoteClient
-    {
+    let hosted_transport =
+        crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config);
+    if command.caller.caller_kind == KernelCallerKind::RemoteClient {
         let binding = match request {
             LocalDaemonRequest::IssueCloudRelayClientToken(request) => Some((
                 Some(request.client_id.as_str()),
@@ -25,7 +26,7 @@ pub(crate) fn authorize_kernel_cloud_request(
                 request.client_id.as_deref(),
                 request.public_key_thumbprint.as_deref(),
             )),
-            LocalDaemonRequest::JoinTerminalPairingLink(request) => Some((
+            LocalDaemonRequest::JoinTerminalPairingLink(request) if hosted_transport => Some((
                 request.terminal_id.as_deref(),
                 request.public_key_thumbprint.as_deref(),
             )),
@@ -75,16 +76,17 @@ pub(crate) fn authorize_kernel_cloud_request(
             | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
+            // A private pivot reuses the kernel's own relay credential.
             | LocalDaemonRequest::ResolveKernelClientConnection(_)
     );
-    let directory = config.cloud_relay.is_some()
+    let directory = hosted_transport
         && matches!(
             request,
             LocalDaemonRequest::ListRemoteMachines(_)
                 | LocalDaemonRequest::ListRemoteMachineKernels(_)
                 | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
         );
-    let cloud_pairing = config.cloud_relay.is_some()
+    let cloud_pairing = hosted_transport
         && matches!(
             request,
             LocalDaemonRequest::CreateTerminalPairingLink(_)
@@ -116,7 +118,7 @@ pub(crate) fn kernel_cloud_owner(config: &DaemonConfig, command: &KernelCommand)
 }
 
 pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCaller) -> bool {
-    if let Some(profile) = &config.cloud_relay {
+    if let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(config) {
         if caller.caller_kind == KernelCallerKind::RemoteClient
             && caller.user_id.as_deref() == Some(profile.user_id.as_str())
             && caller.realm_id.as_deref() == Some(profile.realm_id.as_str())
@@ -131,6 +133,36 @@ pub(crate) fn cloud_relay_caller_owner(config: &DaemonConfig, caller: &KernelCal
 mod tests {
     use super::*;
     use crate::local::ResolveKernelClientConnectionRequest;
+    #[test]
+    fn retained_profile_private_requests_do_not_spend_cloud_authority() {
+        // MP-08 / MP-10 / MP-11: private grants admit private operations only.
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("ws://operator-relay".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://cloud-relay".into(),
+            user_id: "cloud-owner".into(),
+            realm_id: "cloud-realm".into(),
+            ..Default::default()
+        });
+        for value in [
+            serde_json::json!({"ListRemoteMachines": null}),
+            serde_json::json!({"JoinTerminalPairingLink": {"pairing_link": "synthetic-link"}}),
+        ] {
+            let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
+            let mut command = KernelCommand::from_local_request("private", None, None, &request);
+            command.source = KernelCommandSource::RelayClient;
+            command.caller.caller_kind = KernelCallerKind::RemoteClient;
+            command.caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
+            assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+            let cloud = LocalDaemonRequest::CloudRelayStatus(crate::local::CloudRelayStatusRequest);
+            assert!(authorize_kernel_cloud_request(&config, &command, &cloud).is_err());
+            command.caller.user_id = Some("cloud-owner".into());
+            command.caller.realm_id = Some("cloud-realm".into());
+            assert!(authorize_kernel_cloud_request(&config, &command, &request).is_ok());
+            assert!(authorize_kernel_cloud_request(&config, &command, &cloud).is_err());
+        }
+    }
+
     #[test]
     fn paired_terminal_cannot_renew_a_different_identity_or_key() {
         let mut config = DaemonConfig::for_tests();
