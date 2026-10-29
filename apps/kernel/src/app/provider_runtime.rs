@@ -511,7 +511,7 @@ impl DaemonApp {
         workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
-        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
+        crate::provider::prepare_claude_onboarding_state(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let initial_run = self.providers.start_run_provider_only(request)?.into_run();
         let run_id = initial_run.id().to_string();

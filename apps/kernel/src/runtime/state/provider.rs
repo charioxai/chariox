@@ -130,7 +130,7 @@ impl KernelRuntimeOwnedState {
             }
         }
 
-        crate::provider::prepare_vaulted_claude_native_onboarding(&request)?;
+        crate::provider::prepare_claude_onboarding_state(&request)?;
         let provider_credential_env = std::mem::take(&mut request.provider_credential_env);
         let session = self.session_store.get_session(&session_id)?;
         let agent_id = request

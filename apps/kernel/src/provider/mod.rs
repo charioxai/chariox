@@ -65,7 +65,7 @@ pub(crate) use account_credential::{
     validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
-pub(crate) use claude::prepare_vaulted_claude_native_onboarding;
+pub(crate) use claude::prepare_claude_onboarding_state;
 pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
 
 /// Names the launching kernel's pid in every process it starts for a provider run, and so in the
