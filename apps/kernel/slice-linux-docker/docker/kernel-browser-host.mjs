@@ -31,7 +31,7 @@ import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs"
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
-import { inputHostTab } from "./kernel-browser-input.mjs";
+import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
@@ -1054,8 +1054,8 @@ export class KernelBrowserHost {
       }
       catch (error) {
         if (dispatched) markDispatched(error);
-        // A busy renderer that is only late to acknowledge a CDP press/release (both already queued in order) leaves nothing held: it must not take the browser down.
-        if ((dispatched && !lateInputAck(error) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
+        // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
+        if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays.
           await this.stop();
