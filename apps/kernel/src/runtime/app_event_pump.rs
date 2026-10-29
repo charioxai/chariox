@@ -19,6 +19,15 @@ struct State {
     maintenance: Option<AppCursor>,
     dispatch: Option<String>,
     notification_after: Option<(String, String)>,
+    /// Notification injections a task or pass is delivering right now.
+    notifications_claimed: std::collections::BTreeSet<AppCursor>,
+}
+/// Exclusive hold on one notification injection while it is delivered. A remote
+/// delivery moves it onto its own task, so the item stays held after the pass
+/// that admitted it has finished; dropping it wakes the pump.
+pub(crate) struct NotificationClaim {
+    state: Arc<Mutex<State>>,
+    key: AppCursor,
 }
 pub(crate) struct AppEventPass {
     state: Arc<Mutex<State>>,
@@ -38,7 +47,20 @@ impl AppEventPump {
             maintenance: None,
             dispatch: None,
             notification_after: None,
+            notifications_claimed: std::collections::BTreeSet::new(),
         })))
+    }
+    pub(crate) fn claim_notification(&self, session: &str, id: &str) -> Option<NotificationClaim> {
+        let key = (session.to_owned(), id.to_owned());
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .notifications_claimed
+            .insert(key.clone())
+            .then(|| NotificationClaim {
+                state: self.0.clone(),
+                key,
+            })
     }
     /// Rotate pending injections on the existing pump, including paused/retrying
     /// items, so a retained first page cannot starve later receipts.
@@ -132,6 +154,16 @@ impl AppEventPass {
         state.next = Instant::now() + Duration::from_secs(1);
         state.in_flight = false;
         self.finished = true;
+    }
+}
+impl Drop for NotificationClaim {
+    fn drop(&mut self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.notifications_claimed.remove(&self.key);
+        state.wake = true;
     }
 }
 impl Drop for AppEventPass {
