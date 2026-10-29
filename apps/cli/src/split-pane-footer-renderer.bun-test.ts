@@ -124,3 +124,35 @@ for (const kind of ["interrupted_by_restart", "cancelled", "completed", "other"]
     } finally { harness.renderer.destroy() }
   })
 }
+
+
+// MP-08 / MP-09 / MP-10 / MP-11: diagnostics must leave room for the transcript and retry.
+test("EA2-80 narrow footer bounds multiline provider errors and keeps Continue visible", async () => {
+  const harness = await createTestRenderer({ width: 40, height: 16, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { width: 40 })
+  harness.renderer.root.add(box)
+  const agent = { id: "agent-1", state: "Idle", provider: "codex" }
+  const reason = ("Provider diagnostic 漢字 🐛 with extra detail\n".repeat(200)) + "END OF DIAGNOSTIC"
+  const outcome = { kind: "other", reason, retryable: true }
+  const options = {
+    renderer: harness.renderer, state: createSplitPaneFooterRenderState(), primaryBox: box,
+    auxiliaryBoxes: [], showAgentFooters: true, maxAgentsPerScreen: 1,
+    session: { id: "room", agents: [agent], agent_activity: { "agent-1": {
+      busy: false, prompt_status: "none", last_completed_turn: { turn_id: "turn-1", outcome },
+    } } }, visibleAgents: [agent], metaagentTasks: [], focusedAgentId: "agent-1", providerRun: null,
+    currentProviderSelection: { provider: "codex", model: "gpt-6-luna", effort: "low" },
+    agentActivityLabels: {}, streamingAgentId: null, agentBusyLatch: () => false,
+    sessionConfigValues: {}, agentLocationLabel: () => null, providerAccountLabel: () => "",
+    badgeWidth: STATUS_BADGE_WIDTH, animationFrame: 0,
+  } as unknown as SplitPaneFooterRenderOptions
+  try {
+    renderSplitPaneFooters(options)
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.ok(frame.includes("Continue: /continue"), frame)
+    assert.ok(frame.includes("..."), frame)
+    assert.equal(options.state.primary.outcomeText!.height, 1, "diagnostic occupies one line")
+    assert.ok(!options.state.primary.outcomeText!.plainText.includes("\n"), "collapse diagnostic newlines")
+    assert.equal(outcome.reason, reason, "history/state retains the complete diagnostic")
+  } finally { harness.renderer.destroy() }
+})
