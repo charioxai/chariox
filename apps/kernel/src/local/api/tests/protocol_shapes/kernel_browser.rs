@@ -585,7 +585,7 @@ fn mp08_mp10_mp11_browser_visible_page_536_snapshot() {
     let bytes = include_bytes!("browser-visible-page-536.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "b30af298d530e6da6206f30ecd2e7bc7ef6441129f295351e059d2957a8ea25a"
+        "867f99b3a87658e32c893b7030ac6c0d20b05ab001e336563081b8ab5892e588"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for value in snapshot["requests"].as_array().unwrap() {

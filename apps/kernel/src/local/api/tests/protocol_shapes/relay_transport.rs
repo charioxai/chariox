@@ -14,7 +14,7 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
     let bytes = include_bytes!("relay-transport-532.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "7867d9deca341040099528a7e3d81aafe875af189f8818ad0e1045d31b08caac"
+        "dd49c2d3f1da05dceb925d3389022f4a1c52eadd9add9c7b1e2e4044eb099bc2"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local"], 532);

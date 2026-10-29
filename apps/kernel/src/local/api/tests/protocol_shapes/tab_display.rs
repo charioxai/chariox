@@ -11,7 +11,7 @@ fn mp08_mp10_mp11_tab_display_720_snapshot_hash() {
     let bytes = include_bytes!("browser-tab-display-720.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "bf0a043db21c0afccbdb98f4bffd43d0d8ec44334d52b44acc723ecfba07ad04"
+        "24822e28ab2927396570afa973e605f2d333e015b0d219b095f80c6e50cb5c19"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], 720);

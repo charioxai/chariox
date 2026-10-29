@@ -2,12 +2,6 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome};
 
-pub(super) fn is_legacy_goal_template(workflow: &crate::session::WorkflowDefinition) -> bool {
-    workflow.alias().is_some_and(|alias| {
-        alias == "planner-worker-reviewer" || alias.starts_with("planner-worker-reviewer-")
-    })
-}
-
 impl KernelRuntimeOwnedState {
     /// Old snapshots cannot prove whether the registry template was invoked
     /// through `/goal` or manually, so a live planner/worker/reviewer run no

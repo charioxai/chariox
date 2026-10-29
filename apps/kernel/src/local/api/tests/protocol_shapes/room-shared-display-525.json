@@ -1,6 +1,6 @@
 {
-  "local_protocol": 811,
-  "peer_protocol": 361,
+  "local_protocol": 525,
+  "peer_protocol": 133,
   "request": {
     "GetSliceDisplayEndpoint": {
       "slice_ref": "slice-1",
