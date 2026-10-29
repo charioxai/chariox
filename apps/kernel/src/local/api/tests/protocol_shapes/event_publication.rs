@@ -370,3 +370,49 @@ fn workflow_turn_context_shape_is_versioned() {
         "ee11932387891cb53da8ddaa37805476972a9323531f648f88d5fa8f522e1c21"
     );
 }
+
+#[test]
+fn local_daemon_protocol_received_event_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 880);
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        430
+    );
+    let event = serde_json::json!({
+        "delivery_id": "delivery-1",
+        "event_type": "pull_request.synchronize",
+        "occurrence_id": "occurrence-1",
+        "connection_id": "connection-1",
+        "connection_scope": "charioxai/chariox",
+        "subject": "#1026",
+        "received_at_ms": 1_000,
+        "published_at_ms": 2_000,
+        "status": "published",
+        "attempts": 1,
+        "publication_count": 1
+    });
+    let requests = [
+        serde_json::json!({"ListEventConnectionEvents": {"connection_id": "connection-1", "limit": 20}}),
+        serde_json::json!({"ReplayEventConnectionEvent": {"connection_id": "connection-1", "delivery_id": "delivery-1"}}),
+    ];
+    for request in requests {
+        let typed: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), request);
+    }
+    let defaulted: LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"ListEventConnectionEvents": {"connection_id": "connection-1"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(defaulted).unwrap(),
+        serde_json::json!({"ListEventConnectionEvents": {"connection_id": "connection-1", "limit": 50}})
+    );
+    let responses = [
+        serde_json::json!({"EventConnectionEvents": {"page": {"events": [event.clone()]}}}),
+        serde_json::json!({"EventConnectionEventReplayed": {"result": {"event": event}}}),
+    ];
+    for response in responses {
+        let typed: LocalDaemonResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), response);
+    }
+}

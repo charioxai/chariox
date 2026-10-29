@@ -86,6 +86,12 @@ impl CommandRouter {
                 Some(request.connection_id.clone())
             }
             LocalDaemonRequest::TestEventConnection(request) => Some(request.connection_id.clone()),
+            LocalDaemonRequest::ListEventConnectionEvents(request) => {
+                Some(request.connection_id.clone())
+            }
+            LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
+                Some(request.connection_id.clone())
+            }
             LocalDaemonRequest::ReconnectEventConnection(request) => {
                 Some(request.connection_id.clone())
             }

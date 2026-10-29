@@ -153,6 +153,25 @@ export type EventConnectionTestResult = {
   message?: string | null
 }
 
+export type ReceivedEventStatus = "pending" | "published" | "unmatched" | "failed"
+
+export type ReceivedEvent = {
+  delivery_id: string
+  event_type: string
+  occurrence_id: string
+  connection_id?: string | null
+  connection_scope: string
+  subject?: string | null
+  received_at_ms: number
+  published_at_ms?: number | null
+  status: ReceivedEventStatus
+  attempts: number
+  publication_count: number
+  last_error?: string | null
+}
+
+export type ReceivedEventPage = { events: ReceivedEvent[] }
+
 export type EventConnectionAuthorization = {
   authorization_id: string
   generator_id: string

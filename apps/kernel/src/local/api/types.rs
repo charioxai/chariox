@@ -397,4 +397,7 @@ pub use workspace::*;
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity (public snapshot schema 14).
 /// MP-08/MP-09/MP-10/MP-11: allocated 910 adds the optional `images` data-URL list and `images_omitted` count to the
 /// provider tool payload (Claude tool results), and Codex web search and image view tool calls with their lifecycle status.
+/// Allocated 880 adds owner-scoped listing and replay of the webhooks an integration received
+/// (`ListEventConnectionEvents`, `ReplayEventConnectionEvent`); the predecessor list keeps only the
+/// current release (636) and the one before it (629).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 910;

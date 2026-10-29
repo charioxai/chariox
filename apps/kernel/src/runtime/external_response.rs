@@ -526,6 +526,8 @@ response_policies! {
         EventConnection,
         EventConnectionResourcesPage,
         EventConnectionTested,
+        EventConnectionEvents,
+        EventConnectionEventReplayed,
         EventConnectionDependencies,
         EventConnectionRemoved,
         EventDeliveryStatus,
