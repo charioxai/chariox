@@ -945,30 +945,13 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
         .session_store
         .write()
         .restore_session(other.clone());
-    let router = f.router.clone();
-    let resolving = tokio::spawn(async move {
-        router.dispatch_authenticated_runtime_tool_call("sudo-fixture-bearer", "chariox_kernel_request", serde_json::json!({"request":{"ResolveSession":{"session_ref":"sudo-other-alias", "workspace_id":null}}})).await
-    });
-    let scope_prompt = popup(&f.state).await;
-    assert!(scope_prompt.interaction_id.contains(":scope:"));
-    f.state
-        .answer_terminal_runtime_interaction(
-            &turn.session_id,
-            &scope_prompt.interaction_id,
-            "approve",
-            None,
-            Some("local"),
-            Some(&ApprovalPasskey::new(PASSKEY)),
-            None,
-            Some(KernelConnectionClass::Terminal),
-        )
-        .await
-        .unwrap();
-    let resolved = tokio::time::timeout(Duration::from_secs(5), resolving)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let resolved = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.router.dispatch_authenticated_runtime_tool_call("sudo-fixture-bearer", "chariox_kernel_request", serde_json::json!({"request":{"ResolveSession":{"session_ref":"sudo-other-alias", "workspace_id":null}}})),
+    )
+    .await
+    .expect("another session asked for consent again")
+    .unwrap();
     assert_eq!(
         resolved.payload["SessionResolved"]["session"]["id"],
         other.id()
@@ -1000,8 +983,8 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
                     value: "16".into()
                 })
             )
-            .is_err(),
-        "an unclassified host mutation needs explicit owner scope authorization"
+            .is_ok(),
+        "a live window covers every request the owner has not reserved"
     );
     let session = f
         .state

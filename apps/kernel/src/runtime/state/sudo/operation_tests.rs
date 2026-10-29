@@ -263,10 +263,11 @@ async fn sudo_operations_host_workspace_parameters_reuse_task_consent() {
         compare_ref: None,
         limit: None,
     });
+    // A live window covers the whole kernel, not only the task's workspace.
     assert!(f
         .state
         .authorize_sudo_request(&turn.entry_id, &foreign)
-        .is_err());
+        .is_ok());
 }
 
 #[cfg(target_os = "linux")]

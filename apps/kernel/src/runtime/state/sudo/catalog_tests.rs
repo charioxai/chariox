@@ -569,10 +569,6 @@ async fn catalog_row(
                 f.state.owned.sudo_timers.lock().unwrap().is_empty(),
                 "{name}"
             );
-            assert!(
-                f.state.owned.sudo_scopes.lock().unwrap().is_empty(),
-                "{name}"
-            );
         }
     }
     // No popup may outlive the request: an open vault popup would

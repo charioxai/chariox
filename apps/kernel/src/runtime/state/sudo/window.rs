@@ -18,21 +18,21 @@ pub(crate) fn sudo_window_minutes(reply: Option<&str>) -> Result<u32, DaemonErro
     }
 }
 
-/// Starts the window at verification time; extension restarts it, never banks.
-#[cfg(test)]
-pub(super) fn open_window(turn: &mut KernelSudoTurn, minutes: u32) {
-    open_window_at(
-        turn,
-        minutes,
-        (Instant::now(), crate::session::unix_epoch_ms()),
-    );
-}
-
 /// Regression-only short windows, keyed by session so parallel tests keep the
 /// real durations. Real elapsed-time proof stays with the live drills.
 #[cfg(test)]
 pub(crate) static SUDO_WINDOW_LENGTH_FOR_TEST: std::sync::Mutex<BTreeMap<String, Duration>> =
     std::sync::Mutex::new(BTreeMap::new());
+
+/// The monotonic deadline does not count host sleep, the displayed expiry
+/// does: a window ends at whichever comes first.
+pub(super) fn window_lapsed(turn: &KernelSudoTurn) -> bool {
+    turn.deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+        || turn
+            .expires_at_ms
+            .is_some_and(|expires_at_ms| crate::session::unix_epoch_ms() >= expires_at_ms)
+}
 
 pub(super) fn open_window_at(turn: &mut KernelSudoTurn, minutes: u32, verified: (Instant, u64)) {
     let length = Duration::from_secs(u64::from(minutes) * 60);
@@ -299,11 +299,6 @@ impl KernelRuntimeState {
             .expect("sudo timers poisoned")
             .remove(&turn.entry_id);
         self.owned
-            .sudo_scopes
-            .lock()
-            .expect("sudo scopes poisoned")
-            .remove(&turn.entry_id);
-        self.owned
             .sudo_verified_at
             .lock()
             .expect("sudo verification clocks poisoned")
@@ -467,7 +462,8 @@ impl KernelRuntimeState {
                 .get_mut(&turn.entry_id)
                 .filter(|current| {
                     current.revision == turn.revision
-                        && current.deadline.is_some_and(|d| Instant::now() < d)
+                        && current.deadline.is_some()
+                        && !window_lapsed(current)
                 })
                 .ok_or_else(|| error("sudo window ended or changed before the extension"))?;
             open_window_at(current, minutes, verified);

@@ -14,10 +14,7 @@ impl KernelRuntimeOwnedState {
         ) {
             return Some("requester_ended");
         }
-        if turn
-            .deadline
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
+        if super::window::window_lapsed(turn) {
             return Some("expired");
         }
         let prompt_id = turn.prompt_id.as_deref()?;
@@ -192,16 +189,6 @@ impl KernelRuntimeState {
         id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
-        let session = self.check_sudo_request(id, request)?;
-        self.require_sudo_scope(id, request)?;
-        Ok(session)
-    }
-
-    pub(super) fn check_sudo_request(
-        &self,
-        id: &str,
-        request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
         let turn = self
             .owned
             .sudo_turns
@@ -223,6 +210,16 @@ impl KernelRuntimeState {
         }
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
+        }
+        // No session has an empty id, so the request cannot work as written.
+        if matches!(
+            crate::runtime::session_membership::scope::request_session_scope(request),
+            Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(id))
+                if id.trim().is_empty()
+        ) {
+            return Err(error(
+                "this kernel request names an empty session_id; pass a session id from chariox.room.overview or ListSessions",
+            ));
         }
         self.check_sudo_creator_scope(&turn, request)?;
         Ok(turn.session_id.clone())

@@ -1,6 +1,6 @@
 //! MP-08/MP-11: prompt lanes must retain the submitting sudo turn.
-use super::tests::{fixture_with_options, popup, Fixture};
-use super::window_tests::{approve, open, start_continuation};
+use super::tests::{fixture_with_options, Fixture};
+use super::window_tests::{open, start_continuation};
 use super::*;
 use crate::runtime::agent_actor::AgentRuntime;
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
@@ -85,14 +85,9 @@ async fn assert_queued_prompt(cancel: bool, replace: bool, include_run: bool, co
         request.target_agent_id = Some(target.clone());
         LocalDaemonRequest::SubmitPrompt(request)
     };
-    let confirmation = tokio::spawn({
-        let state = f.state.clone();
-        let window = window.clone();
-        let request = request.clone();
-        async move { state.confirm_sudo_scope(&window, &request).await }
-    });
-    approve(&f, &popup(&f.state).await, None).await.unwrap();
-    confirmation.await.unwrap().unwrap();
+    f.state
+        .authorize_sudo_request(&window.entry_id, &request)
+        .unwrap();
     let runtime = AgentRuntime::new(
         f.state.clone(),
         Default::default(),

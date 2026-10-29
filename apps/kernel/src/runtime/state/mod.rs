@@ -213,7 +213,6 @@ struct KernelRuntimeOwnedState {
     sudo_turns: sudo::SudoStore,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
-    sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
     sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
@@ -981,7 +980,6 @@ impl KernelRuntimeState {
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
                 sudo_timers: Default::default(),
-                sudo_scopes: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
