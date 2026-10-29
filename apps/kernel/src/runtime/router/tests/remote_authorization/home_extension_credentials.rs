@@ -110,6 +110,43 @@ async fn forwarded_home_credential_secret_adopts_first_worker_provider_run_for_a
 }
 
 #[tokio::test]
+async fn forwarded_home_credential_secret_refuses_terminal_injection() {
+    let (router, context, _agent_id) =
+        remote_home_invocation_router_with_active_prompt("remote-credential-pty-refused");
+
+    let refusal = router
+        .runtime_state
+        .dispatch_forwarded_home_credential_tool_call(
+            context.clone(),
+            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL.to_string(),
+            serde_json::Value::Null,
+        )
+        .await
+        .expect("forwarded terminal calls refuse without parsing arguments");
+    assert!(!refusal.ok);
+    assert_eq!(
+        refusal.payload["error"],
+        crate::transport::runtime_tools::TERMINAL_SECRET_REFUSAL
+    );
+
+    let error = router
+        .runtime_state
+        .resolve_forwarded_home_credential_secret(
+            context,
+            "not-registered".to_string(),
+            crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty,
+        )
+        .await
+        .expect_err("an older worker must not resolve a terminal secret on the home kernel");
+    assert!(
+        error
+            .to_string()
+            .contains("Vault secrets are not typed into terminals."),
+        "terminal injection must fail with the fixed refusal before any credential lookup: {error}"
+    );
+}
+
+#[tokio::test]
 async fn home_extension_invocation_cancellation_is_authorized_and_audited() {
     let config = DaemonConfig::for_tests();
     let home_kernel_id = config.daemon_id.clone();
