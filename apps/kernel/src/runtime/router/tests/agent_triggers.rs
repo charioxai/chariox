@@ -813,3 +813,214 @@ async fn destroying_an_agent_settles_its_requested_reply() {
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "source_lost");
 }
+
+/// Replaces the agent's test run with a structured one whose provider answers
+/// a submit on its own schedule: `slow-structured` acknowledges after a delay,
+/// an unbound `codex` run refuses the steer.
+fn install_structured_run(
+    app: &mut DaemonApp,
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+    run_id: &str,
+    adapter_key: &str,
+    provider: &str,
+) {
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        adapter_key,
+        provider,
+        "default",
+        "model",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        run_id,
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "trigger-structured-steer".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run);
+}
+
+/// Starts a turn the way a person's prompt would, so a trigger firing finds a busy agent.
+fn start_running_turn(
+    app: &DaemonApp,
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+) -> crate::runtime::prompt_state::PromptStateOwner {
+    let prompt_owner = app.prompt_state_owner();
+    let turn = crate::session::PromptQueueItem::new(
+        app.session_state_store().reserve_prompt_id(),
+        "person-attachment",
+        agent.id(),
+        "a turn in progress",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { .. } = prompt_owner
+        .submit_prepared_prompt(session, turn, false)
+        .expect("the turn should become active")
+    else {
+        panic!("the turn should start on an idle agent");
+    };
+    let (active, queued) = prompt_owner.state_parts(session, agent.id());
+    app.session_state_store()
+        .mirror_agent_prompt_state(session.id(), agent.id(), active, queued)
+        .expect("prompt state should project");
+    prompt_owner
+}
+
+#[tokio::test]
+async fn a_steer_the_provider_refuses_after_the_mailbox_accepted_it_leaves_the_firing_queued() {
+    use crate::session::AgentTriggerOutcome;
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-provider-refusal");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    install_structured_run(&mut app, &session, &agent, run.id(), "codex", "codex");
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+    })
+    .await;
+
+    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    assert_eq!(
+        queued
+            .iter()
+            .map(|prompt| prompt.agent_trigger_id())
+            .collect::<Vec<_>>(),
+        vec![Some(trigger.id())],
+        "the provider refused the steer, so the firing must still be queued"
+    );
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    let fired = &snapshot.agent_triggers()[0];
+    assert_eq!(fired.last_outcome(), Some(AgentTriggerOutcome::Queued));
+    assert!(fired
+        .last_error()
+        .is_some_and(|error| error.starts_with("steer refused, the firing stays queued")));
+}
+
+#[tokio::test]
+async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
+    use crate::session::AgentTriggerOutcome;
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-waits-for-provider");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    // The stub provider answers a submit after 750 ms.
+    install_structured_run(
+        &mut app,
+        &session,
+        &agent,
+        run.id(),
+        "dev-stub",
+        "slow-structured",
+    );
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+
+    let firing_settled = std::sync::atomic::AtomicBool::new(false);
+    let ((), ()) = tokio::join!(
+        async {
+            boxed_schedule_future(|| {
+                router
+                    .runtime_state
+                    .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            })
+            .await;
+            firing_settled.store(true, std::sync::atomic::Ordering::SeqCst);
+        },
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert!(
+                !firing_settled.load(std::sync::atomic::Ordering::SeqCst),
+                "the firing settled before the provider answered"
+            );
+            let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+            assert_eq!(
+                queued.len(),
+                1,
+                "the firing must stay queued until the provider acknowledges the steer"
+            );
+        }
+    );
+
+    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    assert!(queued.is_empty(), "the acknowledged steer leaves the queue");
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    assert_eq!(
+        snapshot.agent_triggers()[0].last_outcome(),
+        Some(AgentTriggerOutcome::Steered)
+    );
+}

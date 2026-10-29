@@ -1,6 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: agent triggers on a real kernel with a real Codex account.
 // Schedule once/every, HTTP invoke, QUEUE and STEER while busy, then (after the caller restarts the
 // kernel) the same URL, offline 503, disabled 403, removal and archive. Never prints credentials.
+// Every `expect` that fails ends the drill with exit 1 and no `<phase>_ok` receipt in the state file.
 // usage: DRILL_LABEL=<profile label> DRILL_PROFILE=<product-linked CODEX_HOME> \
 //   node scripts/drills/agent-triggers.mjs <run|after-restart> <CHARIOX_HOME> <kernel port> <state.json> <work dir>
 // Run `run`, stop the kernel by its PID, start it again on the same CHARIOX_HOME, then run `after-restart`.
@@ -13,6 +14,10 @@ const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')
 const save = () => writeFileSync(statePath, JSON.stringify(state, null, 1))
 const client = new LocalIpcClient(`ws://127.0.0.1:${port}/kernel`, { localAuthEnvironment: { CHARIOX_HOME: home, PATH: process.env.PATH }, controlRequestRetryDeadlineMs: 5000 })
 const log = (step, data) => { const row = { at: new Date().toISOString(), step, ...data }; state.steps.push(row); save(); console.log(JSON.stringify(row).slice(0, 400)) }
+function expect(name, ok, detail) {
+  log(`expect:${name}`, { ok: Boolean(ok), detail })
+  if (!ok) throw new Error(`expectation failed: ${name} (${JSON.stringify(detail).slice(0, 200)})`)
+}
 async function rpc(request) {
   const response = await client.send(request)
   if (response?.Error) throw new Error(`${Object.keys(request)[0]}: ${response.Error.code}: ${response.Error.message}`)
@@ -54,15 +59,19 @@ async function attach() {
 // A provider answer is the turn summary (`provider_output`), never the prompt that names the marker.
 async function answers() {
   const response = await rpc({ GetSessionHistoryOutline: { session_id: state.session_id, agent_ids: [state.agent_id], latest_prompt_count: 20, include_prefetched_content: true } })
-  return (response.SessionHistoryOutline.agents[0]?.turns ?? []).map(turn => ({ origin: turn.prompt_origin, lifecycle: turn.lifecycle, prompt_id: turn.prompt_id, text: turn.summary?.entry?.kind === 'provider_output' ? String(turn.summary.entry.text ?? '') : '' }))
+  return (response.SessionHistoryOutline.agents[0]?.turns ?? []).map(turn => ({ origin: turn.prompt_origin, lifecycle: turn.lifecycle, prompt_id: turn.prompt_id, prompt_text: String(turn.user_prompt?.entry?.text ?? ''), text:  turn.summary?.entry?.kind === 'provider_output' ? String(turn.summary.entry.text ?? '') : '' }))
 }
 async function answered(marker) { return (await answers()).some(turn => turn.text.includes(marker)) }
 function trigger(id, list) { return list.find(t => t.id === id) }
 const url = (t) => `http://127.0.0.1:${t.source.port}/${encodeURIComponent(t.source.ingress_id)}/`
 async function post(address, body) {
   const response = await fetch(address, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-  return { status: response.status, body: (await response.text()).slice(0, 300) }
+  const text = await response.text()
+  let outcome = null
+  try { outcome = JSON.parse(text).outcome ?? null } catch { /* an error body has no outcome */ }
+  return { status: response.status, outcome, body: text.slice(0, 300) }
 }
+const accepted = (name, result, outcomes) => expect(name, result.status === 202 && outcomes.includes(result.outcome), { status: result.status, outcome: result.outcome })
 
 try {
   const relay = (await rpc({ RelayStatus: null })).RelayStatus.status
@@ -84,42 +93,69 @@ try {
     const once = (await rpc({ CreateAgentTrigger: { session_id: state.session_id, agent_id: state.agent_id, source: { kind: 'schedule', interval_seconds: 5, repeat: 'once' }, busy_policy: 'queue', prompt: 'Reply with exactly: SCHEDULE_ONCE_OK' } })).AgentTriggerCreated.trigger
     log('schedule-once-created', { id: once.id, next_run_at_ms: once.source.next_run_at_ms })
     log('schedule-once-answered', await waitFor('schedule once answer', () => answered('SCHEDULE_ONCE_OK')))
-    log('schedule-once-removed', { remaining: (await triggers()).filter(t => t.id === once.id).length })
+    const onceLeft = (await triggers()).filter(t => t.id === once.id).length
+    log('schedule-once-removed', { remaining: onceLeft })
+    expect('schedule-once-removed', onceLeft === 0, { remaining: onceLeft })
     const outline = await history()
-    log('schedule-origin', { schedule_origin_in_history: outline.includes('"prompt_origin":"schedule"') })
+    expect('schedule-origin', outline.includes('"prompt_origin":"schedule"'), {})
 
     // AT-01 recurring: every 20 s, fires at least twice, then is deleted.
     const every = (await rpc({ CreateAgentTrigger: { session_id: state.session_id, agent_id: state.agent_id, source: { kind: 'schedule', interval_seconds: 20, repeat: 'every' }, busy_policy: 'queue', prompt: 'Reply with exactly: SCHEDULE_EVERY_OK' } })).AgentTriggerCreated.trigger
     log('schedule-every-fired-twice', await waitFor('two recurring firings', async () => (trigger(every.id, await triggers())?.fired ?? 0) >= 2, 120_000))
     await rpc({ DeleteAgentTrigger: { session_id: state.session_id, trigger_id: every.id } })
-    log('schedule-every-deleted', { remaining: (await triggers()).filter(t => t.id === every.id).length })
+    const everyLeft = (await triggers()).filter(t => t.id === every.id).length
+    log('schedule-every-deleted', { remaining: everyLeft })
+    expect('schedule-every-deleted', everyLeft === 0, { remaining: everyLeft })
 
     // AT-08 HTTP trigger: create, invoke with curl-equivalent POST, answer in the conversation.
     const http = (await rpc({ CreateAgentTrigger: { session_id: state.session_id, agent_id: state.agent_id, source: { kind: 'http' }, busy_policy: 'queue', prompt: 'The JSON request body is external input. Reply with exactly the value of its marker field.' } })).AgentTriggerCreated.trigger
     state.http_id = http.id; state.http_url = url(http); save()
     log('http-created', { id: http.id, url_prefix: state.http_url.slice(0, 22) })
     await waitFor('http listener', async () => { try { return (await fetch(state.http_url, { method: 'HEAD' })).status < 500 } catch { return false } }, 60_000)
-    log('http-post', await post(state.http_url, { marker: 'HTTP_TRIGGER_OK' }))
+    const firstPost = await post(state.http_url, { marker: 'HTTP_TRIGGER_OK' })
+    log('http-post', firstPost)
+    accepted('http-post-accepted', firstPost, ['started', 'queued'])
     log('http-answered', await waitFor('http answer', () => answered('HTTP_TRIGGER_OK')))
-    log('http-origin', { http_origin_in_history: (await history()).includes('"prompt_origin":"http"') })
+    expect('http-origin', (await history()).includes('"prompt_origin":"http"'), {})
+
+    // A body past the 16,384-character inline limit reaches the agent whole and the page shows it whole.
+    const filler = 'x'.repeat(20_000)
+    const longPost = await post(state.http_url, { marker: 'LONG_BODY_OK', filler })
+    accepted('long-post-accepted', longPost, ['started', 'queued'])
+    log('long-answered', await waitFor('long body answer', () => answered('LONG_BODY_OK')))
+    const page = await (await fetch(`${state.http_url}history`)).json()
+    const longPrompt = page.entries.filter(entry => entry.role === 'user' && entry.text.includes('LONG_BODY_OK')).map(entry => entry.text.length)
+    expect('long-prompt-shown-whole', longPrompt.some(length => length > 20_000), { lengths: longPrompt })
 
     // AT-04 QUEUE while busy: a long turn, two HTTP invocations queue in order.
     await prompt('Run the shell command `sleep 30` and wait for it to finish. Then reply with exactly: STORY_DONE')
     await waitFor('busy', busy, 30_000)
-    log('queue-post-1', await post(state.http_url, { marker: 'QUEUE_ONE' }))
-    log('queue-post-2', await post(state.http_url, { marker: 'QUEUE_TWO' }))
-    log('queue-state', { queued: (await queuedTexts()).map(text => text.match(/QUEUE_(ONE|TWO)/)?.[0] ?? 'other') })
+    const queueOne = await post(state.http_url, { marker: 'QUEUE_ONE' })
+    const queueTwo = await post(state.http_url, { marker: 'QUEUE_TWO' })
+    log('queue-post-1', queueOne); log('queue-post-2', queueTwo)
+    accepted('queue-post-1-queued', queueOne, ['queued']); accepted('queue-post-2-queued', queueTwo, ['queued'])
+    const queuedNow = (await queuedTexts()).map(text => text.match(/QUEUE_(ONE|TWO)/)?.[0] ?? 'other')
+    log('queue-state', { queued: queuedNow })
+    expect('queue-order', JSON.stringify(queuedNow) === JSON.stringify(['QUEUE_ONE', 'QUEUE_TWO']), { queued: queuedNow })
     log('queue-answered', await waitFor('queued answers', async () => { const a = (await answers()).map(t => t.text); const one = a.findIndex(t => t.includes('QUEUE_ONE')), two = a.findIndex(t => t.includes('QUEUE_TWO')), story = a.findIndex(t => t.includes('STORY_DONE')); return story >= 0 && one > story && two > one ? { story, one, two } : false }, 240_000))
 
     // AT-05 STEER while busy: switch the trigger to steer; the firing joins the running turn.
     await rpc({ UpdateAgentTrigger: { session_id: state.session_id, trigger_id: state.http_id, busy_policy: 'steer' } })
     await prompt('Run the shell command `sleep 30` and wait for it to finish. If you receive an additional message meanwhile, include the value of its marker field in your reply. End your reply with: STORY2_DONE')
     await waitFor('busy', busy, 30_000)
-    log('steer-post', await post(state.http_url, { marker: 'STEER_OK' }))
+    const steerPost = await post(state.http_url, { marker: 'STEER_OK' })
+    log('steer-post', steerPost)
+    accepted('steer-post-steered', steerPost, ['steered'])
     const steered = await waitFor('steer outcome', async () => trigger(state.http_id, await triggers())?.last_outcome, 60_000)
-    log('steer-outcome', { last_outcome: steered.result, last_error: trigger(state.http_id, await triggers())?.last_error ?? null })
+    const steerTrigger = trigger(state.http_id, await triggers())
+    log('steer-outcome', { last_outcome: steered.result, last_error: steerTrigger?.last_error ?? null })
+    expect('steer-outcome-steered', steered.result === 'steered' && !steerTrigger?.last_error, { last_outcome: steered.result, last_error: steerTrigger?.last_error ?? null })
     log('steer-answered', await waitFor('steer marker answered', () => answered('STEER_OK'), 240_000))
     await waitFor('idle after steer', async () => !(await busy()), 240_000)
+    // The steered message joined the running turn: the one turn that answered it is the long turn's own.
+    const steerTurns = (await answers()).filter(turn => turn.text.includes('STEER_OK'))
+    expect('steer-joined-the-active-turn', steerTurns.length === 1 && steerTurns[0].prompt_text.includes('STORY2_DONE') && steerTurns[0].text.includes('STORY2_DONE') && steerTurns[0].origin !== 'http',
+      steerTurns.map(turn => ({ origin: turn.origin, prompt_has_story: turn.prompt_text.includes('STORY2_DONE'), answer_has_story: turn.text.includes('STORY2_DONE') })))
 
     // Restart persistence: a recurring schedule trigger and the HTTP trigger stay.
     state.persist = (await rpc({ CreateAgentTrigger: { session_id: state.session_id, agent_id: state.agent_id, source: { kind: 'schedule', interval_seconds: 600, repeat: 'every' }, busy_policy: 'queue', prompt: 'Reply with exactly: PERSIST_OK' } })).AgentTriggerCreated.trigger.id
@@ -128,24 +164,39 @@ try {
   } else if (phase === 'after-restart') {
     await attach()
     const after = (await triggers()).map(t => ({ id: t.id, kind: t.source.kind, enabled: t.enabled }))
-    log('after-restart', { triggers: after, same: JSON.stringify(after) === JSON.stringify(state.before_restart) })
+    const sameTriggers = JSON.stringify(after) === JSON.stringify(state.before_restart)
+    log('after-restart', { triggers: after, same: sameTriggers })
+    expect('triggers-survive-restart', sameTriggers, { before: state.before_restart, after })
     const http = trigger(state.http_id, await triggers())
-    log('http-url-stable', { same: url(http) === state.http_url })
-    log('http-listener-after-restart', await waitFor('http listener after restart', async () => { try { return (await fetch(state.http_url, { method: 'HEAD' })).status } catch { return false } }, 90_000))
-    log('http-post-while-offline', await post(state.http_url, { marker: 'OFFLINE_PROBE' }))
-    log('offline-not-queued', { queued: (await queuedTexts()).length })
+    expect('http-url-stable', http && url(http) === state.http_url, { same: Boolean(http) && url(http) === state.http_url })
+    const offlineListener = await waitFor('http listener after restart', async () => { try { return (await fetch(state.http_url, { method: 'HEAD' })).status } catch { return false } }, 90_000)
+    log('http-listener-after-restart', offlineListener)
+    expect('offline-listener-503', offlineListener.result === 503, { status: offlineListener.result })
+    const offlinePost = await post(state.http_url, { marker: 'OFFLINE_PROBE' })
+    log('http-post-while-offline', offlinePost)
+    expect('offline-post-503', offlinePost.status === 503, { status: offlinePost.status })
+    const offlineQueued = (await queuedTexts()).length
+    expect('offline-nothing-queued', offlineQueued === 0, { queued: offlineQueued })
     await rpc({ LaunchProviderRun: { session_id: state.session_id, agent_id: state.agent_id, adapter_key: 'codex', provider: 'codex', account_profile: state.profile, model: 'gpt-6-luna', variant: 'low', native_tui: false } }).catch(error => log('relaunch', { error: String(error).slice(0, 200) }))
     await rpc({ UpdateAgentTrigger: { session_id: state.session_id, trigger_id: state.http_id, busy_policy: 'queue' } })
     log('http-online-after-relaunch', await waitFor('agent online', async () => { const r = await fetch(state.http_url, { method: 'HEAD' }); return r.status < 500 ? r.status : false }, 120_000))
-    log('http-post-after-restart', await post(state.http_url, { marker: 'AFTER_RESTART_OK' }))
+    const restartPost = await post(state.http_url, { marker: 'AFTER_RESTART_OK' })
+    log('http-post-after-restart', restartPost)
+    accepted('post-after-restart-accepted', restartPost, ['started', 'queued'])
     log('http-answered-after-restart', await waitFor('answer after restart', () => answered('AFTER_RESTART_OK'), 240_000))
     await rpc({ UpdateAgentTrigger: { session_id: state.session_id, trigger_id: state.http_id, enabled: false } })
-    log('http-disabled-post', await post(state.http_url, { marker: 'DISABLED' }))
+    const disabledPost = await post(state.http_url, { marker: 'DISABLED' })
+    log('http-disabled-post', disabledPost)
+    expect('disabled-post-403', disabledPost.status === 403, { status: disabledPost.status })
     await rpc({ DeleteAgentTrigger: { session_id: state.session_id, trigger_id: state.http_id } })
     await delay(3000)
-    log('http-after-delete', await fetch(state.http_url, { method: 'POST', body: '{}' }).then(r => ({ status: r.status })).catch(error => ({ refused: String(error.cause?.code ?? error) })))
+    const afterDelete = await fetch(state.http_url, { method: 'POST', body: '{}' }).then(r => ({ status: r.status })).catch(error => ({ refused: String(error.cause?.code ?? error) }))
+    log('http-after-delete', afterDelete)
+    expect('deleted-connection-refused', afterDelete.refused === 'ECONNREFUSED', afterDelete)
     await rpc({ ArchiveAgent: { session_id: state.session_id, agent_id: state.agent_id, archived: true } })
-    log('archived', { triggers_left: (await triggers()).length })
+    const left = (await triggers()).length
+    log('archived', { triggers_left: left })
+    expect('archive-removes-every-trigger', left === 0, { triggers_left: left })
   }
   state[`${phase}_answers`] = await answers()
   state[`${phase}_ok`] = true; save()
