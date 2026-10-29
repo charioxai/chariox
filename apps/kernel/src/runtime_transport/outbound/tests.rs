@@ -102,7 +102,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
     );
     assert!(names.len() >= 21);
     eprintln!("MP-11 generated event variants: {}", names.len());
-    let mut delivered = 0;
+    let mut delivered = Vec::new();
     for name in names {
         let mut event = serde_json::json!({"event":snake(&name),
             "session":{"agents":[{"remote_execution":{"relay_token":CANARY}}]},
@@ -116,7 +116,7 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
                 !output.to_string().contains(CANARY),
                 "MP-11 secret escaped event {name}"
             );
-            delivered += 1;
+            delivered.push(name);
             assert_eq!(
                 output["event"]["public_text"],
                 "MP-11 unmodified terminal/history text"
@@ -124,8 +124,15 @@ fn outbound_generated_every_event_variant_hides_worker_credentials() {
         }
     }
     assert_eq!(
-        delivered, 23,
+        delivered.len(),
+        24,
         "MP-11 current public events remain deliverable"
+    );
+    assert!(
+        delivered
+            .iter()
+            .any(|name| name == "SessionProcessesChanged"),
+        "MP-11 process events must pass the credential-hiding assertions"
     );
 }
 #[test]
