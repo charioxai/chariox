@@ -1368,6 +1368,9 @@ impl KernelRuntimeOwnedState {
                             continue;
                         }
                     }
+                    let held_position = current_queue
+                        .iter()
+                        .position(|current| current.id() == prompt.id());
                     let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
                         &session,
                         agent_id,
@@ -1399,16 +1402,45 @@ impl KernelRuntimeOwnedState {
                                 removed.id().to_string(),
                             ));
                         }
-                        Err(error) => crate::logging::error_with_fields(
-                            "durable_state.recovery",
-                            "failed to persist the removal of a held queued steer",
-                            serde_json::json!({
-                                "session_id": session.id(),
-                                "agent_id": agent_id,
-                                "prompt_id": removed.id(),
-                                "error": error.to_string(),
-                            }),
-                        ),
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to persist the removal of a held queued steer; keeping the hold for the next maintenance tick",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "agent_id": agent_id,
+                                    "prompt_id": removed.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            // The durable queue still holds the firing. Without it here
+                            // too, no later pass would find the hold and the prompts
+                            // behind it would never be woken.
+                            self.prompt_state_owner.restore_queued_prompt(
+                                &session,
+                                agent_id,
+                                held_position.unwrap_or(0),
+                                removed,
+                            );
+                            let (active_prompt, queued_prompts) =
+                                self.prompt_state_owner.state_parts(&session, agent_id);
+                            if let Err(error) = self.session_store.mirror_agent_prompt_state(
+                                session.id(),
+                                agent_id,
+                                active_prompt,
+                                queued_prompts,
+                            ) {
+                                crate::logging::error_with_fields(
+                                    "durable_state.recovery",
+                                    "failed to restore the session view of a held queued steer",
+                                    serde_json::json!({
+                                        "session_id": session.id(),
+                                        "agent_id": agent_id,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                            }
+                        }
                     }
                 }
             }
