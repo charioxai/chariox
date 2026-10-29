@@ -273,6 +273,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     onExit: deps.requestExit,
     onWaiting: deps.requestWaitingRoom,
     onStop: () => requestPromptStop(),
+    onContinue: () => normalPromptSubmitController.continueLatest(),
     onApprovals: deps.openKernelApprovals,
     handleAttachmentCommand: deps.handleAttachmentCommand,
     handleSessionCommand: deps.handleSessionCommand,

@@ -34,6 +34,7 @@ type SplitPaneFooterSlotState = {
   parts: Partial<SplitPaneFooterTextGroup>
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
+  outcomeText?: TextRenderable
   goalText?: TextRenderable
   badgeBox?: BoxRenderable
 }
@@ -189,6 +190,9 @@ function ensureFooterRenderables(
   state.goalText = new TextRenderable(renderer, { wrapMode: "word", flexShrink: 0 })
   state.goalText.visible = false
   footerBox.add(state.goalText)
+  state.outcomeText = new TextRenderable(renderer, { wrapMode: "word", flexShrink: 0 })
+  state.outcomeText.visible = false
+  footerBox.add(state.outcomeText)
   footerBox.add(footerRow)
   state.parts = nextParts
   state.taskParts = nextTaskParts
@@ -207,6 +211,7 @@ function clearFooter(
   renderStatusBadgeTexts(state.badgeTexts, "", "idle", options)
   renderTaskParts(state.taskParts, null)
   if (state.goalText) state.goalText.visible = false
+  if (state.outcomeText) state.outcomeText.visible = false
   clearFooterParts(state.parts)
   footerBox?.requestRender()
 }
@@ -257,6 +262,18 @@ function renderFooter(
     state.goalText.visible = Boolean(goalStatus)
     state.goalText.content = goalStatus?.label ?? ""
     state.goalText.fg = goalStatus?.tone === "error" ? theme.error : theme.textMuted
+  }
+  if (state.outcomeText) {
+    const activity = agent ? options.session?.agent_activity?.[agent.id] : null
+    const outcome = activity?.last_completed_turn?.outcome
+    const failed = outcome && outcome.kind !== "completed" && outcome.kind !== "cancelled"
+    const settled = activity && !activity.busy && activity.prompt_status === "none"
+      && !options.agentBusyLatch(agent?.id ?? "")
+    state.outcomeText.visible = Boolean(outcome && settled)
+    state.outcomeText.content = outcome && settled
+      ? `${outcome.kind}${outcome.reason ? ` · ${outcome.reason}` : ""}${failed && outcome.retryable && focused ? " · Continue: /continue" : ""}`
+      : ""
+    state.outcomeText.fg = failed ? theme.error : theme.textMuted
   }
   // The goal row above carries the detail; the badge keeps only its phase.
   const badgeLabel = badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label

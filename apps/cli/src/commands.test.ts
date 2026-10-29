@@ -440,3 +440,13 @@ test("workflow notification settings use the shared shell path", () => {
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications on retained-source"), "workflow notifications on retained-source")
   assert.equal(sharedShellCommandForSlashCommand("/workflow notifications-other on"), null)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 EA2-80: handled locally, sent through normal submission.
+test("Continue is an exact slash action rather than a provider prompt", async () => {
+  assert.deepEqual(parseSlashCommand("/continue"), { kind: "continue", raw: "/continue" })
+  assert.equal(parseSlashCommand("/continue later"), null)
+  assert.equal(sharedShellCommandForSlashCommand("/continue"), null)
+  let calls = 0
+  await executeSlashCommand("/continue", { onContinue: () => { calls++ } } as Parameters<typeof executeSlashCommand>[1])
+  assert.equal(calls, 1)
+})
