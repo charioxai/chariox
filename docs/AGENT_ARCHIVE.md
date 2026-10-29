@@ -57,7 +57,7 @@ read visibility subject to existing Room policy; they gain no owner authority.
 | History/worktree | Keep transcript, prompt outcomes, files, worktree and bindings | Readable throughout |
 | Running/queued prompts | Cancel with archive reason, record terminal outcomes before success | Never replay cancelled prompts |
 | Wakes/processes | Cancel target's timers and watched work; retain receipts and await physical stop | Owner must create new work |
-| Goal/schedules | Cancel target's goal and legacy prompt schedules, retain outcomes in history | No automatic continuation or missed-interval replay |
+| Goal/triggers | Cancel target's goal and remove its agent triggers (schedule and HTTP; `/wait` is a schedule trigger), retain outcomes in history | No automatic continuation or missed-interval replay; triggers are created again |
 | Interactions | Withdraw target's process-bound interactions | New run requests fresh decisions as needed |
 | App grants | Keep bindings; suspend use while archived | Existing unexpired, non-revoked grants become usable |
 | Terminals | Close target-owned provider/Room terminals; keep history | Fresh terminals on demand |
