@@ -920,6 +920,7 @@ mod tests {
             "default",
             "claude-headless/claude-sonnet-4-6",
         );
+        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
@@ -1010,6 +1011,7 @@ mod tests {
             "CLAUDE_CONFIG_DIR".to_string(),
             selected_config_dir.display().to_string(),
         )]));
+        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
