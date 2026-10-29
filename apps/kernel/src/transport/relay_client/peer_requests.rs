@@ -3437,6 +3437,67 @@ mod tests {
     }
 
     #[test]
+    fn lease_worker_ignores_cloud_enrollment_claims_over_private_relay() {
+        std::thread::Builder::new()
+            .name("lease-worker-private-relay".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("lease worker private relay test runtime")
+                    .block_on(
+                        lease_worker_ignores_cloud_enrollment_claims_over_private_relay_inner(),
+                    );
+            })
+            .expect("lease worker private relay test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn lease_worker_ignores_cloud_enrollment_claims_over_private_relay_inner() {
+        // MP-08 / MP-10 / MP-11: only the Cloud relay vouches for enrollment claims.
+        for (relay_url, admitted) in [(None, true), (Some("ws://operator-relay:49100"), false)] {
+            let mut config = lease_worker_config();
+            config.relay_url = relay_url.map(Into::into);
+            config.relay_token = relay_url.map(|_| "synthetic-operator-transport".into());
+            let app = DaemonApp::bootstrap(config).expect("lease worker should boot");
+            let target_public_key = app.config().relay_public_key.clone();
+            let router = Arc::new(CommandRouter::with_interactive_capacity(
+                Arc::new(Mutex::new(app)),
+                1,
+            ));
+            let state = Arc::new(RwLock::new(RelayClientState::default()));
+            let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+            let source_private_key = relay_crypto::generate_private_key_base64();
+            let source_public_key =
+                relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                    .expect("source public key");
+            let outcome = send_lease_worker_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                scoped_machine_identity(
+                    "machine-home-1",
+                    Some(public_key_thumbprint(&source_public_key)),
+                ),
+                &source_private_key,
+                &target_public_key,
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: "source-kernel-1".to_string(),
+                    home_session_id: "session-1".to_string(),
+                    home_agent_id: "agent-1".to_string(),
+                    home_agent_metaagent: false,
+                    owner_user_id: "user-1".to_string(),
+                },
+            )
+            .await;
+            assert_eq!(outcome.error.is_none(), admitted, "relay_url={relay_url:?}");
+        }
+    }
+
+    #[test]
     fn lease_worker_binds_creation_and_idempotent_deletion_to_authenticated_home() {
         std::thread::Builder::new()
             .name("lease-worker-authority".to_string())

@@ -109,7 +109,9 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .relay_request_timeout_ms
         .min(REMOTE_INVENTORY_RELAY_TIMEOUT_MS);
 
-    let visible_kernel_ids = if let Some(profile) = runtime_config.cloud_relay.as_ref() {
+    let visible_kernel_ids = if let Some(profile) =
+        crate::runtime::cloud_relay_control::active_cloud_profile(&runtime_config)
+    {
         relay_discovery::authorization::visible_targets(profile).await?
     } else {
         None
@@ -171,7 +173,7 @@ async fn validate_live_relay_kernels(
             continue;
         }
         let is_known = known_kernel_ids.contains(&kernel.kernel_id);
-        if !requires_peer_probe(is_known, config.cloud_relay.is_some()) {
+        if !requires_peer_probe(is_known, config) {
             validated.push(kernel);
             continue;
         }
@@ -197,15 +199,48 @@ async fn validate_live_relay_kernels(
     validated
 }
 
-fn requires_peer_probe(is_known: bool, is_hosted: bool) -> bool {
+fn requires_peer_probe(is_known: bool, config: &crate::config::DaemonConfig) -> bool {
     // Hosted inventory is already filtered by heartbeat freshness. Avoid a
     // redundant temporary peer admission for the same inventory refresh.
-    is_known && !is_hosted
+    is_known && !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // MP-08 / MP-10 / MP-11: a private relay's inventory is read with its own
+    // token; a retained Cloud profile is not asked which targets are visible.
+    #[tokio::test]
+    async fn private_relay_inventory_refresh_does_not_contact_cloud() {
+        let cloud = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        cloud.set_nonblocking(true).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.relay_url = Some("ws://127.0.0.1:1".into());
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            api_url: format!("http://{}", cloud.local_addr().unwrap()),
+            relay_url: "wss://cloud-relay".into(),
+            kernel_credential: Some("synthetic-enrollment".into()),
+            ..Default::default()
+        });
+        let refreshed = timeout(
+            Duration::from_secs(3),
+            refresh_remote_inventory_projection(
+                DaemonConfigProjectionStore::new(config),
+                RemoteRelayInventoryProjectionStore::default(),
+            ),
+        )
+        .await;
+        assert!(
+            matches!(refreshed, Ok(Err(_))),
+            "the unreachable private relay is the failure: {refreshed:?}"
+        );
+        assert!(
+            cloud.accept().is_err(),
+            "private inventory refresh must not reach the Cloud API"
+        );
+    }
 
     #[tokio::test]
     async fn bounded_remote_inventory_refresh_reports_success() {
@@ -245,9 +280,20 @@ mod tests {
 
     #[test]
     fn hosted_known_kernels_use_fresh_relay_inventory_without_a_peer_probe() {
-        assert!(!requires_peer_probe(true, true));
-        assert!(requires_peer_probe(true, false));
-        assert!(!requires_peer_probe(false, true));
-        assert!(!requires_peer_probe(false, false));
+        let cloud = crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://cloud-relay".into(),
+            ..Default::default()
+        };
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(cloud);
+        config.relay_url = Some("wss://cloud-relay".into());
+        assert!(!requires_peer_probe(true, &config));
+        assert!(!requires_peer_probe(false, &config));
+        // A private relay with a retained Cloud profile has no Cloud freshness filter.
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        assert!(requires_peer_probe(true, &config));
+        assert!(!requires_peer_probe(false, &config));
+        config.cloud_relay = None;
+        assert!(requires_peer_probe(true, &config));
     }
 }

@@ -54,10 +54,10 @@ impl CommandRouter {
     }
 
     pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
-        self.config_projection
-            .snapshot()
-            .cloud_relay
-            .map(|profile| (profile.realm_id, profile.user_id))
+        // A private relay asserts its own identities, never the Cloud enrollment.
+        let config = self.config_projection.snapshot();
+        crate::runtime::cloud_relay_control::active_cloud_profile(&config)
+            .map(|profile| (profile.realm_id.clone(), profile.user_id.clone()))
     }
 
     pub(crate) async fn relay_authorize_execution_lease_caller(
