@@ -2112,3 +2112,5 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
 }
 
 mod connectivity;
+
+mod watched_process_fences;

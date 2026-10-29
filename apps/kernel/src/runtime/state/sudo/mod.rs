@@ -85,3 +85,6 @@ const SUDO_WARNING: Duration = Duration::from_secs(10 * 60);
 /// A due warning/expiry handled later than this by the sweep means its
 /// dedicated timer did not fire: the kernel alerts instead of staying silent.
 const SUDO_TIMER_TOLERANCE: Duration = Duration::from_secs(5);
+
+#[cfg(test)]
+mod watched_process_tests;

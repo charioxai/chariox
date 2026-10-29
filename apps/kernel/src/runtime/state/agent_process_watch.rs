@@ -271,6 +271,24 @@ fn spawn(
 }
 
 impl KernelRuntimeState {
+    /// Sudo replaces command permission, never execution or filesystem mode.
+    /// Fetch again after consent: an owner can change modes while it is pending.
+    pub(super) fn watched_process_run(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        let run = self.owned.provider_store.get_run(run_id)?;
+        if run.state() != crate::provider::ProviderRunState::Running
+            || run.execution_mode() != crate::provider::AgentExecutionMode::Build
+            || run.write_access_mode() != crate::provider::ProviderWriteAccessMode::Unrestricted
+        {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "watched processes require a current unrestricted build run",
+            ));
+        }
+        Ok(run)
+    }
+
     /// Launch intent is durable before the process starts; a failed or
     /// uncertain launch is reported, never retried automatically.
     pub(super) async fn start_agent_process(
