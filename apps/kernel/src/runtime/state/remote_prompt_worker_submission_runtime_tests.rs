@@ -513,7 +513,7 @@ async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
             true,
         )
         .await;
-        trigger_origin_peer_submission(origin, 187, false).await;
+        trigger_origin_peer_submission(origin, 239, false).await;
     }
 }
 
