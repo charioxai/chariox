@@ -198,13 +198,17 @@ impl SessionService {
             .store
             .list()
             .iter()
-            .filter(|session| !session.is_hidden() && session.workspace_id() == workspace_id)
+            .filter(|session| {
+                !session.is_hidden()
+                    && RuntimeProject::workspace_paths_match(session.workspace_id(), workspace_id)
+            })
             .count()
             + 1;
         loop {
             let alias = format!("{base}-{number}");
             if self.store.visible_non_ended_sessions().all(|session| {
-                session.workspace_id() != workspace_id || session.alias() != Some(alias.as_str())
+                !RuntimeProject::workspace_paths_match(session.workspace_id(), workspace_id)
+                    || session.alias() != Some(alias.as_str())
             }) {
                 return alias;
             }

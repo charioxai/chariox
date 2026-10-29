@@ -541,6 +541,48 @@ mod tests {
             .is_empty());
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     }
+    // MP-08 / MP-10 / MP-11: restored non-Git spelling participates in automatic aliases.
+    #[tokio::test]
+    async fn r6_environment_session_alias_allocation_uses_prepared_workspace_equivalence() {
+        let root = crate::test_support::TestWorktree::new("r6-restored-session");
+        let folder = root.path().join("source");
+        std::fs::create_dir(&folder).unwrap();
+        let old = format!("{}/", folder.display());
+        let config = crate::DaemonConfig::for_tests();
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let existing = state
+            .owned
+            .session_store
+            .write()
+            .create_session(crate::session::CreateSessionRequest::new(&old, &old))
+            .unwrap();
+        assert_eq!(existing.alias(), Some("source-1"));
+        let LocalDaemonResponse::SessionCreated { session, .. } = r4_dispatch(
+            &router,
+            "r6-restored-auto-alias",
+            crate::local::LocalDaemonRequest::CreateSession(
+                crate::session::CreateSessionRequest::new(
+                    folder.to_str().unwrap(),
+                    folder.to_str().unwrap(),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .expect("automatic alias allocation must include restored workspace spellings") else {
+            panic!("Session expected")
+        };
+        assert_eq!(session.alias(), Some("source-2"));
+        assert_eq!(session.project_id(), existing.project_id());
+        state.delete_session_id(session.id()).await.unwrap();
+        state.delete_session_id(existing.id()).await.unwrap();
+    }
+
     // MP-08 / MP-10 / MP-11: interpose realpath to model an unavailable saved mount.
     #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
