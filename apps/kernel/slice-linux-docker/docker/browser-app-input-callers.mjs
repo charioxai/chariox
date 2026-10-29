@@ -17,12 +17,17 @@ export function createInputCallers() {
   const currentText = edit => entries.get(edit.token)?.timestamp != null && !edit.expired
     && edit.element.isConnected && document.activeElement === edit.element
     && fingerprint(edit.element).every((value, index) => value === edit.fingerprint[index]);
+  // The keypress whose default action may be the next beforeinput. Every trusted
+  // event retires it, so no key state outlives the edit it can still produce.
+  let pendingKeypress;
   globalThis.addEventListener('beforeinput', event => {
     const edit = textEdit;
+    const keypress = pendingKeypress?.target === event.target && !pendingKeypress.defaultPrevented;
+    pendingKeypress = undefined;
     if (!event.isTrusted || !edit || !['inserting', 'accepted'].includes(edit.state) || event.inputType !== 'insertText' || event.data !== edit.text) return;
-    // A physical key's own default edit has its own source, even when its
-    // text equals the queued CDP text. It must not consume that insertion.
-    if (source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target && /^[^\p{C}]$/u.test(source.key) && source.key === event.data) return;
+    // A person's key reaches here through a keypress that Chromium turns into
+    // this very beforeinput in the same task. CDP's insertion has no keypress.
+    if (keypress) return;
     // This check runs in the native insertion task, before App listeners and
     // the edit itself. A change after host admission must still type nothing.
     if (edit.state === 'accepted' || edit.element !== event.target || !currentText(edit)) {
@@ -71,6 +76,10 @@ export function createInputCallers() {
       // until its generated input/submit or the next physical event, including
       // an unclaimed human event. There is no wall-clock attribution window.
       const previous = source;
+      // Ctrl/Meta keypresses carry text but edit nothing.
+      pendingKeypress = type === 'keypress' && !event.ctrlKey && !event.metaKey ? event : undefined;
+      // The default action runs in this task; a later task cannot belong to it.
+      if (pendingKeypress) setTimeout(() => { if (pendingKeypress === event) pendingKeypress = undefined; }, 0);
       source = type === 'keydown' ? event : type === 'keypress' && previous?.type === 'keydown' ? previous : undefined;
       // Enter's native implicit submission clicks the default button without
       // the CDP timestamp. It is still part of that key's default action.
