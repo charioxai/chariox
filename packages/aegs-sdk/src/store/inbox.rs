@@ -19,7 +19,8 @@ const MAX_PUBLICATION_ATTEMPTS: u32 = 8;
 const FIRST_RETRY_DELAY_MS: u64 = 5_000;
 const MAX_RETRY_DELAY_MS: u64 = 10 * 60_000;
 /// How long a claimed attempt keeps other workers away; a crashed attempt is retried afterwards.
-const ATTEMPT_LEASE_MS: u64 = 60_000;
+/// Unit tests shorten it so a publication can outlast a lease in real time.
+const ATTEMPT_LEASE_MS: u64 = if cfg!(test) { 300 } else { 60_000 };
 /// Published events are kept as long as AEDS keeps its own deduplication window.
 const RETENTION_MS: u64 = 30 * 24 * 60 * 60_000;
 
@@ -205,52 +206,95 @@ impl AegsStore {
         Ok(true)
     }
 
-    /// Takes the next publication attempt of every due, pending interest of `delivery_id`
-    /// (limited to `owner_id`'s when given). Only one caller gets a row until its lease expires,
-    /// so the inline attempt and the retry worker never overlap on it.
-    pub fn claim_inbox_deliveries(
+    /// The bindings of `delivery_id` that are due for a publication attempt (limited to
+    /// `owner_id`'s when given), in publication order.
+    pub fn due_inbox_bindings(
+        &self,
+        delivery_id: &str,
+        owner_id: Option<&str>,
+        now_ms: u64,
+    ) -> Result<Vec<String>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT binding_id FROM webhook_inbox_delivery
+                 WHERE delivery_id = ?1 AND status = 'pending' AND next_due_at_ms <= ?2
+                   AND (?3 IS NULL OR owner_id = ?3)
+                 ORDER BY connection_id, event_interest_key, binding_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![delivery_id, now_ms as i64, owner_id], |row| {
+                row.get(0)
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Takes the next publication attempt of one due, pending interest, at the moment its
+    /// publication starts, so its lease covers that publication and not the ones before it.
+    /// `None` when another caller holds the row or it is not due.
+    /// Only one caller gets a row until its lease expires, so the inline attempt and the retry
+    /// worker never publish the same interest at once.
+    pub fn claim_inbox_delivery(
+        &self,
+        delivery_id: &str,
+        binding_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<ClaimedInboxDelivery>, String> {
+        let token = crate::random_opaque("attempt");
+        let connection = self.lock()?;
+        let claimed = connection
+            .execute(
+                "UPDATE webhook_inbox_delivery
+                 SET attempts = attempts + 1, next_due_at_ms = ?4, attempt_token = ?5
+                 WHERE delivery_id = ?1 AND binding_id = ?2 AND status = 'pending'
+                   AND next_due_at_ms <= ?3",
+                params![
+                    delivery_id,
+                    binding_id,
+                    now_ms as i64,
+                    (now_ms + ATTEMPT_LEASE_MS) as i64,
+                    token,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if claimed == 0 {
+            return Ok(None);
+        }
+        let delivery = connection
+            .query_row(
+                &format!(
+                    "SELECT {DELIVERY_COLUMNS} FROM webhook_inbox_delivery
+                     WHERE delivery_id = ?1 AND binding_id = ?2"
+                ),
+                params![delivery_id, binding_id],
+                read_delivery,
+            )
+            .map_err(|error| error.to_string())??;
+        Ok(Some(ClaimedInboxDelivery {
+            delivery_id: delivery_id.to_string(),
+            attempts: delivery.attempts,
+            interest: delivery.interest,
+            token,
+        }))
+    }
+
+    /// Claims every due interest of `delivery_id` at one instant, as a test stands in for the
+    /// attempts that publish them one after another.
+    #[cfg(test)]
+    pub(crate) fn claim_all_inbox_deliveries(
         &self,
         delivery_id: &str,
         owner_id: Option<&str>,
         now_ms: u64,
     ) -> Result<Vec<ClaimedInboxDelivery>, String> {
-        let token = crate::random_opaque("attempt");
-        let connection = self.lock()?;
-        connection
-            .execute(
-                "UPDATE webhook_inbox_delivery
-                 SET attempts = attempts + 1, next_due_at_ms = ?3, attempt_token = ?4
-                 WHERE delivery_id = ?1 AND status = 'pending' AND next_due_at_ms <= ?2
-                   AND (?5 IS NULL OR owner_id = ?5)",
-                params![
-                    delivery_id,
-                    now_ms as i64,
-                    (now_ms + ATTEMPT_LEASE_MS) as i64,
-                    token,
-                    owner_id
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        let mut statement = connection
-            .prepare(&format!(
-                "SELECT {DELIVERY_COLUMNS} FROM webhook_inbox_delivery
-                 WHERE delivery_id = ?1 AND attempt_token = ?2
-                 ORDER BY connection_id, event_interest_key, binding_id"
-            ))
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map(params![delivery_id, token], read_delivery)
-            .map_err(|error| error.to_string())?;
-        rows.map(|row| {
-            let delivery = row.map_err(|error| error.to_string())??;
-            Ok(ClaimedInboxDelivery {
-                delivery_id: delivery_id.to_string(),
-                attempts: delivery.attempts,
-                interest: delivery.interest,
-                token: token.clone(),
-            })
-        })
-        .collect()
+        let mut claimed = Vec::new();
+        for binding_id in self.due_inbox_bindings(delivery_id, owner_id, now_ms)? {
+            claimed.extend(self.claim_inbox_delivery(delivery_id, &binding_id, now_ms)?);
+        }
+        Ok(claimed)
     }
 
     /// Stored events that need an attempt: those whose interests were never chosen and those
@@ -527,8 +571,8 @@ fn retry_delay_ms(attempts: u32) -> u64 {
 /// An event belongs to the owner of the connection that received it: the connection named by
 /// the webhook URL, or else the connections whose live trigger subscriptions watch the event's
 /// scope (`?1` is the owner id). Subscriptions are reconciled under the kernel's id, so their
-/// own `owner_id` says nothing about who owns the event. A revoked connection, an inactive
-/// subscription or one from an older authorization generation grants nothing.
+/// own `owner_id` says nothing about who owns the event. A revoked connection, an inactive subscription or one from an
+/// older authorization generation grants nothing.
 const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
      THEN route_connection_id IN (SELECT connection_id FROM connections WHERE owner_id = ?1)
      ELSE connection_scope IN
@@ -756,16 +800,19 @@ mod tests {
     fn claimed_delivery_is_leased_and_retries_back_off_up_to_the_budget() {
         let (store, _) = selected_store(&[("c1", "owner")]);
         assert_eq!(
-            store.claim_inbox_deliveries("d1", None, 0).unwrap().len(),
+            store
+                .claim_all_inbox_deliveries("d1", None, 0)
+                .unwrap()
+                .len(),
             1
         );
         assert!(store
-            .claim_inbox_deliveries("d1", None, 1)
+            .claim_all_inbox_deliveries("d1", None, 1)
             .unwrap()
             .is_empty());
         // A crashed attempt becomes claimable again once its lease ends.
         let mut now = ATTEMPT_LEASE_MS;
-        let mut claimed = store.claim_inbox_deliveries("d1", None, now).unwrap();
+        let mut claimed = store.claim_all_inbox_deliveries("d1", None, now).unwrap();
         let mut delays = Vec::new();
         loop {
             let status = store
@@ -778,7 +825,7 @@ mod tests {
                 break;
             }
             now = row.next_due_at_ms;
-            claimed = store.claim_inbox_deliveries("d1", None, now).unwrap();
+            claimed = store.claim_all_inbox_deliveries("d1", None, now).unwrap();
         }
         assert_eq!(delays[..3], [10_000, 20_000, 40_000]);
         assert!(delays.iter().all(|delay| *delay <= MAX_RETRY_DELAY_MS));
@@ -793,7 +840,7 @@ mod tests {
     fn superseded_attempt_cannot_change_the_delivery() {
         let (store, interests) = selected_store(&[("c1", "owner")]);
         let first = store
-            .claim_inbox_deliveries("d1", None, 0)
+            .claim_all_inbox_deliveries("d1", None, 0)
             .unwrap()
             .remove(0);
         assert_eq!(
@@ -810,7 +857,7 @@ mod tests {
             Requeue::Queued
         );
         let second = store
-            .claim_inbox_deliveries("d1", None, ATTEMPT_LEASE_MS)
+            .claim_all_inbox_deliveries("d1", None, ATTEMPT_LEASE_MS)
             .unwrap()
             .remove(0);
         assert!(!store.finish_inbox_delivery(&first, 5).unwrap());
@@ -852,7 +899,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].owner_id, "kernel-a");
         assert_eq!(rows[0].status, DeliveryStatus::Pending);
-        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        let claimed = store.claim_all_inbox_deliveries("d1", None, 0).unwrap();
         assert_eq!(claimed.len(), 1);
         assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
         assert_eq!(
@@ -864,7 +911,7 @@ mod tests {
     #[test]
     fn entry_is_published_only_when_every_interest_is_settled() {
         let (store, _) = selected_store(&[("c-a", "owner-a"), ("c-b", "owner-b")]);
-        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        let claimed = store.claim_all_inbox_deliveries("d1", None, 0).unwrap();
         assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
         let entry = store.inbox_event("d1").unwrap().unwrap();
         assert_eq!(entry.status, InboxStatus::Pending);
@@ -888,7 +935,7 @@ mod tests {
             store.select_inbox_interests(id, &interests, at).unwrap();
         }
         for (id, at) in [("old", 0), ("recent", RETENTION_MS)] {
-            let claimed = store.claim_inbox_deliveries(id, None, at).unwrap();
+            let claimed = store.claim_all_inbox_deliveries(id, None, at).unwrap();
             store.finish_inbox_delivery(&claimed[0], at + 1).unwrap();
         }
         assert_eq!(store.prune_inbox(RETENTION_MS + 1).unwrap(), 1);
@@ -902,7 +949,7 @@ mod tests {
     fn replay_replaces_only_the_requesting_owners_rows() {
         let (store, interests) = selected_store(&[("c-a", "owner-a"), ("c-b", "owner-b")]);
         // B's attempt failed and waits in backoff; A's published.
-        let claimed = store.claim_inbox_deliveries("d1", None, 0).unwrap();
+        let claimed = store.claim_all_inbox_deliveries("d1", None, 0).unwrap();
         assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
         store
             .fail_inbox_delivery(&claimed[1], "refused", 1)
@@ -922,7 +969,7 @@ mod tests {
         // A's replay claims A's row only; B's backoff still holds.
         assert_eq!(
             store
-                .claim_inbox_deliveries("d1", Some("owner-a"), 2)
+                .claim_all_inbox_deliveries("d1", Some("owner-a"), 2)
                 .unwrap()
                 .len(),
             1

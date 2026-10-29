@@ -1959,7 +1959,7 @@ mod mp11_ingress_tests {
 mod mp11_delivery_http_tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     struct SignedProvider;
     impl AegsProvider for SignedProvider {
         fn generator_id(&self) -> &'static str {
@@ -2010,6 +2010,8 @@ mod mp11_delivery_http_tests {
         refusals: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
+        /// Milliseconds the fake AEDS takes to accept each publication.
+        delay_ms: Arc<AtomicU64>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
     impl PublisherFixture {
@@ -2031,6 +2033,8 @@ mod mp11_delivery_http_tests {
             let done = stop.clone();
             let hold = Arc::new(AtomicBool::new(blocked));
             let held = hold.clone();
+            let delay_ms = Arc::new(AtomicU64::new(0));
+            let delay = delay_ms.clone();
             let thread = std::thread::spawn(move || {
                 while !done.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -2066,6 +2070,7 @@ mod mp11_delivery_http_tests {
                             if done.load(Ordering::SeqCst) {
                                 break;
                             }
+                            std::thread::sleep(Duration::from_millis(delay.load(Ordering::SeqCst)));
                             if refuse
                                 .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
@@ -2100,6 +2105,7 @@ mod mp11_delivery_http_tests {
                 refusals,
                 stop,
                 hold,
+                delay_ms,
                 thread: Some(thread),
             }
         }
@@ -2568,7 +2574,7 @@ mod mp11_delivery_http_tests {
         // An inline or worker attempt that has been claimed and is awaiting AEDS.
         assert_eq!(
             store
-                .claim_inbox_deliveries("in-flight", None, now_ms())
+                .claim_all_inbox_deliveries("in-flight", None, now_ms())
                 .unwrap()
                 .len(),
             1
@@ -2771,7 +2777,7 @@ mod mp11_delivery_http_tests {
         // B's retry has been claimed and is awaiting AEDS when A asks for a replay.
         let due = now_ms() + 60_000;
         let in_flight = store
-            .claim_inbox_deliveries("matrix-4", Some("owner-b"), due)
+            .claim_all_inbox_deliveries("matrix-4", Some("owner-b"), due)
             .unwrap();
         assert_eq!(in_flight.len(), 1);
         let (status, replayed) = replay_as(&server, "owner", "matrix-4").await;
@@ -3194,6 +3200,102 @@ mod mp11_delivery_http_tests {
         assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
         let connection = store.connection("connection").unwrap().unwrap();
         assert!(connection.last_accepted_event_at_ms.is_some());
+    }
+
+    fn claim_c() -> crate::SubscriptionClaim {
+        crate::SubscriptionClaim {
+            binding_id: "binding-c".into(),
+            connection_id: "connection-c".into(),
+            event_interest_key: "interest-c".into(),
+            ..subscription_claim()
+        }
+    }
+
+    async fn wait_for_calls(publisher: &PublisherFixture, calls: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while publisher.calls.load(Ordering::SeqCst) < calls {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the fake AEDS received the publication");
+    }
+
+    #[tokio::test]
+    async fn an_interest_is_leased_when_its_publication_starts_not_when_the_event_is_picked_up() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        store
+            .upsert_ready_connection(
+                "connection-c",
+                "owner-c",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        store
+            .reconcile(
+                "kernel",
+                "dev.chariox.github",
+                &[subscription_claim(), claim_b(), claim_c()],
+            )
+            .unwrap();
+        // Three publications of 200 ms against a 300 ms lease: the third starts after a lease
+        // taken at the start of the event would have ended.
+        publisher.delay_ms.store(200, Ordering::SeqCst);
+        let at = now_ms();
+        store
+            .record_inbox_event("slow-1", None, &event(), at)
+            .unwrap();
+        let inline = tokio::spawn({
+            let server = server.clone();
+            async move { server.attempt_inbox_delivery("slow-1", None, at).await }
+        });
+        wait_for_calls(&publisher, 3).await;
+        // The retry worker passes while the third interest is awaiting AEDS.
+        server.deliver_due_inbox(now_ms()).await.unwrap();
+        inline.await.unwrap().unwrap();
+        assert_eq!(
+            accepted_interests(&publisher),
+            vec!["interest", "interest-b", "interest-c"]
+        );
+        let rows = store.inbox_deliveries("slow-1").unwrap();
+        assert!(rows
+            .iter()
+            .all(|row| row.status == crate::DeliveryStatus::Published && row.attempts == 1));
+    }
+
+    #[tokio::test]
+    async fn the_retry_worker_leases_each_event_when_its_own_publication_starts() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        publisher.delay_ms.store(200, Ordering::SeqCst);
+        let at = now_ms();
+        let deliveries = ["batch-1", "batch-2", "batch-3"];
+        for delivery in deliveries {
+            store
+                .record_inbox_event(delivery, None, &event(), at)
+                .unwrap();
+        }
+        let first_pass = tokio::spawn({
+            let server = server.clone();
+            async move { server.deliver_due_inbox(at).await }
+        });
+        wait_for_calls(&publisher, 3).await;
+        // A second pass while the third event is awaiting AEDS: its lease began with its own
+        // attempt, not with the first pass.
+        server.deliver_due_inbox(now_ms()).await.unwrap();
+        first_pass.await.unwrap().unwrap();
+        assert_eq!(accepted_interests(&publisher).len(), 3);
+        for delivery in deliveries {
+            let entry = store.inbox_event(delivery).unwrap().unwrap();
+            assert_eq!(
+                (entry.status, entry.attempts, entry.publication_count),
+                (crate::InboxStatus::Published, 1, 1),
+                "{delivery}"
+            );
+        }
     }
 
     #[tokio::test]
