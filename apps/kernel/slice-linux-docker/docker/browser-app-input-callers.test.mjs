@@ -80,3 +80,42 @@ test('native key defaults retain only the stamped source, and human input clears
   dispatch(event('keydown')); await inputs.end('caller');
   assert.equal(dispatch(event('input')),undefined,'retired source cannot tag delayed input');
 });
+
+test('CDP text claims its native beforeinput and synchronous transform only', async () => {
+  const listeners = new Map(), timers = new Map(), element = {};
+  let timer = 0;
+  const inputs = vm.runInNewContext(`(${createInputCallers.toString()})()`, {
+    document:{activeElement:element},performance:{timeOrigin:0,now:()=>1},
+    addEventListener(type,fn){listeners.set(type,fn);},
+    setTimeout(fn){timers.set(++timer,fn);return timer;},clearTimeout(id){timers.delete(id);},
+  });
+  const event = (type, overrides = {}) => ({type,target:element,isTrusted:true,inputType:'insertText',data:'Edit',...overrides});
+  const dispatch = value => {listeners.get(value.type)(value);return inputs.token(value);};
+  const flush = () => { for (const [id,fn] of timers) {timers.delete(id);fn();} };
+  inputs.begin('caller',10);
+  inputs.armText('Edit','caller');
+  assert.equal(dispatch(event('beforeinput',{isTrusted:false})),undefined);
+  assert.equal(dispatch(event('beforeinput')),'caller');
+  assert.equal(dispatch(event('input',{data:'EDIT'})),'caller','the editor may synchronously transform the native edit');
+  assert.equal(dispatch(event('input')),undefined,'consumed once');
+  for (const type of ['keydown','pointerdown','paste','compositionstart','focusin']) {
+    inputs.armText('Edit','caller'); dispatch(event(type,{timeStamp:50}));
+    assert.equal(dispatch(event('beforeinput')),undefined,type+' retires the claim');
+    assert.equal(dispatch(event('input')),undefined);
+  }
+  for (const override of [{target:{}},{data:'Human'},{inputType:'insertFromPaste'}]) {
+    inputs.armText('Edit','caller');
+    assert.equal(dispatch(event('beforeinput',override)),undefined);
+    assert.equal(dispatch(event('input')),undefined);
+  }
+  inputs.armText('Edit','caller'); assert.equal(dispatch(event('beforeinput')),'caller');
+  flush(); assert.equal(dispatch(event('input')),undefined,'a cancelled beforeinput cannot label a later task');
+  inputs.armText('Edit','caller'); flush();
+  assert.equal(dispatch(event('beforeinput')),undefined,'an unused claim expires');
+  inputs.armText('Edit','caller'); inputs.clearText('other');
+  assert.equal(dispatch(event('beforeinput')),'caller');
+  inputs.clearText('caller'); assert.equal(dispatch(event('input')),undefined);
+  inputs.armText('Edit','caller'); await inputs.end('caller');
+  assert.equal(timers.size,0); assert.equal(dispatch(event('beforeinput')),undefined);
+  assert.throws(()=>inputs.armText('Edit','caller'),/expired/);
+});
