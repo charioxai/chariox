@@ -247,9 +247,9 @@ impl AppPackagePreparation {
             let digest = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
             self.verify_and_stage(owner, &bytes, &digest, portable_only, checkpoint)
         } else {
-            let claimed = inspect_untrusted(&bytes, &Limits::default())
+            let claimed = inspect_publisher(&bytes, &Limits::default())
                 .map_err(|e| PreparationError::PackageRejected(e.code))?;
-            if claimed.manifest.publisher.id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            if claimed.id == chariox_app_package::v2::DEV_PUBLISHER_ID {
                 return Err(PreparationError::PackageRejected(
                     ErrorCode::UntrustedPublisher,
                 ));

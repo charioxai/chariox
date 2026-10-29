@@ -463,39 +463,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chariox-app-wasm-worker"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bytes",
- "chariox-app-package",
- "chariox-app-runtime",
- "chariox-app-wasm-worker",
- "chariox-app-wit",
- "ed25519-dalek",
- "futures",
- "http",
- "http-body",
- "http-body-util",
- "libc",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "wasm-compose",
- "wasm-encoder 0.262.0",
- "wasmparser 0.262.0",
- "wasmtime",
- "wasmtime-wasi",
- "wasmtime-wasi-http",
- "wasmtime-wasi-io",
- "wat",
- "wit-component 0.262.0",
- "wit-parser 0.262.0",
-]
-
-[[package]]
 name = "chariox-app-sdk"
 version = "0.1.0"
 dependencies = [
@@ -519,6 +486,39 @@ dependencies = [
  "wasmparser 0.262.0",
  "wasmtime",
  "wasmtime-wasi",
+ "wit-component 0.262.0",
+ "wit-parser 0.262.0",
+]
+
+[[package]]
+name = "chariox-app-wasm-worker"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "chariox-app-package",
+ "chariox-app-runtime",
+ "chariox-app-wasm-worker",
+ "chariox-app-wit",
+ "ed25519-dalek",
+ "futures",
+ "http",
+ "http-body",
+ "http-body-util",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "wasm-compose 0.261.0",
+ "wasm-encoder 0.262.0",
+ "wasmparser 0.262.0",
+ "wasmtime",
+ "wasmtime-wasi",
+ "wasmtime-wasi-http",
+ "wasmtime-wasi-io",
+ "wat",
  "wit-component 0.262.0",
  "wit-parser 0.262.0",
 ]
@@ -4938,14 +4938,14 @@ dependencies = [
  "semver",
  "serde",
  "serde_derive",
+ "serde_json",
  "smallvec",
  "target-lexicon",
- "wasmparser 0.261.0",
- "wasmtime-environ",
- "serde_json",
  "tempfile",
  "wasm-compose 0.261.0",
  "wasm-encoder 0.261.0",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
  "wasmtime-internal-cache",
  "wasmtime-internal-component-macro",
  "wasmtime-internal-component-util",
@@ -4956,8 +4956,8 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
- "windows-sys 0.61.2",
  "wat",
+ "windows-sys 0.61.2",
  "wit-parser 0.261.0",
 ]
 
