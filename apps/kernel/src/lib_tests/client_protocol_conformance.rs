@@ -40,7 +40,7 @@ fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
     );
     assert_file_contains(
         "apps/kernel/src/local/api/tests/protocol_shapes/usage_snapshot.rs",
-        &["usage_snapshot_589_contract_roundtrips_without_private_profiles"],
+        &["usage_snapshot_770_contract_roundtrips_without_private_profiles"],
         &mut failures,
     );
 

@@ -1,5 +1,12 @@
 # Chariox v1 Protocol
 
+MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
+with older kernels is not a goal. The managed-upgrade policy admits only the
+current release and the previous release (636 and 629), plus the new target
+770 while it is being prepared. Older kernels are
+discontinued and re-provisioned when that simplifies the code, regardless of
+whether an older protocol shipped.
+
 ### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
 
 `UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
@@ -744,9 +751,7 @@ The worker maps `completion-assessment:<backing-prompt-id>` to
 admission binding. Other assessments cannot supply this check's verdict, even
 when their bytes arrive after its prompt boundary. Both kernels must speak 181;
 178 workers do not provide this identity. Ordinary failed completions retain the
-worker termination and settle as failed work. Upgrade/rollback keep 567 and 570
-reciprocal within the existing 32-entry policy; 370 is the oldest unpinned
-intermediate removed to make room.
+worker termination and settle as failed work.
 
 MP-08 / MP-10 / MP-11: coordinator-allocated 513/121 adds the paired terminal
 actor normalization for display metadata/credits and the historical workflow
@@ -760,9 +765,7 @@ stop/cancel a non-terminal historical run, including a captured Room Stop.
 Pause and Resume remain denied for everyone; other callers and all controls of
 terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
-the transactional immutable proof. Managed upgrade policy retains 506 as an
-explicit predecessor; the aggregate retains 493, 506, 513 and 520 in both
-upgrade and rollback policy. The shared agent-tab inventory minimum is 486
+the transactional immutable proof. The shared agent-tab inventory minimum is 486
 (`kernelBrowserAgentTabsMinimumProtocolVersion`), enforced by the OSS CLI's
 `/access tabs` command. Owner-managed context transfer retains the C5 minimums
 of local 520 and peer 128. The OSS CLI has no separate Goal or window-sudo
@@ -784,8 +787,7 @@ stop/cancel a non-terminal historical run, including a captured Room Stop.
 Pause and Resume remain denied for everyone; other callers and all controls of
 terminal historical records remain denied before idempotent shortcuts. Stop
 never creates invoker proof or removes the historical label. New admissions retain
-the transactional immutable proof. Managed upgrade policy retains 506 as an
-explicit predecessor; the consuming web floor is 513.
+the transactional immutable proof. The consuming web floor is 513.
 
 MP-08 / MP-10 / MP-11: local protocol **516** orders a DOM mirror read
 (`mirror_next`) behind every earlier `mirror_input` of the same mirror
@@ -1440,7 +1442,7 @@ Current slice-management surface:
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
-- Local daemon protocol v589 / relay peer v195 adds `GetProviderUsageSnapshot {}` and `GetAgentUsageSnapshot {session_id, agent_id}`. The read-only account response contains only provider/profile id/label and the existing provider-observed usage meters (rolling windows, credits, reset and observation times). It uses the ordinary provider-account authority owner scope, never refreshes credentials, and never estimates missing balances or windows. The agent response requires Room membership and an agent belonging to that Room. It returns observed context used/limit when available and the actual execution target (slice name, remote kernel alias/id, or local kernel alias/id), with the home kernel as `via` for remote execution. Context has no observation timestamp because provider-run activity time is not a usage observation. Remote admission credentials and profile locations are never included. Clients below 589 omit the usage menu, context ring and routed execution label without issuing the new requests.
+- Local daemon protocol v770 / relay peer v320 exposes `GetProviderUsageSnapshot {}` with opaque `account_id`, provider/profile id/label, `auth_state`, safe configured `services`, and provider-observed usage meters. Account identities group provider-reported email identities across kernels; profiles without such an identity group only when the machine and native credential scope match. Identity hashes never use credentials. Unobserved/unconfigured native defaults without usage are omitted; explicit profiles retain their status. Clients group by account identity, keep fixed order and select each meter's latest observation. No credential/profile locations leave the kernel. `GetAgentUsageSnapshot {session_id, agent_id}` still requires Room membership and returns observed context and execution route without remote admission credentials. Usage references require protocol 770; missing balances/windows are never estimated.
 
 - Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
@@ -5208,10 +5210,7 @@ for edge cases, resource ownership and the proposal approval requirement.
 
 MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),
 usage (589/195), agent archive (592/198), dictation (594/200), and session
-snapshot state (596/202). It keeps protocol 567 and each feature predecessor
-reciprocal for managed upgrade and rollback. The 32-entry validator limit
-requires retiring unshipped branch protocols 371–375; released 376/377/411,
-Apps 416, main 472/520, display 552, and staging 567 remain admitted.
+snapshot state (596/202).
 The general web minimum remains 567; clients gate additive requests separately.
 
 
@@ -5219,9 +5218,7 @@ The general web minimum remains 567; clients gate additive requests separately.
 
 MP-08 / MP-09 / MP-10 / MP-11: this union adds Vault speech services
 (603/209: speech-service selection, owner Vault metadata, setup state and
-recording context) to the 599/205 staging union. It keeps 599 and 567 as
-reciprocal managed-upgrade predecessors. The 32-entry validator limit retires
-the unshipped branch protocol 378; the other admitted releases stay. Clients
+recording context) to the 599/205 staging union. Clients
 require 603 for the Dictation settings contract and gate it separately from
 the general web minimum.
 
@@ -5230,9 +5227,7 @@ the general web minimum.
 MP-08 / MP-09 / MP-10 / MP-11: this union carries the 610/216 staging line and
 the external agents v2 line (609/215: gateway kernels, outside events, agent
 deadlines, kernel files, provider account copy). Both lines keep their
-contracts; clients feature-detect each by its own allocated number. 610 stays a
-reciprocal managed-upgrade predecessor; 609 never shipped and is not admitted.
-The 32-entry validator limit retires the unshipped branch protocol 525.
+contracts; clients feature-detect each by its own allocated number.
 A subscribe frame that names a `kernel` (gateway route) and also sets
 `heartbeat_interval_ms` is refused with `heartbeat_interval_not_routable`: the
 routed kernel's own interval applies, so the field is not silently dropped.
@@ -5546,8 +5541,7 @@ viewer that did not ask never receives an empty `href`, and its validator keeps 
 
 The relay never parses mirror records, which travel inside `KernelBrowser` results; peer 232 is
 raised for the resize command above. The web offers the new fields only to kernels at local 629 or
-later. The 629/232 union keeps 614 as a reciprocal managed-upgrade predecessor and retires the
-unshipped branch protocol 588 from the 32-entry list.
+later.
 
 ### OSS landing union protocol 629 / peer 232
 

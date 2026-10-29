@@ -1,5 +1,15 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 provider account references (2026-10-28)
+
+Local 770 / peer 320 projects account identity, authentication state and configured
+services through the existing owner-scoped provider usage request. Ordinary and
+managed kernels use the same registry, native-provider observations and reference
+projection. Unobserved native defaults are omitted; explicit profiles retain
+truthful status. Identity uses provider-reported email or the native scope and
+machine, never secret values. This does not change account admission, copying,
+provider execution, relay authority or mandatory managed shutdown.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
 
 `RoomTerminal` binary exec operations enter the same owner/Room-agent checks in
