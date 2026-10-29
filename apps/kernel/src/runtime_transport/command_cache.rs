@@ -155,6 +155,11 @@ pub(crate) enum CommandReservation {
 }
 
 pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
+    // A read is answered again on replay; keeping its result only holds memory.
+    // File contents and heartbeats are reads too, so they never enter the cache.
+    if crate::runtime::kernel_gateway::ledger::is_repeatable(request) {
+        return false;
+    }
     // Exec byte pages and stdin acknowledgements are owned by the bounded
     // stream, not this transport cache. Only starting a command needs a receipt.
     if matches!(request, LocalDaemonRequest::RoomTerminal(terminal)
@@ -199,10 +204,6 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
         LocalDaemonRequest::RequestKernelSudo(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RenewKernelSudoRequester(_)
-            // File contents are never kept in the result cache, and a heartbeat is
-            // only ever fresh; a replay of either is safe to run again.
-            | LocalDaemonRequest::ReadKernelFile(_)
-            | LocalDaemonRequest::HeartbeatAttachments(_)
             // The result carries a relay token that joins a terminal; it is
             // never kept in this cache, on disk or in memory.
             | LocalDaemonRequest::CreateTerminalPairingLink(_)
@@ -210,49 +211,34 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             // fingerprinted, cached or replayed.
             | LocalDaemonRequest::RespondToHandoff(_)
             | LocalDaemonRequest::RequestKernelAccess(_)
-            | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
-            | LocalDaemonRequest::ListAppInstallations(_)
             | LocalDaemonRequest::BeginAppPublisherEnrollment(_)
-            | LocalDaemonRequest::GetAppPublisherEnrollment(_)
             | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
-            | LocalDaemonRequest::GetAppInstallation(_)
             | LocalDaemonRequest::BeginAppInstall(_)
             | LocalDaemonRequest::BeginAppUpdate(_)
-            | LocalDaemonRequest::GetAppInstallOperation(_)
             | LocalDaemonRequest::CancelAppInstallOperation(_)
-            | LocalDaemonRequest::GetAppInstallationJournal(_)
             | LocalDaemonRequest::BeginAppPackageUpload(_)
             | LocalDaemonRequest::PutAppPackageUploadChunk(_)
-            | LocalDaemonRequest::GetAppPackageUpload(_)
             | LocalDaemonRequest::AbortAppPackageUpload(_)
-            | LocalDaemonRequest::GetAppWorker(_)
             | LocalDaemonRequest::ControlAppWorker(_)
             | LocalDaemonRequest::RestoreAppDataSnapshot(_)
-            | LocalDaemonRequest::ListAppAutomations(_)
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
             | LocalDaemonRequest::OpenUserAppView(_)
-            | LocalDaemonRequest::ListUserAppViews(_)
             | LocalDaemonRequest::CloseUserAppView(_)
-            | LocalDaemonRequest::GetUserAppViewFrontend(_)
             | LocalDaemonRequest::CallUserAppView(_)
             | LocalDaemonRequest::SubscribeUserAppViews(_)
             | LocalDaemonRequest::AnswerUserDomainInteraction(_)
             | LocalDaemonRequest::OpenAppView(_)
             | LocalDaemonRequest::SetAppViewPanel(_)
             | LocalDaemonRequest::UninstallApp(_)
-            | LocalDaemonRequest::GetAppLogs(_)
             | LocalDaemonRequest::CreateAppInboxRoute(_)
             | LocalDaemonRequest::RemoveAppInboxRoute(_)
-            | LocalDaemonRequest::ListAppInboxRoutes(_)
             | LocalDaemonRequest::TestAppInboxRoute(_)
             | LocalDaemonRequest::GrantAppConnection(_)
-            | LocalDaemonRequest::GetAppSet(_)
             | LocalDaemonRequest::PreviewDeploymentApps(_)
             | LocalDaemonRequest::PrepareDeploymentApps(_)
             | LocalDaemonRequest::RevokeAppConnection(_)
-            | LocalDaemonRequest::ListAppConnections(_)
             | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::SaveAppFileExport(_)
             | LocalDaemonRequest::RevokeAppFileGrants(_)
@@ -797,19 +783,6 @@ impl CommandResultCache {
     }
 
     #[cfg(test)]
-    pub(super) fn fingerprint_for_command_type_test(command_type: &str) -> CommandFingerprint {
-        CommandFingerprint {
-            command_type: command_type.to_string(),
-            source: "test".to_string(),
-            session_id: None,
-            attachment_id: None,
-            request_hash: stable_hash64(command_type.as_bytes()),
-            browser_caller: None,
-            browser_protection_revision: None,
-        }
-    }
-
-    #[cfg(test)]
     pub(super) fn request_hash_for_test(fingerprint: &CommandFingerprint) -> u64 {
         fingerprint.request_hash
     }
@@ -1072,18 +1045,8 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
         "kernel_browser"
             | "notes"
             | "credential_enrollment.interaction.request"
-            | "external_provider_session.list"
             | "interaction.respond"
             | "native_provider.interaction.request"
-            | "provider.catalog.get"
-            | "prompt_input_history.get"
-            | "session.state.get"
-            | "session.history.blob"
-            | "session.history.outline"
-            | "slice.list"
-            | "terminal.command_catalog.get"
-            | "waiting_room.inventory.get"
-            | "waiting_room.public_snapshot.get"
     )
 }
 
