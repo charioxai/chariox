@@ -27,8 +27,10 @@ impl KernelRuntimeState {
                 "caller does not own the selected Project",
             ));
         }
-        let current = store.snapshot_locked(&project)?;
+        let mut current = store.snapshot_locked(&project)?;
+        let attached = store.snapshot_live_bindings_locked(&project)?;
         let mut draft = request.draft;
+        review_new_proposal_folders(&mut current, &mut draft, &[], &attached.folders)?;
         let diff = tokio::task::spawn_blocking(move || {
             let _lock = _lock;
             // Validate before any path read; Preview measures the same selections as Save.
@@ -67,7 +69,12 @@ impl KernelRuntimeState {
         }
         let mut current = store.snapshot_locked(&project)?;
         let attached = store.snapshot_live_bindings_locked(&project)?;
-        review_new_proposal_folders(&mut current, &mut request, &attached.folders)?;
+        review_new_proposal_folders(
+            &mut current,
+            &mut request.draft,
+            &request.accepted_proposal_ids,
+            &attached.folders,
+        )?;
         let user = user.to_owned();
         let response_store = store.clone();
         let (mut environment, diff) = tokio::task::spawn_blocking(move || {
