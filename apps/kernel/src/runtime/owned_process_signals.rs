@@ -27,6 +27,12 @@ impl OwnedProcessSignals {
         Self::capture(child, true)
     }
 
+    /// A process this kernel did not just spawn (an orphan found by scanning).
+    /// Its identity is only as good as the moment of this snapshot.
+    pub(crate) fn for_pid(pid: u32) -> io::Result<Self> {
+        Self::capture_pid(pid, false)
+    }
+
     fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
         Self::capture_pid(child.id(), launched_exclusive_session)
     }

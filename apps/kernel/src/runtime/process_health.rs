@@ -74,83 +74,19 @@ pub fn process_running(pid: u32) -> bool {
     resident_set_bytes_for_pid(pid).is_some()
 }
 
+/// Kills `pid` and the descendants found in one snapshot, each by its start
+/// identity, so a PID reused in the meantime is never signalled. There is no
+/// grace period in which a descendant's PID could be recycled.
 #[cfg(unix)]
 pub(crate) fn terminate_process_tree(pid: u32) -> bool {
-    // Reject special PIDs before ancestry traversal; pid 0 would collect the
-    // host's unrelated process trees, and an overflowing cast could signal a group.
-    if signal_pid(pid).is_none() {
-        return false;
-    }
-    let mut pids = descendant_process_ids(pid);
-    pids.push(pid);
-    pids.dedup();
-
-    for child_pid in pids.iter().rev().filter_map(|pid| signal_pid(*pid)) {
-        let _ = unsafe { libc::kill(child_pid, libc::SIGTERM) };
-    }
-    wait_for_processes_to_exit(&pids, std::time::Duration::from_millis(1_000));
-    let mut killed = false;
-    for child_pid in pids.iter().rev() {
-        if process_running(*child_pid) {
-            let Some(child_pid) = signal_pid(*child_pid) else {
-                continue;
-            };
-            let result = unsafe { libc::kill(child_pid, libc::SIGKILL) };
-            killed |= result == 0;
-        } else {
-            killed = true;
-        }
-    }
-    killed
+    super::owned_process_signals::OwnedProcessSignals::for_pid(pid)
+        .and_then(|mut owned| owned.kill_owned_processes())
+        .is_ok()
 }
 
 #[cfg(not(unix))]
 pub(crate) fn terminate_process_tree(_pid: u32) -> bool {
     false
-}
-
-#[cfg(unix)]
-fn wait_for_processes_to_exit(pids: &[u32], timeout: std::time::Duration) {
-    let started = std::time::Instant::now();
-    while started.elapsed() < timeout && pids.iter().any(|pid| process_running(*pid)) {
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-}
-
-#[cfg(unix)]
-fn descendant_process_ids(root_pid: u32) -> Vec<u32> {
-    let output = match std::process::Command::new("ps")
-        .args(["-axo", "pid=,ppid="])
-        .output()
-    {
-        Ok(output) => output,
-        Err(_) => return Vec::new(),
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    let rows = text
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let pid = parts.next()?.parse::<u32>().ok()?;
-            let ppid = parts.next()?.parse::<u32>().ok()?;
-            Some((pid, ppid))
-        })
-        .collect::<Vec<_>>();
-    let mut descendants = Vec::new();
-    let mut frontier = vec![root_pid];
-    while let Some(parent_pid) = frontier.pop() {
-        for (pid, ppid) in &rows {
-            if *ppid == parent_pid
-                && *pid != root_pid
-                && signal_pid(*pid).is_some()
-                && !descendants.contains(pid)
-            {
-                descendants.push(*pid);
-                frontier.push(*pid);
-            }
-        }
-    }
-    descendants
 }
 
 #[cfg(unix)]
