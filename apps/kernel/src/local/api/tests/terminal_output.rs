@@ -21,3 +21,4 @@ mod basic_pump;
 mod native_output;
 mod native_output_batch;
 mod parallel_prompts;
+mod tool_images;

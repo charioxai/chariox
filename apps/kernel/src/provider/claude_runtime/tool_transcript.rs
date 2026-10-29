@@ -46,15 +46,18 @@ fn append_result(output: &mut String, text: &str) -> bool {
     length < text.len()
 }
 
-/// The result's PNG, JPEG, GIF and WebP blocks as data URLs, for the transcript to draw; larger or other blocks are left out.
-fn bounded_result_images(content: Option<&Value>) -> Vec<String> {
+/// The result's PNG, JPEG, GIF and WebP blocks as data URLs, for the transcript to draw, and how many of those were too large or past the limit; other blocks are left out.
+fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, usize) {
     let Some(Value::Array(items)) = content else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
-    items
-        .iter()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("image"))
-        .filter_map(|item| {
+    let mut images = Vec::new();
+    let mut omitted = 0;
+    for item in items {
+        if item.get("type").and_then(Value::as_str) != Some("image") {
+            continue;
+        }
+        let Some((media_type, data)) = (|| {
             let source = item.get("source")?;
             if source.get("type")?.as_str()? != "base64" {
                 return None;
@@ -67,12 +70,18 @@ fn bounded_result_images(content: Option<&Value>) -> Vec<String> {
             (matches!(
                 media_type,
                 "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-            ) && base64
-                && data.len() <= IMAGE_BASE64_BYTES)
-                .then(|| format!("data:{media_type};base64,{data}"))
-        })
-        .take(RESULT_IMAGES)
-        .collect()
+            ) && base64)
+                .then_some((media_type, data))
+        })() else {
+            continue;
+        };
+        if data.len() > IMAGE_BASE64_BYTES || images.len() == RESULT_IMAGES {
+            omitted += 1;
+        } else {
+            images.push(format!("data:{media_type};base64,{data}"));
+        }
+    }
+    (images, omitted)
 }
 
 fn bounded_result(content: Option<&Value>) -> String {
@@ -171,9 +180,12 @@ impl ClaudeToolTranscript {
                     payload["status"] = json!(if failed { "error" } else { "completed" });
                     let output = bounded_result(block.get("content"));
                     payload[if failed { "error" } else { "output" }] = json!(output);
-                    let images = bounded_result_images(block.get("content"));
+                    let (images, omitted) = bounded_result_images(block.get("content"));
                     if !images.is_empty() {
                         payload["images"] = json!(images);
+                    }
+                    if omitted > 0 {
+                        payload["images_omitted"] = json!(omitted);
                     }
                     return Some(payload);
                 }
@@ -413,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn result_images_become_data_urls_and_oversized_or_unknown_ones_are_left_out() {
+    fn result_images_become_data_urls_and_oversized_ones_are_counted_and_unknown_ones_left_out() {
         let mut transcript = ClaudeToolTranscript::default();
         transcript.observe(&invocation("shot", "Read"));
         let png = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}});
@@ -429,6 +441,7 @@ mod tests {
             output[0]["images"],
             json!(["data:image/png;base64,iVBORw0KGgo="])
         );
+        assert_eq!(output[0]["images_omitted"], 1);
         transcript.observe(&invocation("plain", "Read"));
         let plain = transcript.observe(&result("plain", json!("text only")));
         assert!(plain[0].get("images").is_none());
