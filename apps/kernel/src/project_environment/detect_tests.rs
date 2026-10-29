@@ -338,9 +338,9 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     let root = TestWorktree::new("envp02a-utility-cache");
     write(&root, "package.json", r#"{"engines":{"node":"22"}}"#);
     let folder = folder(&root);
-    let detection = detect_environment(&[folder.clone()], "environment").unwrap();
+    let detection = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
     assert_eq!(
-        detection.model_folders(None, &[], &[folder.clone()]),
+        detection.model_folders(None, &[], std::slice::from_ref(&folder)),
         ["folder".into()].into()
     );
     let target = EnvironmentTargetBinding {
@@ -378,12 +378,12 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     store.save_detection(&cache).unwrap();
     let reloaded = store.load_detection("project").unwrap().unwrap();
     assert!(detection
-        .model_folders(Some(&reloaded), &["folder".into()], &[folder.clone()])
+        .model_folders(Some(&reloaded), &["folder".into()], std::slice::from_ref(&folder))
         .is_empty());
     write(&root, "package.json", r#"{"engines":{"node":"24"}}"#);
-    let changed = detect_environment(&[folder.clone()], "environment").unwrap();
+    let changed = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
     assert!(!changed
-        .model_folders(Some(&reloaded), &[], &[folder.clone()])
+        .model_folders(Some(&reloaded), &[], std::slice::from_ref(&folder))
         .is_empty());
     cache.operation.phase = EnvironmentOperationPhase::Failed;
     assert!(!detection
