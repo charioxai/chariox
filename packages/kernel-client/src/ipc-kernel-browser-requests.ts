@@ -12,6 +12,8 @@ export const leasedComputerMinimumProtocolVersion = 500
 export const kernelBrowserAgentTabsMinimumProtocolVersion = 486
 // MP-08/MP-10/MP-11: allocated shared producer resumption.
 export const kernelDisplayResumeMinimumProtocolVersion = 525
+// MP-08/MP-10/MP-11 (P1): one page display per Tab, parked while the DOM mirror paints.
+export const kernelTabDisplayMinimumProtocolVersion = 720
 
 export function kernelBrowserRequest(command: KernelBrowserCommand): KernelBrowserRequest {
   return { KernelBrowser: { command } }

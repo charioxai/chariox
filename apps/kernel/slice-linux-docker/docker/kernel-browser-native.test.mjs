@@ -440,3 +440,84 @@ test('MP-08/MP-10/MP-11 resized page capture keeps the exact owned window withou
  const {LinuxCapture}=await import('./kernel-browser-native.mjs');const capture=new LinuxCapture({size:{width:1150,height:592},scale:1,pageWindow:async()=>({xid:42,bounds:{width:1150,height:680},page_rect:{left:0,top:88,width:1150,height:592}}),connection:{send:()=>assert.fail('a resized owned window must not be fitted again')}});
  assert.deepEqual(await capture.prepareReadback(),{width:1150,height:592,window_region:{id:42,width:1150,height:680,left:0,top:88}});
 });
+// MP-08/MP-10/MP-11 (P1): a Tab display's source keeps its worker across the Tab's documents; old pixels retire.
+test('MP-08/MP-10/MP-11 a Tab display source follows a main-frame commit instead of fencing',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('a followed document must not re-attest the window: '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true,followsDocument:true});
+ const controls=[];source.valid=()=>!source.closed;source.attested=true;source.child={stdin:{destroyed:false,write:text=>controls.push(JSON.parse(text))}};
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ let released=0;const followed=[];source.onDocument(id=>followed.push(id));
+ source.latest={raw:{release:()=>released++},serial:4};
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});
+ assert.equal(source.closed,false,'the worker and its window binding stay');
+ assert.equal(source.tab.document_id,'d2');assert.deepEqual(followed,['d2']);
+ assert.equal(released,1);assert.equal(source.sample(),null,'no pixel of the old document is offered as the new one');
+ assert.ok(controls.some(c=>c.refresh===true),'the new document is read back at once');
+ await source.regions.refresh(); // the new document's Vault projection, then its first readback
+ const readback=serial=>({width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4,255),serial,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()});
+ // Chrome shows white or old tiles until the new document paints: nothing is published before that paint.
+ source.pending=readback(5);await source.publish();assert.equal(source.sample(),null);
+ source.onCdp({sessionId:'s',method:'Page.lifecycleEvent',params:{name:'firstPaint',loaderId:'old',frameId:'f'}});assert.ok(source.paintHold,'another document\'s paint does not end the hold');
+ const refreshes=controls.filter(c=>c.refresh===true).length;
+ source.onCdp({sessionId:'s',method:'Page.lifecycleEvent',params:{name:'firstContentfulPaint',loaderId:'d2',frameId:'f'}});
+ assert.equal(source.paintHold,null);assert.equal(controls.filter(c=>c.refresh===true).length,refreshes+1,'the paint is read back at once');
+ await new Promise(resolve=>setTimeout(resolve,2));
+ source.pending=readback(6);await source.publish();assert.equal(source.sample().document_id,'d2');
+ // A child frame commit is not the Tab's document; a source without the Tab display binding still fences.
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'c',parentId:'f',loaderId:'x'}}});assert.equal(source.tab.document_id,'d2');
+ const plain=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true});
+ plain.valid=()=>!plain.closed;plain.attested=true;
+ plain.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});assert.equal(plain.closed,true);
+ await source.close();await plain.close();
+});
+// Chrome's lifecycle firstPaint reaches CDP 40-60 ms after the new document's pixels are on screen.
+test('MP-08/MP-10 the new document\'s first painted readback ends the paint hold before CDP reports the paint',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('unexpected '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true,followsDocument:true});
+ source.valid=()=>!source.closed;source.attested=true;source.child={stdin:{destroyed:false,write:()=>{}}};
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const page=fill=>{const pixels=Buffer.alloc(64*32*4,255);pixels.fill(fill,0,64*4*8);return pixels};
+ const readback=(serial,signature,pixels)=>({width:64,height:32,length:pixels.length,pixels,serial,signature,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()});
+ source.pending=readback(1,'old',page(10));await source.publish();assert.equal(source.sample().document_id,'d1');
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});
+ await source.regions.refresh();await new Promise(resolve=>setTimeout(resolve,2));
+ source.pending=readback(2,'old-unfocused',page(20));await source.publish();assert.equal(source.sample(),null,'what Chrome shows at the commit (the old page, its focus ring gone) is not the new document');
+ source.pending=readback(3,'old-unfocused',page(20));await source.publish();assert.equal(source.sample(),null);
+ source.pending=readback(4,'white',Buffer.alloc(64*32*4,255));await source.publish();assert.equal(source.sample(),null,'Chrome\'s white frame is not the new document');
+ source.pending=readback(5,'new',page(90));await source.publish();
+ assert.equal(source.paintHold,null,'the first painted readback ends the hold');assert.equal(source.sample()?.document_id,'d2');assert.equal(source.sample().serial,5);
+ await source.close();
+});
+// Chrome UI over the page (the omnibox dropdown) differs from the commit's readback without being the new document.
+test('MP-08/MP-10 an occluded or transient readback is no document paint',async()=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');const {NativeRegionProtection}=await import('./kernel-browser-region-protection.mjs');
+ const connection={send:async method=>assert.fail('unexpected '+method)};
+ const source=new LinuxCapture({connection,sessionId:'s',tab:{target_id:'t',tab_id:'tab',document_id:'d1'},policy:{},allowed:()=>true,followsDocument:true});
+ source.valid=()=>!source.closed;source.attested=true;source.child={stdin:{destroyed:false,write:()=>{}}};
+ source.regions=new NativeRegionProtection(connection,'s',{policy:{targets:[],values:[]}});source.regions.measure=async()=>[];await source.regions.refresh();
+ const page=fill=>{const pixels=Buffer.alloc(64*32*4,255);pixels.fill(fill,0,64*4*8);return pixels};
+ const readback=(serial,signature,pixels)=>({width:64,height:32,length:pixels.length,pixels,serial,signature,format:'bgr0',captured_ms:performance.timeOrigin+performance.now()});
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'f',loaderId:'d2'}}});
+ await source.regions.refresh();await new Promise(resolve=>setTimeout(resolve,2));
+ source.pending=readback(1,'old',page(10));await source.publish();
+ let occluded=true;source.occluded=async()=>occluded;
+ source.pending=readback(2,'old-with-dropdown',page(40));await source.publish();
+ assert.ok(source.paintHold,'the dropdown over the old page keeps the hold');assert.equal(source.sample(),null);
+ occluded=false;let stable=false;source.connection.presentationFence={stable:()=>stable,recoverFailed:async()=>{}};
+ source.pending=readback(3,'old-moving',page(50));await source.publish();
+ assert.ok(source.paintHold,'a transient presentation keeps the hold');
+ stable=true;source.pending=readback(4,'old',page(10));await source.publish();assert.ok(source.paintHold,'the old page again is no paint');
+ source.pending=readback(5,'new',page(90));await source.publish();
+ assert.equal(source.paintHold,null);assert.equal(source.sample()?.serial,5);
+ await source.close();
+});
+test('MP-08/MP-10 parking a Tab display source pauses its worker readback and unparking resumes it',()=>{
+ return import('./kernel-browser-native.mjs').then(({LinuxCapture})=>{
+  const controls=[],source=new LinuxCapture({tab:{target_id:'t',tab_id:'tab',document_id:'d'},policy:{},allowed:()=>true});
+  source.valid=()=>!source.closed;source.child={stdin:{destroyed:false,write:text=>controls.push(JSON.parse(text))}};
+  source.park(true);source.park(true);source.park(false);
+  assert.deepEqual(controls,[{pause:true},{pause:false}]);
+ });
+});

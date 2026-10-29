@@ -89,6 +89,13 @@ mod region_tests {
             serde_json::from_str::<Command>(r#"{"windows":{"id":4}}"#),
             Ok(Command::Windows { .. })
         ));
+        // MP-08/MP-10: a parked Tab display pauses readback and resumes it.
+        for pause in [true, false] {
+            assert!(matches!(
+                serde_json::from_str::<Command>(&format!(r#"{{"pause":{pause}}}"#)),
+                Ok(Command::Pause { pause: p }) if p == pause
+            ));
+        }
         // The worker's own bound owner is the only inventory owner.
         assert!(serde_json::from_str::<Command>(r#"{"windows":{"id":4,"pid":1}}"#).is_err());
     }
@@ -240,6 +247,10 @@ enum Command {
     },
     Wake {
         wake: bool,
+    },
+    /// MP-08/MP-10: a parked page display reads nothing back; damage still accrues for the resume.
+    Pause {
+        pause: bool,
     },
     Refresh {
         refresh: bool,
@@ -398,6 +409,7 @@ const RASTER_SLOTS: usize = super::RASTER_SLOT_NAMES.len();
 // audit (pixelflux pace.rs). Independently implemented here; no upstream
 // code copied. Input wakes retain their immediate readback admission.
 const READBACK_MIN: Duration = Duration::from_millis(3);
+const REFINE_INTERVAL: Duration = Duration::from_micros(16_667);
 pub(super) fn readback_due(dirty: bool, wake: bool, elapsed: Duration) -> bool {
     dirty && (wake || elapsed >= READBACK_MIN)
 }
@@ -615,11 +627,14 @@ pub(super) fn run() -> Result<(), String> {
     let mut refresh = true;
     let mut last = Instant::now() - Duration::from_secs(1);
     let mut wake = None;
+    let mut paused = false;
     let mut inventory = None;
     let mut damage_at = epoch();
     // MP-08/MP-10: video encoding runs on its own thread so readback continues
     // during x264; capture damage queues while that thread holds the sessions.
-    let sessions = std::sync::Arc::new(std::sync::Mutex::new(Sessions::new(w, h, root.clone())));
+    let sessions = Sessions::new(w, h, root.clone());
+    let refine = sessions.refine.clone();
+    let sessions = std::sync::Arc::new(std::sync::Mutex::new(sessions));
     let mut pending_rows = 0u8;
     let (codec_tx, codec_rx) =
         std::sync::mpsc::sync_channel::<(Encode, raster::CodecLease, f64, Route)>(4);
@@ -722,6 +737,13 @@ pub(super) fn run() -> Result<(), String> {
             dirty = true;
             damaged = Instant::now();
         }
+        // MP-08/MP-10 (P2): one unchanged readback per frame interval while the encoded picture is coarse.
+        if !dirty
+            && last.elapsed() >= REFINE_INTERVAL
+            && refine.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            (dirty, refresh) = (true, true);
+        }
         // L3: a leased readback waits for the kernel's credit (delivered).
         let held = {
             let mut d = locked_direct(&direct);
@@ -731,7 +753,7 @@ pub(super) fn run() -> Result<(), String> {
         if resume(&direct)? {
             (dirty, refresh, wake) = (true, true, Some(epoch()));
         }
-        let due = !held && readback_due(dirty, wake.is_some(), last.elapsed());
+        let due = !held && !paused && readback_due(dirty, wake.is_some(), last.elapsed());
         if due {
             if let Some(slot) = slots.iter_mut().find(|s| s.available()) {
                 let at = epoch();
@@ -844,7 +866,7 @@ pub(super) fn run() -> Result<(), String> {
         }
         let [retire_fd, link_fd] = locked_direct(&direct).fds();
         let timeout = poll_timeout(
-            dirty,
+            dirty && !paused,
             slots.iter().any(|s| s.available()),
             held,
             link_fd >= 0,
@@ -931,6 +953,12 @@ pub(super) fn run() -> Result<(), String> {
                     eprintln!("MD-DISPLAY: native rejected {} {}", reject.label(), count);
                 }
                 Command::Wake { wake: true } => wake = Some(epoch()),
+                Command::Pause { pause } => {
+                    if paused && !pause {
+                        (dirty, refresh, wake) = (true, true, Some(epoch()));
+                    }
+                    paused = pause;
+                }
                 Command::Refresh { refresh: true } => {
                     dirty = true;
                     refresh = true;

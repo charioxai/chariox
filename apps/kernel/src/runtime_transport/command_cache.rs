@@ -176,6 +176,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
                 command: crate::local::KernelBrowserCommand::DisplayNext { .. }
                     | crate::local::KernelBrowserCommand::DisplaySuspend { .. }
                     | crate::local::KernelBrowserCommand::DisplayResume { .. }
+                    | crate::local::KernelBrowserCommand::DisplayPark { .. }
                     | crate::local::KernelBrowserCommand::DisplayAck { .. }
                     | crate::local::KernelBrowserCommand::ListGrants
                     | crate::local::KernelBrowserCommand::SubscribeGrants { .. }

@@ -397,7 +397,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \

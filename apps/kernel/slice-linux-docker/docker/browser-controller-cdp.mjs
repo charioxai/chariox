@@ -1245,6 +1245,12 @@ export class BrowserCdpClient {
       && entry.sessionId === this.sessionsByTarget.get(targetId)
       && entry.frame.loaderId === this.documentIdsByTarget.get(targetId) ? entry : null;
   }
+  // MP-08/MP-10/MP-11 (P1): the committed document of this target on the live connection/session. Unlike
+  // currentPageFrame it stays while a navigation is under way: the page shows that document until the next commit.
+  committedPageDocument(targetId) {
+    const sessionId = this.sessionsByTarget.get(targetId), documentId = this.documentIdsByTarget.get(targetId);
+    return this.connection?.isOpen?.() === true && sessionId && documentId ? { connection: this.connection, sessionId, document_id: documentId } : null;
+  }
   async resolvePageTarget(targetId) {
     if (this.rendererRecovery.crashed.has(targetId)) {
       throw new BrowserControllerError('browser_renderer_crashed', 'Browser tab crashed; recovery waits for available memory. Close the tab to stop recovery.');

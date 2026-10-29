@@ -379,4 +379,6 @@ pub use workspace::*;
 /// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
+/// docs/BROWSER_LATENCY_GAP_PLAN.md).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 780;

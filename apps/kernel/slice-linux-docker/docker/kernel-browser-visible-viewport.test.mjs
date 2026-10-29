@@ -1,5 +1,6 @@
 // MP-08/MP-10/MP-11: native publication reuses geometry only under existing document/window observers.
 import test from 'node:test';
+import { DisplaySessions } from './kernel-display-resumption.mjs';
 import assert from 'node:assert/strict';
 import {subscribeVisiblePage} from './kernel-browser-page-display.mjs';
 import {NativeTabState,nativeWindowChangedBinding} from './kernel-browser-native-tab-state.mjs';
@@ -60,4 +61,50 @@ test('MP-08/MP-10/MP-11 a viewport configured by the browser client keeps the na
   for(let i=0;i<3;i++)assert.equal(await stream.regionCurrent(),true);assert.equal(f.reads(),1);
   f.state.onCdp({method:'Page.frameResized',sessionId:'page'});assert.equal(await stream.regionCurrent(),false);assert.equal(f.reads(),1);await stream.close();
  }finally{await browser.close();}
+});
+// MP-08/MP-10/MP-11 (P1): a Tab display keeps its lease for the Tab's later documents on the same session.
+test('MP-08/MP-10/MP-11 a Tab display lease follows the committed document and unparks on the commit',async()=>{
+ const f=fixture();let committed={document_id:'doc',sessionId:'page'},follow=null;const parks=[];
+ f.host.browser.committedPageDocument=()=>({connection:f.host.browser.connection,...committed});
+ class Capture extends f.Capture{onDocument(fn){follow=fn;return()=>{};}park(parked){parks.push(parked);}}
+ const result=await subscribeVisiblePage(f.host,{...f.command,tab_display:true},'terminal:a',undefined,{Capture});
+ const stream=f.host.displays.get(result.subscription_id);
+ assert.equal(result.tab_display,true);assert.equal(stream.tabDisplay,true);
+ stream.park(true);assert.deepEqual(parks,[true]);
+ // Navigation started: the frame record is suspended, the page still shows the committed document.
+ f.host.browser.currentPageFrame=()=>null;
+ assert.equal(await stream.regionCurrent(),true);
+ // Commit: the source follows, the lease follows the source and the display unparks.
+ committed={document_id:'doc2',sessionId:'page'};follow('doc2');
+ assert.equal(stream.regionLease.document_id,'doc2');assert.equal(await stream.regionCurrent(),true);assert.equal(stream.regionFrameCurrent(),true);
+ assert.deepEqual(parks,[true,false]);assert.equal(stream.parked,false);assert.equal(f.reads(),1,'no renderer layout read per document');
+ // A commit the source did not follow (another session) retires the binding.
+ committed={document_id:'doc3',sessionId:'other'};
+ assert.equal(await stream.regionCurrent(),false);
+ await stream.close();
+});
+// Review (PR 1166): resume replies omitted tab_display, so a resumed viewer rebuilt a plain binding and refused the
+// Tab's next document and its park.
+test('MP-08/MP-10/MP-11 a resumed Tab display stays a Tab display: it parks and follows the next commit',async()=>{
+ const f=fixture();let committed={document_id:'doc',sessionId:'page'},follow=null;const parks=[];
+ f.host.browser.committedPageDocument=()=>({connection:f.host.browser.connection,...committed});
+ class Capture extends f.Capture{onDocument(fn){follow=fn;return()=>{};}park(parked){parks.push(parked);}}
+ const result=await subscribeVisiblePage(f.host,{...f.command,tab_display:true},'terminal:a',undefined,{Capture});
+ const stream=f.host.displays.get(result.subscription_id),source={},binding=()=>source;
+ f.host.armDisplayExpiry??=()=>{};
+ const sessions=new DisplaySessions(f.host,{id:()=>'resumed'});
+ await sessions.suspend(result.subscription_id,stream.observed_by,stream.generation??f.host.generation,binding);
+ const resumed=await sessions.resume(result.subscription_id,stream.observed_by,stream.generation??f.host.generation,binding);
+ assert.equal(resumed.tab_display,true);assert.equal(f.host.displays.get('resumed'),stream);
+ stream.park(true);committed={document_id:'doc2',sessionId:'page'};follow('doc2');
+ assert.deepEqual(parks,[true,false]);assert.equal(stream.regionLease.document_id,'doc2');
+ await stream.close();
+});
+test('MP-11 without the Tab display binding a commit still retires the page display',async()=>{
+ const f=fixture();let committed={document_id:'doc',sessionId:'page'};
+ f.host.browser.committedPageDocument=()=>({connection:f.host.browser.connection,...committed});
+ const result=await subscribeVisiblePage(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const stream=f.host.displays.get(result.subscription_id);assert.equal(result.tab_display,undefined);
+ committed={document_id:'doc2',sessionId:'page'};f.replace();
+ assert.equal(await stream.regionCurrent(),false);await stream.close();
 });

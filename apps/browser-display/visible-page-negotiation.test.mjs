@@ -14,3 +14,16 @@ test('MP-11:536 default crop refuses malformed lease and unsubscribes',async()=>
  const ops=[];const transport={kernelProtocolVersion:536,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{ops.push(command.op);return {KernelBrowser:{result:{...result,binding_id:''}}}}};
  await assert.rejects(attachBrowserDisplay({},transport,{tab_id:'t',generation:2},{codec:'avc1.420033'}),/invalid region/);assert.deepEqual(ops,['display_subscribe','unsubscribe']);
 });
+for(const version of [636,720])test(`MP-08/MP-10 a Tab display is negotiated only at protocol 720 (kernel ${version})`,async()=>{
+ const commands=[],document=Object.assign(new EventTarget(),{hidden:false});
+ const canvas={ownerDocument:document,width:1,height:1,getContext:()=>({})};
+ const transport={kernelProtocolVersion:version,displayEventEncoding:'CXD1',onEvent:()=>()=>{},subscribeDisplay:async()=>{},unsubscribeDisplay:async()=>{},
+  request:async({KernelBrowser:{command}})=>{commands.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?{...result,...(command.tab_display?{tab_display:true}:{})}:command.op==='display_ack'?{push:'running'}:{}}}}};
+ const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:2},{codec:'avc1.420033',tabDisplay:true});
+ try{
+  const subscribe=commands.find(c=>c.op==='display_subscribe');
+  assert.equal(subscribe.tab_display,version>=720?true:undefined);
+  if(version>=720){await stream.park(true);assert.deepEqual(commands.at(-1),{op:'display_park',subscription_id:'s',generation:2,parked:true});}
+  else await assert.rejects(stream.park(true),/not a Tab display/);
+ }finally{await stream.close();}
+});

@@ -34,7 +34,7 @@ export async function resizeBrowserPage(host,tab,command,signal){
  // Every Tab shares the one window: all of them, and Tabs opened later, are laid out at its size.
  const layout=host.windowLayout={width,height};
  for(const other of [...host.tabs.values()]){await host.setLayout(other,'resize',{width,height});current();}
- for(const stream of host.displays.values())if(!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate();}
+ for(const stream of host.displays.values())if(!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate(true,'resize');}
  host.stateSignal.notify();
  await host.rebindWindows();current();
  host.resizeSettled=layout;
