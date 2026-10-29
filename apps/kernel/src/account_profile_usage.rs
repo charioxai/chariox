@@ -67,7 +67,6 @@ impl ProviderAccountProfileRegistry {
                 }
                 let public = project_usage_freshness(profile.clone());
                 Some(ProviderUsageAccount {
-                    identity_summary: profile.identity_summary.clone(),
                     account_id: format!("{:x}", identity.finalize()),
                     provider: public.provider,
                     profile_id: public.profile_id,
