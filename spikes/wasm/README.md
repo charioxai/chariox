@@ -18,6 +18,11 @@ Not part of the product build. Read [DECISION.md](DECISION.md) first, then
 
 ## Reproduce (Linux x64)
 
+This section freezes the historical spike, including its old WIT. Production
+Apps use [the shared SDK compiler](../../packages/app-sdk-tools/README.md), which
+retains the same QuickJS revision with a deterministic snapshot patch and R1
+admission. Do not install the npm QuickJS backend as another SDK toolchain.
+
 Tools (all under `$SPIKE_ROOT`): rustup toolchain 1.99.1 with `wasm32-wasip2`,
 wasm-tools 1.262.0, Node 24.20.0, npm `@bytecodealliance/jco@1.39.0`,
 `@bytecodealliance/componentize-js@0.23.0`,

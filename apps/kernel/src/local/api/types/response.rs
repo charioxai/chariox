@@ -60,6 +60,8 @@ pub enum LocalDaemonResponse {
     AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
     AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
     AppRequestFailed { code: AppRequestErrorCode, },
+    AppDevPushBuilding { request_id: String },
+    AppDevPushFailed { request_id: String, code: AppDevPushFailureCode, message: String },
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },

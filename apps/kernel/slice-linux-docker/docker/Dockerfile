@@ -42,6 +42,8 @@ COPY packages/app-package packages/app-package
 COPY packages/app-runtime packages/app-runtime
 COPY packages/app-wit packages/app-wit
 COPY packages/app-wasm-worker packages/app-wasm-worker
+COPY packages/app-sdk-rust packages/app-sdk-rust
+COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY packages/app-sdk packages/app-sdk
 COPY apps/app-worker/bundle.lock.json apps/app-worker/bundle.lock.json
 COPY apps/kernel/slice-linux-docker/prebuilt /opt/chariox-prebuilt

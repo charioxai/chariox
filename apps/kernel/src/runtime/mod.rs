@@ -11,6 +11,8 @@ pub(crate) mod app_call_errors;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_connection_broker;
 pub(crate) mod app_control;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_dev_push;
 pub(crate) mod app_event_pump;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 pub(crate) mod app_file_grant_broker;

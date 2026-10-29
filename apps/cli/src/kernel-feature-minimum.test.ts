@@ -160,3 +160,12 @@ test("App inspection requires allocated protocol 646 before sending the request"
   for (const protocol of [567,644,619]) assert.throws(() => requireKernelFeatureProtocol(request, protocol), /App view inspection.*646/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request,646))
 })
+
+// MP-08 / MP-10 / MP-11: the watch adapter needs the kernel build operation.
+test("kernel App dev push requires protocol 647 before either begin or poll",()=>{
+  for(const name of ["BeginAppDevPush","GetAppDevPush"]){
+    const request={[name]:{session_id:"room",request_id:"save"}}
+    assert.throws(()=>requireKernelFeatureProtocol(request,644),/Kernel App dev push.*647/)
+    assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,647))
+  }
+})

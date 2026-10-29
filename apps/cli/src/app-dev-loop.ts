@@ -1,10 +1,11 @@
-/** Terminal-local `/app dev`: pack a source directory, install or update it, and repeat on change. */
+/** Client-local source watcher; the kernel owns every dev build and installation. */
 import { watch as watchFileSystem } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { mkdtemp, realpath, rm, stat } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import { listAppInstallationsRequest } from "@chariox/kernel-client/ipc-requests"
+import { listAppInstallationsRequest, beginAppDevPushRequest, getAppDevPushRequest } from "@chariox/kernel-client/ipc-requests"
 import type { AppInstallationSummary, AppInstallOperationSummary } from "@chariox/kernel-client/kernel-types"
 import { packAppPackage, type PackedAppPackage } from "./app-developer.js"
 import { activePhases, formatInstallFailure, KernelFailure, terminalCwd, type AppFileInstaller } from "./app-install-file.js"
@@ -17,6 +18,8 @@ export type AppDevDeps = {
   installer: Pick<AppFileInstaller, "install" | "update" | "status" | "cancel" | "retained" | "discardRetained">
   notice: (message: string) => void
   currentSession: () => string | undefined
+  /** Same-machine discovery selects kernel builds; remote clients upload their bundle. */
+  isKernelLocal?: () => boolean
   pack?: (options: AppDevPackOptions) => Promise<PackedAppPackage>
   watch?: (directory: string, onChange: (file: string | null) => void, onError: (error: unknown) => void) => AppDevWatcher
   /** A new private directory for packed output; it must be outside the App directory. */
@@ -42,8 +45,9 @@ export class AppDevLoop {
     if (!session) throw new Error("Attach to a session before starting /app dev")
     const cwd = this.deps.cwd ?? terminalCwd()
     const root = await sourceDirectory(resolve(cwd, directory))
-    const workspace = await (this.deps.workspace ?? privateWorkspace)()
-    if (contains(root, workspace)) {
+    const workspace = this.deps.isKernelLocal?.() === false
+      ? await (this.deps.workspace ?? privateWorkspace)() : undefined
+    if (workspace && contains(root, workspace)) {
       await rm(workspace, { recursive: true, force: true })
       throw new Error("The temporary package directory must be outside the App directory")
     }
@@ -100,10 +104,11 @@ class DevRun {
   private suggestedOpen = false
   private savedAt: number | undefined
   private readonly output: string
+  private pushRequest: string | undefined
 
-  constructor(private deps: AppDevDeps, private root: string, private key: string | undefined, private workspace: string,
+  constructor(private deps: AppDevDeps, private root: string, private key: string | undefined, private workspace: string | undefined,
     private session: string, private onClosed: () => void) {
-    this.output = join(workspace, "app-dev.cxapp")
+    this.output = workspace ? join(workspace, "app-register.cxapp") : ""
   }
 
   begin(): void {
@@ -117,7 +122,10 @@ class DevRun {
       void this.close()
       throw error
     }
-    this.deps.notice(`Watching ${this.root} for changes. Use /app dev stop to stop.`)
+    const mode = this.workspace
+      ? "remote: uploads the prebuilt bundle/; compile with the SDK tools before saving"
+      : "kernel builds source"
+    this.deps.notice(`Watching ${this.root} for changes (${mode}). Use /app dev stop to stop.`)
     this.trigger()
   }
 
@@ -135,14 +143,14 @@ class DevRun {
       this.abort.abort()
       this.onClosed()
       await this.running?.catch(() => {})
-      await rm(this.workspace, { recursive: true, force: true }).catch(() => {})
+      if (this.workspace) await rm(this.workspace, { recursive: true, force: true }).catch(() => {})
     })()
     return this.closing
   }
 
   private schedule(): void {
     if (this.stopped) return
-    this.savedAt ??= performance.now()
+    this.savedAt = performance.now()
     if (this.timer) clearTimeout(this.timer)
     this.timer = setTimeout(() => { this.timer = undefined; this.trigger() }, this.deps.debounceMs ?? 500)
   }
@@ -180,6 +188,7 @@ class DevRun {
       void this.close()
       return
     }
+    if (!this.key && !this.workspace) { await this.push(savedAt); return }
     try {
       if (!(await this.settleRetained())) return
       await rm(this.output, { force: true })
@@ -201,6 +210,67 @@ class DevRun {
     } finally {
       await rm(this.output, { force: true }).catch(() => {})
     }
+  }
+
+  private async push(savedAt: number): Promise<void> {
+    // A response can be lost after admission. Finish that exact request before
+    // submitting the newest save, so a reconnect cannot duplicate installation.
+    if (this.pushRequest) {
+      try {
+        const prior = await this.followPush(this.pushRequest, true)
+        if (!prior || this.stopped) return
+      } catch (error) {
+        // A terminal build failure settles the earlier revision. The save
+        // that brought us back still needs its own push.
+        if (this.pushRequest) throw error
+        this.deps.notice(`Previous build: ${message(error)}`)
+      }
+      this.pushRequest = undefined
+    }
+    const request = `dev-${randomUUID()}`
+    this.pushRequest = request
+    const response = await this.deps.send(beginAppDevPushRequest({ sessionId: this.session, requestId: request, directory: this.root }))
+    const status = await this.followPush(request, false, response)
+    if (status) {
+      this.pushRequest = undefined
+      if (status.phase === "committed") this.deps.notice(`DEV save → running: ${Math.round(performance.now() - savedAt)} ms; generation ${status.generation}.`)
+    }
+  }
+
+  private async followPush(request: string, previous: boolean, first?: Record<string, unknown>): Promise<AppInstallOperationSummary | undefined> {
+    let response = first ?? await this.deps.send(beginAppDevPushRequest({ sessionId: this.session, requestId: request, directory: this.root }))
+    let announced = false
+    let polling = false
+    while (!this.stopped) {
+      const error = response.AppDevPushFailed as { message: string } | undefined
+      if (error) {
+        this.pushRequest = undefined
+        throw new Error(error.message)
+      }
+      const failure = response.AppRequestFailed as { code?: string } | undefined
+      if (failure) {
+        // Status admission can be busy after the push was already accepted.
+        // Keep that identity until the next save can settle it.
+        const uncertain = polling && (failure.code === "busy" || failure.code === "storage_unavailable")
+        if (!uncertain) this.pushRequest = undefined
+        throw new Error(`Kernel dev push failed (${failure.code ?? "failed"}); ${uncertain ? "the next save will continue this request before pushing the latest source" : "save again to retry"}.`)
+      }
+      const status = (response.AppInstallOperationStatus as { operation?: AppInstallOperationSummary } | undefined)?.operation
+      if (status && !activePhases.has(status.phase)) {
+        this.report(status, this.suggestedOpen ? status.installation_id ?? undefined : undefined, previous ? "Previous build: " : "")
+        return status
+      }
+      if (!status && !response.AppDevPushBuilding) throw new Error("Kernel returned an invalid App dev push response; update the kernel and CLI together.")
+      if (status?.phase === "awaiting_approval" && !announced) {
+        announced = true
+        this.deps.notice("Awaiting your approval in the approval panel: this build requests new or changed capabilities.")
+      }
+      try { await delay(this.deps.pollMs ?? 500, undefined, { signal: this.abort.signal }) } catch { return undefined }
+      if (this.stopped) return undefined
+      polling = true
+      response = await this.deps.send(getAppDevPushRequest({ sessionId: this.session, requestId: request }))
+    }
+    return undefined
   }
 
   /**
@@ -317,7 +387,7 @@ function watchDirectory(directory: string, onChange: (file: string | null) => vo
 /** Dotfiles and dependency trees do not trigger a cycle. */
 export function ignored(file: string | null): boolean {
   if (file === null) return false
-  return file.split(/[\\/]/).some(part => part.startsWith(".") || part === "node_modules")
+  return file.split(/[\\/]/).some(part => part.startsWith(".") || part === "node_modules" || part === "target")
 }
 
 function contains(root: string, path: string): boolean {
