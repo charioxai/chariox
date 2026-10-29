@@ -184,7 +184,8 @@ export class AppTabs {
     return true;
   }
 
-  constructor(browser, { restoreGraceMs = 30_000 } = {}) {
+  constructor(browser, { restoreGraceMs = 30_000, windowMode = "fullscreen" } = {}) {
+    this.windowMode = windowMode;
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
@@ -308,16 +309,15 @@ export class AppTabs {
       }
       return { target_id: open.targetId, origin };
     }
-    // Each App view gets its own fullscreen window, so page and desktop
-    // coordinates agree. Its page lays out left of the trusted conversation
-    // panel, which the terminal draws over the rest of the desktop.
+    // Room App pages share desktop coordinates with the trusted panel.
+    // User-domain Apps stay in the native tabbed window for region capture.
     // A restored placeholder has no App script or authority. Only an Open
     // with kernel-verified assets can adopt it, matching the exact origin.
     const { targetInfos = [] } = await connection.send("Target.getTargets", {});
     const restored = instanceId === null
       ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
       : undefined;
-    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: this.windowMode === "fullscreen" });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
@@ -509,6 +509,7 @@ export class AppTabs {
   // True when the App's window already is fullscreen; otherwise restores it
   // (someone pressed Esc) and reports false.
   async fullscreen(connection, targetId) {
+    if (this.windowMode === "tabbed") return false;
     const { windowId } = await connection.send("Browser.getWindowForTarget", { targetId });
     const { bounds } = await connection.send("Browser.getWindowBounds", { windowId });
     if (bounds?.windowState === "fullscreen") return true;
@@ -521,6 +522,7 @@ export class AppTabs {
   // a reply for another App then waits behind every window's CDP round trips.
   // Keep one bounded pass, at the old cadence, while bridge polls can drain.
   maintainFullscreen() {
+    if (this.windowMode === "tabbed") return;
     const now = performance.now();
     if (this.fullscreenMaintenance || now < this.nextFullscreenCheck) return;
     this.nextFullscreenCheck = now + FULLSCREEN_CHECK_INTERVAL_MS;
