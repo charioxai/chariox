@@ -953,6 +953,77 @@ async fn notification_inject_remote_uncertainty_never_becomes_a_new_run() {
     );
 }
 
+// MP-08 / MP-10: a remote worker's late answer must not stall unrelated App events.
+#[tokio::test]
+async fn notification_inject_remote_delivery_does_not_hold_the_app_event_pass() {
+    let (_root, runtime, session, id) = fixture(false, 1).await;
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    let agent_id = snapshot.workflow_runs()[0].node_runs()[0]
+        .agent_id()
+        .to_owned();
+    runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker".into(),
+                worker_machine_id: "machine".into(),
+                leased_agent_id: "leased".into(),
+                execution_lease_id: "lease".into(),
+                active_worker_provider_run_id: Some("worker-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    // The worker's provider run is busy: its delivery cannot proceed yet.
+    let busy_worker_run = runtime.provider_runtime_lanes.acquire("worker-run").await;
+
+    runtime.schedule_app_event_pump();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if runtime
+                .app_control()
+                .event_pump()
+                .next_due()
+                .is_none_or(|due| due > std::time::Instant::now())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the App event pass must finish while the remote delivery waits");
+
+    drop(busy_worker_run);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+            let sent = snapshot
+                .workflow_queued_prompts()
+                .iter()
+                .find(|q| q.id() == id)
+                .and_then(|item| item.publication_invocation())
+                .is_some_and(|invocation| {
+                    invocation.caller["notification_steer"]
+                        .get("remote_uncertain")
+                        .is_some()
+                });
+            if sent {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the remote delivery continues on its own task and saves its send intent");
+}
+
 // MP-08 / MP-10 / MP-11: exact worker receipt is authoritative after the old turn ends.
 #[tokio::test]
 async fn notification_inject_remote_ack_loss_reconciles_after_real_bootstrap() {
