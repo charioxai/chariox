@@ -1,7 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: sudo never changes execution or write mode.
 use super::tests::{fixture_with_options, running};
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sudo_operations_watched_commands_keep_plan_and_write_fences() {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
@@ -66,7 +65,6 @@ async fn sudo_operations_watched_commands_keep_plan_and_write_fences() {
     assert!(failures.is_empty(), "sudo bypassed fences: {failures:?}");
 }
 
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn watched_process_rechecks_modes_after_owner_approval() {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
