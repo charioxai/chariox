@@ -35,6 +35,11 @@ pub(crate) fn redact_response_for_user(
                 session: redact_session(session)?,
             }
         }
+        LocalDaemonResponse::TriggerDeliveryResent { session } => {
+            LocalDaemonResponse::TriggerDeliveryResent {
+                session: redact_session(session)?,
+            }
+        }
         LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             LocalDaemonResponse::SessionCreated {
                 session: redact_session(session)?,
@@ -777,5 +782,35 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn trigger_delivery_resend_answers_with_a_redacted_session() {
+        let mut session = RuntimeSession::new(
+            "session-resend",
+            None,
+            "workspace-resend",
+            "worktree-resend",
+            "machine-resend",
+            "daemon-resend",
+        );
+        assert!(session.note_agent_output_sequence("agent-resend", 3));
+        let expected = session.clone().redacted_for_user("member");
+        assert_ne!(
+            expected, session,
+            "the fixture carries state that redaction removes"
+        );
+        let response = redact_response_for_user(
+            LocalDaemonResponse::TriggerDeliveryResent { session },
+            "member",
+            &ProviderRunProjectionStore::default(),
+            None,
+            None,
+        )
+        .expect("resend response should redact");
+        let LocalDaemonResponse::TriggerDeliveryResent { session } = response else {
+            panic!("unexpected response")
+        };
+        assert_eq!(session, expected);
     }
 }
