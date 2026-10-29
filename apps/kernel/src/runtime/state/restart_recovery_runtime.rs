@@ -1989,6 +1989,18 @@ mod tests {
                 ),
             )
             .expect("the follower subscribes");
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the real admission creates its task before dispatch");
         let targets = runtime.durable_restart_recovery_targets();
 
         runtime
@@ -2052,6 +2064,90 @@ mod tests {
         assert_eq!(
             serde_json::to_value(turn).expect("turn serializes")["outcome"]["kind"],
             "interrupted_by_restart"
+        );
+
+        // A later owner prompt replaces this failed attempt; its owner decision must
+        // not keep the agent blocked after the new turn completes or is stopped.
+        let old_task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == prompt_id)
+            .unwrap();
+        runtime
+            .ensure_task_owner_interaction(old_task.clone())
+            .await
+            .unwrap();
+        let attachment = runtime
+            .with_app_side_effect(|app| {
+                KernelSessionService::new(app).attach(AttachRequest::new(
+                    &session_id,
+                    "owner-continue",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+            })
+            .await
+            .unwrap();
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("dev-stub".into()), None, None)
+            .unwrap();
+        let mut prepared = crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: PromptQueueItem::new(
+                "owner-continue",
+                attachment.id(),
+                &agent_id,
+                "Continue",
+                PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        };
+        prepared
+            .prepare_task_prompt_identity(|| "owner-continue".into())
+            .unwrap();
+        let started = runtime.submit_prepared_prompt(prepared).await.unwrap();
+        assert!(matches!(
+            started.outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        let retired = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.task_id == old_task.task_id)
+            .unwrap();
+        assert_eq!(
+            retired.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Cancelled,
+            "a superseded restart attempt must not keep the agent blocked"
+        );
+        assert!(
+            !runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|interaction| interaction
+                    .id()
+                    .starts_with(&format!("task-blocked-{}-", old_task.task_id)))
+        );
+        assert!(
+            !started
+                .session
+                .active_interactions()
+                .iter()
+                .any(|interaction| interaction
+                    .id()
+                    .starts_with(&format!("task-blocked-{}-", old_task.task_id)))
         );
     }
 

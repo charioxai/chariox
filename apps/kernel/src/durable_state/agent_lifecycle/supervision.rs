@@ -383,6 +383,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Task(t))
         }
+        Operation::RetireRestartFailure {
+            task,
+            revision,
+            now,
+        } => {
+            let mut t = load(tx, &task)?;
+            // Admission must not abandon a goal, owned work, or an uncertain receipt.
+            let unresolved: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','blocked','submitting','uncertain') ELSE 1 END)",
+                params![t.room_id, t.agent_id], |r| r.get(0),
+            ).map_err(sql)?;
+            if t.state != ExecutionState::Blocked
+                || t.blocked_revision != revision
+                || t.goal.is_some()
+                || !t.obligations.is_empty()
+                || t.wait.is_some()
+                || t.pending_prompt_id.is_some()
+                || unresolved
+                || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
+            {
+                return Ok(Outcome::Task(t));
+            }
+            t.state = ExecutionState::Cancelled;
+            t.reason = "Restart failure superseded by a new owner turn".into();
+            t.last_progress_at_ms = now;
+            t.revision += 1;
+            save(tx, &t)?;
+            Ok(Outcome::Task(t))
+        }
         Operation::OwnerResponse {
             task,
             revision,

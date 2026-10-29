@@ -104,4 +104,82 @@ impl KernelRuntimeState {
         });
         Ok(())
     }
+
+    /// A new owner turn replaces a failed restart attempt, not a goal or owned work.
+    pub(super) async fn retire_superseded_restart_task(
+        &self,
+        room: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        if prompt.prompt_origin() != crate::session::PromptOrigin::Chariox
+            || prompt.workflow_run_id().is_some()
+            || prompt
+                .durable_operation_fingerprint()
+                .is_some_and(|value| value.starts_with("task:"))
+        {
+            return Ok(false);
+        }
+        let session = self.owned.session_store.get_session(room)?;
+        let Ok(attachment) = self
+            .owned
+            .attachment_store
+            .get_attachment(prompt.source_attachment_id())
+        else {
+            return Ok(false);
+        };
+        if attachment.owner_user_id() != session.owner_user_id()
+            || !matches!(
+                attachment.capability_level(),
+                crate::attachment::ClientCapabilityLevel::FullTerminal
+                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
+            )
+        {
+            return Ok(false);
+        }
+        let Some(previous) = self
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(room, prompt.target_agent_id())
+        else {
+            return Ok(false);
+        };
+        if previous.outcome.as_ref().is_none_or(|outcome| {
+            outcome.kind != crate::provider::TurnOutcomeKind::InterruptedByRestart
+        }) || previous.prompt_id == prompt.id()
+        {
+            return Ok(false);
+        }
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(prompt.target_agent_id()))?
+            .into_iter()
+            .find(|task| {
+                task.prompt_id == previous.prompt_id
+                    && task.owner_user_id == session.owner_user_id()
+                    && task.state == ExecutionState::Blocked
+                    && task.goal.is_none()
+                    && task.obligations.is_empty()
+                    && task.wait.is_none()
+                    && task.pending_prompt_id.is_none()
+            });
+        let Some(task) = task else { return Ok(false) };
+        let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
+            self.owned.durable_state_store.agent_lifecycle(
+                crate::durable_state::agent_lifecycle::Operation::RetireRestartFailure {
+                    task: task.task_id,
+                    revision: task.blocked_revision,
+                    now: crate::session::unix_epoch_ms(),
+                },
+            )?
+        else {
+            unreachable!()
+        };
+        if retired.state == ExecutionState::Blocked {
+            return Ok(false);
+        }
+        self.retract_stale_task_owner_interactions(room, std::slice::from_ref(&retired))
+            .await;
+        Ok(true)
+    }
 }
