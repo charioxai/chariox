@@ -26,6 +26,8 @@ When a serialized shape a client depends on changes:
 3. Raise a client's minimum version only if it needs the new behaviour.
 4. Add or update a focused drill for the change.
 
+Development stage: there is no backward compatibility. Managed upgrade and rollback admit the current and the previous release only; older predecessors are dropped when that simplifies the code. Do not report the missing upgrade or rollback path from an older release as a finding.
+
 ## Runtime rules
 
 1. The kernel is the authority for sessions, agents, provider runs, workspaces, history and state. Put behaviour in the kernel and the shared protocol, not in one client.
