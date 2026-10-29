@@ -1,6 +1,4 @@
-// Todo view. It talks to the App only through window.chariox.call. The kernel
-// runs each call as whoever drives this page: the person, or an agent acting
-// in it as itself (agents also use the same tools directly).
+// Human UI calls use the ambient bridge; registered forms keep their caller.
 const $ = (id) => document.getElementById(id)
 const list = $("todos")
 const status = $("status")
@@ -14,9 +12,9 @@ function say(message, error = false) {
   status.classList.toggle("error", error)
 }
 
-async function call(tool, input = {}) {
+async function call(tool, input = {}, caller = window.chariox) {
   try {
-    return await window.chariox.call(tool, input)
+    return await caller.call(tool, input)
   } catch (error) {
     say(error.message || "The App could not complete that.", true)
     throw error
@@ -84,10 +82,10 @@ function item(todo) {
 
 // Re-render only when the list changed, so polling never moves keyboard or
 // screen-reader focus off the row a person is on.
-async function refresh() {
+async function refresh(caller = window.chariox) {
   let result
   try {
-    result = await window.chariox.call("list_todos", {})
+    result = await caller.call("list_todos", {})
   } catch (error) {
     listFailed = true
     say(error.message || "The App could not load Todos.", true)
@@ -136,26 +134,25 @@ function showReminders() {
 
 // Always re-render afterwards, so a refused change (e.g. a checkbox the
 // browser already flipped) shows the stored state again.
-async function mutate(tool, input) {
+async function mutate(tool, input, caller = window.chariox) {
   let ok = false
   try {
-    await call(tool, input)
+    await call(tool, input, caller)
     ok = true
     say("")
   } catch {}
   shown = ""
-  await refresh()
+  await refresh(caller)
   return ok
 }
 
-$("new-todo").addEventListener("submit", async (event) => {
-  event.preventDefault()
+window.chariox.form($("new-todo"), async (_input, caller) => {
   const title = $("title").value.trim()
   if (!title) return
   const due = $("due").value
   const input = { title }
   if (due) input.due_at_ms = new Date(due).getTime()
-  if (!(await mutate("create_todo", input))) return
+  if (!(await mutate("create_todo", input, caller))) return
   $("new-todo").reset()
   $("title").focus()
 })

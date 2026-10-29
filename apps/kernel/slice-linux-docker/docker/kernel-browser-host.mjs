@@ -969,6 +969,7 @@ export class KernelBrowserHost {
       return state;
     }
     if (command.op === "navigate") {
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       // MP-08/MP-10/MP-11: a human navigation selects this owned desktop tab.
       // Retire native claims before physical focus can show a different page.
       if(this.chromium.desktop&&!command._agent_input&&!command.focused_agent){
@@ -989,6 +990,7 @@ export class KernelBrowserHost {
     if (command.op === "note_selection") return this.observe({ generation:this.generation, observation:await this.browser.observeNote({ ...binding, ...(command.quote ? {quote:command.quote} : {}) }) },tab,scope);
     if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
     if (command.op === "input") {
+      if (app) this.browser.appTabs.noteActivity(tab.target_id);
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
       if (!observed || observed !== tab.document_id) throw new UserDomainRefusal("stale_reference");
       const at = timestamp();
@@ -1123,6 +1125,7 @@ export class KernelBrowserHost {
         // Check the App view claim before dispatching the fill.
         const app = this.appForInput(tab, request.params, true);
         const action = codeInput ? { ...request.params.action, mask_code_input: true } : request.params.action;
+        if (app) this.browser.appTabs.noteActivity(tab.target_id);
         await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: request.params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();

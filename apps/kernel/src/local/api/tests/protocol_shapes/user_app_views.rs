@@ -123,6 +123,7 @@ fn user_app_view_protocol_443_kernel_browser_host_selection_snapshot() {
         serde_json::json!({"target_id":"internal-target"})
     );
     let hosted_open = BrowserAppViewRequest::Open {
+        projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
         origin_label: "a".into(),
         installation_id: "todo".into(),
         instance_id: Some("v".into()),

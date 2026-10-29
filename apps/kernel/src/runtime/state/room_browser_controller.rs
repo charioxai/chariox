@@ -344,7 +344,14 @@ impl KernelRuntimeState {
             Command::NoteObservation { .. } => Some("Room Notes"),
             Command::AppView {
                 request:
-                    crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. },
+                    crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. }
+                    | crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Open {
+                        projection:
+                            crate::runtime::browser_controller_app_view::AppViewProjection::Agent {
+                                ..
+                            },
+                        ..
+                    },
             } => Some("App view agent actions"),
             _ => None,
         };

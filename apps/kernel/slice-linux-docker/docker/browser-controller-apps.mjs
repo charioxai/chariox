@@ -11,6 +11,7 @@ import { createViewActions } from "./browser-app-view-actions.mjs";
 // reloads, navigates or closes, the kernel cancels that document's calls and
 // an answer for it is never delivered to the next one.
 import { BrowserControllerError } from "./browser-controller-cdp.mjs";
+import { appViewIdleMs, retireIdleAppTabs } from "./browser-controller-app-idle.mjs";
 import { placeholderOrigin } from "./browser-app-restore.mjs";
 
 // Each installation is a separate registrable domain. A shared parent such as
@@ -141,7 +142,11 @@ function agentCall(params, token) {
   if (typeof params.agent !== "string" || !AGENT_ID.test(params.agent)) throw invalid("invalid acting agent");
   const deadline = params.deadline_ms ?? AGENT_DEADLINE_MS;
   if (!Number.isSafeInteger(deadline) || deadline < 1 || deadline > AGENT_MAX_DEADLINE_MS) throw invalid("invalid deadline");
-  const call = (method, args, answer = "answer") => `(async () => { const view = globalThis.__charioxViewAgent;
+  const call = (method, args, answer = "answer") => `(async () => {
+    if (typeof document !== "undefined" && document.readyState === "loading") {
+      await new Promise(resolve => document.addEventListener("DOMContentLoaded", resolve, { once: true }));
+    }
+    const view = globalThis.__charioxViewAgent;
     if (!view) return { ok: false, code: "view_unavailable", message: "The view has not loaded the Chariox bridge" };
     const answer = await view.${method}(${args.map((arg) => JSON.stringify(arg)).join(", ")});
     return ${answer}; })()`;
@@ -184,7 +189,9 @@ export class AppTabs {
     return true;
   }
 
-  constructor(browser, { restoreGraceMs = 30_000 } = {}) {
+  constructor(browser, { restoreGraceMs = 30_000, idleMs = appViewIdleMs(), now = () => performance.now() } = {}) {
+    this.idleMs = idleMs;
+    this.now = now;
     this.browser = browser;
     // Every new CDP connection sweeps App Tabs, even when no App command
     // arrives: interception ends with the old connection.
@@ -200,6 +207,11 @@ export class AppTabs {
     this.orphanRestores = new Map();
   }
 
+  noteActivity(targetId) {
+    const app = [...this.apps.values()].find(open => open.targetId === targetId);
+    if (app) app.lastActivity = this.now();
+  }
+
   // One agent handler runs per view. Deadlines return to the caller while the
   // page keeps running, so its invocation remains active until CDP settles.
   async agent(params) {
@@ -207,6 +219,8 @@ export class AppTabs {
     const entry = [...this.apps.entries()].find(([, app]) => app.targetId === params?.target_id);
     if (!entry) throw invalid("unknown App tab");
     const [sessionId, app] = entry;
+    if (app.retiring) return { ok: false, code: "view_retired", message: "The idle view closed; read the catalog to open a fresh view" };
+    app.lastActivity = this.now();
     const token = randomUUID();
     const { agent, expression, deadline, runsAppCode } = agentCall(params, token);
     // Reading the change log or the registrations runs no App code: it neither
@@ -216,8 +230,11 @@ export class AppTabs {
     }
     if (params.call === "invoke") app.invocation = { token, actor: { kind: "agent", id: agent }, document: app.document };
     const connection = this.connection;
+    app.agentCalls = (app.agentCalls ?? 0) + 1;
     const running = connection.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sessionId, { timeoutMs: null })
       .finally(() => {
+        app.agentCalls--;
+        app.lastActivity = this.now();
         if (app.agentRunning === running) {
           app.agentRunning = null;
           app.invocation = null;
@@ -283,7 +300,13 @@ export class AppTabs {
       || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.instance_id))) throw invalid("invalid App instance");
     const instanceId = params.instance_id ?? null;
     const entry = params.entry ?? "index.html";
-    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null };
+    const projection = params.projection ?? { kind: "human" };
+    if (!projection || !["human", "agent"].includes(projection.kind)
+      || (projection.kind === "agent" && (typeof projection.agent !== "string" || !AGENT_ID.test(projection.agent)))) {
+      throw invalid("invalid App projection");
+    }
+    const background = projection.kind === "agent";
+    const app = { installation: params.installation_id, instanceId, origin, entry, assets: assets(params.assets, entry), page: params.page ?? null, background, lastActivity: this.now() };
     const connection = await this.browser.ensureConnection();
     this.listen(connection);
     // One shared App Tab per Room and installation: opening it again (another
@@ -292,14 +315,22 @@ export class AppTabs {
     const shown = [...this.apps.entries()].find(([, open]) => open.installation === app.installation && open.origin === origin && open.instanceId === instanceId);
     if (shown) {
       const [sessionId, open] = shown;
+      if (open.retiring) {
+        await open.retiring.catch(() => {});
+        return this.open(params);
+      }
+      open.lastActivity = this.now();
+      open.background = open.background && app.background;
       const changed = open.entry !== entry || open.assets.size !== app.assets.size
         || [...app.assets].some(([name, value]) => open.assets.get(name)?.contentType !== value.contentType || open.assets.get(name)?.body !== value.body);
       Object.assign(open, { entry, assets: app.assets, page: app.page });
       if (changed) open.ready = false;
       const metrics = this.browser.appMetrics?.(open.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId).catch(() => {});
-      await connection.send("Target.activateTarget", { targetId: open.targetId });
-      await this.fullscreen(connection, open.targetId).catch(() => false);
+      if (!app.background) {
+        await connection.send("Target.activateTarget", { targetId: open.targetId });
+        await this.fullscreen(connection, open.targetId).catch(() => false);
+      }
       // MP-08/MP-10: an unchanged Open only focuses the existing editor.
       // Verified asset changes still navigate and retire the old document.
       if (changed) {
@@ -317,15 +348,17 @@ export class AppTabs {
     const restored = instanceId === null
       ? targetInfos.find(target => target.type === "page" && placeholderOrigin(target.url) === origin)
       : undefined;
-    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true });
+    const { targetId } = restored ?? await connection.send("Target.createTarget", { url: "about:blank", newWindow: true, ...(app.background ? { background: true } : {}) });
     clearTimeout(this.orphanRestores.get(targetId)?.timer);
     this.orphanRestores.delete(targetId);
     const sessionId = await this.browser.ensureTargetSession(connection, targetId);
     const opening = { ...app, targetId, document: null, pending: new Set(), invocation: null, ready: false };
     this.apps.set(sessionId, opening);
     try {
-      if (restored) await connection.send("Target.activateTarget", { targetId });
-      await this.fullscreen(connection, targetId);
+      if (!app.background) {
+        if (restored) await connection.send("Target.activateTarget", { targetId });
+        await this.fullscreen(connection, targetId);
+      }
       const metrics = this.browser.appMetrics?.(app.page);
       if (metrics) await connection.send("Emulation.setDeviceMetricsOverride", metrics, sessionId);
       await connection.send("Fetch.enable", { patterns: [{ urlPattern: "*", requestStage: "Request" }] }, sessionId);
@@ -484,6 +517,7 @@ export class AppTabs {
       return;
     }
     // Calls the kernel may answer for this document; a new one clears them.
+    app.lastActivity = this.now();
     app.pending.add(call.id);
     if (app.pending.size > MAX_ANSWERABLE_CALLS) app.pending.delete(app.pending.values().next().value);
     this.calls.push({ installation_id: app.installation, target_id: app.targetId,
@@ -529,7 +563,7 @@ export class AppTabs {
     const pass = async () => {
       for (const [sessionId, app] of apps) {
         if (this.connection !== connection) return;
-        if (this.apps.get(sessionId) !== app) continue;
+        if (this.apps.get(sessionId) !== app || app.background || app.retiring) continue;
         await this.fullscreen(connection, app.targetId).catch(() => false);
       }
     };
@@ -609,6 +643,10 @@ export class AppTabs {
     });
   }
 
+  async retireIdle() {
+    return retireIdleAppTabs(this);
+  }
+
   async takeCalls(params = {}) {
     // MP-08/MP-11: only drain targets whose kernel binding was published.
     // An existing owner's idle drain may wake while another Open is in flight.
@@ -616,6 +654,7 @@ export class AppTabs {
     const eligible = call => targets === null || targets.has(call.target_id);
     await this.reconcile();
     await this.waitForCalls(eligible);
+    await this.retireIdle();
     // A call whose Tab closed or moved to another document is not run.
     const current = new Map([...this.apps.values()].map((app) => [app.targetId, app.document]));
     const currentCalls = this.calls.filter((call) => current.has(call.target_id)
@@ -639,6 +678,7 @@ export class AppTabs {
     const [sessionId, app] = entry;
     // The calling document is gone: its answer must not reach the next one.
     if (!app.pending.delete(params.call_id)) return { delivered: false };
+    app.lastActivity = this.now();
     const ok = params.error == null;
     const value = ok ? params.result ?? null : { code: String(params.error.code ?? "APP_ERROR"), message: String(params.error.message ?? "App call failed") };
     await this.resolve(sessionId, params.call_id, ok, value);

@@ -29,11 +29,19 @@ impl Drop for Rig {
 }
 
 fn rig() -> Rig {
+    rig_for_catalog(false)
+}
+
+fn rig_for_catalog(with_tools: bool) -> Rig {
     let root =
         std::env::temp_dir().join(format!("chariox-view-agent-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
-    crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    if with_tools {
+        crate::durable_state::app_state::fixture_tool_catalog(&app.durable_state_store());
+    } else {
+        crate::durable_state::app_state::fixture_catalog(&app.durable_state_store());
+    }
     let session = app
         .sessions_mut()
         .create_session(
@@ -189,7 +197,40 @@ async fn an_agent_reaches_only_its_own_rooms_views_and_only_for_an_app_it_holds(
         "another Room's view is not addressable"
     );
     let listed = rig.runtime.view_catalog(&rig.agent).await;
-    assert_eq!(listed["views"], json!([]));
+    assert_eq!(listed["views"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["views"][0]["app"], APP);
+    assert!(listed["views"][0].get("unavailable").is_some());
+    assert!(
+        listed["views"][0].get("state").is_none(),
+        "another Room's view is not opened or read"
+    );
+}
+
+#[tokio::test]
+async fn a_room_view_of_another_owners_installation_is_not_agent_authority() {
+    let mut rig = rig();
+    rig.grant().await;
+    rig.runtime.app_control().views().register(
+        &rig.session,
+        TARGET,
+        AppViewBinding {
+            owner: "bob".into(),
+            installation: APP.into(),
+            generation: GENERATION,
+            panel: Default::default(),
+            logical_tab: None,
+        },
+    );
+    for handle in [TARGET, APP] {
+        assert_eq!(
+            rig.runtime
+                .bound_view(&rig.agent, handle)
+                .err()
+                .unwrap()
+                .code,
+            "unknown_view"
+        );
+    }
 }
 
 #[tokio::test]
@@ -219,11 +260,11 @@ async fn the_catalog_lists_each_open_view_and_says_why_one_cannot_be_read() {
             view["app"].as_str(),
             view["generation"].as_u64()
         ),
-        (Some(TARGET), Some(APP), Some(GENERATION))
+        (Some(APP), Some(APP), Some(GENERATION))
     );
     assert_eq!(
-        view["unavailable"]["code"], "APP_UNAVAILABLE",
-        "no worker runs in this rig, so the signed actions cannot be read"
+        view["unavailable"]["code"], "view_unavailable",
+        "a cached binding does not prove this rig has a running Room controller"
     );
 }
 
@@ -516,6 +557,357 @@ async fn action_approvals_keep_their_choice_action_and_generation_scope() {
             .code,
         "approval_denied"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_catalog_opens_granted_app_without_a_human_view() {
+    check_live_binding(LiveBindingCheck::Catalog).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_page_panel_survives_agent_state_on_an_adopted_tab() {
+    check_live_binding(LiveBindingCheck::Panel).await;
+}
+
+// MP-08/MP-10/MP-11: page-controlled registration failures cross the same
+// observation boundary as action results, including the stable-handle probe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_registration_errors_are_scrubbed_on_every_agent_path() {
+    check_live_binding(LiveBindingCheck::RegistrationErrors).await;
+}
+
+// MP-08/MP-09/MP-10/MP-11: a failed idle close keeps the person's restore intent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_failed_retirement_keeps_the_adopted_tabs_restore_intent() {
+    check_live_binding(LiveBindingCheck::FailedRetirement).await;
+}
+
+// MP-08/MP-09/MP-10/MP-11: retirement must settle bindings before the drain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mp08_a3_successful_retirement_unbinds_the_old_adopted_tab_on_reopen() {
+    check_live_binding(LiveBindingCheck::SuccessfulRetirement).await;
+}
+
+#[derive(PartialEq)]
+enum LiveBindingCheck {
+    Catalog,
+    Panel,
+    RegistrationErrors,
+    FailedRetirement,
+    SuccessfulRetirement,
+}
+
+async fn check_live_binding(check: LiveBindingCheck) {
+    use crate::runtime::browser_controller_process::BrowserControllerProcessStore;
+    use chariox_app_package::{verify, VerificationPolicy};
+    use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    let store = rig.runtime.owned.durable_state_store.clone();
+    let (bytes, publisher) = crate::durable_state::app_state::fixture_tool_package();
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .fixture_inbox_workers_with_mode(
+            chariox_app_runtime::worker_process::test_fixture::Mode::ToolEcho,
+        );
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
+        .unwrap();
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/runtime/state/app-view-actor.fixture.mjs");
+    let controllers = BrowserControllerProcessStore::new(
+        "systemd-run",
+        vec![
+            "--scope".into(),
+            "--quiet".into(),
+            "-p".into(),
+            "MemoryMax=4G".into(),
+            "-p".into(),
+            "MemorySwapMax=0".into(),
+            "node".into(),
+            fixture.display().to_string(),
+            directory.display().to_string(),
+            rig.root.display().to_string(),
+        ],
+        std::time::Duration::from_secs(3),
+    );
+    controllers.acquire(&rig.session).unwrap();
+    rig.runtime
+        .set_browser_controller_process_store_for_test(controllers.clone());
+    let result = std::panic::AssertUnwindSafe(async {
+        let listed = rig.runtime.view_catalog(&rig.agent).await;
+        assert_eq!(
+            listed["views"].as_array().unwrap().len(),
+            1,
+            "a granted App opens with every viewer closed: {listed}"
+        );
+        let view = &listed["views"][0];
+        assert_eq!(view["app"], APP);
+        assert_eq!(
+            view["view"], APP,
+            "the installation is a stable handle: {listed}"
+        );
+        assert_eq!(
+            rig.runtime.app_control().views().bound_views(&rig.session)[0].0,
+            "actor-target",
+            "the production controller was reached"
+        );
+        assert!(
+            view.get("state").is_some(),
+            "the state bridge answered: {listed}"
+        );
+        assert!(
+            view["state"].get("unavailable").is_none(),
+            "the controller answered state: {listed}"
+        );
+        if check == LiveBindingCheck::RegistrationErrors {
+            const SECRET: &str = "registration-vault-value";
+            rig.runtime
+                .owned
+                .room_secret_observations
+                .register(&rig.session, SECRET)
+                .unwrap();
+            std::fs::write(rig.root.join("registration-error"), "").unwrap();
+            for (tool, arguments) in [
+                (STATE, json!({"view": APP})),
+                (CHANGES, json!({"view": APP})),
+                (BATCH, json!({"view": APP, "steps": []})),
+            ] {
+                let error = rig
+                    .runtime
+                    .app_view_tool(&rig.run, &rig.agent, tool, arguments)
+                    .await
+                    .unwrap_err();
+                assert_eq!(error.code, "view_unavailable");
+                assert!(
+                    !error.message.contains(SECRET),
+                    "registration probe leaked a known secret through {tool}"
+                );
+            }
+            let catalog = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, CATALOG, json!({}))
+                .await
+                .unwrap();
+            assert!(
+                !catalog.to_string().contains(SECRET),
+                "catalog probe leaked a known secret"
+            );
+            let context = rig.runtime.bound_view(&rig.agent, "actor-target").unwrap();
+            let error = rig
+                .runtime
+                .run_in_view(&context, "roundtrip", json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, "view_unavailable");
+            assert!(
+                !error.message.contains(SECRET),
+                "action registration check leaked a known secret"
+            );
+            return;
+        }
+        if matches!(
+            check,
+            LiveBindingCheck::Panel
+                | LiveBindingCheck::FailedRetirement
+                | LiveBindingCheck::SuccessfulRetirement
+        ) {
+            rig.runtime
+                .ensure_room_app_view(
+                    "alice",
+                    &rig.session,
+                    APP,
+                    crate::runtime::browser_controller_app_view::AppViewProjection::Human,
+                )
+                .await
+                .unwrap();
+            let views = rig.runtime.app_control().views();
+            assert!(views.request_panel(
+                &rig.session,
+                "actor-target",
+                crate::runtime::app_views::PanelRequest {
+                    placement: Some(crate::session::AppPanelPlacement::Bottom),
+                    size: Some(250),
+                }
+            ));
+            let before = views.layouts(&rig.session);
+            let state = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, STATE, json!({"view": APP}))
+                .await
+                .unwrap();
+            assert_eq!(state, json!({"ready": true}));
+            assert_eq!(
+                views.layouts(&rig.session),
+                before,
+                "agent state preserves the adopted page's panel request"
+            );
+        }
+        if check == LiveBindingCheck::FailedRetirement {
+            std::fs::write(rig.root.join("fail-idle-close"), "").unwrap();
+            let context = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+            assert_eq!(
+                context.target, "actor-target",
+                "the failed close reuses the adopted document"
+            );
+            let views = rig.runtime.app_control().views();
+            views.suspend_for_cold_start(&rig.session);
+            let restoring = views.cold_start_views(&rig.session);
+            assert_eq!(
+                restoring.len(),
+                1,
+                "failed retirement must preserve the adopted Tab's restore intent"
+            );
+            assert_eq!(restoring[0].installation, APP);
+            return;
+        }
+        if check == LiveBindingCheck::SuccessfulRetirement {
+            let views = rig.runtime.app_control().views();
+            let old_tab = crate::session::EnvironmentTab {
+                tab_id: "retired-person-tab".into(),
+                url: "https://app.invalid/".into(),
+                title: "Old App".into(),
+                document_revision: 1,
+                focused: true,
+                app: None,
+            };
+            views.remember_logical_tab(&rig.session, "actor-target", old_tab.clone());
+            std::fs::write(rig.root.join("successful-idle-close"), "").unwrap();
+            let context = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+            assert_eq!(context.target, "actor-target-2");
+            assert!(
+                views.binding_state(&rig.session, "actor-target").is_none(),
+                "a successful close must unbind the old adopted Tab before the drain"
+            );
+            assert_eq!(views.bound_views(&rig.session).len(), 1);
+            let opened = || std::fs::read_to_string(rig.root.join("app-opens")).unwrap();
+            let before = opened();
+            assert!(views.request_panel(
+                &rig.session,
+                &context.target,
+                crate::runtime::app_views::PanelRequest {
+                    placement: Some(crate::session::AppPanelPlacement::Bottom),
+                    size: Some(275),
+                }
+            ));
+            assert!(views.first_call(&rig.session, &context.target));
+            let layouts = views.layouts(&rig.session);
+            let state = rig
+                .runtime
+                .app_view_tool(&rig.run, &rig.agent, STATE, json!({"view": APP}))
+                .await
+                .unwrap();
+            assert_eq!(state, json!({"ready": true}));
+            assert_eq!(opened(), before, "the next agent call sends no second Open");
+            assert_eq!(views.layouts(&rig.session), layouts);
+            assert!(!views.first_call(&rig.session, &context.target));
+            // The person adopts the replacement before the next drain. Browser
+            // loss must restore this document, never the successfully closed one.
+            rig.runtime
+                .ensure_room_app_view(
+                    "alice",
+                    &rig.session,
+                    APP,
+                    crate::runtime::browser_controller_app_view::AppViewProjection::Human,
+                )
+                .await
+                .unwrap();
+            let new_tab = crate::session::EnvironmentTab {
+                tab_id: "replacement-person-tab".into(),
+                ..old_tab
+            };
+            views.remember_logical_tab(&rig.session, &context.target, new_tab.clone());
+            views.suspend_for_cold_start(&rig.session);
+            let restoring = views.cold_start_views(&rig.session);
+            assert_eq!(restoring.len(), 1);
+            assert_eq!(restoring[0].logical_tab, Some(new_tab));
+            return;
+        }
+        let opens = || {
+            std::fs::read_to_string(rig.root.join("app-opens"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        let before = opens();
+        let repeated = rig.runtime.view_catalog(&rig.agent).await;
+        assert_eq!(opens(), before, "a live binding sends no second Open");
+        assert_eq!(repeated["views"][0]["view"], view["view"]);
+        assert_eq!(
+            rig.runtime
+                .app_control()
+                .views()
+                .bound_views(&rig.session)
+                .len(),
+            1
+        );
+        // The binding grants declared App work in this Room, never another Room's Tab.
+        assert!(rig
+            .runtime
+            .app_control()
+            .views()
+            .bound_views("unrelated-room")
+            .is_empty());
+        rig.runtime
+            .app_control()
+            .views()
+            .unbind(&rig.session, "actor-target");
+        // The controller retired a Tab; its drain has not pruned Rust's old
+        // binding yet. A stable handle must still resolve the actual target.
+        rig.runtime.app_control().views().register_projection(
+            &rig.session,
+            "retired-target",
+            AppViewBinding {
+                owner: "alice".into(),
+                installation: APP.into(),
+                generation: 1,
+                panel: Default::default(),
+                logical_tab: None,
+            },
+            true,
+        );
+        let reopened = rig.runtime.view_context(&rig.agent, APP).await.unwrap();
+        assert_eq!(reopened.target, "actor-target");
+        assert_eq!(reopened.binding.installation, APP);
+        assert_eq!(reopened.binding.generation, 1);
+    });
+    use futures_util::FutureExt;
+    let outcome = result.catch_unwind().await;
+    rig.runtime
+        .app_control()
+        .views()
+        .forget_session(&rig.session);
+    controllers.release(&rig.session).unwrap();
+    rig.runtime
+        .app_control()
+        .lifecycle()
+        .stop_blocking("alice", APP)
+        .unwrap();
+    if let Err(error) = outcome {
+        std::panic::resume_unwind(error);
+    }
 }
 
 #[tokio::test]

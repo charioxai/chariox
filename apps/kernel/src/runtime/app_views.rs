@@ -77,6 +77,8 @@ struct SessionViews {
     tabs: HashMap<String, (AppViewBinding, u64)>,
     /// Target → the queue its agent actions wait in, one at a time.
     agent_queues: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Background views have no human restore intent after browser loss.
+    unprojected: std::collections::HashSet<String>,
     /// Existing permission answers, scoped to this session and exact grant.
     action_approvals: action_approvals::ActionApprovals,
     registrations: u64,
@@ -127,9 +129,12 @@ impl SessionViews {
             .collect();
         for target in targets {
             let (binding, _) = self.tabs.remove(&target).unwrap();
-            if !self.restoring.iter().any(|(old, _)| {
-                old.owner == binding.owner && old.installation == binding.installation
-            }) {
+            let unprojected = self.unprojected.remove(&target);
+            if !unprojected
+                && !self.restoring.iter().any(|(old, _)| {
+                    old.owner == binding.owner && old.installation == binding.installation
+                })
+            {
                 self.restoring.push((binding, 0));
             }
             self.called.remove(&target);
@@ -351,8 +356,23 @@ impl AppViews {
     /// Records the Tab; returns true when the caller must start the session's
     /// call pump.
     pub(crate) fn register(&self, session: &str, target: &str, binding: AppViewBinding) -> bool {
+        self.register_projection(session, target, binding, false)
+    }
+
+    pub(crate) fn register_projection(
+        &self,
+        session: &str,
+        target: &str,
+        binding: AppViewBinding,
+        background: bool,
+    ) -> bool {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let views = sessions.entry(session.to_owned()).or_default();
+        if !background {
+            views.unprojected.remove(target);
+        } else if !views.tabs.contains_key(target) {
+            views.unprojected.insert(target.to_owned());
+        }
         views.bind(target, binding);
         !std::mem::replace(&mut views.pumping, true)
     }
@@ -488,6 +508,7 @@ impl AppViews {
         let mut sessions = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(views) = sessions.get_mut(session) {
             views.tabs.remove(target);
+            views.unprojected.remove(target);
             views
                 .unreloadable
                 .insert(target.to_owned(), std::time::Instant::now());
@@ -566,6 +587,9 @@ impl AppViews {
             views
                 .reconnecting
                 .retain(|target| open_targets.contains(target));
+            views
+                .unprojected
+                .retain(|target| views.tabs.contains_key(target));
             views
                 .refreshing
                 .retain(|target| open_targets.contains(target));
@@ -1696,5 +1720,42 @@ mod agent_view_tests {
         views.unbind("room", "t1");
         assert!(views.agent_queue("room", "t1").is_none());
         assert!(views.agent_queue("elsewhere", "t1").is_none());
+    }
+}
+
+#[cfg(test)]
+mod unprojected_tests {
+    use super::*;
+
+    fn binding() -> AppViewBinding {
+        AppViewBinding {
+            owner: "alice".into(),
+            installation: "todo".into(),
+            generation: 1,
+            panel: Default::default(),
+            logical_tab: None,
+        }
+    }
+
+    #[test]
+    fn mp08_a3_browser_loss_retires_unprojected_authority_without_human_restore_intent() {
+        let views = AppViews::default();
+        views.register_projection("room", "background", binding(), true);
+        views.register("room", "human", binding());
+        let background_call = views.track_call("room", "background", None);
+        views.suspend_for_cold_start("room");
+        assert!(background_call.is_cancelled());
+        assert!(views.binding_state("room", "background").is_none());
+        assert_eq!(views.cold_start_views("room").len(), 1);
+    }
+
+    #[test]
+    fn mp08_a3_human_adoption_wins_over_later_agent_registration() {
+        let views = AppViews::default();
+        views.register_projection("room", "tab", binding(), true);
+        views.register("room", "tab", binding());
+        views.register_projection("room", "tab", binding(), true);
+        views.suspend_for_cold_start("room");
+        assert_eq!(views.cold_start_views("room").len(), 1);
     }
 }

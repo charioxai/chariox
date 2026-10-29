@@ -13,6 +13,9 @@ pub(crate) use crate::local::{
 pub(crate) enum BrowserAppViewRequest {
     Open {
         origin_label: String,
+        /// Agent opens stay unprojected and attribute startup calls to that agent.
+        #[serde(default, skip_serializing_if = "AppViewProjection::is_human")]
+        projection: AppViewProjection,
         installation_id: String,
         /// User-domain views are distinct ephemeral targets; Room opens omit it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,23 @@ pub(crate) enum BrowserAppViewRequest {
         wait_ms: Option<u64>,
         deadline_ms: u64,
     },
+}
+
+/// Only a person can project a Room App Tab; an agent names its own authority.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum AppViewProjection {
+    #[default]
+    Human,
+    Agent {
+        agent: String,
+    },
+}
+
+impl AppViewProjection {
+    pub(crate) fn is_human(&self) -> bool {
+        matches!(self, Self::Human)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

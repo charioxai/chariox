@@ -1977,3 +1977,15 @@ test('MP-08/MP-10 whenDocumentMoves resolves at the main-frame commit of another
  const cancelled=browser.whenDocumentMoves('target-a','doc-b');cancelled.cancel();assert.equal(browser.commitWaiters.size,0);
  watch.cancel();await browser.close();
 });
+
+test("MP-08/MP-10 A3: unprojected App targets keep their session but stay out of the Room tabs", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.appTabs = { apps: new Map([["session-a", { targetId: "target-a", background: true }]]) };
+  const hidden = await browser.reconcile(viewport);
+  assert.equal(hidden.tabs.some(tab => tab.target_id === "target-a"), false);
+  browser.appTabs.apps.get("session-a").background = false;
+  const shown = await browser.reconcile(viewport);
+  assert.equal(shown.tabs.some(tab => tab.target_id === "target-a"), true);
+  await browser.close();
+});
