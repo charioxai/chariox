@@ -194,7 +194,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
         "webSearch" => CodexToolTranscriptUpdate {
             id,
             tool: Some("web_search".to_string()),
-            status: Some(instant_tool_status(status)),
+            status: Some(status),
             title: None,
             description: None,
             text: None,
@@ -215,7 +215,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
         "imageView" => CodexToolTranscriptUpdate {
             id,
             tool: Some("view_image".to_string()),
-            status: Some(instant_tool_status(status)),
+            status: Some(status),
             title: None,
             description: None,
             text: None,
@@ -259,15 +259,6 @@ fn normalize_codex_tool_status(status: &str) -> String {
         "failed" => "error".to_string(),
         "declined" => "declined".to_string(),
         other => non_empty(other).unwrap_or("updated").to_string(),
-    }
-}
-
-/// A web search or an image view carries no status of its own: once it is in the transcript, it is done.
-fn instant_tool_status(status: String) -> String {
-    if status == "updated" {
-        "completed".to_string()
-    } else {
-        status
     }
 }
 
@@ -347,7 +338,9 @@ mod tests {
 
     #[test]
     fn web_searches_and_image_views_are_tool_calls() {
-        let search = rendered(json!({"type": "webSearch", "id": "ws-1", "query": "svg viewbox"}));
+        let search = rendered(
+            json!({"type": "webSearch", "id": "ws-1", "status": "completed", "query": "svg viewbox"}),
+        );
         assert_eq!(search["tool"], "web_search");
         assert_eq!(search["status"], "completed");
         assert_eq!(search["input"], json!({"query": "svg viewbox"}));

@@ -68,15 +68,36 @@ pub(in crate::provider::codex_runtime) fn decode_codex_output_delta_chunk(chunk:
         .unwrap_or_else(|_| chunk.as_bytes().to_vec())
 }
 
+/// The event an item arrived with. Web searches and image views carry no status of their own, so this decides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::provider::codex_runtime) enum CodexItemLifecycle {
+    Started,
+    /// Also the lifecycle of items read back from a finished turn.
+    Completed,
+}
+
 pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     item: &Value,
+    lifecycle: CodexItemLifecycle,
     remote_extension_manifest: &RemoteExtensionManifest,
 ) -> Option<CodexOutputChunk> {
     if !is_codex_tool_item(item) {
         return None;
     }
     let item_id = item.get("id").and_then(Value::as_str)?.to_string();
+    let mut item = item.clone();
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("webSearch" | "imageView")
+    ) && item.get("status").is_none()
+    {
+        item["status"] = json!(match lifecycle {
+            CodexItemLifecycle::Started => "inProgress",
+            CodexItemLifecycle::Completed => "completed",
+        });
+    }
+    let item = &item;
     let entry = tool_items
         .entry(item_id.clone())
         .or_insert_with(|| CodexToolTranscriptState {
