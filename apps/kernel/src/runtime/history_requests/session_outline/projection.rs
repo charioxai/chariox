@@ -278,6 +278,7 @@ fn outline_blob_preview(events: &[&HistoryEvent]) -> Option<String> {
                 "contentItems",
                 "result",
                 "agentsStates",
+                "images",
             ] {
                 snapshot.remove(key);
             }
@@ -786,6 +787,27 @@ mod tests {
                 "input": { "command": "ls -la" },
             })
         );
+    }
+
+    #[test]
+    fn a_tool_blob_preview_leaves_out_result_images() {
+        let events = vec![provider_tool_event_with_text(
+            1,
+            "call-img",
+            serde_json::json!({
+                "id": "call-img",
+                "tool": "Read",
+                "status": "completed",
+                "input": { "file_path": "chart.png" },
+                "images": ["data:image/png;base64,iVBORw0KGgo="],
+            })
+            .to_string(),
+        )];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        let preview = blobs[0].preview.as_deref().expect("tool preview");
+        assert!(!preview.contains("images") && !preview.contains("base64"));
     }
 
     #[test]
