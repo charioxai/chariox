@@ -1071,10 +1071,29 @@ impl DaemonApp {
         let sessions = self.sessions.read().store().list();
         let mut reconciled_runtime_state = false;
         for mut session in sessions {
-            let reconciliation = session.reconcile_after_kernel_restart();
+            // Queue admission persists a run and its entry intent before provider
+            // preparation can persist the first prompt. The ordinary queue pump
+            // owns these entries after startup; they are not lost provider turns.
+            let mut admitted_entry_run_ids = BTreeSet::new();
+            for run in session.workflow_runs() {
+                if self
+                    .durable_state
+                    .workflow_dispatch_intent(&self.config.daemon_id, session.id(), run.id())?
+                    .is_some_and(|intent| !intent.submitted)
+                {
+                    admitted_entry_run_ids.insert(run.id().to_string());
+                }
+            }
+            let reconciliation = session
+                .reconcile_after_kernel_restart_with_admitted_entries(&admitted_entry_run_ids);
             if !reconciliation.changed() {
                 continue;
             }
+            // Normalized runs override the full snapshot at the next startup
+            // and feed durable task/goal observers. Commit the recovery outcome
+            // there too, so an orphan cannot return as Running after each restart.
+            self.durable_state
+                .persist_workflow_runtime_transition(&session, "kernel_restart_reconciled")?;
             reconciled_runtime_state = true;
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);

@@ -1034,6 +1034,18 @@ impl KernelRuntimeState {
                     } else {
                         None
                     };
+                    let public_answer = public_answer.or_else(|| {
+                        workflow_source
+                            .as_ref()
+                            .filter(|run| {
+                                matches!(
+                                    run.status(),
+                                    crate::session::WorkflowRunStatus::Failed
+                                        | crate::session::WorkflowRunStatus::Stopped
+                                )
+                            })
+                            .map(super::agent_workflow_tasks::workflow_failure_answer)
+                    });
                     let occurrence = terminal_task
                         .as_ref()
                         .map(|t| format!("task-terminal-{}", t.task_id))
