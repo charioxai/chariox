@@ -1,6 +1,17 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: automatic trust is only for the selected folder.
 use super::*;
 
+fn replace_current_run(app: &mut DaemonApp, run: &RuntimeProviderRun) {
+    let current = app.providers().get_run(run.id()).unwrap();
+    let mut replacement = serde_json::to_value(current).unwrap();
+    replacement["id"] = serde_json::json!("replacement");
+    for field in ["started_at_ms", "last_activity_at_ms"] {
+        replacement[field] = serde_json::json!(replacement[field].as_u64().unwrap() + 1);
+    }
+    app.providers_mut()
+        .insert_run_for_test(serde_json::from_value(replacement).unwrap());
+}
+
 #[test]
 fn startup_trust_cards_keep_the_selected_workspace_scope() {
     crate::test_support::isolated_env_test!();
@@ -25,6 +36,8 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
     let mut failures = Vec::new();
     for (name, cwd, displayed, warmed, expected) in [
         ("selected arrow", &selected, &selected, false, true),
+        ("selected replacement", &selected, &selected, false, true),
+        ("replaced run", &selected, &selected, false, false),
         ("selected", &selected, &selected, false, true),
         ("ancestor", &selected, &ancestor, false, false),
         ("child", &selected, &child, false, false),
@@ -98,6 +111,9 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
         let mut run: RuntimeProviderRun = serde_json::from_value(run).unwrap();
         run.mark_running();
         app.providers_mut().insert_run_for_test(run.clone());
+        if name == "replaced run" {
+            replace_current_run(&mut app, &run);
+        }
         if name.starts_with("selected") && !name.contains("Git") {
             app.pty.spawn_for_run(&run).unwrap();
         }
@@ -152,10 +168,15 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
                     std::thread::sleep(std::time::Duration::from_millis(2));
                 }
             }
-            let changed = frame.replace(
-                &selected.display().to_string(),
-                &ancestor.display().to_string(),
-            );
+            let changed = if name == "selected replacement" {
+                replace_current_run(&mut app, &run);
+                frame.clone()
+            } else {
+                frame.replace(
+                    &selected.display().to_string(),
+                    &ancestor.display().to_string(),
+                )
+            };
             ProviderOutputClaudeNativeBridge::new(&mut app)
                 .process_terminal_output(
                     session.id(),
@@ -165,7 +186,7 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
                     &changed,
                 )
                 .unwrap();
-            if name == "selected" {
+            if name != "selected arrow" {
                 bridge.resolve("allow_once", "allow");
             }
             let result = (|| {

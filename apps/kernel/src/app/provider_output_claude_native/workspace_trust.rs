@@ -60,6 +60,16 @@ pub(super) fn selected_startup_workspace(
     if agent.session_id() != session_id || session.project_id().is_empty() {
         return false;
     }
+    if app
+        .providers
+        .get_run_for_agent(session_id, agent_id)
+        .is_none_or(|current| {
+            current.id() != run.id()
+                || current.state() != crate::provider::ProviderRunState::Running
+        })
+    {
+        return false;
+    }
     let selected = Path::new(agent.worktree_id().unwrap_or_else(|| session.worktree_id()));
     let home = run
         .pty_env()
@@ -112,7 +122,7 @@ pub(super) fn validate_selected_workspace(
     Err(crate::error::DaemonError::LocalTransport {
         operation: "approve Claude workspace trust",
         message:
-            "Claude changed the selected workspace trust target before approval; retry the launch."
+            "Claude's selected workspace or startup run changed before approval; retry the launch."
                 .into(),
     })
 }
