@@ -56,6 +56,9 @@ if (dryRun) {
 
 const { LocalIpcClient } = await import("../../../packages/kernel-client/dist/ipc.js")
 const requests = await import("../../../packages/kernel-client/dist/ipc-requests.js")
+const { createRelayKeypair, RelayClientIdentity } = await import("../../../packages/kernel-client/dist/relay-crypto.js")
+const { createTerminalPairingLink, joinKernelTerminalPairingLink } = await import("../dist/relay-api.js")
+const { parseArgs: parseCliArgs } = await import("../dist/cli-options.js")
 await Promise.all([
   requireExecutable(kernelBinary, "kernel"),
   requireExecutable(relayBinary, "relay"),
@@ -136,7 +139,7 @@ try {
   const providerSeen = Array.from({ length: clientCount }, () => new Set())
   const resumeCounts = Array.from({ length: clientCount }, () => 0)
   for (let index = 0; index < clientCount; index += 1) {
-    const client = relayClient()
+    const client = await pairedRelayClient(control)
     client.onKernelEvent((event) => {
       if (event?.event === "transport_resumed") resumeCounts[index] += 1
       if (event?.event !== "terminal_output") return
@@ -498,12 +501,19 @@ function reconnectStormBuildProfile() {
   }
   return value
 }
-function relayClient() {
-  return new LocalIpcClient(`ws://127.0.0.1:${ports.relay}`, {
-    relayAuthToken: relayToken,
-    targetDaemonAlias: "home",
-    reconnectJitterMs: 0,
-  })
+// The kernel admits a relay terminal only through its product pairing flow.
+async function pairedRelayClient(kernel) {
+  const pairing = await createTerminalPairingLink(kernel)
+  const options = parseCliArgs(["--terminal-pairing-link", pairing.pairing_link])
+  const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
+  const connection = { targetDaemonId: options.targetDaemonId, relayIdentity: identity }
+  const bootstrap = new LocalIpcClient(options.relayUrl, { relayAuthToken: options.relayToken, ...connection })
+  try {
+    const joined = await joinKernelTerminalPairingLink(bootstrap, pairing.pairing_link, pairing.terminal_id, identity.publicKeyThumbprint)
+    return new LocalIpcClient(options.relayUrl, { relayAuthToken: joined.relay_token ?? options.relayToken, reconnectJitterMs: 0, ...connection })
+  } finally {
+    await bootstrap.close()
+  }
 }
 function relayEnv() {
   return {
