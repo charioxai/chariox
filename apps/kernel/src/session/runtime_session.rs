@@ -1302,6 +1302,21 @@ impl RuntimeSession {
 #[cfg(test)]
 mod tests;
 
+impl RuntimeSession {
+    pub(crate) fn for_execution_project(
+        &self,
+        project_id: &str,
+        workspace: &str,
+        worktree: &str,
+    ) -> Self {
+        let mut execution = self.clone();
+        execution.project_id = project_id.to_string();
+        execution.workspace_id = workspace.to_string();
+        execution.worktree_id = worktree.to_string();
+        execution
+    }
+}
+
 #[cfg(test)]
 mod session_activity_tests {
     use super::*;
@@ -1333,20 +1348,5 @@ mod session_activity_tests {
             serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
         assert_eq!(restored.last_activity_at_ms(), initial + 20);
         assert_eq!(restored.pinned_at_ms(), pinned_at);
-    }
-}
-
-impl RuntimeSession {
-    pub(crate) fn for_execution_project(
-        &self,
-        project_id: &str,
-        workspace: &str,
-        worktree: &str,
-    ) -> Self {
-        let mut execution = self.clone();
-        execution.project_id = project_id.to_string();
-        execution.workspace_id = workspace.to_string();
-        execution.worktree_id = worktree.to_string();
-        execution
     }
 }

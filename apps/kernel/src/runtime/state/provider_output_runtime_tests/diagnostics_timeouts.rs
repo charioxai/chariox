@@ -296,7 +296,10 @@ async fn an_opencode_transport_fault_stays_hidden_from_a_room_agent_owner() {
         let (transcript, failure) =
             owner_view_of_failed_submit(FailedSubmit::OpenCode(reply)).await;
         assert!(transcript.is_empty(), "{transcript:?}");
-        assert_eq!(failure, Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap()));
+        assert_eq!(
+            failure,
+            Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap())
+        );
     }
 }
 
@@ -311,7 +314,10 @@ async fn a_kernel_submit_error_stays_hidden_from_a_room_agent_owner() {
     ))
     .await;
     assert!(transcript.is_empty(), "{transcript:?}");
-    assert_eq!(failure, Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap()));
+    assert_eq!(
+        failure,
+        Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap())
+    );
 }
 
 #[tokio::test]

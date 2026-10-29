@@ -4327,7 +4327,11 @@ pub(in crate::runtime::state) mod tests {
                 !visible.iter().any(|text| text.contains(message)),
                 "{message} reached the owner: {visible:?}"
             );
-            assert_eq!(failure, Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap()), "the cancelled dispatch has one outcome without a provider error");
+            assert_eq!(
+                failure,
+                Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap()),
+                "the cancelled dispatch has one outcome without a provider error"
+            );
         }
     }
 
