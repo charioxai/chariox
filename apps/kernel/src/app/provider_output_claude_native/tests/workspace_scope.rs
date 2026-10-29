@@ -316,6 +316,35 @@ fn startup_trust_survives_pty_drain_boundaries_around_the_path() {
             None => vec![frame.to_string()],
         },
     ));
+    // Each drain is fresh stream bytes: a drain that repeats the previous
+    // pathname segment (`/tmp/project` | `/project`) is not a duplicate.
+    let segments = |frame: &str, path: &str, every_segment: bool| {
+        let start = frame.find(path).expect("frame shows the path");
+        let end = start + path.len();
+        let mut cuts = Vec::new();
+        let mut separators = path.match_indices('/').map(|(index, _)| start + index);
+        if every_segment {
+            cuts.extend(separators);
+        } else {
+            cuts.extend(separators.next_back());
+        }
+        cuts.push(end);
+        let mut drains = vec![frame[..cuts[0]].to_string()];
+        drains.extend(
+            cuts.windows(2)
+                .map(|pair| frame[pair[0]..pair[1]].to_string()),
+        );
+        drains.push(frame[end..].to_string());
+        drains
+    };
+    failures.extend(startup_trust_failures(
+        "last segment drain",
+        &|frame, path| segments(frame, path, false),
+    ));
+    failures.extend(startup_trust_failures(
+        "every segment drain",
+        &|frame, path| segments(frame, path, true),
+    ));
     assert!(
         failures.is_empty(),
         "a PTY drain boundary changed the selected workspace: {failures:?}"
@@ -330,7 +359,8 @@ fn startup_trust_failures(
     let home = root.path().join("home");
     let plain = root.path().join("selected");
     let trailing = root.path().join("selected ");
-    for path in [&home, &plain, &trailing] {
+    let repeated = root.path().join("project").join("project");
+    for path in [&home, &plain, &trailing, &repeated] {
         fs::create_dir_all(path).unwrap();
     }
     let crlf = |displayed: &std::path::Path, blank: &str, yes_first: bool| {
@@ -353,6 +383,14 @@ fn startup_trust_failures(
             "trailing space with blank lines",
             &trailing,
             &trailing,
+            "\r\n\r\n",
+            true,
+        ),
+        ("repeated segment", &repeated, &repeated, "", true),
+        (
+            "repeated segment with blank lines",
+            &repeated,
+            &repeated,
             "\r\n\r\n",
             true,
         ),

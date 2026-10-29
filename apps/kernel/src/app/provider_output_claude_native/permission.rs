@@ -623,9 +623,9 @@ pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str
     } else {
         &normalized
     };
-    if continued.is_empty()
-        || (!continued.trim().is_empty() && recent.trim_end().ends_with(continued.trim()))
-    {
+    // Every drain is fresh stream bytes; matching text is not a repeat (a
+    // pathname may repeat a segment across drains).
+    if continued.is_empty() {
         return recent;
     }
     recent.push_str(continued);

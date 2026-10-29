@@ -176,7 +176,7 @@ pub(crate) fn startup_readiness_run(
 }
 
 #[test]
-fn repeated_claude_permission_render_is_stored_once() {
+fn claude_permission_recent_appends_every_drain_as_received() {
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-permission-recent-test-{}-{}",
         std::process::id(),
@@ -185,14 +185,11 @@ fn repeated_claude_permission_render_is_stored_once() {
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("context.json");
     let context_file = context_file.display().to_string();
-    let rendered =
-        "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons";
 
-    let first = update_claude_permission_recent(&context_file, rendered);
-    let second = update_claude_permission_recent(&context_file, rendered);
+    update_claude_permission_recent(&context_file, "/tmp/project");
+    let recent = update_claude_permission_recent(&context_file, "/project");
 
-    assert_eq!(first, second);
-    assert_eq!(second.matches(rendered).count(), 1, "{second}");
+    assert_eq!(recent, "/tmp/project/project");
     let _ = fs::remove_dir_all(root);
 }
 
