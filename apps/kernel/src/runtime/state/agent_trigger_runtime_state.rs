@@ -1579,6 +1579,108 @@ pub(super) mod tests {
         assert!(queued.is_empty());
     }
 
+    // MP-08/MP-10/MP-11: a hold that cannot leave the durable queue stays a hold.
+    #[tokio::test]
+    async fn failed_hold_removal_keeps_the_hold_and_a_later_tick_wakes_the_queue() {
+        let mut config = durable_state_config("trigger-hold-removal-failure");
+        config.room_agent_tools = false;
+        let (_worktree, runtime, session_id, agent_id, attachment_id, _, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config, &[],
+            ).await;
+        install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "slow-ack");
+        let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
+        let settlement = reject_trigger_settlement(&runtime);
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+        runtime
+            .owned
+            .provider_store
+            .drain_finished_structured_prompt_submit_jobs();
+        let submission = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: crate::session::PromptQueueItem::new(
+                    "user-behind-hold",
+                    &attachment_id,
+                    &agent_id,
+                    "Run the accepted user work",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .unwrap();
+        let crate::session::PromptSubmissionOutcome::Queued { prompt } = submission.outcome else {
+            panic!("user work must queue behind the held steer");
+        };
+        let user_prompt_id = prompt.id().to_string();
+        runtime
+            .complete_agent_prompt_with_external_authority(&session_id, &agent_id, None, None)
+            .await
+            .unwrap();
+        // The settlement can be written now, but the queue removal cannot.
+        settlement
+            .execute_batch("DROP TRIGGER reject_trigger_settlement;")
+            .unwrap();
+        settlement
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_hold_removal BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = '{}'
+                 BEGIN SELECT RAISE(FAIL, 'injected hold removal failure'); END;",
+                crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+            ))
+            .unwrap();
+
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (_, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(
+            queued.iter().any(|prompt| prompt.local_steer_submitted()),
+            "a removal that was not persisted must keep the hold in memory"
+        );
+        assert_eq!(queued.len(), 2, "the user prompt still waits behind it");
+        settlement
+            .execute_batch("DROP TRIGGER reject_hold_removal;")
+            .unwrap();
+
+        runtime
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .await;
+
+        let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let jobs = runtime
+                    .owned
+                    .provider_store
+                    .drain_finished_structured_prompt_submit_jobs();
+                if !jobs.is_empty() {
+                    break jobs;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the next maintenance tick must deliver the user prompt");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].prompt_id, user_prompt_id);
+        let session = runtime.owned.session_snapshot(&session_id).unwrap();
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert_eq!(active.unwrap().id(), user_prompt_id);
+        assert!(queued.is_empty());
+    }
+
     // MP-08/MP-10/MP-11: failed appends must preserve the replay barrier.
     #[tokio::test]
     async fn live_settlement_failure_retains_held_firing() {
