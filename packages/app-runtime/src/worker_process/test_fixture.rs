@@ -172,6 +172,10 @@ impl Observation {
         }
         Ok(Some(bytes))
     }
+    /// Fixed export staging location for the queued broker cleanup regression.
+    pub fn export_staging_directory(&self) -> PathBuf {
+        self.marker.with_file_name(".export-cancelled")
+    }
     pub fn pending_file_replacements(&self) -> io::Result<usize> {
         let mut count = 0;
         for (index, entry) in fs::read_dir(self.marker.parent().unwrap())?.enumerate() {

@@ -5,6 +5,7 @@ use chariox_app_sdk::{
 use serde_json::{json, Value};
 use std::{fs::File, io::Read};
 
+mod export_cleanup;
 mod scene;
 
 struct Excalidraw;
@@ -88,8 +89,7 @@ impl ExportFile {
 impl Drop for ExportFile {
     fn drop(&mut self) {
         // Failed writes, failed offers and cancellation must release their reservation too.
-        let _ = std::fs::remove_file(format!("data/{}", self.0));
-        let _ = std::fs::remove_dir(format!("data/{}", self.0.rsplit_once('/').unwrap().0));
+        let _ = export_cleanup::remove(std::path::Path::new(&format!("data/{}", self.0)));
     }
 }
 
