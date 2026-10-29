@@ -61,7 +61,7 @@ test('native text edits capture only synchronous events on the edited element', 
 test('native key defaults retain only the stamped source, and human input clears it', async () => {
   const listeners = new Map();
   const inputs = vm.runInNewContext(`(${createInputCallers.toString()})()`, {
-    performance:{timeOrigin:0,now:()=>1},addEventListener(type,fn){listeners.set(type,fn);},
+    performance:{timeOrigin:0,now:()=>1},addEventListener(type,fn){listeners.set(type,fn);},setTimeout(){},
   });
   const target = {tagName:'INPUT'};
   const event = (type, properties = {}) => ({type,target,isTrusted:true,timeStamp:10000,...properties});
@@ -108,7 +108,7 @@ function textFixture() {
 
 test('queued text checks state rather than physical event classes', () => {
   const f = textFixture();
-  for (const type of ['keydown','keypress','paste','cut','drop','compositionstart','compositionupdate','compositionend',
+  for (const type of ['keydown','paste','cut','drop','compositionstart','compositionupdate','compositionend',
     'focusout','focusin','pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keyup','wheel']) {
     f.inputs.armText('Edit','caller');
     assert.equal(f.dispatch(f.event(type)),undefined);
@@ -188,6 +188,32 @@ test('an identical physical key edit during dispatch remains human and refuses t
   const agent = f.insert(undefined,'h');assert.equal(agent.before.defaultPrevented,true);assert.equal(agent.caller,undefined);
   assert.equal(f.element.value,'h');assert.equal(f.inputs.finishText('caller'),false);
   f.inputs.clearText('caller');
+});
+
+test('only the keypress that Chromium turns into a beforeinput marks a physical edit', () => {
+  const key = (f, overrides = {}) => { f.dispatch(f.event('keydown',{key:'h',...overrides})); return f.event('keypress',{key:'h',...overrides}); };
+  const agentInsert = (f, text = 'h') => {
+    f.inputs.armText(text,'caller');assert.equal(f.inputs.startText('caller'),true);
+    const edit = f.insert(undefined,text);assert.equal(edit.caller,'caller');assert.equal(edit.after,'caller');
+    assert.equal(f.inputs.finishText('caller'),true);f.inputs.clearText('caller');
+  };
+  // A held key whose own edit an App cancelled leaves no claim on a later insertion.
+  let f = textFixture();const press = key(f);f.dispatch(press);
+  const cancelled = f.event('beforeinput',{data:'h'});f.dispatch(cancelled);cancelled.preventDefault();
+  agentInsert(f);
+  // Held shortcuts edit nothing, with or without a keypress.
+  f = textFixture();f.dispatch(f.event('keydown',{key:'c',ctrlKey:true}));agentInsert(f,'c');
+  f = textFixture();f.dispatch(key(f,{ctrlKey:true}));agentInsert(f);
+  f = textFixture();f.dispatch(key(f,{metaKey:true}));agentInsert(f);
+  // A keypress whose default action was cancelled, retired or on another target produces no beforeinput.
+  f = textFixture();const stopped = key(f);f.dispatch(stopped);stopped.preventDefault();agentInsert(f);
+  f = textFixture();f.dispatch(key(f));f.dispatch(f.event('keyup',{key:'h'}));agentInsert(f);
+  f = textFixture();f.dispatch(key(f));f.flush();agentInsert(f);
+  f = textFixture();f.dispatch(key(f,{target:{}}));agentInsert(f);
+  // The keypress is consumed by the one beforeinput it produces.
+  f = textFixture();f.inputs.armText('h','caller');assert.equal(f.inputs.startText('caller'),true);
+  f.dispatch(key(f));assert.equal(f.insert(undefined,'h').caller,undefined);
+  assert.equal(f.insert(undefined,'h').before.defaultPrevented,true,'the person already changed the field');
 });
 
 test('nonediting key names can be inserted literally with the queued caller', () => {
