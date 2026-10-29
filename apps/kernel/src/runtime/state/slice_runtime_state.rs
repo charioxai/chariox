@@ -408,6 +408,7 @@ impl KernelRuntimeState {
                 structured_endpoint: manifest.structured_endpoint.clone(),
                 provider_session_id: manifest.provider_session_id.clone(),
                 native_tui: true,
+                native_checkpoint_binding: None,
             };
             let response = self
                 .launch_remote_native_provider_run(&request, &manifest.owner_user_id)

@@ -34,6 +34,11 @@ pub fn initialize_codex_runtime(
         }
         sleep(Duration::from_millis(100));
     }
+    if let Some(checkpoint) = run.native_checkpoint() {
+        checkpoint
+            .import(run)
+            .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
+    }
     let client = codex_client_for_run(run, &endpoint, None)?;
     let socket = client.connect_initialized()?;
     let next_request_id = 1;

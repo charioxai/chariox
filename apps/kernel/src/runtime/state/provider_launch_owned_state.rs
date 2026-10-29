@@ -31,6 +31,9 @@ impl KernelRuntimeOwnedState {
                 launch_request = launch_request.with_resume_state(resume_state);
             }
         }
+        if let Some(binding) = request.native_checkpoint_binding {
+            launch_request = launch_request.with_native_checkpoint_binding(binding);
+        }
         let config = self.config_projection.snapshot();
         let session = self.session_store.get_session(&request.session_id).ok();
         let workspace_live_sync_mode =
@@ -252,8 +255,38 @@ impl KernelRuntimeOwnedState {
         if request.permission_level.is_none() {
             request = request.with_permission_level(effective_config.permission_level);
         }
-        if request.resume_state.is_none() {
+        if request.resume_state.is_none()
+            || agent.as_ref().is_some_and(|agent| {
+                agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .is_none_or(|state| state.required_native_session().is_none())
+            })
+        {
             if let Some(agent) = agent.as_ref() {
+                if agent
+                    .provider_resume_state()
+                    .required_native_session()
+                    .is_some()
+                    && request
+                        .resume_state
+                        .as_ref()
+                        .and_then(|state| state.provider_session_id(&request.adapter_key))
+                        .is_some_and(|id| {
+                            Some(id)
+                                != agent
+                                    .provider_resume_state()
+                                    .provider_session_id(&request.adapter_key)
+                        })
+                {
+                    return Err(crate::provider::NativeCheckpointFailure::SessionChanged
+                        .into_daemon_error());
+                }
+
                 let resume_state = crate::app::sanitize_resume_state_for_launch(&request, agent);
                 if !resume_state.is_empty() {
                     request = request.with_resume_state(resume_state);

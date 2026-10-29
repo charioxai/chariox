@@ -810,6 +810,7 @@ async fn assert_remote_native_terminal_resize(
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: true,
+        native_checkpoint_binding: None,
     });
     let launch_command = KernelCommand::from_local_request(
         "launch-remote-native-resize",

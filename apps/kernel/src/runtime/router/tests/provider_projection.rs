@@ -55,6 +55,7 @@ async fn provider_launch_rejects_cross_session_agent_before_acceptance_inner() {
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     });
     let launch_command = KernelCommand::from_local_request(
         "cmd-provider-launch-cross-session-agent",
@@ -127,6 +128,7 @@ async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_i
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
             LaunchProviderRunRequest {
                 session_id: session_id.clone(),
@@ -139,6 +141,7 @@ async fn provider_batch_launch_accepts_multiple_agents_with_one_kernel_request_i
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ],
     });
@@ -234,6 +237,7 @@ async fn provider_batch_launch_rejects_duplicate_targets_without_partial_launch_
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     };
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(2),
@@ -302,6 +306,7 @@ async fn provider_batch_launch_rejects_focused_and_explicit_duplicate_without_pa
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     };
     let explicit_launch = LaunchProviderRunRequest {
         agent_id: Some(agent_id.clone()),
@@ -382,6 +387,7 @@ async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_in
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
             LaunchProviderRunRequest {
                 session_id: second_session_id.clone(),
@@ -394,6 +400,7 @@ async fn provider_batch_launch_accepts_mixed_sessions_with_one_kernel_request_in
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: false,
+                native_checkpoint_binding: None,
             },
         ],
     });
@@ -476,6 +483,7 @@ async fn get_provider_run_uses_warmed_projection_without_app_lock_inner() {
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     });
     let launch_command =
         KernelCommand::from_local_request("cmd-provider-launch", None, None, &launch_request);
@@ -585,6 +593,7 @@ async fn provider_run_projection_tracks_async_launch_completion_inner() {
         structured_endpoint: None,
         provider_session_id: None,
         native_tui: false,
+        native_checkpoint_binding: None,
     });
     let launch_command =
         KernelCommand::from_local_request("cmd-provider-launch-async", None, None, &launch_request);

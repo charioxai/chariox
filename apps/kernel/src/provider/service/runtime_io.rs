@@ -133,6 +133,7 @@ impl ProviderProcessService {
                 self.apply_claude_run_selection(run_id, binding.selection)?;
             }
             ProviderRuntimeBinding::Codex(binding) => {
+                self.get_run_mut(run_id)?.clear_native_checkpoint();
                 self.run_actor_mailbox
                     .insert_codex_runtime(run_id.to_string(), binding.state);
                 self.apply_codex_run_selection(run_id, binding.selection)?;

@@ -15,6 +15,8 @@ pub struct LaunchProviderRunRequest {
     pub provider_session_id: Option<String>,
     #[serde(default)]
     pub native_tui: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_checkpoint_binding: Option<crate::provider::NativeCheckpointBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

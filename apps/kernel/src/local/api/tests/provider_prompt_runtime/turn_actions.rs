@@ -561,6 +561,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_tui: true,
+                native_checkpoint_binding: None,
             },
         ))
         .expect("provider launch should be accepted")

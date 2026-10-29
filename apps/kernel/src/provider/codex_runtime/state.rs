@@ -192,6 +192,10 @@ impl CodexRuntimeState {
         (!self.thread_id.trim().is_empty()).then_some(self.thread_id.as_str())
     }
 
+    pub(crate) fn native_resume_turn_accepted(&self) -> bool {
+        self.thread_ready && self.active_turn_id.is_some()
+    }
+
     pub(super) fn thread_ready(&self) -> bool {
         self.thread_ready
     }

@@ -390,4 +390,5 @@ pub use workspace::*;
 /// and `reason` for every turn that ends, with the prompt and turn id on the outside event); every earlier contract is retained.
 /// Protocol 643 answers `CancelActivePrompt` for a parked task with `AgentTaskUpdated`; 506 leaves the predecessor list to
 /// keep it within the 32-entry policy.
+/// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

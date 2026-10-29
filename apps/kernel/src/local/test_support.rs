@@ -246,6 +246,7 @@ impl LocalRouterTestHarness {
                     structured_endpoint: None,
                     provider_session_id: None,
                     native_tui: false,
+                    native_checkpoint_binding: None,
                 },
             ))
             .expect("workflow test provider should launch")

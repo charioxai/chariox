@@ -400,6 +400,10 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("native provider checkpoint failed: {reason}")]
+    NativeProviderCheckpoint {
+        reason: crate::provider::NativeCheckpointFailure,
+    },
     #[error("failed to spawn PTY for provider run `{provider_run_id}`: {message}")]
     PtySpawn {
         provider_run_id: String,

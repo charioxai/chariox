@@ -557,6 +557,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             },
         ))
