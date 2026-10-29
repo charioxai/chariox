@@ -260,3 +260,147 @@ fn invalid_startup_trust_selection_has_an_actionable_failure() {
     assert!(error.to_string().contains("selection state is invalid"));
     app.shutdown_cleanup().unwrap();
 }
+
+/// Raw PTY frames use CRLF, may pad headings with blank lines, and the
+/// selected folder may itself end in a literal space.
+#[test]
+fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("trust-scope-crlf");
+    let home = root.path().join("home");
+    let plain = root.path().join("selected");
+    let trailing = root.path().join("selected ");
+    for path in [&home, &plain, &trailing] {
+        fs::create_dir_all(path).unwrap();
+    }
+    let crlf = |displayed: &std::path::Path, blank: &str, yes_first: bool| {
+        let choices = if yes_first {
+            "❯ 1. Yes, I trust this folder\r\n2. No, exit"
+        } else {
+            "❯ 1. No, exit\r\n2. Yes, I trust this folder"
+        };
+        format!(
+            "Accessing workspace:\r\n{blank}{}\r\n{blank}Quick safety check\r\nDo you trust this folder?\r\n{choices}",
+            displayed.display(),
+        )
+    };
+    let mut failures = Vec::new();
+    for (name, selected, displayed, blank, expected) in [
+        ("crlf", &plain, &plain, "", true),
+        ("blank lines", &plain, &plain, "\r\n\r\n", true),
+        ("literal trailing space", &trailing, &trailing, "", true),
+        (
+            "trailing space with blank lines",
+            &trailing,
+            &trailing,
+            "\r\n\r\n",
+            true,
+        ),
+        ("dropped trailing space", &trailing, &plain, "\r\n", false),
+        ("added trailing space", &plain, &trailing, "\r\n", false),
+    ] {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                selected.to_str().unwrap(),
+                selected.to_str().unwrap(),
+            ))
+            .unwrap();
+        let native = root
+            .path()
+            .join(format!("native-{}", name.replace(' ', "_")));
+        fs::create_dir(&native).unwrap();
+        let context = native.join("context.txt");
+        let events = native.join("events.jsonl");
+        fs::write(&context, "").unwrap();
+        fs::write(&events, "").unwrap();
+        let mut run = serde_json::to_value(startup_readiness_run(
+            session.id(),
+            agent.id(),
+            "trust-crlf-run",
+            &context,
+            &events,
+            format!(
+                "tee '{}' >/dev/null",
+                native
+                    .join("input.log")
+                    .display()
+                    .to_string()
+                    .replace('\'', "'\\''")
+            ),
+        ))
+        .unwrap();
+        run["working_directory"] = serde_json::to_value(selected).unwrap();
+        run["pty_env"]["HOME"] = serde_json::to_value(&home).unwrap();
+        let mut run: RuntimeProviderRun = serde_json::from_value(run).unwrap();
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        app.pty.spawn_for_run(&run).unwrap();
+        let bridge = StartupTrustBridge::default();
+        ProviderOutputClaudeNativeBridge::new(&mut app)
+            .process_terminal_output(
+                session.id(),
+                run.id(),
+                &run,
+                Some(std::sync::Arc::new(bridge.clone())),
+                &crlf(displayed, blank, false),
+            )
+            .unwrap();
+        let interaction = bridge.wait_for_interaction();
+        let reusable = interaction
+            .id()
+            .starts_with("claude-selected-workspace-trust-");
+        if reusable != expected {
+            failures.push(format!("{name}: reusable={reusable}"));
+        }
+        if reusable {
+            bridge.resolve("allow_once", "allow");
+            let context_file = context.to_str().unwrap();
+            let mut pump = |app: &mut DaemonApp| {
+                ProviderOutputClaudeNativeBridge::new(app)
+                    .process_pending_claude_workspace_trust(run.id(), context_file)
+            };
+            for _ in 0..500 {
+                pump(&mut app).unwrap();
+                if claude_workspace_trust_selection_started_at(context_file).is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // The repaint after the arrow key must still prove the same folder.
+            ProviderOutputClaudeNativeBridge::new(&mut app)
+                .process_terminal_output(
+                    session.id(),
+                    run.id(),
+                    &run,
+                    Some(std::sync::Arc::new(bridge.clone())),
+                    &crlf(displayed, blank, true),
+                )
+                .unwrap();
+            let mut approved = Err("selection was not confirmed".to_string());
+            for _ in 0..500 {
+                match pump(&mut app) {
+                    Err(error) => {
+                        approved = Err(error.to_string());
+                        break;
+                    }
+                    Ok(Some(_)) => {
+                        approved = Ok(());
+                        break;
+                    }
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
+                }
+            }
+            if let Err(error) = approved {
+                failures.push(format!("{name}: revalidation failed: {error}"));
+            }
+        } else {
+            bridge.resolve("deny", "deny");
+        }
+        app.shutdown_cleanup().unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "terminal line boundaries changed the selected workspace: {failures:?}"
+    );
+}

@@ -606,7 +606,8 @@ pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
 }
 
 pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {
-    let normalized = normalize_claude_rendered_permission_text(rendered);
+    // Keep line boundaries: the selected-folder proof reads the displayed path.
+    let normalized = claude_rendered_terminal_text(rendered);
     if normalized.trim().is_empty() {
         return claude_permission_recent_file(context_file)
             .and_then(|path| fs::read_to_string(path).ok())
@@ -641,7 +642,21 @@ pub(super) fn clear_claude_permission_recent(context_file: &str) {
     }
 }
 
+/// Terminal text for matching: every separator is a plain space.
 fn normalize_claude_rendered_permission_text(value: &str) -> String {
+    claude_rendered_terminal_text(value).replace('\n', " ")
+}
+
+/// Terminal text without escape sequences. A run of line breaks (CR, LF,
+/// CRLF, blank lines, vertical cursor moves) is one `\n` boundary, so a
+/// reader can tell a terminal boundary from a literal space in a pathname.
+/// Other separators stay single spaces.
+pub(super) fn claude_rendered_terminal_text(value: &str) -> String {
+    fn boundary(output: &mut String) {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
     let mut output = String::new();
     let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -651,10 +666,12 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
                     for next in chars.by_ref() {
                         if ('@'..='~').contains(&next) {
                             // Ink uses cursor movement for word separators.
-                            if matches!(next, 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'f')
-                                && !output.ends_with(' ')
-                            {
-                                output.push(' ');
+                            match next {
+                                'A' | 'B' | 'E' | 'F' | 'H' | 'f' => boundary(&mut output),
+                                'C' | 'D' | 'G' if !output.ends_with([' ', '\n']) => {
+                                    output.push(' ');
+                                }
+                                _ => {}
                             }
                             break;
                         }
@@ -675,8 +692,11 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
             }
             continue;
         }
+        if matches!(ch, '\r' | '\n') {
+            boundary(&mut output);
+            continue;
+        }
         if ch.is_control() {
-            // Keep the boundary after a path even when its last character is a space.
             output.push(' ');
             continue;
         }

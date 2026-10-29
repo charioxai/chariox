@@ -34,12 +34,12 @@ pub(super) fn displayed_workspace(rendered: &str) -> Option<&str> {
     let frame = &rendered[start..];
     let (end, _) = heading_span(frame, "Quick safety check", false)?;
     let target = frame[..end].trim_start();
-    // Remove one terminal separator, never the pathname's trailing spaces.
-    Some(
-        target
-            .strip_suffix(|ch: char| ch.is_ascii_whitespace())
-            .unwrap_or(target),
-    )
+    // The path ends at the line boundary before the heading. Spaces before
+    // that boundary belong to the pathname; spaces after it are indentation.
+    Some(match target.rfind('\n') {
+        Some(boundary) => target[..boundary].trim_end_matches(['\r', '\n']),
+        None => target,
+    })
 }
 
 pub(super) fn selected_startup_workspace(
@@ -203,8 +203,16 @@ mod tests {
         assert!(selected_workspace_is_trust_target(
             selected,
             Some(selected),
-            &frame.replace('\n', " ")
+            &frame.replace('\n', "\r\n")
         ));
+        assert!(
+            !selected_workspace_is_trust_target(
+                selected,
+                Some(selected),
+                &frame.replace('\n', " ")
+            ),
+            "spaces are pathname characters, never line boundaries"
+        );
         assert!(
             selected_workspace_is_trust_target(
                 selected,
@@ -241,14 +249,14 @@ mod tests {
         let compacted = selected.join("foldername");
         std::fs::create_dir(&spaced).unwrap();
         std::fs::create_dir(&compacted).unwrap();
-        let spaced_frame = format!("Accessingworkspace: {} Quicksafetycheck", spaced.display());
+        let spaced_frame = format!("Accessingworkspace: {}\nQuicksafetycheck", spaced.display());
         assert!(selected_workspace_is_trust_target(
             &spaced,
             Some(&spaced),
             &spaced_frame
         ));
         let wrong_frame = format!(
-            "Accessingworkspace: {} Quicksafetycheck",
+            "Accessingworkspace: {}\nQuicksafetycheck",
             compacted.display()
         );
         assert!(
