@@ -231,6 +231,7 @@ mod tests {
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;
+    mod provider_steer_receipts;
     mod relay_leased_prompt_steer;
     mod relay_subscription_attachment;
     mod remote_agent_message_origin;
