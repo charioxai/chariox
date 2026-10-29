@@ -38,3 +38,20 @@ test("folder rename survives rebase and preserves another editor's requirement c
   assert.equal(result.folders[0]?.requirements[0]?.required, false)
   assert.equal(mergeEnvironmentDraft(base, base, { ...latest, folders: [{ ...latest.folders[0]!, label: "server" }] }).folders[0]?.label, "server")
 })
+
+
+test("Software spec rebase preserves disjoint saved fields in the resubmitted revision", () => {
+  const base = environmentRevisionDraft(environment)
+  assert.equal(requirement.spec.kind, "software")
+  if (requirement.spec.kind !== "software") throw new Error("Software fixture required")
+  const ours = editEnvironmentRequirement(base, "node", { spec: { ...requirement.spec, install_scope: "user" } })
+  const theirs = editEnvironmentRequirement(base, "node", { spec: { ...requirement.spec, version_constraint: "24" } })
+  const latest = { ...environment, revision: 3, content_digest: "saved-by-A", project_requirements: theirs.project_requirements }
+  const merged = mergeEnvironmentDraft(base, ours, environmentRevisionDraft(latest))
+  assert.deepEqual(merged.project_requirements[0]?.spec, { ...requirement.spec, version_constraint: "24", install_scope: "user" })
+  const request = saveEnvironmentRevisionRequest(latest, merged).SaveProjectEnvironmentRevision
+  assert.equal(request.expectedRevision, 3)
+  assert.equal(request.expectedContentDigest, "saved-by-A")
+  assert.deepEqual(request.draft.project_requirements[0]?.spec, merged.project_requirements[0]?.spec)
+  assert.equal(requirement.spec.version_constraint, "22")
+})
