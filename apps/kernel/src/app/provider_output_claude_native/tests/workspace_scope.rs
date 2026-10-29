@@ -19,6 +19,8 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
     let selected = root.path().join("selected  folder");
     let compacted = root.path().join("selected folder");
     let unicode_space = root.path().join("selected\u{a0} folder");
+    let trailing_space = root.path().join("selected  folder ");
+    let trailing_unicode = root.path().join("selected  folder\u{a0}");
     let child = selected.join("child");
     let sibling = root.path().join("sibling");
     let home = root.path().join("home");
@@ -26,6 +28,8 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
         &selected,
         &compacted,
         &unicode_space,
+        &trailing_space,
+        &trailing_unicode,
         &child,
         &sibling,
         &home,
@@ -54,6 +58,20 @@ fn startup_trust_cards_keep_the_selected_workspace_scope() {
             "different literal spaces",
             &selected,
             &compacted,
+            false,
+            false,
+        ),
+        (
+            "trailing path space",
+            &selected,
+            &trailing_space,
+            false,
+            false,
+        ),
+        (
+            "trailing Unicode space",
+            &selected,
+            &trailing_unicode,
             false,
             false,
         ),
@@ -238,8 +256,7 @@ fn invalid_startup_trust_selection_has_an_actionable_failure() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
     let error = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_pending_claude_workspace_trust("run", context.to_str().unwrap())
-        .err()
-        .expect("invalid selection state must settle with a reason");
+        .expect_err("invalid selection state must settle with a reason");
     assert!(error.to_string().contains("selection state is invalid"));
     app.shutdown_cleanup().unwrap();
 }

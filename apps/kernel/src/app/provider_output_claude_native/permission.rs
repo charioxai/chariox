@@ -676,9 +676,8 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
             continue;
         }
         if ch.is_control() {
-            if !output.ends_with(' ') {
-                output.push(' ');
-            }
+            // Keep the boundary after a path even when its last character is a space.
+            output.push(' ');
             continue;
         }
         // Only terminal/control separators are normalized; literal path

@@ -33,7 +33,13 @@ pub(super) fn displayed_workspace(rendered: &str) -> Option<&str> {
     let (_, start) = heading_span(rendered, "Accessing workspace:", true)?;
     let frame = &rendered[start..];
     let (end, _) = heading_span(frame, "Quick safety check", false)?;
-    Some(frame[..end].trim())
+    let target = frame[..end].trim_start();
+    // Remove one terminal separator, never the pathname's trailing spaces.
+    Some(
+        target
+            .strip_suffix(|ch: char| ch.is_ascii_whitespace())
+            .unwrap_or(target),
+    )
 }
 
 pub(super) fn selected_startup_workspace(
