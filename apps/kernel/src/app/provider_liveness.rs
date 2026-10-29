@@ -266,6 +266,7 @@ impl ProviderRunLivenessSessionEffects {
                     &outcome.agent_id,
                     Some(&outcome.provider_run_id),
                     outcome.provider_termination.clone(),
+                    None,
                 )?
                 .started_next
                 .is_some(),

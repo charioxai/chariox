@@ -140,6 +140,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
 /// MP-08/MP-09/MP-10/MP-11: allocated 361 carries structured login retry feedback.
+/// MP-08/MP-09/MP-10/MP-11: landing union 242 carries local 640 (peers 233 dialogs, 234 outside events,
+/// 235 binary Room exec, 239 archived-agent discovery with the saved provider thread handoff and 242 the typed
+/// failure cause on provider run terminations).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -1520,6 +1523,8 @@ pub struct RelayProjectedCompletion {
     pub home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::provider::ProviderFailure>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1622,6 +1627,7 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let completion = RelayProjectedCompletion {
+            failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
             home_prompt_id: Some("home-prompt-1".to_string()),
@@ -1644,12 +1650,52 @@ mod tests {
             snapshot.pointer("/provider_termination/timestamp_ms"),
             Some(&serde_json::json!(1_234)),
         );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/failure/cause"),
+            Some(&serde_json::json!("provider_crashed")),
+        );
         let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+            "27e5082e95fc04980d67deba6b9bda29fc64f13f76cab9c6f9fde790fd551cd7",
         );
+    }
+
+    #[test]
+    fn leased_failure_without_termination_shape_is_versioned() {
+        let completion = RelayProjectedCompletion {
+            message_id: "failed-turn".into(),
+            completed_at_ms: 1234,
+            home_prompt_id: Some("home-prompt".into()),
+            provider_termination: None,
+            failure: Some(crate::provider::ProviderFailure {
+                cause: crate::provider::ProviderFailureCause::UsageLimit,
+                retryable: false,
+                message: "You've hit your usage limit.".into(),
+            }),
+        };
+        let snapshot = serde_json::to_value(&completion).unwrap();
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "message_id": "failed-turn", "completed_at_ms": 1234,
+                "home_prompt_id": "home-prompt", "failure": {
+                    "cause": "usage_limit", "retryable": false,
+                    "message": "You've hit your usage limit.",
+                },
+            })
+        );
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(encoded.as_bytes())),
+            "7ccf2f84ef547c763fd104386a3e93c612089557dc883af214825d835d8e937c"
+        );
+        let old: RelayProjectedCompletion = serde_json::from_value(serde_json::json!({
+            "message_id": "completed-turn", "completed_at_ms": 1234,
+        }))
+        .unwrap();
+        assert_eq!(old.failure, None);
     }
 
     #[test]
@@ -1661,6 +1707,7 @@ mod tests {
             ),
             (
                 crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "codex",
                     "provider rejected request",
                     1_235,
                 ),
@@ -1670,6 +1717,7 @@ mod tests {
 
         for (provider_termination, category) in cases {
             let completion = RelayProjectedCompletion {
+                failure: None,
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
                 home_prompt_id: Some("home-prompt-1".to_string()),

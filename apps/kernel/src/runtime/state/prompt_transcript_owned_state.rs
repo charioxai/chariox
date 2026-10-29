@@ -103,7 +103,33 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         message: &str,
     ) {
-        let message = crate::provider::sanitize_provider_diagnostic(message);
+        self.append_provider_failure_entry(
+            session_id,
+            provider_run_id,
+            agent_id,
+            crate::provider::sanitize_provider_diagnostic(message),
+        );
+    }
+
+    /// A failed turn's typed notice: already redacted, so it keeps its own
+    /// words and its recovery whole.
+    pub(super) fn record_provider_failure_notice(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        failure: &crate::provider::ProviderFailure,
+    ) {
+        self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
+    }
+
+    fn append_provider_failure_entry(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        message: String,
+    ) {
         if message.is_empty() {
             return;
         }

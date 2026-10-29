@@ -33,6 +33,7 @@ fn event(session: &str, agent: &str) -> OutsideEvent {
             run_state: Some(EventRunState::Idle),
             task_state: None,
             reason: None,
+            failure: None,
         },
         summary: "idle".into(),
         at_ms: 1,

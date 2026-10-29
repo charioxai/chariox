@@ -355,7 +355,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .as_deref()
             .or(workflow_backing_prompt_id.as_deref())
             .or(home_prompt_id.as_deref());
-        let provider_termination = self
+        let completed_turn = self
             .app
             .completed_git_turn_snapshot_store()
             .latest_projection_for_agent(
@@ -365,8 +365,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .filter(|turn| {
                 turn.provider_run_id == provider_run_id
                     && termination_prompt_id.is_none_or(|prompt_id| turn.prompt_id == prompt_id)
-            })
-            .and_then(|turn| turn.provider_termination);
+            });
+        let provider_termination = completed_turn
+            .as_ref()
+            .and_then(|turn| turn.provider_termination.clone());
+        let failure = completed_turn.and_then(|turn| turn.failure);
         let mut completions = self
             .app
             .terminal
@@ -381,6 +384,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_none_or(|started_at_ms| record.completed_at_ms >= started_at_ms)
             })
             .map(|record| RelayProjectedCompletion {
+                failure: failure.clone(),
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
                 home_prompt_id: home_prompt_id.clone(),
@@ -564,6 +568,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
                     agent.replayable_completion =
                         Some(crate::execution_lease::LeasedCompletionReplay {
+                            failure: completion.failure.clone(),
                             provider_run_id: provider_run_id.to_string(),
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
@@ -652,6 +657,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     // The cached message identity can predate a failed native turn.
                     // Keep the current scoped termination when replaying its completion.
                     completions.push(RelayProjectedCompletion {
+                        failure: failure.clone().or_else(|| replay.failure.clone()),
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
                         home_prompt_id: replay.home_prompt_id.clone(),
@@ -702,10 +708,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .any(|key| key == &completion_key)
             {
                 completions.push(RelayProjectedCompletion {
+                    failure: failure.clone(),
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
                     home_prompt_id: home_prompt_id.clone(),
-                    provider_termination: None,
+                    provider_termination: provider_termination.clone(),
                 });
             }
         }
@@ -740,6 +747,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 if let Some(completion) = completions.last() {
                     agent.replayable_completion =
                         Some(crate::execution_lease::LeasedCompletionReplay {
+                            failure: completion.failure.clone(),
                             provider_run_id: provider_run_id.to_string(),
                             message_id: completion.message_id.clone(),
                             completed_at_ms: completion.completed_at_ms,
@@ -778,6 +786,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 })
             {
                 completions.push(RelayProjectedCompletion {
+                    failure: failure.clone().or_else(|| replay.failure.clone()),
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
                     home_prompt_id: replay.home_prompt_id.clone(),
@@ -1218,6 +1227,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .filter_map(|completion| completion.provider_termination.as_ref())
             .max_by_key(|termination| termination.timestamp_ms)
             .cloned();
+        let projected_failure = matching_completions
+            .iter()
+            .filter(|completion| completion.failure.is_some())
+            .max_by_key(|completion| completion.completed_at_ms)
+            .and_then(|completion| completion.failure.clone())
+            .or_else(|| {
+                projected_termination
+                    .as_ref()
+                    .and_then(|termination| termination.failure.clone())
+            });
         for completion in &matching_completions {
             self.app.record_assistant_message_completion_for_agent(
                 session_id,
@@ -1276,17 +1295,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .app
                         .provider_run_projection
                         .get(&projected_provider_run_id);
-                    let provider_diagnostic = projected_termination
+                    let provider_diagnostic = projected_failure
                         .as_ref()
-                        .map(|termination| termination.reason.clone())
+                        .map(|failure| failure.message.clone())
+                        .or_else(|| {
+                            projected_termination
+                                .as_ref()
+                                .map(|termination| termination.reason.clone())
+                        })
                         .or_else(|| {
                             failed_provider
                                 .as_ref()
                                 .and_then(|run| run.terminal_diagnostic().map(str::to_string))
                                 .filter(|message| !message.trim().is_empty())
                         });
-                    let provider_failed =
-                        failed_provider.is_some() && provider_diagnostic.is_some();
+                    let provider_failed = provider_diagnostic.is_some();
                     if provider_diagnostic.is_none()
                         && self.app.follow_up_missing_workflow_output(
                             session_id,
@@ -1347,11 +1370,24 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         &projected_provider_run_id,
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
+                        projected_failure.clone().or_else(|| {
+                            Some(crate::provider::ProviderFailure::new(
+                                crate::provider::ProviderFailureCause::Other,
+                                false,
+                                message,
+                            ))
+                        }),
                     );
                     let completed = self
                         .app
                         .prompt_owner_complete_active_prompt_only(session_id, agent_id)?;
                     outcome.provider_failed = provider_failed;
+                    if provider_failed {
+                        let _ = self
+                            .app
+                            .agents()
+                            .mark_unexpected_provider_exit_error(agent_id, true);
+                    }
                     crate::transport::flow_control::clear_prompt_activity(
                         self.app,
                         &projected_provider_run_id,
@@ -1386,6 +1422,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 &projected_provider_run_id,
                 projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                 projected_termination.clone(),
+                projected_failure.clone(),
             );
             // A matching worker completion settles the same flow-control turn
             // started by native prompt projection. Clear it before publishing
@@ -1404,8 +1441,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
-            if let Some(termination) = projected_termination
+            if let Some(failure_message) = projected_failure
                 .as_ref()
+                .map(|failure| failure.message.as_str())
+                .or_else(|| {
+                    projected_termination
+                        .as_ref()
+                        .map(|termination| termination.reason.as_str())
+                })
                 .filter(|_| !intentionally_cancelled)
             {
                 outcome.provider_failed = true;
@@ -1421,7 +1464,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         crate::session::WorkflowFailureKind::ProviderFailure,
                         workflow_node_run_id,
                         Vec::new(),
-                        termination.reason.clone(),
+                        failure_message.to_string(),
                     );
                     let _ = self.app.sessions_mut().record_workflow_failure_event(
                         session_id,
@@ -1542,6 +1585,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(outcome)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Preserve explicit prompt identity and independent failure and termination evidence"
+    )]
     fn record_projected_prompt_settlement(
         &self,
         session_id: &str,
@@ -1550,13 +1597,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::ProviderFailure>,
     ) {
         let settlement_status = if matches!(
             prompt.status(),
             PromptStatus::Cancelling | PromptStatus::Cancelled
         ) {
             crate::git_observer::CompletedTurnSettlementStatus::Cancelled
-        } else if provider_termination.is_some() {
+        } else if provider_termination.is_some() || failure.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Completed
@@ -1571,6 +1619,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(provider_run_id),
                 settled_at_ms,
                 settlement_status.as_str(),
+                failure.as_ref(),
             );
         self.app
             .completed_git_turn_snapshot_store()
@@ -1583,6 +1632,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 Some(prompt.created_at_ms()),
                 settlement_status,
                 provider_termination,
+                failure,
             );
     }
 
@@ -3316,6 +3366,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "active-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(active_prompt_id),
@@ -3386,6 +3437,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "ordinary-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(ordinary.id().to_string()),
@@ -3522,6 +3574,7 @@ mod mp11_projection_admission_tests {
                     output_chunks: vec![],
                     notices: vec![],
                     completions: vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "prompt-complete:worker-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(prompt.id().into()),

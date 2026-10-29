@@ -120,6 +120,9 @@ pub struct CompletedGitTurnActionProjection {
     pub settlement_status: CompletedTurnSettlementStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
+    /// Why a failed turn failed, typed from the provider's own error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::provider::ProviderFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(default)]
@@ -195,6 +198,7 @@ impl CompletedGitTurnSnapshotStore {
             started_at_ms,
             settlement_status,
             None,
+            None,
         );
     }
 
@@ -212,6 +216,7 @@ impl CompletedGitTurnSnapshotStore {
         started_at_ms: Option<u64>,
         settlement_status: CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::ProviderFailure>,
     ) {
         let mut projection = CompletedGitTurnActionProjection {
             turn_id: prompt.id().to_string(),
@@ -226,6 +231,7 @@ impl CompletedGitTurnSnapshotStore {
             completed_at_ms,
             settlement_status,
             provider_termination,
+            failure: failure.filter(|_| settlement_status == CompletedTurnSettlementStatus::Failed),
             duration_ms: started_at_ms
                 .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms)),
             changed_paths: Vec::new(),
@@ -247,6 +253,9 @@ impl CompletedGitTurnSnapshotStore {
             projection.settlement_status = existing.settlement_status;
             if projection.provider_termination.is_none() {
                 projection.provider_termination = existing.provider_termination.clone();
+            }
+            if projection.failure.is_none() {
+                projection.failure = existing.failure.clone();
             }
         }
         let replace = settled_turns
@@ -326,6 +335,7 @@ impl CompletedGitTurnSnapshotStore {
                 Some(CompletedGitTurnActionProjection {
                     settlement_status: settled.settlement_status,
                     provider_termination: settled.provider_termination,
+                    failure: settled.failure,
                     ..observed
                 })
             }
@@ -399,6 +409,7 @@ impl CompletedGitTurnSnapshot {
             completed_at_ms: self.completed_at_ms,
             settlement_status: CompletedTurnSettlementStatus::Completed,
             provider_termination: None,
+            failure: None,
             duration_ms: self.duration_ms,
             changed_paths: self
                 .change

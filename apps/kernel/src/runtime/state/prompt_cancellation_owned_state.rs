@@ -355,6 +355,7 @@ impl KernelRuntimeOwnedState {
             provider_run_id,
             settled_at_ms,
             "cancelled",
+            None,
         );
         self.completed_git_turn_snapshots.record_prompt_settlement(
             session_id,

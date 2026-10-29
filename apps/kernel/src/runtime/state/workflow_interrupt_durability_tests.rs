@@ -2904,3 +2904,122 @@ async fn legacy_goal_orphan_reconciliation(recovery: LegacyGoalRecovery, keep_pr
         );
     }
 }
+
+// MP-08 / MP-10 / MP-11 EA2-75: dispatch failure can carry only the typed cause.
+#[tokio::test]
+async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("typed-remote-workflow-failure"),
+        config,
+        false,
+    );
+    let runtime = &fixture.runtime;
+    runtime
+        .owned
+        .agent_store
+        .bind_remote_execution(
+            &fixture.target_agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: "worker-kernel".into(),
+                worker_machine_id: "worker-machine".into(),
+                execution_lease_id: "lease".into(),
+                leased_agent_id: "leased-agent".into(),
+                active_worker_provider_run_id: Some("worker-run".into()),
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let prompt = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    let failure = crate::provider::ProviderFailure::classify(
+        "codex",
+        "Codex error [usage_limit_exceeded]: Credits exhausted",
+    );
+    runtime
+        .project_relay_remote_runtime_projection(
+            crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel"),
+            crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                home_session_id: fixture.session_id.clone(),
+                home_agent_id: fixture.target_agent_id.clone(),
+                provider_run_id: "worker-run".into(),
+                provider_run: None,
+                prompts: Vec::new(),
+                output_chunks: Vec::new(),
+                notices: Vec::new(),
+                completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    message_id: "failed-dispatch".into(),
+                    home_prompt_id: Some(prompt.id().into()),
+                    completed_at_ms: crate::session::unix_epoch_ms(),
+                    provider_termination: None,
+                    failure: Some(failure.clone()),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let run = session.workflow_run(&fixture.workflow_run_id).unwrap();
+    let event = run.failure_events().last().unwrap();
+    assert_eq!(
+        event.kind(),
+        crate::session::WorkflowFailureKind::ProviderFailure
+    );
+    assert_eq!(event.message(), failure.message);
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&fixture.claim_id),
+        "typed provider failure must release the workflow workspace claim"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&fixture.target_agent_id)
+            .unwrap()
+            .state(),
+        crate::agent::AgentState::Error
+    );
+    let tasks = runtime
+        .owned
+        .durable_state_store
+        .agent_tasks(Some(&fixture.session_id), Some(&fixture.target_agent_id))
+        .unwrap();
+    let task = tasks.iter().find(|t| t.prompt_id == prompt.id()).unwrap();
+    assert_eq!(
+        task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+    );
+    assert!(task.reason.contains("Provider run failed"));
+    let settled = runtime
+        .with_app_side_effect(|app| {
+            app.completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(&fixture.session_id, &fixture.target_agent_id)
+        })
+        .await
+        .unwrap();
+    assert_eq!(settled.failure, Some(failure));
+    assert_eq!(
+        settled.settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed
+    );
+}

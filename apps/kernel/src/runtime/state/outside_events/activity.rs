@@ -1,7 +1,20 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: use the same committed activity as the clients.
 use super::*;
 use crate::durable_state::agent_lifecycle::outside::RunState;
+use crate::runtime::projection::{AgentRuntimeActivity, AgentRuntimeStatus};
 use std::collections::BTreeSet;
+
+/// The typed cause recorded for the agent's failed turn.
+fn failed_turn_cause(activity: &AgentRuntimeActivity) -> Option<crate::provider::ProviderFailure> {
+    activity
+        .last_completed_turn
+        .as_ref()
+        .filter(|turn| {
+            turn.settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed
+        })?
+        .failure
+        .clone()
+}
 
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn outside_run_state_snapshot(
@@ -55,17 +68,19 @@ impl KernelRuntimeOwnedState {
                 }) {
                     continue;
                 }
+                let failure = (value.status == AgentRuntimeStatus::Error)
+                    .then(|| failed_turn_cause(&value))
+                    .flatten();
                 let state = match value.status {
-                    crate::runtime::projection::AgentRuntimeStatus::Idle => EventRunState::Idle,
-                    crate::runtime::projection::AgentRuntimeStatus::Working => {
-                        EventRunState::Working
-                    }
-                    crate::runtime::projection::AgentRuntimeStatus::Error => EventRunState::Error,
+                    AgentRuntimeStatus::Idle => EventRunState::Idle,
+                    AgentRuntimeStatus::Working => EventRunState::Working,
+                    AgentRuntimeStatus::Error => EventRunState::Error,
                 };
                 states.push(RunState {
                     session_id: id.into(),
                     agent_id,
                     state,
+                    failure,
                 });
             }
         }

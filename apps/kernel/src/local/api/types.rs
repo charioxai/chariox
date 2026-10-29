@@ -382,4 +382,7 @@ pub use workspace::*;
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
+/// MP-08/MP-09/MP-10/MP-11: landing union 640 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
+/// health events), 632 (binary Room exec), 636 (archived-agent discovery) and 640 (the typed cause, retryable flag and
+/// reset time of a failed turn on its outside event and history); every earlier contract is retained.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

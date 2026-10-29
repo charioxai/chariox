@@ -25,6 +25,7 @@ pub(crate) use credential_environment::{
 mod executable_resolution;
 mod external_observation;
 pub(crate) use account_handoff::encode_account_handoff;
+mod failure;
 mod launch_contract;
 mod managed_isolation;
 mod mcp_proxy;
@@ -103,6 +104,7 @@ pub(crate) use external_observation::{
     ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
     ObservedExternalProviderTurnRole,
 };
+pub use failure::{ProviderFailure, ProviderFailureCause};
 pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
@@ -146,7 +148,7 @@ pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
     classify_provider_terminal_failure_text, claude_native_stop_failure,
     provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
-    PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
