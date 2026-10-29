@@ -14,6 +14,12 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
     part: &mut Part,
     limit: usize,
 ) -> Result<(), DaemonError> {
+    // Only appends after the last count add rows, and each takes a higher inbox sequence.
+    if part.counted.is_some_and(|counted| {
+        counted.rows + part.latest.saturating_sub(counted.at) <= limit as u64
+    }) {
+        return Ok(());
+    }
     let count: i64 = tx
         .query_row(
             "SELECT count(*) FROM agent_inbox WHERE room_id='' AND agent_id=?1",
@@ -23,10 +29,17 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         .map_err(sql)?;
     let count = usize::try_from(count).map_err(|_| error("invalid inbox row count"))?;
     if count <= limit {
+        part.counted = Some(CountedInbox {
+            at: part.latest,
+            rows: count as u64,
+        });
         return Ok(());
     }
-    let mut drop_count = count - limit + 1;
-    let (groups, last, health_floor) = loop {
+    // A full inbox is trimmed with headroom, so it is not counted and trimmed again on
+    // every following event.
+    let target = limit - limit / 16;
+    let mut drop_count = count - target + 1;
+    let (groups, last, health_floor, retained) = loop {
         let mut query=tx.prepare("SELECT sequence,payload FROM agent_inbox WHERE room_id='' AND agent_id=?1 ORDER BY sequence LIMIT ?2").map_err(sql)?;
         let rows = query
             .query_map(params![part.id, drop_count as i64], |row| {
@@ -87,17 +100,17 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
             }
         }
         let retained = count - drop_count + groups.len();
-        if retained <= limit {
+        if retained <= target {
             // A health-only kernel has no source gap to carry its lost transition.
             let health_floor = health_only.into_values().max().unwrap_or(0);
-            break (groups, last, health_floor);
+            break (groups, last, health_floor, retained);
         }
         if drop_count == count {
             return Err(error(
                 "test inbox limit must retain a gap for every followed kernel",
             ));
         }
-        drop_count = (drop_count + retained - limit).min(count);
+        drop_count = (drop_count + retained - target).min(count);
     };
     tx.execute(
         "DELETE FROM agent_inbox WHERE room_id='' AND agent_id=?1 AND sequence<=?2",
@@ -129,5 +142,9 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
         tx.execute("INSERT INTO agent_inbox(sequence,room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,'',?2,?3,?4,?5)",params![sql_integer(group.sequence)?,part.id,event.kernel,format!("gap-{}",group.sequence),encode(&event)?]).map_err(sql)?;
     }
     part.floor = part.floor.max(floor);
+    part.counted = Some(CountedInbox {
+        at: part.latest,
+        rows: retained as u64,
+    });
     Ok(())
 }

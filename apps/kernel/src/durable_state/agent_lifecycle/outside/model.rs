@@ -46,6 +46,17 @@ pub(crate) struct Part {
     pub run_states: BTreeMap<String, crate::local::EventRunState>,
     #[serde(default)]
     pub kernel_health: BTreeMap<String, bool>,
+    /// The inbox rows at the last count, so retention counts again only when appends since
+    /// then could have reached the limit.
+    #[serde(default)]
+    pub counted: Option<CountedInbox>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CountedInbox {
+    /// `latest` when the rows were counted; a later row has a higher sequence.
+    pub at: u64,
+    pub rows: u64,
 }
 impl Part {
     pub(super) fn new(id: String, home: bool) -> Self {
@@ -63,6 +74,7 @@ impl Part {
             forwarded_counts: BTreeMap::new(),
             run_states: BTreeMap::new(),
             kernel_health: BTreeMap::new(),
+            counted: None,
         }
     }
     pub(crate) fn subscription(&self) -> EventSubscription {

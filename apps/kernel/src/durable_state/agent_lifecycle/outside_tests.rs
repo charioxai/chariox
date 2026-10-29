@@ -958,3 +958,50 @@ fn outside_run_states_offer_again_after_a_failed_commit() {
     f.store.outside_settled().unwrap();
     assert_eq!(run_states(&f, "a"), [("x".into(), EventRunState::Working)]);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: an inbox nobody acknowledges grows to its limit; it is
+// counted only when new events could have filled it, and trimmed with headroom so a full
+// inbox is not counted and trimmed again on every event.
+#[test]
+fn outside_retention_counts_only_when_an_inbox_could_be_full() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    let bound = |limit| {
+        f.store
+            .outside_mutate(Mutation::Bound {
+                id: "grant".into(),
+                limit,
+            })
+            .unwrap();
+        let part = f.store.outside_part("grant").unwrap().unwrap();
+        let retained = f
+            .store
+            .outside_list("grant", Some(part.floor), 1000)
+            .unwrap()
+            .unwrap()
+            .events
+            .len();
+        (part, retained)
+    };
+    for n in 0..40 {
+        publish(&f, &n.to_string(), event("x", "x1"));
+    }
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 30, "trimmed to the limit less its headroom");
+    assert_eq!(
+        part.counted,
+        Some(outside::CountedInbox {
+            at: part.latest,
+            rows: 30
+        })
+    );
+    publish(&f, "40", event("x", "x1"));
+    publish(&f, "41", event("x", "x1"));
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 32, "two new events cannot pass the limit");
+    assert_eq!(part.counted.map(|counted| counted.rows), Some(30));
+    publish(&f, "42", event("x", "x1"));
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 30);
+    assert_eq!(part.counted.map(|counted| counted.rows), Some(30));
+}

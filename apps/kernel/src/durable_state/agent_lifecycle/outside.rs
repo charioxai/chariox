@@ -24,7 +24,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 }
 
 mod model;
-pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState};
+pub(crate) use model::{CountedInbox, Mutation, OpenDecision, Part, Recipient, RunState};
 mod producers;
 use producers::identity;
 pub(super) use producers::publish_task;
