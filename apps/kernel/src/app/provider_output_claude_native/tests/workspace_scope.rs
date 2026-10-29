@@ -356,7 +356,7 @@ fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
         if reusable {
             bridge.resolve("allow_once", "allow");
             let context_file = context.to_str().unwrap();
-            let mut pump = |app: &mut DaemonApp| {
+            let pump = |app: &mut DaemonApp| {
                 ProviderOutputClaudeNativeBridge::new(app)
                     .process_pending_claude_workspace_trust(run.id(), context_file)
             };
