@@ -7,6 +7,7 @@ mod keys;
 mod scaffold;
 #[cfg(test)]
 mod tests;
+mod v2;
 
 use std::{collections::BTreeMap, path::Path};
 
