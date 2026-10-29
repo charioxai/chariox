@@ -31,7 +31,7 @@ pub(crate) fn for_session(
                 }),
         );
     }
-    rows.sort_by(|a, b| a.process.pid.cmp(&b.process.pid));
+    rows.sort_by_key(|row| row.process.pid);
     rows.dedup_by_key(|row| row.process.pid);
     rows
 }

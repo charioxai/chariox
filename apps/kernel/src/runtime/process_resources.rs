@@ -121,7 +121,7 @@ impl PreparedDomain {
                 program,
             ];
             wrapped.extend(args);
-            return ("/bin/sh".into(), wrapped);
+            ("/bin/sh".into(), wrapped)
         }
         #[cfg(not(target_os = "linux"))]
         (program, args)
@@ -279,13 +279,6 @@ impl ProcessDomain {
         {
             registry.remove(key);
         }
-    }
-    pub(crate) fn samples(&self) -> Vec<ProcessSample> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .samples
-            .clone()
     }
 }
 impl Drop for ProcessDomain {
