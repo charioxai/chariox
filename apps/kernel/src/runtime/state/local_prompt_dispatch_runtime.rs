@@ -225,6 +225,24 @@ impl KernelRuntimeState {
                     crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
                     None,
                 );
+                // Cold launches admit a queued turn before provider readiness.
+                // Retire its predecessor only after the promoted turn was submitted.
+                if !dispatch.steering {
+                    if let Ok(session) = owned.session_store.get_session(&dispatch.session_id) {
+                        if let Some(prompt) = owned
+                            .prompt_state_owner
+                            .active_prompt_for_agent(&session, &dispatch.agent_id)
+                            .filter(|prompt| prompt.id() == dispatch.prompt_id)
+                        {
+                            if let Err(error) = self
+                                .retire_superseded_restart_task(&dispatch.session_id, &prompt)
+                                .await
+                            {
+                                tracing::warn!(%error, "Restart owner-decision cleanup failed after queued dispatch");
+                            }
+                        }
+                    }
+                }
             }
             let result = result.map(|acceptance| acceptance != PromptDispatchAcceptance::Dropped);
             self.record_agent_event_dispatch_result(dispatch, &result)?;

@@ -238,6 +238,7 @@ test("parseSlashCommand parses undo and fork commands with optional refs", () =>
 })
 
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/continue")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/undo")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
@@ -449,4 +450,14 @@ test("nested sudo goal controls use the goal command route", () => {
   }
   assert.equal(parseSlashCommand("/sudo /goal List session count"), null)
   assert.equal(parseSlashCommand("/sudo ordinary task"), null)
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11 EA2-80: handled locally, sent through normal submission.
+test("Continue is an exact slash action rather than a provider prompt", async () => {
+  assert.deepEqual(parseSlashCommand("/continue"), { kind: "continue", raw: "/continue" })
+  assert.equal(parseSlashCommand("/continue later"), null)
+  assert.equal(sharedShellCommandForSlashCommand("/continue"), null)
+  let calls = 0
+  await executeSlashCommand("/continue", { onContinue: () => { calls++ } } as Parameters<typeof executeSlashCommand>[1])
+  assert.equal(calls, 1)
 })

@@ -116,3 +116,95 @@ fn blocked_intent_refresh_never_revives_a_closed_or_foreign_turn() {
     );
     assert_eq!(f.task(), before);
 }
+
+#[test]
+fn restart_failure_retirement_keeps_owned_work_and_requires_current_revision() {
+    for retained_work in ["none", "obligation", "goal", "registration", "stale"] {
+        let f = Fixture::new();
+        f.begin("p");
+        match retained_work {
+            "obligation" => f.register(),
+            "goal" => {
+                f.apply(Operation::StartGoal {
+                    task: "p".into(),
+                    owner: "owner".into(),
+                    objective: "Finish work".into(),
+                    minutes: 5,
+                    now: 2,
+                });
+            }
+            "registration" => {
+                f.apply(Operation::Subscribe {
+                    task: "p".into(),
+                    prompt: "p".into(),
+                    registration: Registration {
+                        id: "reg".into(),
+                        task_id: "p".into(),
+                        source_id: "source".into(),
+                        obligation_id: None,
+                        source_cursor: 0,
+                        live: true,
+                    },
+                });
+            }
+            _ => {}
+        }
+        f.apply(Operation::Block {
+            task: "p".into(),
+            prompt: "p".into(),
+            reason: "restart recovery failed".into(),
+        });
+        let before = f.task();
+        f.apply(Operation::RetireRestartFailure {
+            task: "p".into(),
+            revision: before.blocked_revision + u64::from(retained_work == "stale"),
+            now: 3,
+        });
+        let after = f.task();
+        if retained_work == "none" {
+            assert_eq!(after.state, ExecutionState::Cancelled);
+        } else {
+            assert_eq!(after, before, "{retained_work} must remain supervised");
+        }
+        if retained_work == "registration" {
+            assert!(f.store.agent_registrations("p").unwrap()[0].live);
+        }
+    }
+}
+
+#[test]
+fn restart_failure_retirement_keeps_pending_deliveries() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.apply(Operation::Occur(InboxEvent {
+        sequence: 0,
+        room_id: "room".into(),
+        agent_id: "parent".into(),
+        source_id: "source".into(),
+        occurrence_id: "pending".into(),
+        kind: "message".into(),
+        payload: serde_json::json!({}),
+        urgent: false,
+        reply_requested: false,
+        state: "pending".into(),
+        prompt_id: None,
+        target_prompt_id: None,
+        provider_run_id: None,
+        attempted_at_ms: None,
+        submit_epoch: None,
+    }));
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "restart recovery failed".into(),
+    });
+    let before = f.task();
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    f.apply(Operation::RetireRestartFailure {
+        task: "p".into(),
+        revision: before.blocked_revision,
+        now: 3,
+    });
+    assert_eq!(f.task(), before);
+    assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap(), inbox);
+}

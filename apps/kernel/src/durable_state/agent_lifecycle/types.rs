@@ -449,6 +449,12 @@ pub(crate) enum Operation {
         run: String,
         node: String,
     },
+    /// Private owner-turn admission; never cancels resources or delivery receipts.
+    RetireRestartFailure {
+        task: String,
+        revision: u64,
+        now: u64,
+    },
     OwnerResponse {
         task: String,
         revision: u64,

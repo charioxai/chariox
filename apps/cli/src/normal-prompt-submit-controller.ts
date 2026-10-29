@@ -68,6 +68,7 @@ export type NormalPromptSubmitControllerDeps = {
 }
 
 export type NormalPromptSubmitController = {
+  continueLatest(): Promise<void>
   submit(rawPrompt: string, targetAgentIdOverride?: string | null): Promise<void>
 }
 
@@ -76,8 +77,28 @@ export function createNormalPromptSubmitController(
 ): NormalPromptSubmitController {
   const formatError = deps.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
 
-  return {
-    async submit(rawPrompt, targetAgentIdOverride) {
+  const continuing = new Set<string>()
+  const retryableTurnId = (agentId: string | null) => {
+    const activity = agentId ? deps.getSession().agent_activity?.[agentId] : null
+    const turn = activity?.last_completed_turn
+    const outcome = turn?.outcome
+    return outcome?.retryable && outcome.kind !== "completed" && outcome.kind !== "cancelled"
+      && !activity?.busy && activity?.prompt_status === "none" ? turn?.turn_id : null
+  }
+  const refuseContinue = () => deps.flashFooter("No retryable turn to continue.", "info")
+  const controller = {
+    async continueLatest() {
+      const agentId = deps.getFocusedAgentId()
+      const turnId = retryableTurnId(agentId)
+      if (!agentId || !turnId || continuing.has(agentId)) {
+        refuseContinue()
+        return
+      }
+      continuing.add(agentId)
+      try { await controller.submit("Continue", agentId, turnId) }
+      finally { continuing.delete(agentId) }
+    },
+    async submit(rawPrompt: string, targetAgentIdOverride?: string | null, expectedTurnId?: string) {
       const prompt = formatPromptSubmissionBody(rawPrompt)
       const aliasRoute = parsePromptAgentAliasRoute(prompt)
       const renderedPrompt = aliasRoute?.prompt ?? prompt
@@ -91,7 +112,7 @@ export function createNormalPromptSubmitController(
           return
         }
         // Consume this Enter before focus or attachment preparation can yield.
-        submissionUi = deps.beginSubmittedPromptUi(rawPrompt)
+        submissionUi = deps.beginSubmittedPromptUi(expectedTurnId ? "/continue" : rawPrompt)
         await deps.waitForPendingAgentFocusTransition()
         const requestedTargetAgentId = targetAgentIdOverride ?? deps.getFocusedAgentId()
         const targetAgentId = resolvePromptSubmissionTargetAgentId({
@@ -131,6 +152,11 @@ export function createNormalPromptSubmitController(
         const attachments = await deps.preparePromptAttachmentsForSubmit(rawAttachments, {
           inlineLocalFiles: deps.shouldInlineLocalFiles(),
         })
+        if (expectedTurnId && retryableTurnId(targetAgentId) !== expectedTurnId) {
+          deps.restoreFailedPromptUi(submissionUi)
+          refuseContinue()
+          return
+        }
         const submission = await deps.submitPrompt(attachment.id, targetAgentId, prompt, attachments)
         const payload = submission.payload
         const submittedTargetAgentId = submission.targetAgentId ?? targetAgentId
@@ -181,4 +207,5 @@ export function createNormalPromptSubmitController(
       }
     },
   }
+  return controller
 }

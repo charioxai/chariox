@@ -34,6 +34,8 @@ type SplitPaneFooterSlotState = {
   parts: Partial<SplitPaneFooterTextGroup>
   taskParts: SplitPaneFooterTaskGroup
   badgeTexts: TextRenderable[]
+  outcomeText?: TextRenderable
+  continueText?: TextRenderable
   goalText?: TextRenderable
   badgeBox?: BoxRenderable
 }
@@ -189,6 +191,12 @@ function ensureFooterRenderables(
   state.goalText = new TextRenderable(renderer, { wrapMode: "word", flexShrink: 0 })
   state.goalText.visible = false
   footerBox.add(state.goalText)
+  state.outcomeText = new TextRenderable(renderer, { wrapMode: "none", height: 1, truncate: true, flexShrink: 0 })
+  state.outcomeText.visible = false
+  footerBox.add(state.outcomeText)
+  state.continueText = new TextRenderable(renderer, { wrapMode: "none", flexShrink: 0 })
+  state.continueText.visible = false
+  footerBox.add(state.continueText)
   footerBox.add(footerRow)
   state.parts = nextParts
   state.taskParts = nextTaskParts
@@ -207,6 +215,8 @@ function clearFooter(
   renderStatusBadgeTexts(state.badgeTexts, "", "idle", options)
   renderTaskParts(state.taskParts, null)
   if (state.goalText) state.goalText.visible = false
+  if (state.outcomeText) state.outcomeText.visible = false
+  if (state.continueText) state.continueText.visible = false
   clearFooterParts(state.parts)
   footerBox?.requestRender()
 }
@@ -257,6 +267,23 @@ function renderFooter(
     state.goalText.visible = Boolean(goalStatus)
     state.goalText.content = goalStatus?.label ?? ""
     state.goalText.fg = goalStatus?.tone === "error" ? theme.error : theme.textMuted
+  }
+  if (state.outcomeText) {
+    const activity = agent ? options.session?.agent_activity?.[agent.id] : null
+    const outcome = activity?.last_completed_turn?.outcome
+    const failed = outcome && outcome.kind !== "completed" && outcome.kind !== "cancelled"
+    const settled = activity && !activity.busy && activity.prompt_status === "none"
+      && !options.agentBusyLatch(agent?.id ?? "")
+    state.outcomeText.visible = Boolean(outcome && settled)
+    state.outcomeText.content = outcome && settled
+      ? `${outcome.kind}${outcome.reason ? ` · ${outcome.reason.replace(/\s+/g, " ").trim()}` : ""}`
+      : ""
+    state.outcomeText.fg = failed ? theme.error : theme.textMuted
+    if (state.continueText) {
+      state.continueText.visible = Boolean(settled && failed && outcome.retryable && focused)
+      state.continueText.content = state.continueText.visible ? "Continue: /continue" : ""
+      state.continueText.fg = theme.error
+    }
   }
   // The goal row above carries the detail; the badge keeps only its phase.
   const badgeLabel = badge.label.startsWith("GOAL ") ? badge.label.split(":")[0]! : badge.label

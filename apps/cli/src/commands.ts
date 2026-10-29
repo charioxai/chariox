@@ -6,6 +6,7 @@ export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
   | { kind: "waiting"; raw: string }
   | { kind: "stop"; raw: string }
+  | { kind: "continue"; raw: string }
   | { kind: "approvals"; raw: string }
   | { kind: "attachment"; raw: string }
   | {
@@ -64,6 +65,7 @@ export type SlashCommandHandlers = {
   onWaiting: () => Promise<unknown> | unknown
   onApprovals: () => Promise<unknown> | unknown
   onStop: () => Promise<unknown> | unknown
+  onContinue?: () => Promise<unknown> | unknown
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
   onProvider: (command: Extract<ParsedSlashCommand, { kind: "provider" }>) => Promise<unknown> | unknown
@@ -116,6 +118,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   if (trimmed === "/approvals") {
     return { kind: "approvals", raw: trimmed }
   }
+  if (trimmed === "/continue") return { kind: "continue", raw: trimmed }
   if (trimmed === "/stop") {
     return { kind: "stop", raw: trimmed }
   }
@@ -468,6 +471,9 @@ export async function executeSlashCommand(
     case "approvals":
       await handlers.onApprovals()
       break
+    case "continue":
+      await handlers.onContinue?.()
+      break
     case "stop":
       await handlers.onStop()
       break
@@ -589,6 +595,7 @@ export async function executeSlashCommand(
 
 export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashCommand): boolean {
   switch (command.kind) {
+    case "continue":
     case "approvals":
     case "provider":
     case "model":

@@ -25,6 +25,7 @@ export type SlashCommandSubmitControllerDeps = {
   onWaiting: () => Promise<unknown> | unknown
   onApprovals: () => unknown
   onStop: () => Promise<unknown> | unknown
+  onContinue?: () => Promise<unknown> | unknown
   handleAttachmentCommand: (raw: string) => Promise<unknown> | unknown
   handleSessionCommand: (command: SlashCommand<"session">) => Promise<boolean> | boolean
   handleProviderCommand: (command: SlashCommand<"provider">) => Promise<unknown> | unknown
@@ -136,6 +137,7 @@ export function createSlashCommandSubmitController(
         onWaiting: deps.onWaiting,
         onApprovals: deps.onApprovals,
         onStop: deps.onStop,
+        ...(deps.onContinue ? { onContinue: deps.onContinue } : {}),
         onAttachment: async (command) => {
           try {
             await deps.handleAttachmentCommand(command.raw)

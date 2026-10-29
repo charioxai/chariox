@@ -2148,6 +2148,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
+        assert_restart_owner_prompt_retires_failure(false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_restart_owner_prompt_retires_failure_after_source_detaches() {
+        assert_restart_owner_prompt_retires_failure(true).await;
+    }
+
+    async fn assert_restart_owner_prompt_retires_failure(detach_source: bool) {
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
@@ -2180,6 +2189,18 @@ mod tests {
                 ),
             )
             .expect("the follower subscribes");
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the real admission creates its task before dispatch");
         let targets = runtime.durable_restart_recovery_targets();
 
         runtime
@@ -2244,6 +2265,133 @@ mod tests {
             serde_json::to_value(turn).expect("turn serializes")["outcome"]["kind"],
             "interrupted_by_restart"
         );
+
+        // A later owner prompt replaces this failed attempt; its owner decision must
+        // not keep the agent blocked after the new turn completes or is stopped.
+        let old_task = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.prompt_id == prompt_id)
+            .unwrap();
+        runtime
+            .ensure_task_owner_interaction(old_task.clone())
+            .await
+            .unwrap();
+        let attachment = runtime
+            .with_app_side_effect(|app| {
+                KernelSessionService::new(app).attach(AttachRequest::new(
+                    &session_id,
+                    "owner-continue",
+                    ClientCapabilityLevel::FullTerminal,
+                ))
+            })
+            .await
+            .unwrap();
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("dev-stub".into()), None, None)
+            .unwrap();
+        let run = runtime
+            .with_app_side_effect(|app| {
+                let run = app.launch_provider(
+                    LaunchProviderRequest::new(
+                        &session_id,
+                        "dev-stub",
+                        "dev-stub",
+                        "default",
+                        "sonnet",
+                    )
+                    .with_agent_id(&agent_id),
+                )?;
+                app.update_provider_run_projection(run.clone());
+                Ok::<_, DaemonError>(run)
+            })
+            .await
+            .unwrap();
+        let mut prepared = crate::app::KernelPreparedPromptSubmission {
+            session_id: session_id.clone(),
+            prompt: PromptQueueItem::new(
+                "owner-continue",
+                attachment.id(),
+                &agent_id,
+                "Continue",
+                PromptStatus::Queued,
+            ),
+            force_queue: true,
+            refresh_projection: true,
+        };
+        prepared
+            .prepare_task_prompt_identity(|| "owner-continue".into())
+            .unwrap();
+        let started = runtime.submit_prepared_prompt(prepared).await.unwrap();
+        assert!(matches!(
+            started.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ));
+        assert!(started
+            .session
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+        if detach_source {
+            runtime
+                .with_app_side_effect(|app| {
+                    KernelSessionService::new(app).attach(AttachRequest::new(
+                        &session_id,
+                        "owner-observer",
+                        ClientCapabilityLevel::FullTerminal,
+                    ))
+                })
+                .await
+                .expect("a second terminal keeps the provider active");
+            runtime
+                .with_app_side_effect(|app| KernelSessionService::new(app).detach(attachment.id()))
+                .await
+                .expect("the submitting terminal detaches before provider readiness");
+            assert!(runtime
+                .owned
+                .attachment_store
+                .get_attachment(attachment.id())
+                .is_err());
+        }
+        let dispatch = runtime
+            .owned
+            .advance_next_queued_prompt_dispatch(&session_id, &agent_id, run.id())
+            .unwrap()
+            .expect("the queued owner turn promotes when the provider is ready");
+        assert!(runtime
+            .enqueue_prompt_dispatch_with_acceptance(&dispatch)
+            .await
+            .unwrap());
+        let retired = runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&session_id), Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .find(|task| task.task_id == old_task.task_id)
+            .unwrap();
+        assert_eq!(
+            retired.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Cancelled,
+            "a superseded restart attempt must not keep the agent blocked"
+        );
+        assert!(!runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
     }
 
     #[tokio::test]
