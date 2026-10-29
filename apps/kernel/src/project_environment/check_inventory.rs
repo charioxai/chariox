@@ -168,7 +168,14 @@ pub(super) fn version_until(
     // Project only stable numeric versions; prerelease suffixes cannot prove a stable bound.
     for bytes in [&*stdout, &*stderr] {
         let text = Zeroizing::new(String::from_utf8_lossy(bytes).into_owned());
+        // Parenthesized text is vendor or package metadata, such as `(Ubuntu 13.3.0-6ubuntu2~24.04)`.
+        let mut depth = 0usize;
         for word in text.split_whitespace() {
+            let inside = depth > 0 || word.starts_with('(');
+            depth = (depth + word.matches('(').count()).saturating_sub(word.matches(')').count());
+            if inside {
+                continue;
+            }
             let word = word
                 .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '.')
                 .trim_end_matches(['"', '\'', '(', ')', '[', ']', ',', ';']);
