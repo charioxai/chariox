@@ -76,7 +76,7 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill'],['text_pointer','filled','after_fill']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill'],['text_pointer','filled','after_fill'],['text_shift','filled','after_fill'],['text_arrow','filled','after_fill']]) {
       if (input.startsWith('room_')) {
         const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
@@ -86,19 +86,24 @@ test('caller attribution and registered form completion through Chromium', async
         const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:input !== 'room_fill'};
         await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
           node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
-      } else if (input === 'text' || input === 'printable' || input === 'transform' || input === 'text_pointer') {
+      } else if (input === 'text' || input === 'printable' || input === 'transform' || input.startsWith('text_')) {
         await evaluate(`window.transformEdit = ${input === 'transform'}; document.querySelector('#filled').value = ''`);
         await browserClick('#filled');
         const send = connection.send;
         let moved = false;
-        if (input === 'text_pointer') {
-          await evaluate(`window.interveningPointer = []; for (const type of ['pointermove','mousemove']) document.addEventListener(type, event => window.interveningPointer.push({type:event.type,trusted:event.isTrusted,focused:document.activeElement.id}), {once:true})`);
+        if (input.startsWith('text_')) {
+          if (input === 'text_pointer') await evaluate(`window.interveningPointer = []; for (const type of ['pointermove','mousemove']) document.addEventListener(type, event => window.interveningPointer.push({type:event.type,trusted:event.isTrusted,focused:document.activeElement.id}), {once:true})`);
+          else await evaluate(`document.addEventListener('keydown', event => window.interveningKey = {key:event.key,trusted:event.isTrusted,focused:document.activeElement.id,value:event.target.value,start:event.target.selectionStart,end:event.target.selectionEnd}, {once:true})`);
           connection.send = async function(method, params, ...rest) {
             const reply = await send.call(this, method, params, ...rest);
             if (method === 'Runtime.evaluate' && params.expression?.startsWith('globalThis.__charioxViewInput.armText(')) {
               // Inject native, trusted browser input in the exact gap between
               // arming the caller and the host's queued text insertion.
-              await send.call(this, 'Input.dispatchMouseEvent', {type:'mouseMoved',x:700,y:300}, sessionId);
+              if (input === 'text_pointer') await send.call(this, 'Input.dispatchMouseEvent', {type:'mouseMoved',x:700,y:300}, sessionId);
+              else {
+                const key = input === 'text_shift' ? 'Shift' : 'ArrowLeft';
+                await send.call(this, 'Input.dispatchKeyEvent', {type:'keyDown',key,code:key,windowsVirtualKeyCode:key === 'Shift' ? 16 : 37}, sessionId);
+              }
               moved = true;
             }
             return reply;
@@ -107,8 +112,9 @@ test('caller attribution and registered form completion through Chromium', async
         try {
           await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:'Inserted'},'agent-one');
         } finally { connection.send = send; }
+        if (input.startsWith('text_')) assert.equal(moved, true, 'native input intervenes after armText acknowledges');
+        if (input === 'text_shift' || input === 'text_arrow') assert.deepEqual(await evaluate('window.interveningKey'), {key:input === 'text_shift' ? 'Shift' : 'ArrowLeft',trusted:true,focused:'filled',value:'',start:0,end:0});
         if (input === 'text_pointer') {
-          assert.equal(moved, true, 'the pointer event intervenes after armText acknowledges');
           assert.deepEqual(await evaluate('window.interveningPointer'), [
             {type:'pointermove',trusted:true,focused:'filled'}, {type:'mousemove',trusted:true,focused:'filled'},
           ]);
@@ -194,6 +200,67 @@ test('caller attribution and registered form completion through Chromium', async
     }
   } finally { await host.stop(); await rm(root,{recursive:true,force:true}); }
 });
+
+for (const interference of ['edit', 'focus', 'selection', 'late_edit', 'late_focus', 'late_selection', 'late_same']) {
+  test(`queued claimed text refuses ${interference} before native insertion`, async () => {
+    assert(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'explicit disposable root required');
+    const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, 'app-text-race-'));
+    const host = new KernelBrowserHost(root);
+    let request = 0;
+    const handle = (method, params) => host.handle({id:++request,method,params});
+    const kind = interference.replace('late_', '');
+    try {
+      const opened = await handle('browser.app.open', {origin_label:'text-race',installation_id:'text-race',assets:[
+        asset('index.html','text/html','<!doctype html><input id="first"><input id="other"><script src="app.js"></script>'),
+        asset('app.js','text/javascript',`window.before = []; document.addEventListener('beforeinput', event => window.before.push({text:event.data,caller:__charioxViewInput.token(event)??null,trusted:event.isTrusted})); window.inputs = []; document.addEventListener('input', event => {
+          window.inputs.push({value:event.target.value,caller:__charioxViewInput.token(event)??null,trusted:event.isTrusted});
+        }); window.ready = true;`),
+      ]});
+      assert.equal(opened.ok,true,JSON.stringify(opened));
+      const target = opened.result.target_id;
+      const {connection,sessionId} = await host.browser.resolvePageTarget(target);
+      const send = connection.send;
+      const evaluate = async expression => {
+        const reply = await send.call(connection,'Runtime.evaluate',{expression,returnByValue:true},sessionId);
+        assert.equal(reply.exceptionDetails,undefined,JSON.stringify(reply.exceptionDetails));
+        return reply.result.value;
+      };
+      for (let i=0;i<100 && !await evaluate('window.ready === true');i++) await delay(20);
+      await evaluate(`document.querySelector('#first').focus(); document.querySelector('#first').value = ${kind === 'selection' ? "'Draft'" : "''"}; document.querySelector('#first').setSelectionRange(0,0)`);
+      let injected = false, dispatched = false;
+      const interfere = async () => {
+        if (kind === 'focus') await evaluate("document.querySelector('#other').focus()");
+        else if (kind === 'selection') await send.call(connection,'Input.dispatchKeyEvent',{type:'keyDown',key:'ArrowRight',code:'ArrowRight',windowsVirtualKeyCode:39},sessionId);
+        else await send.call(connection,'Input.dispatchKeyEvent',{type:'keyDown',key:'h',code:'KeyH',text:'h',windowsVirtualKeyCode:72},sessionId);
+        injected = true;
+      };
+      connection.send = async function(method, params, ...rest) {
+        if (method === 'Input.insertText') {
+          if (interference.startsWith('late_')) await interfere();
+          dispatched = true;
+        }
+        const reply = await send.call(this,method,params,...rest);
+        if (!interference.startsWith('late_') && method === 'Runtime.evaluate' && params.expression?.startsWith('globalThis.__charioxViewInput.armText(')) await interfere();
+        return reply;
+      };
+      const tab = [...host.tabs.values()].find(tab => tab.target_id === target);
+      let reply;
+      try {
+        reply = await handle('host.browser',{op:'input',tab_id:tab.tab_id,generation:host.generation,document_id:tab.document_id,
+          input:{kind:'text',text:kind === 'same' ? 'h' : 'Inserted'},_agent_input:true,observed_by:'agent:agent-one',_app_view_tab:tab.tab_id});
+      } finally { connection.send = send; }
+      assert.equal(injected,true);
+      assert.equal(reply.ok,false,JSON.stringify(reply));
+      assert.equal(reply.error.code,'user_domain_stale_reference');
+      assert.equal(dispatched,interference.startsWith('late_'),'an already stale claim refuses before dispatch');
+      assert.equal(await evaluate("document.querySelector('#first').value"),kind === 'selection' ? 'Draft' : kind === 'focus' ? '' : 'h');
+      assert.equal(await evaluate("document.querySelector('#other').value"),'');
+      assert.deepEqual(await evaluate('window.inputs'),kind === 'edit' || kind === 'same' ? [{value:'h',caller:null,trusted:true}] : []);
+      assert.deepEqual(await evaluate('window.before'),kind === 'edit' || kind === 'same' ? [{text:'h',caller:null,trusted:true}] : []);
+      assert.equal(connection.isOpen(),true);
+    } finally { await host.stop(); await rm(root,{recursive:true,force:true}); }
+  });
+}
 
 for (const focus of ['button', 'readonly', 'body', 'cancel', 'transform']) {
   test(`claimed text on ${focus} keeps the browser and another App tab live`, async () => {
