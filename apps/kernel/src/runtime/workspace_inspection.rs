@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 // Metadata only. File contents and mutating Git commands never enter this worker.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Inspection {
+    ProjectResolution(super::project_resolution_preparation::Input),
     Labels(super::waiting_room_git_metadata::Query),
     Worktrees {
         workspace: String,
@@ -21,6 +22,12 @@ pub(crate) enum Inspection {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Metadata {
+    ProjectResolution(
+        Result<
+            super::project_resolution_preparation::Metadata,
+            super::project_resolution_preparation::Failure,
+        >,
+    ),
     Labels(super::waiting_room_git_metadata::Value),
     Worktrees {
         workspace: String,
@@ -56,7 +63,7 @@ async fn inspect_until(
         },
         Metadata::GitOverview(overview) => LocalDaemonResponse::WorkspaceGitOverview { overview },
         Metadata::Files(listing) => LocalDaemonResponse::WorkspaceFilesListed { listing },
-        Metadata::Labels(_) => return Err(unavailable()),
+        Metadata::Labels(_) | Metadata::ProjectResolution(_) => return Err(unavailable()),
     })
 }
 pub(crate) fn unavailable() -> DaemonError {
@@ -73,6 +80,9 @@ pub(crate) fn measure(inspection: Inspection) -> Result<Metadata, DaemonError> {
         std::thread::sleep(Duration::from_secs(12));
     }
     match inspection {
+        Inspection::ProjectResolution(input) => Ok(Metadata::ProjectResolution(
+            super::project_resolution_preparation::measure(input),
+        )),
         Inspection::Labels(query) => {
             super::waiting_room_git_metadata::measure(query).map(Metadata::Labels)
         }

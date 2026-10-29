@@ -194,6 +194,13 @@ pub(super) fn run_at_root(
             }
         }
     }
+    if matches!(&input, Request::WorkspaceInspection(_)) {
+        for key in crate::git_worktree_placement::working_directory_environment_names() {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    }
     #[cfg(not(test))]
     command
         .arg("--measure-environment-files")

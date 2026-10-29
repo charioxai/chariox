@@ -1,69 +1,149 @@
-//! MP-08 / MP-10 / MP-11: durable, session-free Project entry on the selected kernel.
+//! MP-08 / MP-09 / MP-10 / MP-11: durable, session-free Project entry on the selected kernel.
 use super::*;
+use crate::runtime::project_resolution_preparation::{Candidate, Input, Metadata};
+use std::time::{Duration, Instant};
 
+#[derive(Debug)]
+pub(crate) struct PreparedProjectResolution {
+    request: crate::local::ResolveProjectRequest,
+    caller: String,
+    selected: Option<crate::session::RuntimeProject>,
+    defaults: Vec<Candidate>,
+    workspace: String,
+    name: Option<String>,
+    matched: Option<String>,
+    deadline: Instant,
+}
+fn defaults(projects: &[crate::session::RuntimeProject]) -> Vec<Candidate> {
+    let mut candidates: Vec<_> = projects
+        .iter()
+        .filter(|project| project.kind() == crate::session::RuntimeProjectKind::Default)
+        .map(|project| Candidate {
+            id: project.id().into(),
+            workspaces: vec![project.workspace_id().into()],
+        })
+        .collect();
+    candidates.sort_by(|a, b| a.id.cmp(&b.id));
+    candidates
+}
+fn resolution_error(message: &'static str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "project.resolve",
+        message: message.into(),
+    }
+}
 impl KernelRuntimeState {
-    pub(crate) fn resolve_project(
+    pub(crate) async fn prepare_project_resolution(
         &self,
         request: crate::local::ResolveProjectRequest,
         caller: &str,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> Result<PreparedProjectResolution, DaemonError> {
+        self.authorize_current_external_command()?;
         let selected = request
             .project_id
             .as_deref()
             .and_then(|id| self.owned.session_store.get_project(id).ok());
-        if let Some(project) = &selected {
-            if project.owner_user_id() != caller
-                || !project.contains_workspace(&request.workspace_id)
-            {
-                return Err(DaemonError::LocalTransport {
-                    operation: "project.resolve",
-                    message: "caller does not own the selected Project and workspace".into(),
-                });
-            }
+        if selected
+            .as_ref()
+            .is_some_and(|project| project.owner_user_id() != caller)
+        {
+            return Err(resolution_error(
+                "caller does not own the selected Project and workspace",
+            ));
         }
-        // Existing saved Projects remain readable with detached folders. Creating
-        // a binding uses the same directory and Git scope as ordinary sessions.
-        let workspace = if request.create_if_missing || selected.is_none() {
-            let admitted = crate::git_worktree_placement::preflight_existing_absolute_directory(
-                &request.workspace_id,
-                "workspace_id",
-                "project.resolve",
-            )?;
-            let path = admitted.canonical_path.to_string_lossy().into_owned();
-            let canonical =
-                crate::runtime::workspace_git_common::canonical_workspace_path(&path, &path)
-                    .unwrap_or(path);
-            crate::git_worktree_placement::preflight_existing_absolute_directory(
-                &canonical,
-                "workspace_id",
-                "project.resolve",
-            )?;
-            if selected.is_some() {
-                request.workspace_id.clone()
-            } else {
-                canonical
-            }
-        } else {
-            request.workspace_id
+        let projects = self.owned.session_store.list_projects(caller, true);
+        let defaults = defaults(&projects);
+        let input = Input {
+            workspace: request.workspace_id.clone(),
+            create: request.create_if_missing,
+            selected: selected.as_ref().map(|project| Candidate {
+                id: project.id().into(),
+                workspaces: project.workspace_ids().to_vec(),
+            }),
+            defaults: defaults.clone(),
         };
-        let name = if selected.is_none() {
-            crate::runtime::workspace_git_common::workspace_display_label(&workspace)
-        } else {
-            None
+        let budget = Duration::from_secs(10);
+        #[cfg(test)]
+        let budget = std::env::var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0 && *value <= 10000)
+            .map(Duration::from_millis)
+            .unwrap_or(budget);
+        let deadline = Instant::now() + budget;
+        let root = self
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root();
+        let metadata = tokio::task::spawn_blocking(move || {
+            crate::project_environment::inspect_workspace_metadata(
+                &root, crate::runtime::workspace_inspection::Inspection::ProjectResolution(input), deadline,
+            )
+        }).await.map_err(|_| resolution_error("Project folder preparation failed; retry"))?
+            .map_err(|_| resolution_error("Project folder preparation did not finish within its budget; check storage and Git, then retry"))?;
+        let crate::runtime::workspace_inspection::Metadata::ProjectResolution(metadata) = metadata
+        else {
+            return Err(resolution_error(
+                "Project folder preparation returned invalid metadata; retry",
+            ));
         };
+        let Metadata {
+            workspace,
+            name,
+            project_id: matched,
+        } = metadata.map_err(|failure| failure.error())?;
+        Ok(PreparedProjectResolution {
+            request,
+            caller: caller.into(),
+            selected,
+            defaults,
+            workspace,
+            name,
+            matched,
+            deadline,
+        })
+    }
+    pub(crate) fn resolve_prepared_project(
+        &self,
+        request: crate::local::ResolveProjectRequest,
+        caller: &str,
+        prepared: PreparedProjectResolution,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.authorize_current_external_command()?;
+        if prepared.request.project_id != request.project_id
+            || prepared.request.workspace_id != request.workspace_id
+            || prepared.request.create_if_missing != request.create_if_missing
+            || prepared.caller != caller
+            || Instant::now() >= prepared.deadline
+        {
+            return Err(resolution_error(
+                "Project folder preparation expired or changed; retry",
+            ));
+        }
         let mut store = self.owned.session_store.write();
+        let selected_now = request
+            .project_id
+            .as_deref()
+            .and_then(|id| store.get_project(id).ok());
+        if selected_now != prepared.selected
+            || (prepared.selected.is_none()
+                && defaults(&store.list_projects(caller, true)) != prepared.defaults)
+        {
+            return Err(resolution_error(
+                "Project changed while its folder was checked; refresh and retry",
+            ));
+        }
         let project = store.prepare_project_resolution(
-            request.project_id.as_deref(),
-            &workspace,
+            prepared.matched.as_deref(),
+            &prepared.workspace,
             caller,
             request.create_if_missing,
-            name.as_deref(),
+            prepared.name.as_deref(),
         )?;
         if let Some(project) = &project {
             let old = store.get_project(project.id()).ok();
             if old.as_ref() != Some(project) {
-                // Persist before publishing; a failed journal write leaves the
-                // in-memory Project map unchanged, and retry reuses its identity.
                 self.append_project_durable_event(
                     if old.is_some() {
                         "project.updated"
@@ -77,6 +157,17 @@ impl KernelRuntimeState {
             }
         }
         Ok(LocalDaemonResponse::ProjectResolved { project })
+    }
+    #[cfg(test)]
+    async fn resolve_project(
+        &self,
+        request: crate::local::ResolveProjectRequest,
+        caller: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let prepared = self
+            .prepare_project_resolution(request.clone(), caller)
+            .await?;
+        self.resolve_prepared_project(request, caller, prepared)
     }
 }
 
@@ -106,12 +197,15 @@ mod tests {
             workspace_id: workspace.display().to_string(),
             create_if_missing: true,
         };
-        assert!(runtime.resolve_project(request.clone(), "owner").is_err());
+        assert!(runtime
+            .resolve_project(request.clone(), "owner")
+            .await
+            .is_err());
         assert!(runtime.list_projects("owner", true).await.is_empty());
         connection
             .execute_batch("DROP TRIGGER reject_standalone_project;")
             .unwrap();
-        let response = runtime.resolve_project(request, "owner").unwrap();
+        let response = runtime.resolve_project(request, "owner").await.unwrap();
         let LocalDaemonResponse::ProjectResolved {
             project: Some(project),
         } = response
@@ -140,7 +234,7 @@ mod tests {
         };
         let LocalDaemonResponse::ProjectResolved {
             project: Some(project),
-        } = runtime.resolve_project(request, "owner").unwrap()
+        } = runtime.resolve_project(request, "owner").await.unwrap()
         else {
             panic!("Project expected")
         };
@@ -200,7 +294,7 @@ mod tests {
                     1,
                 )
                 .runtime_state();
-                let resolve = |path: &str| match runtime
+                let resolve = async |path: &str| match runtime
                     .resolve_project(
                         crate::local::ResolveProjectRequest {
                             project_id: None,
@@ -209,6 +303,7 @@ mod tests {
                         },
                         "owner",
                     )
+                    .await
                     .unwrap()
                 {
                     LocalDaemonResponse::ProjectResolved {
@@ -222,12 +317,16 @@ mod tests {
                             .with_owner_user_id("owner"),
                     )
                 };
-                let before = standalone_first.then(|| resolve(folder.to_str().unwrap()));
+                let before = if standalone_first {
+                    Some(resolve(folder.to_str().unwrap()).await)
+                } else {
+                    None
+                };
                 let LocalDaemonResponse::SessionCreated { session, .. } = create().await.unwrap()
                 else {
                     panic!("session expected")
                 };
-                let project = resolve(folder.to_str().unwrap());
+                let project = resolve(folder.to_str().unwrap()).await;
                 assert_eq!(
                     session.project_id(),
                     project.id(),

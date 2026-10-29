@@ -15,6 +15,15 @@ impl SessionService {
         }) {
             return project.clone();
         }
+        self.prepare_new_default_project(owner, workspace, name_hint)
+    }
+
+    fn prepare_new_default_project(
+        &self,
+        owner: &str,
+        workspace: &str,
+        name_hint: Option<&str>,
+    ) -> RuntimeProject {
         let name = name_hint
             .map(str::trim)
             .filter(|name| !name.is_empty())
@@ -40,13 +49,15 @@ impl SessionService {
         let existing = project_id.and_then(|id| self.projects.get(id)).or_else(|| {
             self.projects.values().find(|project| {
                 project.owner_user_id() == owner
-                    && RuntimeProject::workspace_paths_match(project.workspace_id(), workspace)
+                    && project.workspace_id() == workspace
                     && project.kind() == RuntimeProjectKind::Default
             })
         });
         let mut project = match existing {
             Some(project) => {
-                if project.owner_user_id() != owner || !project.contains_workspace(workspace) {
+                if project.owner_user_id() != owner
+                    || !project.workspace_ids().iter().any(|path| path == workspace)
+                {
                     return Err(DaemonError::LocalTransport {
                         operation: "project.resolve",
                         message: "caller does not own the selected Project and workspace".into(),
@@ -54,7 +65,7 @@ impl SessionService {
                 }
                 project.clone()
             }
-            None if create => self.prepare_default_project(owner, workspace, name_hint),
+            None if create => self.prepare_new_default_project(owner, workspace, name_hint),
             None => return Ok(None),
         };
         if project.status() != RuntimeProjectStatus::Active {

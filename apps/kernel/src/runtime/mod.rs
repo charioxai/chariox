@@ -117,6 +117,7 @@ pub(crate) mod pairing_invite_executor;
 pub(crate) mod perf_timing;
 pub mod process_health;
 pub(crate) mod project_environment_setup_utility;
+pub(crate) mod project_resolution_preparation;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;
 pub mod prompt_state;

@@ -38,6 +38,7 @@ struct SessionCommandEnvelope {
     /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
     sudo_binding: Option<(String, String)>,
     request: LocalDaemonRequest,
+    project_resolution: Option<crate::runtime::state::PreparedProjectResolution>,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
@@ -98,17 +99,26 @@ impl SessionRuntime {
         let sudo_binding = self.store.sudo_binding(&command, &request);
         let session_id = self.resolve_session_lane_key(&request).await?;
         let lane_id = session_command_lane_id(&request, &session_id);
-        let lane = self.session_lane(&lane_id, &session_id).await;
-        let (result_tx, result_rx) = oneshot::channel();
         let caller_user_id = command_session_actor_user_id(&command);
+        let caller_metaagent_id = self
+            .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
+            .await?;
+        let project_resolution = self
+            .store
+            .prepare_project_resolution(
+                &command,
+                &request,
+                caller_metaagent_id.as_deref(),
+                &caller_user_id,
+            )
+            .await?;
         let telemetry = LaneCommandTrace::new(
             crate::runtime::command_latency::CommandTrace::from_command(&command),
             crate::runtime::command_latency::now_ms(),
         );
+        let lane = self.session_lane(&lane_id, &session_id).await;
+        let (result_tx, result_rx) = oneshot::channel();
         let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
-        let caller_metaagent_id = self
-            .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
-            .await?;
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
         let external_grant_id = command.external_grant_id();
@@ -127,6 +137,7 @@ impl SessionRuntime {
             external_grant_id,
             sudo_binding,
             request,
+            project_resolution,
             result_tx,
         }) {
             Ok(()) => {
@@ -254,6 +265,10 @@ impl SessionRuntime {
         let mut command =
             KernelCommand::from_local_request(command_id.clone(), None, None, &request);
         command.command_type = command_type.clone();
+        let project_resolution = self
+            .store
+            .prepare_project_resolution(&command, &request, None, DEFAULT_LOCAL_USER_ID)
+            .await?;
         lane.try_send(SessionCommandEnvelope {
             command_id,
             command_type,
@@ -269,6 +284,7 @@ impl SessionRuntime {
             external_grant_id: None,
             sudo_binding: None,
             request,
+            project_resolution,
             result_tx,
         })
         .map_err(|error| DaemonError::LocalTransport {
@@ -355,6 +371,7 @@ async fn run_session_command_lane(
                         envelope.caller_metaagent_id,
                         envelope.terminal_caller,
                         envelope.connection_class,
+                        envelope.project_resolution,
                     )
                     .await
             }
