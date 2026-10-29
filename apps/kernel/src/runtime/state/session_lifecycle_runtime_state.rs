@@ -1144,11 +1144,12 @@ impl KernelRuntimeState {
         self.stop_managed_environment_for_session_lifecycle(&session_id)
             .await;
         let worker_agents = self.agents_leased_to_workers(&session_id);
-        let (session, terminated_run_ids, removed_project) = owned
-            .delete_session_with_project_retention(
-                owned.session_store.get_session(&session_id)?,
-                retain_project,
-            )?;
+        let session = owned.session_store.get_session(&session_id)?;
+        let (session, terminated_run_ids, removed_project) = if retain_project {
+            owned.delete_session_with_project_retention(session, true)?
+        } else {
+            owned.delete_session(session)?
+        };
         // Swept only now: the Room is gone, so an open that raced the delete
         // fails its own Room check instead of outliving this sweep.
         self.end_room_terminals(&session_id);

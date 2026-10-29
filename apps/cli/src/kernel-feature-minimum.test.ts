@@ -140,3 +140,14 @@ test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before t
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
   }
 })
+
+test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
+  for (const request of [{ RequestKernelAccess: { holder_pid: 42 } },
+    { RespondToInteraction: { session_id: "kernel-access", interaction_id: "grant", choice_id: "approve" } }]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, 435), /Local-kernel access needs protocol ≥470/)
+    assert.throws(() => requireKernelFeatureProtocol(request, 451), /protocol ≥470/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 470))
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "ordinary" } }, 435))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ RespondToInteraction: { session_id: "kernel-access", choice_id: "refuse" } }, 451))
+})
