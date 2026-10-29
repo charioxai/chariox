@@ -17,3 +17,12 @@ highlight clearing and JS bookkeeping, clears nonempty text and accepts the next
 nonempty update. `apps/cli/src/native-text-retention.bun-test.ts` exercises real
 TextRenderable updates and verifies bounded native allocation counts. Keep this
 guard until upstream empty replacements reuse or reset their native arena.
+
+MP-08 / MP-10: the stdin parser keeps an incomplete CSI report until its final
+byte arrives, so an SGR mouse report or key sequence delayed by SSH or renderer
+work is never flushed as Escape plus text. While a mouse button is held, a
+pending Escape waits for the next report instead of cancelling the drag on a
+timer. A new ESC and the pending-byte bound still recover malformed input; a
+standalone Escape keeps its 10 ms deadline. `apps/cli/src/tui-mouse-acquisition.bun-test.ts`
+covers delayed reports through the real renderer and parser. Keep it on OpenTUI
+upgrades.
