@@ -1,5 +1,6 @@
 //! MP-08 / MP-10: both source adapters use the ordinary durable queue for
 //! admission, restart and fallback. Provider input uses the existing steer seam.
+use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 use crate::session::{WorkflowQueuedPrompt, WorkflowQueuedPromptStatus};
 
@@ -105,7 +106,11 @@ impl KernelRuntimeState {
             ) {
                 Err(error)
             } else {
-                self.enqueue_prompt_dispatch_with_acceptance(dispatch).await
+                // The persisted submit intent settles this injection through the
+                // finished-submit reapers, so the global App event pass must not
+                // wait for the provider's answer.
+                self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Ignored)
+                    .await
             };
             match accepted {
                 Ok(true) if structured => {

@@ -3,9 +3,9 @@ use super::context_handoff::PendingAgentContextHandoff;
 use super::local_prompt_dispatch_runtime::join_hidden_context;
 use super::*;
 
-/// Whether a steering dispatch waits for the provider's receipt. Only a trigger steer does: the queued firing is kept or consumed
-/// on the answer. Other steers settle through their own acknowledgement and never hold the caller (a notification delivery runs
-/// inside the global App event pass).
+/// Whether a steering dispatch waits for the provider's receipt. A caller that reads "accepted" as "the provider holds it"
+/// (trigger, leased-agent and active-turn steering) waits. Only notification delivery ignores it: it persists its own submit
+/// intent and settles through the finished-submit reapers, and it runs inside the global App event pass.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SteerReceipt {
     Ignored,

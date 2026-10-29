@@ -188,7 +188,7 @@ impl KernelRuntimeState {
         &'a self,
         dispatch: &'a crate::app::KernelPromptDispatch,
     ) -> impl std::future::Future<Output = Result<bool, DaemonError>> + 'a {
-        self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Ignored)
+        self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Awaited)
     }
 
     pub(super) async fn enqueue_prompt_dispatch_with_receipt(
@@ -312,7 +312,7 @@ impl KernelRuntimeState {
         self.enqueue_prompt_dispatch_after_liveness_with_receipt(
             dispatch,
             owned,
-            SteerReceipt::Ignored,
+            SteerReceipt::Awaited,
         )
     }
 
