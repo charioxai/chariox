@@ -612,3 +612,72 @@ fn cli_errors_are_stable_json_and_generated_contract_tracks_sdk() {
         ErrorCode::InvalidManifest
     );
 }
+
+#[path = "../src/v2/tests/components.rs"]
+mod v2_components;
+
+#[test]
+fn cli_packs_and_validates_the_excalidraw_v2_app() {
+    let fixture = Fixture::new();
+    let publisher = fixture.keygen();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/apps/excalidraw");
+    let mut manifest: Value =
+        serde_json::from_slice(&fs::read(source.join("app.json")).unwrap()).unwrap();
+    manifest["publisher"] = serde_json::to_value(&publisher.publisher).unwrap();
+    fs::write(
+        fixture.path("app.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        fixture.path("bundle/runtime/app.wasm"),
+        v2_components::build(chariox_app_wit::APP_WORLD, false),
+    )
+    .unwrap();
+    fs::create_dir(fixture.path("bundle/schemas")).unwrap();
+    for name in ["tools.json", "ui-actions.json"] {
+        fs::copy(
+            source.join("schemas").join(name),
+            fixture.path("bundle/schemas").join(name),
+        )
+        .unwrap();
+    }
+    let args = [
+        "pack",
+        "--bundle",
+        fixture.path("bundle").to_str().unwrap(),
+        "--manifest",
+        fixture.path("app.json").to_str().unwrap(),
+        "--key",
+        fixture.path("keys/private").to_str().unwrap(),
+        "--output",
+        fixture.path("result.cxapp").to_str().unwrap(),
+        "--kernel-protocol",
+        "619",
+    ]
+    .map(str::to_owned);
+    let packed = developer::run_cli(&args)
+        .expect("v2 reference Apps must use the normal developer pack command");
+    assert_eq!(packed["manifest"]["schema"], "chariox.app.v2");
+    let mut unsafe_args = args.clone();
+    unsafe_args[8] = fixture.path("refused.cxapp").to_str().unwrap().to_owned();
+    fs::hard_link(fixture.path("keys/private"), fixture.path("bundle/private")).unwrap();
+    assert_eq!(
+        developer::run_cli(&unsafe_args).unwrap_err().code,
+        ErrorCode::InvalidPath
+    );
+    assert!(!fixture.path("refused.cxapp").exists());
+    fs::remove_file(fixture.path("bundle/private")).unwrap();
+    let args = [
+        "validate",
+        fixture.path("result.cxapp").to_str().unwrap(),
+        "--trust",
+        fixture.path("publisher.json").to_str().unwrap(),
+        "--kernel-protocol",
+        "619",
+    ]
+    .map(str::to_owned);
+    let verified =
+        developer::run_cli(&args).expect("validate must use the same v2 verifier as install");
+    assert_eq!(packed["packageDigest"], verified["packageDigest"]);
+}
