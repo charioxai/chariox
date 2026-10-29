@@ -591,6 +591,7 @@ export async function executeSlashCommand(
 
 export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashCommand): boolean {
   switch (command.kind) {
+    case "continue":
     case "approvals":
     case "provider":
     case "model":

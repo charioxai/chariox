@@ -238,6 +238,7 @@ test("parseSlashCommand parses undo and fork commands with optional refs", () =>
 })
 
 test("shouldClearCommandCenterForSlashCommand only clears selector-backed commands", () => {
+  assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/continue")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/model openai/gpt-5")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/undo")!), true)
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/fork agent-1")!), true)
