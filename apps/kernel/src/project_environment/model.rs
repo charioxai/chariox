@@ -247,9 +247,7 @@ pub fn project_environment_protected_name(name: &str) -> bool {
         || name.starts_with("DYLD_")
         || matches!(
             name,
-            "GITHUB_TOKEN"
-                | "GH_TOKEN"
-                | "HOME"
+            "HOME"
                 | "PATH"
                 | "USER"
                 | "LOGNAME"
@@ -273,7 +271,12 @@ pub fn project_environment_protected_name(name: &str) -> bool {
         )
 }
 
-// MP-08 / MP-10 / MP-11: public bindings cannot override kernel/provider process controls.
+// MP-08 / MP-10 / MP-11: GitHub tokens belong in the Vault; a public (non-secret) binding cannot
+// carry one or override a kernel/provider process control.
+pub(crate) fn project_environment_public_name_protected(name: &str) -> bool {
+    project_environment_protected_name(name) || matches!(name, "GITHUB_TOKEN" | "GH_TOKEN")
+}
+
 pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocator) -> Option<&str> {
     match locator {
         ProjectEnvironmentLocator::WorkspaceEnvironment { name } => Some(name),
@@ -284,5 +287,5 @@ pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocato
 pub(crate) fn project_environment_public_source_protected(
     locator: &ProjectEnvironmentLocator,
 ) -> bool {
-    project_environment_source_name(locator).is_some_and(project_environment_protected_name)
+    project_environment_source_name(locator).is_some_and(project_environment_public_name_protected)
 }

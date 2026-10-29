@@ -59,7 +59,8 @@ pub(crate) fn prepare_scoped_binding(
     };
     if project_environment_protected_name(name)
         || (classification == ProjectEnvironmentClassification::NonSecret
-            && project_environment_public_source_protected(&locator))
+            && (project_environment_public_name_protected(name)
+                || project_environment_public_source_protected(&locator)))
     {
         return Err(environment_error("Protected launch binding"));
     }
