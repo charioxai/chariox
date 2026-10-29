@@ -5652,3 +5652,12 @@ state. The relay remains an opaque encrypted carrier.
 MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
 
 MP-08 / MP-09 / MP-10 / MP-11: local 811 / peer 361 adds optional `problem` to the ephemeral `RuntimeProviderLogin` projection. The kernel supplies code-validation/rejection feedback and omits it for initial instructions. A newly attached client can show retry feedback without interpreting message wording; a new interaction request answers a submitted code even when the feedback repeats. The field follows the existing human-only login projection and is excluded from model context and history.
+## Semantic session activity (local 780 / peer 330)
+
+MP-08 / MP-09 / MP-10 / MP-11: public snapshot schema 14 and persisted sessions carry `last_activity_at_ms`. The kernel advances it for prompt admission, agent turn start/end, completed agent messages, and answered interactions. Focus, configuration, output acknowledgement, presence, heartbeat, and connection updates never advance it. Clients order from this field, with creation time and id as fixed tie breakers. Session metadata writes and replay preserve the greatest activity timestamp.
+
+The focused local 780 / peer 330 drill is `node scripts/session-activity-drill.mjs <external-workspace> <linked-codex-profile-id>`, with `CHARIOX_HOME` and `CHARIOX_KERNEL_PORT` set for an isolated running kernel. It exercises schema 14, pin insertion timestamps, focus without activity, a real Codex turn, and activity invalidation of paged reads. It deletes its session and closes its attachment when finished.
+
+`ListWaitingRoomSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `waiting_room_inventory_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
+
+Projects and sessions persist `pinned_at_ms` when their pin changes from off to on. Clients preserve pin insertion order with this field; pinning never changes semantic session activity.

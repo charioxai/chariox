@@ -19,6 +19,8 @@ const DURABLE_RESTORE_DIAGNOSTIC_SAMPLE_LIMIT: usize = 20;
 
 #[derive(Default)]
 struct DurableRestoreDiagnostics {
+    // Compaction can leave activity before the first retained session record.
+    session_activity_by_id: BTreeMap<String, u64>,
     ignored_prompt_state_count: usize,
     sample_missing_session_ids: BTreeSet<String>,
     sample_truncated: bool,
@@ -1262,6 +1264,38 @@ impl DaemonApp {
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
+            "session.activity.updated" => {
+                let session_id =
+                    event
+                        .subject_id
+                        .as_deref()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "durable_state.restore_session_activity",
+                            message: "Session activity has no session id".into(),
+                        })?;
+                let timestamp_ms =
+                    event.payload["last_activity_at_ms"]
+                        .as_u64()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "durable_state.restore_session_activity",
+                            message: "Session activity has no timestamp".into(),
+                        })?;
+                diagnostics
+                    .session_activity_by_id
+                    .entry(session_id.to_owned())
+                    .and_modify(|previous| *previous = (*previous).max(timestamp_ms))
+                    .or_insert(timestamp_ms);
+                if let Ok(session) = self.sessions.get_session(session_id) {
+                    if self.session_belongs_to_current_kernel(&session)
+                        && session.status() != crate::session::SessionStatus::Ended
+                    {
+                        let session = self
+                            .sessions
+                            .note_session_activity(session_id, timestamp_ms)?;
+                        self.update_session_projection(session);
+                    }
+                }
+            }
             DURABLE_PROMPT_STATE_EVENT_KIND => {
                 let mut prompt_state =
                     serde_json::from_value::<DurablePromptStateEventPayload>(event.payload.clone())
@@ -1280,6 +1314,10 @@ impl DaemonApp {
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
                 }
+                self.sessions.note_session_activity(
+                    &prompt_state.session_id,
+                    prompt_state.last_activity_at_ms,
+                )?;
                 prompt_state.restore_private_states();
                 if let Some(timestamp_ms) = prompt_state.last_prompt_sent_at_ms {
                     self.agents
@@ -1343,6 +1381,9 @@ impl DaemonApp {
                 )?;
                 if !self.session_belongs_to_current_kernel(&session) {
                     return Ok(());
+                }
+                if let Some(timestamp_ms) = diagnostics.session_activity_by_id.get(session.id()) {
+                    session.note_activity_at(*timestamp_ms);
                 }
                 let private_states =
                     if let Some(states) = event.payload.get("prompt_private_states") {
@@ -1755,6 +1796,65 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_session_activity_replays_across_restart_and_stale_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "session-activity-{}-{}.db",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(path.display().to_string());
+        let session_id;
+        let timestamp;
+        {
+            let app = DaemonApp::bootstrap(config.clone()).unwrap();
+            let session = RuntimeSession::new(
+                "activity-session",
+                None,
+                "workspace",
+                "worktree",
+                &app.config().host_machine_id,
+                &app.config().daemon_id,
+            );
+            session_id = session.id().to_owned();
+            timestamp = session.last_activity_at_ms() + 100;
+            app.durable_state_store()
+                .append_event(
+                    "session.updated",
+                    Some(session_id.clone()),
+                    serde_json::json!({"session": session, "reason":"created"}),
+                )
+                .unwrap();
+            app.durable_state_store()
+                .append_event(
+                    "session.activity.updated",
+                    Some(session_id.clone()),
+                    serde_json::json!({"last_activity_at_ms": timestamp}),
+                )
+                .unwrap();
+            app.durable_state_store()
+                .append_event(
+                    "session.updated",
+                    Some(session_id.clone()),
+                    serde_json::json!({"session": session, "reason":"configuration"}),
+                )
+                .unwrap();
+        }
+        {
+            let restored = DaemonApp::bootstrap(config).unwrap();
+            assert_eq!(
+                restored
+                    .sessions()
+                    .get_session(&session_id)
+                    .unwrap()
+                    .last_activity_at_ms(),
+                timestamp
+            );
+        }
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn durable_restore_merges_linked_worktree_default_project_into_main_workspace() {

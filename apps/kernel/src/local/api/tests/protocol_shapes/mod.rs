@@ -118,3 +118,4 @@ mod room_pin;
 mod usage_snapshot;
 
 mod provider_login;
+mod session_activity;

@@ -76,7 +76,7 @@ fn page(
     limit: u32,
     budget: usize,
 ) -> Result<WaitingRoomSessionPage, DaemonError> {
-    let after: Option<(u64, String)> = cursor
+    let after: Option<(u64, u64, String)> = cursor
         .map(|cursor| {
             URL_SAFE_NO_PAD
                 .decode(cursor)
@@ -90,12 +90,11 @@ fn page(
                 })
         })
         .transpose()?;
-    let last_used = |session: &WaitingRoomPublicSessionSummary| {
-        session.last_used_at_ms.unwrap_or(session.created_at_ms)
-    };
+    let activity = |session: &WaitingRoomPublicSessionSummary| session.last_activity_at_ms;
     sessions.sort_by(|a, b| {
-        last_used(b)
-            .cmp(&last_used(a))
+        activity(b)
+            .cmp(&activity(a))
+            .then_with(|| a.created_at_ms.cmp(&b.created_at_ms))
             .then_with(|| a.id.cmp(&b.id))
     });
     let total = sessions.len();
@@ -103,8 +102,10 @@ fn page(
     let mut bytes: usize = 0;
     let mut has_more = false;
     for session in sessions {
-        if after.as_ref().is_some_and(|(time, id)| {
-            last_used(&session) > *time || (last_used(&session) == *time && session.id <= *id)
+        if after.as_ref().is_some_and(|(time, created, id)| {
+            activity(&session) > *time
+                || (activity(&session) == *time
+                    && (session.created_at_ms, &session.id) <= (*created, id))
         }) {
             continue;
         }
@@ -123,7 +124,7 @@ fn page(
         let last = selected.last().expect("nonempty page");
         Some(
             URL_SAFE_NO_PAD.encode(
-                serde_json::to_vec(&(last_used(last), &last.id))
+                serde_json::to_vec(&(activity(last), last.created_at_ms, &last.id))
                     .map_err(|error| fail("waiting_room_cursor_invalid", error.to_string()))?,
             ),
         )
@@ -144,7 +145,7 @@ mod tests {
     fn session(index: usize) -> WaitingRoomPublicSessionSummary {
         serde_json::from_value(serde_json::json!({
             "id": format!("session-{index:05}"), "project_id": "project", "workspace_id": "workspace",
-            "worktree_id": "worktree", "created_at_ms": 42, "status": "Active", "connected_cli_count": 0,
+            "worktree_id": "worktree", "created_at_ms": 42, "last_activity_at_ms": 42, "status": "Active", "connected_cli_count": 0,
         })).unwrap()
     }
 
@@ -157,6 +158,7 @@ mod tests {
             let page = session_page(
                 sessions.clone(),
                 ListWaitingRoomSessionsRequest {
+                    inventory_version: None,
                     cursor,
                     limit: Some(500),
                 },
@@ -184,6 +186,7 @@ mod tests {
         let page = session_page(
             summaries,
             ListWaitingRoomSessionsRequest {
+                inventory_version: None,
                 cursor: None,
                 limit: Some(500),
             },
@@ -199,6 +202,7 @@ mod tests {
         let error = session_page(
             vec![oversized],
             ListWaitingRoomSessionsRequest {
+                inventory_version: None,
                 cursor: None,
                 limit: None,
             },
@@ -214,6 +218,7 @@ mod tests {
         let error = session_page(
             vec![session(0)],
             ListWaitingRoomSessionsRequest {
+                inventory_version: None,
                 cursor: Some("not a cursor".into()),
                 limit: None,
             },

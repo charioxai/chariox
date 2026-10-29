@@ -89,10 +89,10 @@ test("sessionBrowserVisibleSessions filters ended sessions and sorts by recent a
   assert.deepEqual(sessionBrowserVisibleSessions([
     session("old", { status: "Created", created_at_ms: 1 }),
     session("ended", { status: "Ended", created_at_ms: 100 }),
-    session("recent", { status: "Active", last_used_at_ms: 20, created_at_ms: 2 }),
-    session("activity", { status: "Active", last_activity_at_ms: 30, last_used_at_ms: 5, created_at_ms: 3 }),
+    session("recent", { status: "Active", last_activity_at_ms: 20, created_at_ms: 2 }),
+    session("activity", { status: "Active", last_activity_at_ms: 30, last_used_at_ms: 5000, created_at_ms: 3 }),
     session("prompted", { status: "Active", last_prompt_sent_at_ms: 40, last_activity_at_ms: 10, created_at_ms: 4 }),
-  ]).map((session) => session.id), ["prompted", "activity", "recent", "old"])
+  ]).map((session) => session.id), ["activity", "recent", "prompted", "old"])
 })
 
 test("sessionBrowserPreviewSessions returns a bounded visible session preview", () => {

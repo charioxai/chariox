@@ -43,6 +43,7 @@ export type SessionViewAttachedResponse = {
 
 export type RuntimeSession = {
   pinned?: boolean
+  pinned_at_ms?: number | null
   id: string
   project_id: string
   alias?: string | null
@@ -54,6 +55,7 @@ export type RuntimeSession = {
   members?: SessionMember[]
   invites?: SessionInvite[]
   created_at_ms: number
+  last_activity_at_ms?: number
   last_used_at_ms?: number | null
   last_prompt_sent_at_ms?: number | null
   status: string
@@ -103,6 +105,7 @@ export type SessionProjectSelection =
 
 export type RuntimeProject = {
   pinned?: boolean
+  pinned_at_ms?: number | null
   id: string
   owner_user_id: string
   workspace_id: string
@@ -190,6 +193,7 @@ export type SessionAgentDefaults = {
 
 export type WaitingRoomPublicSessionSummary = {
   pinned?: boolean
+  pinned_at_ms?: number | null
   id: string
   project_id: string
   kernel_id?: string | null
@@ -205,6 +209,7 @@ export type WaitingRoomPublicSessionSummary = {
   worktree_label?: string | null
   workspace_live_sync_mode?: "managed" | "tracked" | "unrestricted" | null
   created_at_ms: number
+  last_activity_at_ms?: number
   last_used_at_ms?: number | null
   last_prompt_sent_at_ms?: number | null
   status: string

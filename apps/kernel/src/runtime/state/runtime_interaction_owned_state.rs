@@ -491,6 +491,9 @@ impl KernelRuntimeOwnedState {
                 None,
             )?;
         }
+        if let Some(session) = session.as_mut() {
+            self.persist_session_activity(session, decision_at.1)?;
+        }
         let pending = self
             .pending_interactions
             .write()

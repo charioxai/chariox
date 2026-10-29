@@ -145,6 +145,30 @@ impl SessionStateProjectionStore {
         self.session_change_signal(&session_id).record_change();
     }
 
+    /// Patch metadata without re-entering prompt or managed-activity ownership.
+    pub(crate) fn note_session_activity(&self, session_id: &str, timestamp_ms: u64) {
+        {
+            let mut state = self
+                .state
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(current) = state.session_states.get(session_id) else {
+                return;
+            };
+            if timestamp_ms <= current.last_activity_at_ms() {
+                return;
+            }
+            let mut session = current.as_ref().clone();
+            session.note_activity_at(timestamp_ms);
+            let session = Arc::new(session);
+            upsert_session(&mut state.session_list, session.clone());
+            state.session_states.insert(session_id.to_owned(), session);
+            state.projection_revision = state.projection_revision.saturating_add(1);
+        }
+        self.changes.record_change();
+        self.session_change_signal(session_id).record_change();
+    }
+
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
         let sessions = sessions.into_iter().map(Arc::new).collect::<Vec<_>>();
         let changed_session_ids = sessions

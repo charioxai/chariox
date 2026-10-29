@@ -447,6 +447,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         "/6/WorkflowPublicationCreated/publication/created_at_ms",
         "/6/WorkflowPublicationCreated/publication/updated_at_ms",
         "/6/WorkflowPublicationCreated/session/created_at_ms",
+        "/6/WorkflowPublicationCreated/session/last_activity_at_ms",
         "/6/WorkflowPublicationCreated/session/last_used_at_ms",
         "/7/WorkflowPublicationsListed/publications/0/created_at_ms",
         "/7/WorkflowPublicationsListed/publications/0/updated_at_ms",
@@ -457,8 +458,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         "/10/WorkflowPublicationDisabled/publication/created_at_ms",
         "/10/WorkflowPublicationDisabled/publication/updated_at_ms",
         "/10/WorkflowPublicationDisabled/session/created_at_ms",
+        "/10/WorkflowPublicationDisabled/session/last_activity_at_ms",
         "/10/WorkflowPublicationDisabled/session/last_used_at_ms",
         "/11/WorkflowPublicationMaterialized/session/created_at_ms",
+        "/11/WorkflowPublicationMaterialized/session/last_activity_at_ms",
         "/11/WorkflowPublicationMaterialized/session/last_used_at_ms",
         "/13/WorkflowPublicationEndpointRegistered/publication/created_at_ms",
         "/13/WorkflowPublicationEndpointRegistered/publication/runtime_last_heartbeat_at_ms",
@@ -690,7 +693,7 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "a64f79985d0cbd50ff61f5fe3433bdbc81befedab5f38c47bef802324a11a66f"
+        "2e2290ffd4d7f35a29bf0c18848442f36c8def4b85fad8732ef8d18ea8f997e5"
     );
 }
 

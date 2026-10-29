@@ -1669,6 +1669,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ending_session_with_active_turn_survives_restart() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let config = runtime.app.lock().await.config().clone();
+        let worktree = crate::test_support::TestWorktree::new("active-turn-restart");
+        let LocalDaemonResponse::SessionCreated { session, agent, .. } = runtime
+            .create_session_response(worktree.session_request())
+            .await
+            .unwrap()
+        else {
+            panic!("expected session")
+        };
+        let session_id = session.id().to_owned();
+        let agent_id = agent.id().to_owned();
+        let run = runtime
+            .with_app_side_effect(|app| {
+                app.launch_provider(
+                    crate::provider::LaunchProviderRequest::new(
+                        &session_id,
+                        "dev-stub",
+                        "default",
+                        "default",
+                        "model",
+                    )
+                    .with_agent_id(&agent_id),
+                )
+            })
+            .await
+            .unwrap();
+        runtime
+            .owned
+            .active_turns
+            .start(crate::app::ActiveTurnState::new(
+                session_id.clone(),
+                agent_id,
+                "active-prompt".into(),
+                run.id().into(),
+            ));
+        runtime.end_session(&session_id).await.unwrap();
+        let ended_sequence = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.ended")
+            .unwrap()[0]
+            .sequence;
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.activity.updated")
+            .unwrap()
+            .iter()
+            .all(|event| event.sequence < ended_sequence));
+        // Replays from older executables may already contain a late completion.
+        runtime
+            .owned
+            .durable_state_store
+            .append_event(
+                "session.activity.updated",
+                Some(session_id.clone()),
+                serde_json::json!({"last_activity_at_ms": crate::session::unix_epoch_ms() + 100}),
+            )
+            .unwrap();
+        drop(runtime);
+        let restored = DaemonApp::bootstrap(config).unwrap();
+        assert_eq!(
+            restored
+                .sessions()
+                .get_session(&session_id)
+                .unwrap()
+                .status(),
+            crate::session::SessionStatus::Ended
+        );
+    }
+
+    #[tokio::test]
     async fn ending_last_active_session_persists_final_idle_transition() {
         let runtime = runtime_state_for_rollback_test().await;
         runtime
@@ -2357,6 +2431,81 @@ mod tests {
             "git {} failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[tokio::test]
+    async fn session_activity_moves_for_prompt_transitions_but_not_presence_or_focus() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let session = create_activity_test_session(&runtime, "semantic-activity");
+        let id = session.id().to_owned();
+        let before = session.last_activity_at_ms();
+        let mut touched = session.clone();
+        touched.touch();
+        touched.set_focused_agent(Some("agent".into()));
+        runtime.owned.session_store.restore_session(touched);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            before
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt",
+            "attachment",
+            "agent",
+            "Work",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt.clone()), Default::default())
+            .unwrap();
+        let started = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(started > before);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt), Default::default())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            started
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", None, Default::default())
+            .unwrap();
+        let ended = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(ended > started);
+        // A metadata snapshot captured before the turn cannot roll activity backwards.
+        runtime.owned.session_store.restore_session(session);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            ended
         );
     }
 }
