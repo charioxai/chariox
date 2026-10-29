@@ -38,7 +38,11 @@ pub(crate) fn terminal_output_delta_bytes(
     if !matches!(kind, TerminalOutputKind::ProviderTool) {
         return bytes.to_vec();
     }
-    if bytes.len().saturating_sub(provider_tool_images_bytes(bytes)) > PROVIDER_TOOL_LARGE_PAYLOAD_BYTES {
+    if bytes
+        .len()
+        .saturating_sub(provider_tool_images_bytes(bytes))
+        > PROVIDER_TOOL_LARGE_PAYLOAD_BYTES
+    {
         if let Some(delta) =
             large_provider_tool_delta_bytes(session_id, provider_run_id, agent_id, merge_key, bytes)
         {
