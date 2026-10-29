@@ -183,6 +183,13 @@ pub(crate) async fn execute_provider_account_request(
             .await;
         runtime_state.record_waiting_room_change();
     }
+    if let Err(error) = &response {
+        crate::logging::warn_with_fields(
+            "daemon.account_profile",
+            "Provider account request failed",
+            serde_json::json!({ "error": error.to_string() }),
+        );
+    }
     response
 }
 

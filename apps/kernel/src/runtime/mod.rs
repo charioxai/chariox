@@ -126,6 +126,8 @@ pub(crate) mod provider_auth_control;
 pub(crate) mod provider_capability_import;
 pub(crate) mod provider_catalog_control;
 pub mod provider_launch_executor;
+mod provider_login_input;
+mod provider_login_terminal;
 pub(crate) mod provider_process_control;
 pub(crate) mod provider_run_control;
 pub(crate) mod relay_config_control;

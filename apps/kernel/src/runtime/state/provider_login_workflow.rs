@@ -113,6 +113,7 @@ impl KernelRuntimeState {
                     .provider_login()
                     .cloned()
                     .unwrap_or_else(|| RuntimeProviderLogin {
+                        problem: status.message.clone(),
                         kernel_id: self.provider_login_kernel_id(),
                         login: login.clone(),
                         terminal_output_base64: String::new(),
@@ -120,8 +121,9 @@ impl KernelRuntimeState {
             if login.login_kind != "terminal_setup_token" {
                 projection.terminal_output_base64 = status.terminal_output_base64;
             }
-            let next_phase = template.title().map(str::to_string);
-            if receiver.is_none() || next_phase != phase {
+            let next_title = template.title().map(str::to_string);
+            let next_phase = (next_title.clone(), template.message().to_string());
+            if receiver.is_none() || Some(&next_phase) != phase.as_ref() {
                 if receiver.is_some() {
                     self.update_provider_login_interaction(session_id, agent_id, id, None)
                         .await?;
@@ -131,7 +133,7 @@ impl KernelRuntimeState {
                     agent_id,
                     template.kind(),
                     template.level(),
-                    next_phase.clone(),
+                    next_title,
                     template.message(),
                     template.choices().to_vec(),
                     template.custom_choice().cloned(),
@@ -143,7 +145,7 @@ impl KernelRuntimeState {
                     self.create_runtime_interaction(session_id, interaction)
                         .await?,
                 );
-                phase = next_phase;
+                phase = Some(next_phase);
             } else {
                 self.update_provider_login_interaction(session_id, agent_id, id, Some(projection))
                     .await?;
@@ -158,9 +160,15 @@ impl KernelRuntimeState {
                     let data_base64 = base64::engine::general_purpose::STANDARD.encode(input.as_bytes());
                     use zeroize::Zeroize;
                     input.zeroize();
-                    crate::runtime::provider_auth_control::execute_send_provider_login_input_request(
+                    match crate::runtime::provider_auth_control::execute_send_provider_login_input_request(
                         self, owner, crate::local::SendProviderLoginInputRequest { login_id: login_id.into(), data_base64 },
-                    ).await?;
+                    ).await {
+                        Err(error @ (DaemonError::ProviderLoginCodeIncomplete | DaemonError::ProviderLoginCodeInvalid)) => {
+                            self.provider_login_process_store().set_message(owner, login_id, &error.to_string(), crate::session::unix_epoch_ms())?;
+                        }
+                        Err(error) => return Err(error),
+                        Ok(_) => {}
+                    }
                 }
                 _ = tokio::time::sleep(Duration::from_millis(500)) => {}
             }

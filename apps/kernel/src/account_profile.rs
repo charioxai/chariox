@@ -1639,6 +1639,23 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        // An unsuccessful enrollment retains its isolated provider root so a
+        // retry can reuse it, including when the first client lost its reply.
+        if let Some(existing) = document.profiles.iter().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == provider
+                && stored.public.label.eq_ignore_ascii_case(&label)
+                && stored.public.origin == ProviderAccountProfileOrigin::CharioxCreated
+                && !stored.materialized_replica
+                && matches!(
+                    stored.public.auth_state,
+                    ProviderAccountAuthState::Unknown | ProviderAccountAuthState::NotConfigured
+                )
+                && stored.public.identity_summary.is_none()
+                && stored.public.plan.is_none()
+        }) {
+            return Ok(existing.public.clone());
+        }
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let managed_root = self
@@ -4020,10 +4037,9 @@ fn ensure_unique_label_except(
             && profile.public.profile_id != excluded_profile_id
             && profile.public.label.eq_ignore_ascii_case(label)
     }) {
-        return Err(registry_error(
-            "validate account profile",
-            format!("an account profile labeled `{label}` already exists for {provider}"),
-        ));
+        return Err(DaemonError::ProviderAccountNameTaken {
+            label: label.to_string(),
+        });
     }
     Ok(())
 }
@@ -5159,6 +5175,59 @@ mod tests {
             ),
             crate::session::DEFAULT_LOCAL_USER_ID
         );
+    }
+
+    #[test]
+    fn unfinished_account_name_can_be_reused_but_signed_in_name_cannot() {
+        let (root, registry) = fixture();
+        let first = registry
+            .create_managed("owner-a", "claude", "chariox")
+            .unwrap();
+        let retry = registry
+            .create_managed("owner-a", "claude", "CHARIOX")
+            .unwrap();
+        assert_eq!(retry.profile_id, first.profile_id);
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &first.profile_id,
+                ProviderAccountAuthState::NotConfigured,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            registry
+                .create_managed("owner-a", "claude", "chariox")
+                .unwrap()
+                .profile_id,
+            first.profile_id
+        );
+        registry
+            .update_observation(
+                "owner-a",
+                "claude",
+                &first.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("person@example.test".into()),
+                Some("pro".into()),
+                None,
+                None,
+            )
+            .unwrap();
+        let error = registry
+            .create_managed("owner-a", "claude", "chariox")
+            .unwrap_err();
+        let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(mapped.code, "provider_account_name_taken");
+        assert_eq!(
+            mapped.message,
+            "An account named chariox already exists. Choose another name."
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn fixture() -> (PathBuf, ProviderAccountProfileRegistry) {

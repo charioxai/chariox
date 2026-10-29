@@ -1049,6 +1049,15 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         return crate::runtime::kernel_access::Refusal::Ended.transport_error();
     }
     match error {
+        DaemonError::ProviderAccountNameTaken { .. } => {
+            kernel_error("provider_account_name_taken", error, false)
+        }
+        DaemonError::ProviderLoginCodeIncomplete => {
+            kernel_error("provider_login_code_incomplete", error, false)
+        }
+        DaemonError::ProviderLoginCodeInvalid => {
+            kernel_error("provider_login_code_invalid", error, false)
+        }
         DaemonError::ProviderAccountCopy {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),

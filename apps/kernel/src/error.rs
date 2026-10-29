@@ -50,6 +50,12 @@ pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("An account named {label} already exists. Choose another name.")]
+    ProviderAccountNameTaken { label: String },
+    #[error("The code looks incomplete. Copy the whole code, including # and the part after it.")]
+    ProviderLoginCodeIncomplete,
+    #[error("The code could not be read. Copy the whole code and try again.")]
+    ProviderLoginCodeInvalid,
     #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
     ProviderProfileRefused {
         reason: ProviderProfileRefusal,

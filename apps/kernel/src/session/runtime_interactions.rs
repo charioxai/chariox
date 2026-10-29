@@ -262,6 +262,9 @@ pub struct RuntimeInteraction {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProviderLogin {
+    /// Kernel retry feedback, absent during normal sign-in instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
     pub kernel_id: String,
     pub login: crate::provider::ProviderLoginStart,
     pub terminal_output_base64: String,

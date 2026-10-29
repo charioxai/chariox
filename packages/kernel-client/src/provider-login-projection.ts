@@ -1,5 +1,7 @@
 /** MP-08/MP-10/MP-11: human-only login UI. Never include these lines in traces. */
 export type RuntimeProviderLogin = {
+  /** Kernel retry feedback; initial instructions have no problem. */
+  problem?: string | null
   kernel_id: string
   login: {
     provider: string
@@ -76,9 +78,10 @@ export function providerLoginProblem(terminalOutputBase64: string, fallbackToLas
   try {
     text = new TextDecoder().decode(Uint8Array.from(atob(terminalOutputBase64), c => c.charCodeAt(0)))
   } catch { return null }
+
   const lines = text.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .split(/\r?\n|\r/).map(line => line.replace(/[\x00-\x1f\x7f]/g, "").trim()).filter(Boolean)
-  const problem = [...lines].reverse().find(line => /error|fail|invalid|denied|expired|timed out|not accept|nothing was stored/i.test(line))
+  const problem = [...lines].reverse().find(line => /error|fail|invalid|incomplete|denied|expired|timed out|not accept|nothing was stored/i.test(line))
   return problem ?? (fallbackToLastLine ? lines.at(-1) ?? null : null)
 }
 

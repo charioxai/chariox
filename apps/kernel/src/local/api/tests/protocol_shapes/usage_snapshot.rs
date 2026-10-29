@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: account and agent references at local 770 / peer 320.
+//! MP-08/MP-10/MP-11: account and agent references at local 811 / peer 361.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -19,9 +19,9 @@ fn usage_snapshot_770_contract_roundtrips_without_private_profiles() {
         assert_eq!(serde_json::to_value(decoded).unwrap(), *response);
     }
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 770);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 810);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 320);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 360);
     };
 }

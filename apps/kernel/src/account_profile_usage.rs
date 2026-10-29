@@ -71,6 +71,7 @@ impl ProviderAccountProfileRegistry {
                     provider: public.provider,
                     profile_id: public.profile_id,
                     label: public.label,
+                    identity_summary: public.identity_summary,
                     auth_state: public.auth_state,
                     services: public.services,
                     usage: public.usage,
