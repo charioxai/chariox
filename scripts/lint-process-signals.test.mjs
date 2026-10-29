@@ -68,3 +68,9 @@ test('MP-11 signal lint inspects extensionless executable scripts', () => {
     assert.equal(lintProcessSignals({root, files:['fixture']}).violationCount, 1)
   } finally { rmSync(root, {recursive:true}) }
 })
+
+for (const source of ["trap 'kill 0' EXIT", 'kill 0', 'kill -- 0', 'kill -n 9 -"$pgid"']) {
+  test(`MP-11 rejects a shell group signal without a signal option: ${source}`, () => {
+    assert.ok(signalViolations(source).some(site => site.kind === 'shell-group'))
+  })
+}
