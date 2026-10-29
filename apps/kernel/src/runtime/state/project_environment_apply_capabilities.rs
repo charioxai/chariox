@@ -359,6 +359,17 @@ mod tests {
             .provider_account_profile_registry()
             .create_managed("alice", "opencode", "Room App prompt fixture")
             .unwrap();
+        let environment = app
+            .provider_account_profile_registry()
+            .resolve_environment("alice", "opencode", &profile.profile_id)
+            .unwrap();
+        let auth_directory = std::path::Path::new(&environment["XDG_DATA_HOME"]).join("opencode");
+        std::fs::create_dir_all(&auth_directory).unwrap();
+        crate::config::write_private_file(
+            &auth_directory.join("auth.json"),
+            br#"{"openai":{"type":"api","key":"fixture-only-not-a-real-key"}}"#,
+        )
+        .unwrap();
         app.provider_account_profile_registry()
             .update_observation(
                 "alice",
