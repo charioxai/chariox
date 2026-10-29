@@ -3,6 +3,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OwnedDisplay, ownsDisplay } from './kernel-browser-owned-display.mjs';
 import { LinuxCapture, selectNativeCapture, nativeRefusalReason } from './kernel-browser-native.mjs';
+import {NativeRegionProtection} from './kernel-browser-region-protection.mjs';
+
+test('MP-08/MP-10/MP-11 DOM refresh without Vault targets preserves the native video chain',()=>{
+ const policy={targets:[],values:[]},browser={fillTargets:new Map()};
+ const source=new LinuxCapture({sessionId:'s',tab:{target_id:'target',tab_id:'tab',document_id:'document'},policy,browser,followsDocument:true});
+ source.regions=new NativeRegionProtection({},'s',{policy,browser});source.attested=true;
+ let retired=0,released=0;
+ source.nativeWorker={retireState(){retired++}};
+ const sample={raw:{release(){released++}}};source.latest=sample;
+ source.onCdp({sessionId:'s',method:'DOM.documentUpdated'});
+ assert.equal(source.latest,sample,'DOM inspection alone cannot retire an unmasked native frame');
+ assert.equal(source.regionRevision,0);assert.equal(retired,0);assert.equal(released,0);
+ // A fill anywhere in the browser enables the ordinary conservative metadata fence.
+ browser.fillTargets.set('field',{});
+ source.onCdp({sessionId:'s',method:'DOM.documentUpdated'});
+ assert.equal(source.latest,null);assert.equal(source.regionRevision,1);assert.equal(retired,1);assert.equal(released,1);
+ browser.fillTargets.clear();let followed;
+ source.followDocument=document=>{followed=document};
+ source.onCdp({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'frame',loaderId:'next'}}});
+ assert.equal(followed,'next','navigation keeps its independent document fence without a Vault target');
+});
 for(const display of [null,{}, {display:':0',pid:200}, {display:':99',owned:true}])
  test('MD-DISPLAY refuses unowned display '+JSON.stringify(display),async()=>{
   let launched=false;

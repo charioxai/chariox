@@ -67,9 +67,11 @@ export class LinuxCapture {
   if(this.closed)return;
   if(this.paintHold&&m.sessionId===this.sessionId&&m.method==='Page.lifecycleEvent'&&m.params?.loaderId===this.paintHold.document&&['firstPaint','firstContentfulPaint'].includes(m.params?.name))this.endPaintHold(this.paintHold);
   if(m.method==='Target.targetCreated'&&m.params?.targetInfo?.type==='page'){this.timing('native_fenced target_created '+this.phase,performance.timeOrigin+performance.now());this.fence();}
-  // MP-11: attribute-only protection changes produce no XDamage. Retire even
-  // before attestation, so an empty snapshot cannot outlive marker insertion.
-  if(this.regions&&regionProtectionChanged(m,this.sessionId,this.regions.tracker())){
+  // A DOM inspection refreshes its tree without changing the document. Only
+  // the native tracker's global Vault-target knowledge can skip this mask fence;
+  // the CDP fallback's last empty mask list cannot prove that no target exists.
+  const tracker=this.regions?.tracker();
+  if(tracker&&(tracker.targets||m.method!=='DOM.documentUpdated')&&regionProtectionChanged(m,this.sessionId,tracker)){
    // MP-08/MP-10/MP-11: the owned window/document binding stays intact,
    // also during attestation (pages that mutate continuously still attest).
    // Retire all pixels and queued consumers by revision, refresh only trusted
