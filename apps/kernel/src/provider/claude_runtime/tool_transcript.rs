@@ -425,7 +425,10 @@ mod tests {
             json!([{"type":"text","text":"caption"}, png, svg, huge, url]),
         ));
         assert_eq!(output[0]["output"], "caption");
-        assert_eq!(output[0]["images"], json!(["data:image/png;base64,iVBORw0KGgo="]));
+        assert_eq!(
+            output[0]["images"],
+            json!(["data:image/png;base64,iVBORw0KGgo="])
+        );
         transcript.observe(&invocation("plain", "Read"));
         let plain = transcript.observe(&result("plain", json!("text only")));
         assert!(plain[0].get("images").is_none());
