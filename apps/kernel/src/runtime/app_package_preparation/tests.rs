@@ -259,6 +259,7 @@ fn new_node_package_requires_rebuild_without_activating_or_deleting_data() {
         crate::session::unix_epoch_ms(),
         true,
         |_| Ok(()),
+        PreparationSource::Publisher,
     );
     assert_eq!(result.err(), Some(PreparationError::LegacyNodePackage));
     assert!(root.releases().is_empty());
@@ -468,6 +469,7 @@ fn node_upload_is_accepted_while_native_v2_runtime_is_unavailable() {
         "alice".into(),
         handle,
         Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        PreparationSource::Publisher,
     ));
     assert!(
         result.is_ok(),

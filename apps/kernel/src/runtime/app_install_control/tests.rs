@@ -1,5 +1,7 @@
 use super::*;
-use crate::durable_state::app_publishers::AppPublisherMutation;
+use crate::durable_state::{
+    app_publishers::AppPublisherMutation, app_state::fixture_event_package,
+};
 use crate::local::*;
 use crate::runtime::command::KernelCommand;
 use crate::{
