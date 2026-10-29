@@ -326,11 +326,10 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
     assert_eq!(runs[0].id(), "interrupt-provider-run");
 }
 
-// A12-S06: an upgrade leaves a legacy run without a live turn; until the owner adopts
-// or stops it, the orphan sweep must keep it draining (an ordinary run gets no such cover).
-// Adopting hands that cover to the goal's legacy-run relationship, not drops it.
+// MP-08 / MP-09 / MP-10 / MP-11: neither an alias nor adoption proves live work.
+// Prompt ownership and admitted node tasks remain the shared supervision path.
 #[tokio::test]
-async fn a12_legacy_run_is_supervised_before_and_after_the_owner_adopts_it() {
+async fn a12_legacy_adoption_does_not_invent_supervised_node_tasks() {
     let fixture = |alias: &str| {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.room_agent_tools = true;
@@ -351,7 +350,7 @@ async fn a12_legacy_run_is_supervised_before_and_after_the_owner_adopts_it() {
     };
     assert!(!supervised(&fixture("interrupt-durability")));
     let legacy = fixture("planner-worker-reviewer");
-    assert!(supervised(&legacy));
+    assert!(!supervised(&legacy));
     legacy
         .runtime
         .owned
@@ -368,7 +367,7 @@ async fn a12_legacy_run_is_supervised_before_and_after_the_owner_adopts_it() {
             },
         )
         .unwrap();
-    assert!(supervised(&legacy));
+    assert!(!supervised(&legacy));
 }
 
 // A plain turn only gets a task row: ending after a tool call with no answer is
