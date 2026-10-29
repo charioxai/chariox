@@ -230,7 +230,9 @@ mod tests {
         let held = open_for_owner(&path, 0).unwrap();
         held.lock_exclusive().unwrap();
         let probe = |blocked| {
-            let mut command = crate::process_spawn::command(&executable);
+            // This bootstraps an ordinary kernel identity. Workload pre-exec
+            // hooks cannot write procfs after this fixture drops its root UID.
+            let mut command = std::process::Command::new(&executable);
             command
                 .args(["--exact", "slice::local_docker::admission_lock::tests::provisioned_root_lock_uses_kernel_opener_as_ordinary_uid"])
                 .uid(65534)
