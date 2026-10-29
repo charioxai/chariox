@@ -105,25 +105,7 @@ impl KernelRuntimeOwnedState {
 
 /// Finished tasks a snapshot still carries; a long room must not grow every
 /// snapshot by one task per turn.
-const VISIBLE_FINISHED_TASKS: usize = 32;
-
-/// Every unfinished task plus the most recent finished ones, in ledger order.
-pub(super) fn visible_tasks(tasks: Vec<AgentTaskExecution>) -> Vec<AgentTaskExecution> {
-    let mut finished = 0;
-    let mut visible: Vec<_> = tasks
-        .into_iter()
-        .rev()
-        .filter(|task| {
-            if !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
-                return true;
-            }
-            finished += 1;
-            finished <= VISIBLE_FINISHED_TASKS
-        })
-        .collect();
-    visible.reverse();
-    visible
-}
+pub(super) const VISIBLE_FINISHED_TASKS: usize = 32;
 
 pub(super) fn task_status_notice(task: &AgentTaskExecution, name: &str) -> String {
     let state = match task.state {
@@ -266,27 +248,6 @@ mod tests {
             .map(|(i, status)| serde_json::json!({"id":format!("ob-{i}"),"kind":"delegate","resource_id":format!("agent-{i}"),"status":status,"dispatch_state":"accepted"}))
             .collect::<Vec<_>>();
         serde_json::from_value(serde_json::json!({"task_id":"t","room_id":"r","agent_id":"a","prompt_id":"t","provider_run_id":"run","revision":1,"state":"working","reason":"","obligations":obligations,"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":true,"pending_prompt_id":"task-correction-t"})).unwrap()
-    }
-    #[test]
-    fn snapshot_keeps_every_unfinished_task_and_only_recent_finished_ones() {
-        let mut tasks = Vec::new();
-        for index in 0..40 {
-            let mut task = correction_task(&[]);
-            task.task_id = format!("t{index}");
-            task.state = if index == 0 {
-                ExecutionState::Waiting
-            } else {
-                ExecutionState::Done
-            };
-            tasks.push(task);
-        }
-        let ids: Vec<_> = visible_tasks(tasks)
-            .into_iter()
-            .map(|t| t.task_id)
-            .collect();
-        assert_eq!(ids.len(), 33);
-        assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
-        assert_eq!(ids[32], "t39");
     }
     #[test]
     fn r16_task_notice_uses_the_agent_name_without_protocol_details() {

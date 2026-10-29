@@ -3551,3 +3551,39 @@ fn deleted_child_settles_reply_without_an_admitted_receiver_task() {
     );
     assert!(!f.store.agent_registrations("p").unwrap()[0].live);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a snapshot reads every unfinished task and only the most
+// recent finished ones, so a room with a long history costs a read no more.
+#[test]
+fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let insert = |id: &str, room: &str, state: &str| {
+        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":"a","prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"progress_sequence":0,"no_progress_wakes":0,"correction_used":false,"pending_prompt_id":null});
+        db.execute(
+            "INSERT INTO agent_tasks VALUES(?1,?2,'a',?1,?3)",
+            params![id, room, payload.to_string()],
+        )
+        .unwrap();
+    };
+    insert("t0", "r", "waiting");
+    for index in 1..40 {
+        insert(&format!("t{index}"), "r", "done");
+    }
+    db.execute(
+        "INSERT INTO agent_tasks VALUES('broken','r','a','broken','{')",
+        [],
+    )
+    .unwrap();
+    insert("other", "elsewhere", "working");
+    let ids: Vec<_> = f
+        .store
+        .visible_agent_tasks("r", 32)
+        .unwrap()
+        .into_iter()
+        .map(|task| task.task_id)
+        .collect();
+    assert_eq!(ids.len(), 34);
+    assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
+    assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
+}

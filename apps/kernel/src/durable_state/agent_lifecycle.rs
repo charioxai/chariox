@@ -152,6 +152,42 @@ impl DurableKernelStateStore {
         })
         .collect()
     }
+    /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
+    /// order. Older finished tasks are not read, so a long room costs a read no more.
+    pub(crate) fn visible_agent_tasks(
+        &self,
+        room: &str,
+        finished: usize,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.visible_tasks")?;
+        // An unreadable payload counts as unfinished; decoding quarantines it below.
+        let mut q = db
+            .prepare(
+                "WITH t AS (SELECT rowid AS r,task_id,room_id,agent_id,prompt_id,payload,\
+                 CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') END \
+                 IN ('done','cancelled') AS finished FROM agent_tasks WHERE room_id=?1) \
+                 SELECT task_id,room_id,agent_id,prompt_id,payload FROM t WHERE finished IS NOT 1 \
+                 OR r IN (SELECT r FROM t WHERE finished ORDER BY r DESC LIMIT ?2) ORDER BY r",
+            )
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, sql_integer(finished as u64)?], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+        })
+        .collect()
+    }
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
