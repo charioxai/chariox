@@ -76,7 +76,7 @@ test('caller attribution and registered form completion through Chromium', async
       const pos = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`);
       await browserInput({kind:'click',...pos},id);
     }
-    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill']]) {
+    for (const [input, firstMethod, secondMethod] of [['click','clicked','after_click'],['keyboard','save','refresh'],['form_click','save','refresh'],['room_click','clicked','after_click'],['room_submit','save','refresh'],['room_fill_submit','save','refresh'],['room_fill','filled','after_fill'],['text','filled','after_fill'],['printable','filled','after_fill'],['transform','filled','after_fill'],['text_pointer','filled','after_fill']]) {
       if (input.startsWith('room_')) {
         const selector = input === 'room_click' ? '#agent' : input === 'room_fill' ? '#filled' : '#save input';
         const { root } = await connection.send('DOM.getDocument', {}, sessionId);
@@ -86,10 +86,33 @@ test('caller attribution and registered form completion through Chromium', async
         const action = input === 'room_click' ? {kind:'click'} : input === 'room_submit' ? {kind:'submit'} : {kind:'fill',text:'Edited',append:false,submit:input !== 'room_fill'};
         await host.browser.performAction({ target_id:target, document_id:frameTree.frame.loaderId,
           node_ref:'backend:'+node.backendNodeId, action, timeout_ms:500, agent_id:'agent-one' });
-      } else if (input === 'text' || input === 'printable' || input === 'transform') {
+      } else if (input === 'text' || input === 'printable' || input === 'transform' || input === 'text_pointer') {
         await evaluate(`window.transformEdit = ${input === 'transform'}; document.querySelector('#filled').value = ''`);
         await browserClick('#filled');
-        await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:'Inserted'},'agent-one');
+        const send = connection.send;
+        let moved = false;
+        if (input === 'text_pointer') {
+          await evaluate(`window.interveningPointer = []; for (const type of ['pointermove','mousemove']) document.addEventListener(type, event => window.interveningPointer.push({type:event.type,trusted:event.isTrusted,focused:document.activeElement.id}), {once:true})`);
+          connection.send = async function(method, params, ...rest) {
+            const reply = await send.call(this, method, params, ...rest);
+            if (method === 'Runtime.evaluate' && params.expression?.startsWith('globalThis.__charioxViewInput.armText(')) {
+              // Inject native, trusted browser input in the exact gap between
+              // arming the caller and the host's queued text insertion.
+              await send.call(this, 'Input.dispatchMouseEvent', {type:'mouseMoved',x:700,y:300}, sessionId);
+              moved = true;
+            }
+            return reply;
+          };
+        }
+        try {
+          await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:'Inserted'},'agent-one');
+        } finally { connection.send = send; }
+        if (input === 'text_pointer') {
+          assert.equal(moved, true, 'the pointer event intervenes after armText acknowledges');
+          assert.deepEqual(await evaluate('window.interveningPointer'), [
+            {type:'pointermove',trusted:true,focused:'filled'}, {type:'mousemove',trusted:true,focused:'filled'},
+          ]);
+        }
         if (input === 'text' || input === 'transform') {
           assert.deepEqual(await evaluate('window.beforeEdit'), {data:'Inserted',trusted:true,cancellable:true});
           assert.equal(await evaluate("document.querySelector('#filled').value"),input === 'transform' ? 'INSERTED' : 'Inserted');
@@ -110,6 +133,7 @@ test('caller attribution and registered form completion through Chromium', async
       await respond(humanInput); await respond(firstInput);
       const afterInput = await nextCall(); assert.equal(afterInput.method,secondMethod);
       assert.deepEqual(afterInput.actor,{kind:'agent',id:'agent-one'}, 'the input caller survives an awaited backend reply');
+      assert.equal((await agent('compete','agent-two')).result.code,'view_busy','reservation survives the awaited backend reply');
       await respond(afterInput);
       for (let i=0;i<100 && [...host.browser.appTabs.apps.values()].some(app=>app.agentRunning);i++) await delay(10);
       observations[input+'Input'] = {agent:firstInput.actor,human:humanInput.actor??null,after:afterInput.actor};
