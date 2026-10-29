@@ -56,3 +56,19 @@ test("P03 explicit review retains a typed edit when another editor removed its r
   assert.equal(mergeEnvironmentDraft(base, ours, { project_requirements: [], folders: [] }).project_requirements[0]?.title, "Reviewed removal")
   assert.deepEqual(mergeEnvironmentDraft(base, base, { project_requirements: [], folders: [] }).project_requirements, [])
 })
+
+test("Software spec rebase preserves disjoint saved fields in the resubmitted revision", () => {
+  const base = environmentRevisionDraft(environment)
+  assert.equal(requirement.spec.kind, "software")
+  if (requirement.spec.kind !== "software") throw new Error("Software fixture required")
+  const ours = editEnvironmentRequirement(base, "node", { spec: { ...requirement.spec, install_scope: "user" } })
+  const theirs = editEnvironmentRequirement(base, "node", { spec: { ...requirement.spec, version_constraint: "24" } })
+  const latest = { ...environment, revision: 3, content_digest: "saved-by-A", project_requirements: theirs.project_requirements }
+  const merged = mergeEnvironmentDraft(base, ours, environmentRevisionDraft(latest))
+  assert.deepEqual(merged.project_requirements[0]?.spec, { ...requirement.spec, version_constraint: "24", install_scope: "user" })
+  const request = saveEnvironmentRevisionRequest(latest, merged).SaveProjectEnvironmentRevision
+  assert.equal(request.expectedRevision, 3)
+  assert.equal(request.expectedContentDigest, "saved-by-A")
+  assert.deepEqual(request.draft.project_requirements[0]?.spec, merged.project_requirements[0]?.spec)
+  assert.equal(requirement.spec.version_constraint, "22")
+})

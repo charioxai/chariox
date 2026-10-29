@@ -46,10 +46,10 @@ impl KernelRuntimeState {
         let (project, _, _) = self.apply_context(&request.project_id, user)?;
         let env = store.snapshot_locked(&project)?;
         validate_revision(&env, request.expected_revision, &request.revision_digest)?;
+        drop(_lock);
         let state = self.clone();
         let owner = user.to_owned();
         let plan = tokio::task::spawn_blocking(move || {
-            let _lock = _lock;
             let selected = apply_selection(&env, &request.selected_items)?;
             let binding_scopes = if request.selected_items.is_empty() {
                 std::iter::once(RequirementScope::Project)
@@ -86,13 +86,48 @@ impl KernelRuntimeState {
                     &mut workspace,
                 ));
             }
+            let _lock = store.lock_briefly(project.id())?;
             validate_project(&state, &project, &owner, &env, &store)?;
-            let plan = build_apply_plan(&env, target, &request.selected_items, &observations)?;
-            for o in observations {
-                checks.record_observation(o);
+            if current_check_target(&state.owned.config_projection.snapshot()) != target {
+                return Err(environment_error(
+                    "Plan target changed during probes; refresh and retry",
+                ));
             }
-            checks.folder_binding_digest = folder_bindings_digest(&env);
-            store.save_checks(project.id(), &checks)?;
+            // Apply and Check can publish while Plan probes. Merge into their latest journal.
+            let mut latest = store.load_checks(project.id())?;
+            for mut observation in observations {
+                let key = format!(
+                    "{}:{}:{}",
+                    observation.revision_digest, target.machine_id, observation.requirement_id
+                );
+                if checks
+                    .public_bindings
+                    .get(&key)
+                    .zip(latest.public_bindings.get(&key))
+                    .is_some_and(|(a, b)| a != b)
+                {
+                    observation.status = EnvironmentObservationStatus::Outdated;
+                    observation.reason_code = "binding_drift".into();
+                    observation.safe_summary =
+                        "Public binding changed since its first Check for this revision".into();
+                }
+                let newer = latest.observations.iter().any(|current| {
+                    current.requirement_id == observation.requirement_id
+                        && current.target.machine_id == observation.target.machine_id
+                        && current.target.slice_ref == observation.target.slice_ref
+                        && current.checked_at_ms > observation.checked_at_ms
+                });
+                if !newer {
+                    latest.record_observation(observation);
+                }
+            }
+            for (key, digest) in checks.public_bindings {
+                latest.public_bindings.entry(key).or_insert(digest);
+            }
+            let plan =
+                build_apply_plan(&env, target, &request.selected_items, &latest.observations)?;
+            latest.folder_binding_digest = folder_bindings_digest(&env);
+            store.save_checks(project.id(), &latest)?;
             let mut journal = store.load_applies(project.id())?;
             journal
                 .plans

@@ -87,7 +87,6 @@ pub(crate) fn project_public_setup_environment_until(
                 .is_some_and(|locator| *locator == &entry.locator)
                 && entry.classification == ProjectEnvironmentClassification::NonSecret
                 && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
-                && !crate::secret::secret_like_env_name(&entry.name)
         },
         &mut |root, path| {
             super::setup_inputs::setup_public_file(config, root, path, deadline, &mut cancelled)

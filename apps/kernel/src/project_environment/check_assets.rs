@@ -124,13 +124,6 @@ pub(super) fn check_assets(
                     "Protected kernel/provider binding cannot be probed",
                 );
             }
-            if project_environment_public_source_protected(locator) {
-                return outcome(
-                    NeedsYourInput,
-                    "vault_required",
-                    "Binding source requires Vault classification; no value or digest exposed",
-                );
-            }
             let binding = match locator {
                 ProjectEnvironmentLocator::WorkspaceEnvironment { name } => super::check_binding::summarize(std::env::var(name).ok().map(Zeroizing::new)),
                 _ => match super::check_files::binding(&ctx.config, workspace(env, r), locator, deadline) {
