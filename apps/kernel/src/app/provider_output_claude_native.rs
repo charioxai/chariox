@@ -1237,7 +1237,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         // its literal spaces.
         let mut recent = None;
         if provider_run.provider() == "claude-headless" {
-            let recent = recent.insert(update_claude_permission_recent(context_file, rendered));
+            let recent: &str =
+                recent.insert(update_claude_permission_recent(context_file, rendered));
             if claude_headless_bypass_selection_pending(context_file) {
                 append_claude_headless_debug(
                     context_file,
@@ -1250,7 +1251,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
-            if claude_headless_workspace_trust_visible(&recent) {
+            if claude_headless_workspace_trust_visible(recent) {
                 let startup_waiting = claude_native_marker(context_file)
                     .as_deref()
                     .is_some_and(|value| value.starts_with("startup-wait:"));
@@ -1264,13 +1265,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             provider_run,
                             context_file,
                             bridge,
-                            &recent,
+                            recent,
                         )?;
                     }
                 }
                 return Ok(());
             }
-            if claude_headless_bypass_confirmation_visible(&recent) {
+            if claude_headless_bypass_confirmation_visible(recent) {
                 append_claude_headless_debug(context_file, "auto_confirm", "bypass_permissions");
                 self.app
                     .write_provider_pty_input_for_runtime(provider_run_id, b"\x1b[B")?;
