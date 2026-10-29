@@ -1,19 +1,17 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: use the same committed activity as the clients.
 use super::*;
-use crate::durable_state::agent_lifecycle::outside::RunState;
+use crate::durable_state::agent_lifecycle::outside::{RunState, SettledTurn};
 use crate::runtime::projection::{AgentRuntimeActivity, AgentRuntimeStatus};
 use std::collections::BTreeSet;
 
-/// The typed cause recorded for the agent's failed turn.
-fn failed_turn_cause(activity: &AgentRuntimeActivity) -> Option<crate::provider::ProviderFailure> {
-    activity
-        .last_completed_turn
-        .as_ref()
-        .filter(|turn| {
-            turn.settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed
-        })?
-        .failure
-        .clone()
+/// The agent's last settled turn and how it ended.
+fn settled_turn(activity: &AgentRuntimeActivity) -> Option<SettledTurn> {
+    let turn = activity.last_completed_turn.as_ref()?;
+    Some(SettledTurn {
+        prompt_id: turn.prompt_id.clone(),
+        turn_id: turn.turn_id.clone(),
+        outcome: turn.outcome.clone()?,
+    })
 }
 
 impl KernelRuntimeOwnedState {
@@ -68,9 +66,18 @@ impl KernelRuntimeOwnedState {
                 }) {
                     continue;
                 }
-                let failure = (value.status == AgentRuntimeStatus::Error)
-                    .then(|| failed_turn_cause(&value))
-                    .flatten();
+                let turn = settled_turn(&value);
+                // The turn that just settled keeps its activity until the settlement
+                // finishes. That is not a successor starting, so its end is published
+                // once, when the activity clears.
+                if value.status == AgentRuntimeStatus::Working
+                    && turn
+                        .as_ref()
+                        .zip(value.active_turn.as_ref())
+                        .is_some_and(|(settled, active)| settled.prompt_id == active.prompt_id)
+                {
+                    continue;
+                }
                 let state = match value.status {
                     AgentRuntimeStatus::Idle => EventRunState::Idle,
                     AgentRuntimeStatus::Working => EventRunState::Working,
@@ -80,7 +87,7 @@ impl KernelRuntimeOwnedState {
                     session_id: id.into(),
                     agent_id,
                     state,
-                    failure,
+                    turn,
                 });
             }
         }

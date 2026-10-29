@@ -102,7 +102,7 @@ impl KernelRuntimeState {
         &'a self,
         run: &'a crate::provider::RuntimeProviderRun,
         message: &'a str,
-        failure: crate::provider::ProviderFailure,
+        failure: crate::provider::TurnOutcome,
         expected_prompt_id: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
     {
@@ -115,8 +115,7 @@ impl KernelRuntimeState {
         message: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>
     {
-        let failure =
-            crate::provider::ProviderFailure::classify(started.run.adapter_key(), message);
+        let failure = crate::provider::TurnOutcome::classify(started.run.adapter_key(), message);
         self.start_provider_auth_recovery(
             &started.run,
             message,
@@ -130,7 +129,7 @@ impl KernelRuntimeState {
         &'a self,
         run: &'a crate::provider::RuntimeProviderRun,
         message: &'a str,
-        failure: crate::provider::ProviderFailure,
+        failure: crate::provider::TurnOutcome,
         expected_prompt_id: Option<&'a str>,
         failed_launch: Option<crate::app::StartedProviderLaunch>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, DaemonError>> + Send + 'a>>

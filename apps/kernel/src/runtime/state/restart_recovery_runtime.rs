@@ -1,5 +1,6 @@
 //! Startup reconciliation for durable prompt work left active by a previous kernel process.
 
+use super::prompt_cancellation_owned_state::PromptEnding;
 use super::*;
 
 /// Prefix stamped onto the `source_attachment_id` of every kernel-internal
@@ -240,8 +241,13 @@ impl KernelRuntimeState {
                     active_prompt,
                     queued_prompts,
                 )?;
-                self.finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
-                    .await?;
+                self.finalize_cancelled_local_prompt_after_restart(
+                    &session_id,
+                    &agent_id,
+                    &prompt,
+                    PromptEnding::InterruptedByRestart(reason),
+                )
+                .await?;
                 Ok::<_, DaemonError>(true)
             }
             .await;
@@ -266,7 +272,9 @@ impl KernelRuntimeState {
                         None,
                         Some(&agent_id),
                         recipients,
-                        reason,
+                        PromptEnding::InterruptedByRestart(reason)
+                            .outcome()
+                            .notice(),
                     );
                 }
                 Ok(false) => {}
@@ -491,6 +499,7 @@ impl KernelRuntimeState {
                             session.id(),
                             agent_id,
                             &prompt,
+                            PromptEnding::Cancelled,
                         )
                         .await
                     {
@@ -775,6 +784,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
+        ending: PromptEnding,
     ) -> Result<CancelledLocalPromptRestartOutcome, DaemonError> {
         let failed_delivery = prompt
             .durable_delivery_provider_run_id()
@@ -841,14 +851,13 @@ impl KernelRuntimeState {
                 .map(|run| run.id().to_string())
         };
         self.owned.workflow_cancel_prompt(session_id, prompt)?;
-        let cancellation = self
-            .owned
-            .finalize_local_prompt_cancellation_with_queued_advance(
-                session_id,
-                agent_id,
-                prompt.id(),
-                provider_run_id.as_deref(),
-            )?;
+        let cancellation = self.owned.finalize_local_prompt_ending(
+            session_id,
+            agent_id,
+            prompt.id(),
+            provider_run_id.as_deref(),
+            ending,
+        )?;
         if cancellation.released_claim {
             self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         }
@@ -2126,6 +2135,106 @@ mod tests {
             task.reason.contains("could not be restored"),
             "{}",
             task.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+        );
+        // A provider whose account is not signed in cannot launch.
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("claude".into()), None, None)
+            .expect("agent provider should change");
+        runtime
+            .outside_part_request(
+                "follower",
+                true,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                &crate::local::LocalDaemonRequest::SubscribeEvents(
+                    crate::local::SubscribeEventsRequest {
+                        targets: vec![crate::local::EventTarget {
+                            kernel: runtime.owned.config_projection.snapshot().daemon_id,
+                            session_id: session_id.clone(),
+                            agent_id: Some(agent_id.clone()),
+                        }],
+                    },
+                ),
+            )
+            .expect("the follower subscribes");
+        let targets = runtime.durable_restart_recovery_targets();
+
+        runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        runtime
+            .owned
+            .publish_outside_runtime_activity()
+            .expect("the follower's state is published");
+        let events: Vec<serde_json::Value> = runtime
+            .outside_store()
+            .outside_list("follower", None, 100)
+            .expect("events list")
+            .expect("the follower has events")
+            .events
+            .into_iter()
+            .map(|event| serde_json::to_value(event.value).expect("event serializes"))
+            .filter(|value| value["type"] == "agent" && value["value"]["run_state"].is_string())
+            .map(|value| value["value"].clone())
+            .collect();
+        let ended = events.last().expect("the follower hears the turn end");
+        assert_eq!(ended["run_state"], "error", "{ended}");
+        assert_eq!(
+            ended["outcome"]["kind"], "interrupted_by_restart",
+            "{ended}"
+        );
+        assert_eq!(ended["outcome"]["retryable"], true, "{ended}");
+        assert!(
+            ended["outcome"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("could not be restored")),
+            "{ended}"
+        );
+        assert_eq!(ended["prompt_id"], prompt_id.as_str(), "{ended}");
+        assert_eq!(ended["turn_id"], prompt_id.as_str(), "{ended}");
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .expect("history loads")
+            .expect("the turn has settlement history");
+        assert_eq!(
+            settlement.metadata["prompt_settlement_status"], "failed",
+            "an interrupted turn is not a cancelled one"
+        );
+        assert_eq!(
+            settlement.metadata["turn_outcome"]["kind"],
+            "interrupted_by_restart"
+        );
+        let turn = runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session_id, &agent_id)
+            .expect("the turn is in the state");
+        assert_eq!(
+            serde_json::to_value(turn).expect("turn serializes")["outcome"]["kind"],
+            "interrupted_by_restart"
         );
     }
 

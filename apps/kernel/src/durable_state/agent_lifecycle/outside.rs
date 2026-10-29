@@ -22,7 +22,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 }
 
 mod model;
-pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState};
+pub(crate) use model::{Mutation, OpenDecision, Part, Recipient, RunState, SettledTurn};
 mod producers;
 use producers::identity;
 pub(super) use producers::{publish_deadline, publish_task};
@@ -129,6 +129,7 @@ fn end(tx: &Transaction<'_>, part: &mut Part, reason: &str) -> Result<(), Daemon
     }
     part.targets.clear();
     part.run_states.clear();
+    part.settled_prompts.clear();
     part.kernel_health.clear();
     Ok(())
 }
@@ -148,51 +149,47 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                 return Ok(Outcome::Saved);
             };
             for state in states {
-                let failure = state.failure.clone();
-                let event = OutsideEvent {
-                    cursor: 0,
-                    kernel: kernel.clone(),
-                    machine: machine.clone(),
-                    session_id: state.session_id,
-                    agent_id: Some(state.agent_id),
-                    value: OutsideEventValue::Agent {
-                        run_state: Some(state.state),
-                        task_state: None,
-                        reason: None,
-                        failure: failure.clone(),
-                    },
-                    summary: match (state.state, &failure) {
-                        (crate::local::EventRunState::Working, _) => "working".into(),
-                        (crate::local::EventRunState::Idle, _) => "idle".into(),
-                        (crate::local::EventRunState::Error, None) => "error".into(),
-                        (crate::local::EventRunState::Error, Some(failure)) => {
-                            format!("error: {}", failure.summary())
-                        }
-                    },
-                    at_ms: outside_now_ms()?,
-                    refs: Default::default(),
-                };
+                let at_ms = outside_now_ms()?;
+                let event = agent_event(&kernel, &machine, &state, state.state, at_ms);
                 let key = run_state_key(&event)?;
                 for mut part in parts(tx)? {
                     if part.ended.is_some() || !matches(&part, &event) {
                         continue;
                     }
-                    let previous = part
+                    let mut previous = part
                         .run_states
                         .get(&key)
                         .copied()
                         .unwrap_or(crate::local::EventRunState::Idle);
-                    if previous == state.state {
-                        continue;
+                    let unheard = state
+                        .turn
+                        .as_ref()
+                        .filter(|turn| part.settled_prompts.get(&key) != Some(&turn.prompt_id));
+                    if state.state == crate::local::EventRunState::Working {
+                        // A turn that ended into a queued one leaves the agent working. It
+                        // is heard on its own, ahead of the next turn's start.
+                        if let Some(turn) = unheard {
+                            previous = if turn.outcome.is_error() {
+                                crate::local::EventRunState::Error
+                            } else {
+                                crate::local::EventRunState::Idle
+                            };
+                            let ended = agent_event(&kernel, &machine, &state, previous, at_ms);
+                            append_run_state(tx, &mut part, &key, previous, Some(turn), &ended)?;
+                        }
+                        if previous != state.state {
+                            append_run_state(tx, &mut part, &key, state.state, None, &event)?;
+                        }
+                    } else if previous != state.state || unheard.is_some() {
+                        append_run_state(
+                            tx,
+                            &mut part,
+                            &key,
+                            state.state,
+                            state.turn.as_ref(),
+                            &event,
+                        )?;
                     }
-                    part.run_states.insert(key.clone(), state.state);
-                    append(
-                        tx,
-                        &mut part,
-                        &format!("activity-{:032x}", rand::random::<u128>()),
-                        &event,
-                    )?;
-                    bound(tx, &mut part, inbox_limit()?)?;
                     put(tx, &part)?;
                 }
             }
@@ -250,9 +247,12 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                         serde_json::to_string(&(&kernel, &state.session_id, Some(&state.agent_id)))
                             .map_err(|_| error("event run-state key could not be encoded"))?;
                     if let std::collections::btree_map::Entry::Vacant(entry) =
-                        part.run_states.entry(key)
+                        part.run_states.entry(key.clone())
                     {
                         entry.insert(state.state);
+                        if let Some(turn) = &state.turn {
+                            part.settled_prompts.insert(key, turn.prompt_id.clone());
+                        }
                         changed = true;
                     }
                 }
@@ -466,6 +466,66 @@ fn remove_ended_target(
     }
     prune_target_state(part)
 }
+/// The agent event for `run_state`, carrying the settled turn unless the agent is working.
+fn agent_event(
+    kernel: &str,
+    machine: &str,
+    state: &RunState,
+    run_state: crate::local::EventRunState,
+    at_ms: u64,
+) -> OutsideEvent {
+    let turn = state
+        .turn
+        .as_ref()
+        .filter(|_| run_state != crate::local::EventRunState::Working);
+    OutsideEvent {
+        cursor: 0,
+        kernel: kernel.into(),
+        machine: machine.into(),
+        session_id: state.session_id.clone(),
+        agent_id: Some(state.agent_id.clone()),
+        value: OutsideEventValue::Agent {
+            run_state: Some(run_state),
+            task_state: None,
+            reason: None,
+            prompt_id: turn.map(|turn| turn.prompt_id.clone()),
+            turn_id: turn.map(|turn| turn.turn_id.clone()),
+            outcome: turn.map(|turn| turn.outcome.clone()),
+        },
+        summary: match (run_state, turn) {
+            (crate::local::EventRunState::Working, _) => "working".into(),
+            (crate::local::EventRunState::Idle, _) => "idle".into(),
+            (crate::local::EventRunState::Error, None) => "error".into(),
+            (crate::local::EventRunState::Error, Some(turn)) => {
+                format!("error: {}", turn.outcome.summary())
+            }
+        },
+        at_ms,
+        refs: Default::default(),
+    }
+}
+/// Hands `event` to the holder and remembers the state, and the turn it told of.
+fn append_run_state(
+    tx: &Transaction<'_>,
+    part: &mut Part,
+    key: &str,
+    run_state: crate::local::EventRunState,
+    turn: Option<&SettledTurn>,
+    event: &OutsideEvent,
+) -> Result<(), DaemonError> {
+    part.run_states.insert(key.into(), run_state);
+    if let Some(turn) = turn {
+        part.settled_prompts
+            .insert(key.into(), turn.prompt_id.clone());
+    }
+    append(
+        tx,
+        part,
+        &format!("activity-{:032x}", rand::random::<u128>()),
+        event,
+    )?;
+    bound(tx, part, inbox_limit()?)
+}
 fn run_state_key(event: &OutsideEvent) -> Result<String, DaemonError> {
     serde_json::to_string(&(&event.kernel, &event.session_id, &event.agent_id))
         .map_err(|_| error("event run-state key could not be encoded"))
@@ -486,6 +546,8 @@ fn prune_target_state(part: &mut Part) -> Result<(), DaemonError> {
         }
     }
     part.run_states = kept;
+    part.settled_prompts
+        .retain(|key, _| part.run_states.contains_key(key));
     Ok(())
 }
 /// What an outside caller may see of an event: secrets redacted.

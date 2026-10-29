@@ -406,7 +406,7 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
         receipt: Option<(&str, &crate::agent::RemoteAgentBinding)>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let sessions = self.session_store.read();
@@ -2735,7 +2735,7 @@ mod tests {
         let (runtime, session, agent, attachment, _binding) =
             mp11_fixture(crate::DaemonConfig::for_tests()).await;
         let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "work");
-        let failure = crate::provider::ProviderFailure::classify(
+        let failure = crate::provider::TurnOutcome::classify(
             "codex",
             "Codex error [usage_limit_exceeded]: You've hit your usage limit.",
         );
@@ -2770,7 +2770,7 @@ mod tests {
             settled.settlement_status,
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         );
-        assert_eq!(settled.failure, Some(failure.clone()));
+        assert_eq!(settled.outcome, Some(failure.clone()));
         assert_eq!(settled.provider_termination, None);
         let history = runtime
             .owned
@@ -2781,7 +2781,7 @@ mod tests {
         assert_eq!(
             history
                 .metadata
-                .get(crate::history::PROMPT_FAILURE_METADATA_KEY),
+                .get(crate::history::TURN_OUTCOME_METADATA_KEY),
             Some(&serde_json::json!(failure))
         );
     }

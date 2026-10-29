@@ -369,7 +369,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let provider_termination = completed_turn
             .as_ref()
             .and_then(|turn| turn.provider_termination.clone());
-        let failure = completed_turn.and_then(|turn| turn.failure);
+        let failure = completed_turn
+            .and_then(|turn| turn.outcome)
+            .filter(crate::provider::TurnOutcome::is_error);
         let mut completions = self
             .app
             .terminal
@@ -1297,7 +1299,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .get(&projected_provider_run_id);
                     let provider_diagnostic = projected_failure
                         .as_ref()
-                        .map(|failure| failure.message.clone())
+                        .map(|failure| failure.reason.clone())
                         .or_else(|| {
                             projected_termination
                                 .as_ref()
@@ -1371,8 +1373,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         projected_settled_at_ms.unwrap_or_else(crate::session::unix_epoch_ms),
                         projected_termination.clone(),
                         projected_failure.clone().or_else(|| {
-                            Some(crate::provider::ProviderFailure::new(
-                                crate::provider::ProviderFailureCause::Other,
+                            Some(crate::provider::TurnOutcome::new(
+                                crate::provider::TurnOutcomeKind::Other,
                                 false,
                                 message,
                             ))
@@ -1443,7 +1445,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
             if let Some(failure_message) = projected_failure
                 .as_ref()
-                .map(|failure| failure.message.as_str())
+                .map(|failure| failure.reason.as_str())
                 .or_else(|| {
                     projected_termination
                         .as_ref()
@@ -1597,7 +1599,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         provider_run_id: &str,
         settled_at_ms: u64,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) {
         let settlement_status = if matches!(
             prompt.status(),

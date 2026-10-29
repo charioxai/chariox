@@ -744,9 +744,7 @@ fn outline_turn_from_events_with_lifecycle(
     let completed_at_ms =
         outline_turn_completed_at_ms(prompt, lifecycle_events, prompt_origin, has_newer_prompt);
     let lifecycle = outline_turn_lifecycle(completed_at_ms, lifecycle_events);
-    let failure = (lifecycle == SessionHistoryOutlineTurnLifecycle::Failed)
-        .then(|| outline_turn_failure(lifecycle_events))
-        .flatten();
+    let outcome = outline_turn_outcome(lifecycle, lifecycle_events);
     let summary_index = events
         .iter()
         .rposition(|event| event.kind == HistoryEventKind::ProviderOutput && has_content(event));
@@ -803,7 +801,7 @@ fn outline_turn_from_events_with_lifecycle(
         external_provider_turn_id: external_identity.map(|identity| identity.provider_turn_id),
         started_at_ms: prompt.timestamp_ms,
         lifecycle,
-        failure,
+        outcome,
         completed_at_ms,
         user_prompt,
         entries,
@@ -924,12 +922,51 @@ fn outline_turn_lifecycle(
     SessionHistoryOutlineTurnLifecycle::Completed
 }
 
-fn outline_turn_failure(events: &[HistoryEvent]) -> Option<crate::provider::ProviderFailure> {
-    events.iter().find_map(|event| {
-        let failure = event
+/// How a closed turn ended. History saved before the turn outcome has none, and a failed turn
+/// saved before the typed failure has no failure either, so the lifecycle says it.
+fn outline_turn_outcome(
+    lifecycle: SessionHistoryOutlineTurnLifecycle,
+    events: &[HistoryEvent],
+) -> Option<crate::provider::TurnOutcome> {
+    use crate::git_observer::CompletedTurnSettlementStatus;
+    use SessionHistoryOutlineTurnLifecycle as Lifecycle;
+    if lifecycle == Lifecycle::Open {
+        return None;
+    }
+    let saved = events.iter().find_map(|event| {
+        if let Some(outcome) = event
             .metadata
-            .get(crate::history::PROMPT_FAILURE_METADATA_KEY)?;
-        serde_json::from_value(failure.clone()).ok()
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+        {
+            return serde_json::from_value(outcome.clone()).ok();
+        }
+        #[derive(serde::Deserialize)]
+        struct PreOutcomeFailure {
+            cause: crate::provider::TurnOutcomeKind,
+            retryable: bool,
+            message: String,
+        }
+        let failure: PreOutcomeFailure = serde_json::from_value(
+            event
+                .metadata
+                .get(crate::history::PRE_OUTCOME_FAILURE_METADATA_KEY)?
+                .clone(),
+        )
+        .ok()?;
+        Some(crate::provider::TurnOutcome::new(
+            failure.cause,
+            failure.retryable,
+            &failure.message,
+        ))
+    });
+    saved.or_else(|| {
+        let status = match lifecycle {
+            Lifecycle::Open => return None,
+            Lifecycle::Completed => CompletedTurnSettlementStatus::Completed,
+            Lifecycle::Cancelled => CompletedTurnSettlementStatus::Cancelled,
+            Lifecycle::Failed => CompletedTurnSettlementStatus::Failed,
+        };
+        Some(crate::provider::TurnOutcome::settled(status, None))
     })
 }
 

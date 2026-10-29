@@ -1,8 +1,11 @@
-//! EA2-75: why a provider turn failed, typed once from the harness's own error.
+//! How a turn ended, typed once: the outcome every client reads from the turn's
+//! event, history and state.
 //!
-//! Chariox reports the cause and retryability, preserving the harness's
-//! explicit retryability when it supplies one. It never retries, backs off or counts quota; the provider's
-//! native behaviour stays as it is.
+//! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
+//! reports the kind and retryability, preserving the harness's explicit
+//! retryability when it supplies one. It never retries, backs off or tracks usage limits; the provider's
+//! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
+//! `retryable` only; `reason` is for people.
 
 use serde::{Deserialize, Serialize};
 
@@ -11,18 +14,29 @@ const SUBSTITUTABLE_PREFIX: &str = "Provider reported a substitutable resource l
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderFailureCause {
+pub enum TurnOutcomeKind {
+    Completed,
+    Cancelled,
+    /// The kernel restarted while the turn ran and could not resume it.
+    InterruptedByRestart,
     Overloaded,
     UsageLimit,
     SignInRequired,
     ProviderCrashed,
     Network,
     Other,
+    /// A kind a newer kernel added; `reason` still says what happened.
+    #[serde(other)]
+    Unknown,
 }
 
-impl ProviderFailureCause {
+impl TurnOutcomeKind {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::InterruptedByRestart => "interrupted by restart",
+            Self::Unknown => "unknown",
             Self::Overloaded => "overloaded",
             Self::UsageLimit => "usage limit",
             Self::SignInRequired => "Sign-in required",
@@ -34,17 +48,21 @@ impl ProviderFailureCause {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderFailure {
-    pub cause: ProviderFailureCause,
+pub struct TurnOutcome {
+    pub kind: TurnOutcomeKind,
     /// A later attempt may succeed without anyone changing anything.
     pub retryable: bool,
-    /// The harness's own error text, with credentials removed.
-    pub message: String,
+    /// For people: the harness's own error text, with credentials removed.
+    pub reason: String,
 }
 
-impl ProviderFailureCause {
+impl TurnOutcomeKind {
     fn headline(self) -> &'static str {
         match self {
+            Self::Completed => "Turn completed",
+            Self::Cancelled => "Turn cancelled",
+            Self::InterruptedByRestart => "Interrupted by a restart",
+            Self::Unknown => "Turn ended",
             Self::Overloaded => "Provider overloaded",
             Self::UsageLimit => "Usage limit reached",
             Self::SignInRequired => "Sign-in required",
@@ -55,7 +73,7 @@ impl ProviderFailureCause {
     }
 }
 
-impl ProviderFailure {
+impl TurnOutcome {
     /// One line for event summaries, such as `overloaded, retryable`.
     pub fn summary(&self) -> String {
         let retry = if self.retryable {
@@ -63,33 +81,83 @@ impl ProviderFailure {
         } else {
             "not retryable"
         };
-        format!("{}, {retry}", self.cause.label())
+        format!("{}, {retry}", self.kind.label())
+    }
+
+    pub fn completed() -> Self {
+        Self::of(TurnOutcomeKind::Completed, false, "")
+    }
+
+    pub fn cancelled() -> Self {
+        Self::of(TurnOutcomeKind::Cancelled, false, "")
+    }
+
+    /// The kernel restarted and could not resume the turn; sending the request
+    /// again continues the same conversation.
+    pub fn interrupted_by_restart(reason: &str) -> Self {
+        Self::new(TurnOutcomeKind::InterruptedByRestart, true, reason)
+    }
+
+    /// The outcome of a settled turn: its status, and for a failed turn the
+    /// failure the provider reported.
+    pub(crate) fn settled(
+        status: crate::git_observer::CompletedTurnSettlementStatus,
+        failure: Option<Self>,
+    ) -> Self {
+        use crate::git_observer::CompletedTurnSettlementStatus as Status;
+        match status {
+            Status::Completed => Self::completed(),
+            Status::Cancelled => Self::cancelled(),
+            Status::Failed => {
+                failure.unwrap_or_else(|| Self::of(TurnOutcomeKind::Other, false, ""))
+            }
+        }
+    }
+
+    /// `completed` and `cancelled` are how a turn ends, not errors.
+    pub fn is_error(&self) -> bool {
+        !matches!(
+            self.kind,
+            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled
+        )
+    }
+
+    fn of(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {
+        Self {
+            kind,
+            retryable,
+            reason: reason.to_string(),
+        }
     }
 
     /// What the user does next. Chariox retries nothing, so this only says
     /// what to change before sending the request again.
     fn recovery(&self) -> &'static str {
-        match (self.cause, self.retryable) {
-            (ProviderFailureCause::Overloaded, _) => {
+        match (self.kind, self.retryable) {
+            (TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled, _) => "",
+            (TurnOutcomeKind::InterruptedByRestart, _) => {
+                "The kernel restarted while this turn was running; send the request again and the agent continues the same conversation."
+            }
+            (TurnOutcomeKind::Overloaded, _) => {
                 "The provider is overloaded; send the request again in a moment."
             }
-            (ProviderFailureCause::UsageLimit, true) => {
+            (TurnOutcomeKind::UsageLimit, true) => {
                 "The provider is rate limiting requests; wait a minute, then send the request again."
             }
-            (ProviderFailureCause::UsageLimit, false) => {
+            (TurnOutcomeKind::UsageLimit, false) => {
                 "Wait for the limit to reset (the message gives the time when the provider does) or switch this agent to another account, then send the request again."
             }
-            (ProviderFailureCause::SignInRequired, _) => {
+            (TurnOutcomeKind::SignInRequired, _) => {
                 "Sign in again in Provider Accounts, then send the request again."
             }
-            (ProviderFailureCause::ProviderCrashed, _) => {
+            (TurnOutcomeKind::ProviderCrashed, _) => {
                 "The provider process ended; send the request again to start it."
             }
-            (ProviderFailureCause::Network, _) => {
+            (TurnOutcomeKind::Network, _) => {
                 "Check the connection to the provider, then send the request again."
             }
-            (ProviderFailureCause::Other, true) => "Send the request again.",
-            (ProviderFailureCause::Other, false) => {
+            (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, true) => "Send the request again.",
+            (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, false) => {
                 "Fix the cause named in the message, then send the request again."
             }
         }
@@ -99,11 +167,7 @@ impl ProviderFailure {
     /// the harness's own words and what to do next.
     pub fn notice(&self) -> String {
         const MAX_MESSAGE_CHARS: usize = 400;
-        let message = self
-            .message
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let message = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
         let message = if message.chars().count() > MAX_MESSAGE_CHARS {
             format!(
                 "{}...",
@@ -113,7 +177,7 @@ impl ProviderFailure {
             message
         };
         let message = message.trim_end_matches('.');
-        let headline = self.cause.headline();
+        let headline = self.kind.headline();
         let reason = if message.is_empty() {
             String::new()
         } else {
@@ -122,12 +186,12 @@ impl ProviderFailure {
         format!("{headline}.{reason} {}", self.recovery())
     }
 
-    pub(crate) fn new(cause: ProviderFailureCause, retryable: bool, message: &str) -> Self {
-        Self {
-            cause,
+    pub(crate) fn new(kind: TurnOutcomeKind, retryable: bool, reason: &str) -> Self {
+        Self::of(
+            kind,
             retryable,
-            message: crate::secret_redaction::redact_secrets(message).into_owned(),
-        }
+            &crate::secret_redaction::redact_secrets(reason),
+        )
     }
 
     /// Types a harness error from the code its adapter framed (see
@@ -155,7 +219,7 @@ impl ProviderFailure {
         let normalized = message.to_lowercase();
         let has = |needles: &[&str]| needles.iter().any(|needle| normalized.contains(needle));
         let (cause, retryable) = if reports_overload(&normalized) {
-            (ProviderFailureCause::Overloaded, true)
+            (TurnOutcomeKind::Overloaded, true)
         } else if super::renewal_failure::renewal_failed(adapter_key, message)
             || has(&[
                 "please run /login",
@@ -170,12 +234,9 @@ impl ProviderFailure {
                 "unauthorized",
             ])
         {
-            (ProviderFailureCause::SignInRequired, false)
+            (TurnOutcomeKind::SignInRequired, false)
         } else if super::prompt_signals::text_reports_resource_limit(message) {
-            (
-                ProviderFailureCause::UsageLimit,
-                rate_limit_clears(&normalized),
-            )
+            (TurnOutcomeKind::UsageLimit, rate_limit_clears(&normalized))
         } else if has(&[
             "exited before",
             "exited unexpectedly",
@@ -183,7 +244,7 @@ impl ProviderFailure {
             "terminated by signal",
             "crashed",
         ]) {
-            (ProviderFailureCause::ProviderCrashed, true)
+            (TurnOutcomeKind::ProviderCrashed, true)
         } else if has(&[
             "connection refused",
             "connection reset",
@@ -200,15 +261,16 @@ impl ProviderFailure {
             "dns error",
             "timed out",
             "network is unreachable",
+            "waiting for network",
             "stream disconnected",
             "stream closed before",
             "routing discovery failed",
             "fetch failed",
             "socket hang up",
         ]) {
-            (ProviderFailureCause::Network, true)
+            (TurnOutcomeKind::Network, true)
         } else {
-            (ProviderFailureCause::Other, false)
+            (TurnOutcomeKind::Other, false)
         };
         Self::new(cause, retryable, message)
     }
@@ -253,8 +315,8 @@ fn rate_limit_clears(normalized: &str) -> bool {
 
 /// Codex `codexErrorInfo` variants (snake case), Claude `StopFailure` kinds and
 /// OpenCode error names, by the code each adapter frames.
-fn failure_for_code(code: &str, message: &str) -> Option<(ProviderFailureCause, bool)> {
-    use ProviderFailureCause::*;
+fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)> {
+    use TurnOutcomeKind::*;
     if let Some(status) = code
         .strip_prefix("http_status_")
         .and_then(|s| s.parse::<u16>().ok())
@@ -320,32 +382,32 @@ mod tests {
             ProviderRunTermination::unknown_process_exit(1),
         ] {
             let failure = termination.failure.expect("typed crash");
-            assert_eq!(failure.cause, ProviderFailureCause::ProviderCrashed);
+            assert_eq!(failure.kind, TurnOutcomeKind::ProviderCrashed);
             assert!(failure.retryable);
         }
         let failure = ProviderRunTermination::transport_failure("relay closed", 1)
             .failure
             .expect("typed network loss");
-        assert_eq!(failure.cause, ProviderFailureCause::Network);
+        assert_eq!(failure.kind, TurnOutcomeKind::Network);
         assert!(failure.retryable);
     }
 
     #[test]
     fn the_harness_text_stays_whole_except_for_credentials() {
-        let failure = ProviderFailure::classify(
+        let failure = TurnOutcome::classify(
             "claude",
             "Provider prompt dispatch failed: Claude StopFailure [server_error]: \
              API Error: 500 request failed for Authorization: Bearer sk-ant-abcdefghijklmnop0123456789",
         );
-        assert_eq!(failure.cause, ProviderFailureCause::Other);
+        assert_eq!(failure.kind, TurnOutcomeKind::Other);
         assert!(failure.retryable);
         assert!(failure
-            .message
+            .reason
             .starts_with("API Error: 500 request failed for"));
         assert!(
-            !failure.message.contains("abcdefghijklmnop"),
+            !failure.reason.contains("abcdefghijklmnop"),
             "{}",
-            failure.message
+            failure.reason
         );
     }
 
@@ -354,16 +416,16 @@ mod tests {
         let message = format!("  First line\n{}\n  ", "native diagnostic ".repeat(200));
         let framed =
             super::super::prompt_signals::provider_coded_failure_text("Codex", "other", &message);
-        assert_eq!(ProviderFailure::classify("codex", &framed).message, message);
+        assert_eq!(TurnOutcome::classify("codex", &framed).reason, message);
     }
 
     #[test]
     fn every_class_notice_names_the_cause_the_harness_words_and_a_recovery() {
-        let weekly = ProviderFailure::classify(
+        let weekly = TurnOutcome::classify(
             "claude",
             "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)",
         );
-        assert_eq!(weekly.cause, ProviderFailureCause::UsageLimit);
+        assert_eq!(weekly.kind, TurnOutcomeKind::UsageLimit);
         assert!(!weekly.retryable);
         assert_eq!(
             weekly.notice(),
@@ -395,7 +457,7 @@ mod tests {
                 "send the request again to start it",
             ),
         ] {
-            let notice = ProviderFailure::classify(adapter, text).notice();
+            let notice = TurnOutcome::classify(adapter, text).notice();
             assert!(notice.starts_with(headline), "{notice}");
             assert!(notice.contains(text.trim_end_matches('.')), "{notice}");
             assert!(notice.contains(recovery), "{notice}");
@@ -404,9 +466,9 @@ mod tests {
 
     #[test]
     fn an_unrecognised_failure_is_other_and_not_retryable() {
-        let failure = ProviderFailure::classify("codex", "Codex error [other]: something odd");
-        assert_eq!(failure.cause, ProviderFailureCause::Other);
+        let failure = TurnOutcome::classify("codex", "Codex error [other]: something odd");
+        assert_eq!(failure.kind, TurnOutcomeKind::Other);
         assert!(!failure.retryable);
-        assert_eq!(failure.message, "something odd");
+        assert_eq!(failure.reason, "something odd");
     }
 }

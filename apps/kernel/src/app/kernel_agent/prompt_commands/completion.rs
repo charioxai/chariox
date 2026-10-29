@@ -40,7 +40,7 @@ pub(super) struct KernelPromptOwnerCompletion {
     pub(super) next_queued_prompt: Option<PromptQueueItem>,
     pub(super) settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     pub(super) provider_termination: Option<crate::provider::ProviderRunTermination>,
-    pub(super) failure: Option<crate::provider::ProviderFailure>,
+    pub(super) failure: Option<crate::provider::TurnOutcome>,
 }
 
 impl<'a> KernelAgentService<'a> {
@@ -84,7 +84,7 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<PromptCompletion, DaemonError> {
         self.complete_active_prompt_for_kernel(
             session_id,
@@ -109,7 +109,7 @@ impl<'a> KernelAgentService<'a> {
         next_queued_prompt: Option<&PromptQueueItem>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<PromptCompletion, DaemonError> {
         let admission = self.prepare_prompt_completion_admission(
             session_id,
@@ -131,7 +131,7 @@ impl<'a> KernelAgentService<'a> {
                             .and_then(|id| self.app.providers.get_run(id).ok())
                             .and_then(|run| {
                                 run.terminal_diagnostic().map(|message| {
-                                    crate::provider::ProviderFailure::classify(
+                                    crate::provider::TurnOutcome::classify(
                                         run.adapter_key(),
                                         message,
                                     )
@@ -139,8 +139,8 @@ impl<'a> KernelAgentService<'a> {
                             })
                     })
                     .unwrap_or_else(|| {
-                        crate::provider::ProviderFailure::new(
-                            crate::provider::ProviderFailureCause::Other,
+                        crate::provider::TurnOutcome::new(
+                            crate::provider::TurnOutcomeKind::Other,
                             false,
                             "provider reported an error",
                         )

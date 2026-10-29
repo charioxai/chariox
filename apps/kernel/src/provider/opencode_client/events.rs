@@ -213,13 +213,13 @@ fn session_error_message(error: Value, provider_run_id: &str) -> String {
 
 #[cfg(test)]
 mod failure_cause_tests {
-    use crate::provider::{ProviderFailure, ProviderFailureCause::*};
+    use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
 
     /// EA2-75: OpenCode `session.error` events keep the harness message and
     /// give the typed cause from the error name and HTTP status. The error
     /// objects follow OpenCode's `ProviderAuthError` / `APIError` /
     /// `UnknownError` schema; none was recorded in earlier evidence.
-    fn session_error(error: serde_json::Value) -> ProviderFailure {
+    fn session_error(error: serde_json::Value) -> TurnOutcome {
         let payload = serde_json::json!({
             "type": "session.error",
             "properties": {"sessionID": "session", "error": error}
@@ -229,15 +229,15 @@ mod failure_cause_tests {
         else {
             panic!("missing session error")
         };
-        ProviderFailure::classify("opencode", &message)
+        TurnOutcome::classify("opencode", &message)
     }
 
     #[test]
     fn opencode_errors_are_typed_from_name_and_status() {
-        let expected = |cause, retryable, message: &str| ProviderFailure {
-            cause,
+        let expected = |kind, retryable, reason: &str| TurnOutcome {
+            kind,
             retryable,
-            message: message.to_string(),
+            reason: reason.to_string(),
         };
         assert_eq!(
             session_error(serde_json::json!({

@@ -1334,7 +1334,7 @@ done
     /// not recorded.
     #[test]
     fn claude_errors_are_typed_from_their_result_and_hook() {
-        use crate::provider::{ProviderFailure, ProviderFailureCause::*};
+        use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
         let result_error = |text: &str| {
             let (mut state, mut batch) = parser_state();
             apply_claude_message(
@@ -1344,12 +1344,12 @@ done
                 &mut batch,
             );
             assert!(batch.explicit_provider_error);
-            ProviderFailure::classify("claude", &batch.terminal_failure.expect("failure"))
+            TurnOutcome::classify("claude", &batch.terminal_failure.expect("failure"))
         };
-        let expected = |cause, retryable, message: &str| ProviderFailure {
-            cause,
+        let expected = |kind, retryable, reason: &str| TurnOutcome {
+            kind,
             retryable,
-            message: message.to_string(),
+            reason: reason.to_string(),
         };
         assert_eq!(
             result_error("Not logged in · Please run /login"),
@@ -1396,7 +1396,7 @@ done
         }))
         .expect("StopFailure frame");
         assert_eq!(
-            ProviderFailure::classify("claude", &stop_failure),
+            TurnOutcome::classify("claude", &stop_failure),
             expected(
                 UsageLimit,
                 false,
@@ -1409,10 +1409,7 @@ done
             "last_assistant_message": "Invalid API key · Please run /login"
         }))
         .expect("StopFailure frame");
-        assert_eq!(
-            ProviderFailure::classify("claude", &auth).cause,
-            SignInRequired
-        );
+        assert_eq!(TurnOutcome::classify("claude", &auth).kind, SignInRequired);
     }
 
     #[test]

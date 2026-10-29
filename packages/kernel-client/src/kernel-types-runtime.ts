@@ -76,7 +76,7 @@ export type CompletedGitTurnActionProjection = {
   completed_at_ms: number
   settlement_status: "completed" | "cancelled" | "failed"
   provider_termination?: ProviderRunTermination | null
-  failure?: ProviderFailure
+  outcome?: TurnOutcome
   duration_ms?: number | null
   changed_paths: string[]
   undo_available: boolean
@@ -93,14 +93,29 @@ export type ProviderRunTermination = {
     | "unknown"
   reason: string
   timestamp_ms: number
-  failure?: ProviderFailure
+  failure?: TurnOutcome
 }
 
-/** Why a turn failed, typed from the harness's own error; Chariox adds no retry policy. */
-export type ProviderFailure = {
-  cause: "overloaded" | "usage_limit" | "sign_in_required" | "provider_crashed" | "network" | "other"
+/**
+ * How a turn ended. Decide to retry or stop from `kind` and `retryable` only; `reason` is for people.
+ * `completed` and `cancelled` are not errors. A kind a newer kernel added reads as `unknown`.
+ */
+export type TurnOutcomeKind =
+  | "completed"
+  | "cancelled"
+  | "interrupted_by_restart"
+  | "overloaded"
+  | "usage_limit"
+  | "sign_in_required"
+  | "provider_crashed"
+  | "network"
+  | "other"
+  | "unknown"
+
+export type TurnOutcome = {
+  kind: TurnOutcomeKind
   retryable: boolean
-  message: string
+  reason: string
 }
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"

@@ -19,6 +19,9 @@ mod automatic_substitutes;
 #[path = "tests/failure_causes.rs"]
 mod failure_causes;
 
+#[path = "tests/turn_outcome.rs"]
+mod turn_outcome;
+
 #[path = "tests/goal_assessment.rs"]
 mod goal_assessment;
 

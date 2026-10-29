@@ -2945,7 +2945,7 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
         .prompt_state_owner
         .active_prompt_for_agent(&session, &fixture.target_agent_id)
         .unwrap();
-    let failure = crate::provider::ProviderFailure::classify(
+    let failure = crate::provider::TurnOutcome::classify(
         "codex",
         "Codex error [usage_limit_exceeded]: Credits exhausted",
     );
@@ -2982,7 +2982,7 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
         event.kind(),
         crate::session::WorkflowFailureKind::ProviderFailure
     );
-    assert_eq!(event.message(), failure.message);
+    assert_eq!(event.message(), failure.reason);
     assert!(
         !runtime
             .owned
@@ -3017,7 +3017,7 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
         })
         .await
         .unwrap();
-    assert_eq!(settled.failure, Some(failure));
+    assert_eq!(settled.outcome, Some(failure));
     assert_eq!(
         settled.settlement_status,
         crate::git_observer::CompletedTurnSettlementStatus::Failed

@@ -126,7 +126,7 @@ fn leased_failure_without_termination_keeps_its_native_cause() {
         "Diagnostic context. ".repeat(20)
     );
     assert!(message.len() > 256);
-    let expected = crate::provider::ProviderFailure::classify("codex", &message);
+    let expected = crate::provider::TurnOutcome::classify("codex", &message);
     let providers = app.providers.clone();
     let active_turns = app.active_turns.clone();
     let activity = app.prompt_activity.clone();
@@ -151,7 +151,7 @@ fn leased_failure_without_termination_keeps_its_native_cause() {
         .latest_projection_for_agent(&leased.backing_session_id, &leased.backing_agent_id)
         .unwrap();
     assert_eq!(settled.provider_termination, None);
-    assert_eq!(settled.failure, Some(expected.clone()));
+    assert_eq!(settled.outcome, Some(expected.clone()));
     assert!(
         app.providers
             .get_run(&run)

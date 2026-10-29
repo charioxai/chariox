@@ -205,7 +205,7 @@ impl KernelRuntimeState {
                             agent_id,
                             started.run.id(),
                             None,
-                            crate::provider::ProviderFailure::classify(
+                            crate::provider::TurnOutcome::classify(
                                 started.run.adapter_key(),
                                 &diagnostic,
                             ),

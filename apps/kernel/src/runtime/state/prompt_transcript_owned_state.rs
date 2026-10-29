@@ -118,7 +118,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         provider_run_id: &str,
         agent_id: &str,
-        failure: &crate::provider::ProviderFailure,
+        failure: &crate::provider::TurnOutcome,
     ) {
         self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
     }

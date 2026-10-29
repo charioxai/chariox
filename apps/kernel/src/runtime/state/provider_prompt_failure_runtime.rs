@@ -53,7 +53,7 @@ impl KernelRuntimeState {
         project_failure_output: bool,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure_override: Option<crate::provider::ProviderFailure>,
+        failure_override: Option<crate::provider::TurnOutcome>,
     ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -96,7 +96,7 @@ impl KernelRuntimeState {
                     .and_then(|termination| termination.failure.clone())
             })
             .unwrap_or_else(|| {
-                crate::provider::ProviderFailure::classify(provider_run.adapter_key(), message)
+                crate::provider::TurnOutcome::classify(provider_run.adapter_key(), message)
             });
         if self
             .try_provider_auth_recovery(&provider_run, message, failure.clone(), expected_prompt_id)
@@ -512,7 +512,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         provider_run_id: &str,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: crate::provider::ProviderFailure,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<bool, DaemonError> {
         self.settle_leased_workflow_provider_failure_if_matches(
             session_id,
@@ -532,7 +532,7 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
-        failure: crate::provider::ProviderFailure,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -623,7 +623,7 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) agent_id: &'a str,
     pub(super) message: &'a str,
     /// The failure the turn settles with; the transcript entry renders this one.
-    pub(super) failure: &'a crate::provider::ProviderFailure,
+    pub(super) failure: &'a crate::provider::TurnOutcome,
     pub(super) project_failure_output: bool,
     pub(super) record_diagnostic: bool,
     pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,

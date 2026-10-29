@@ -120,7 +120,7 @@ pub struct LeasedCompletionReplay {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<crate::provider::ProviderFailure>,
+    pub failure: Option<crate::provider::TurnOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

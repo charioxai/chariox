@@ -143,6 +143,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: landing union 242 carries local 640 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec, 239 archived-agent discovery with the saved provider thread handoff and 242 the typed
 /// failure cause on provider run terminations).
+/// MP-08/MP-09/MP-10/MP-11: landing union 243 carries local 642 (peers 233 dialogs, 234 outside events,
+/// failure cause on provider run terminations) and 243 (that failure renamed to the turn outcome kind and reason).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -1524,7 +1526,7 @@ pub struct RelayProjectedCompletion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<crate::provider::ProviderFailure>,
+    pub failure: Option<crate::provider::TurnOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1651,14 +1653,14 @@ mod tests {
             Some(&serde_json::json!(1_234)),
         );
         assert_eq!(
-            snapshot.pointer("/provider_termination/failure/cause"),
+            snapshot.pointer("/provider_termination/failure/kind"),
             Some(&serde_json::json!("provider_crashed")),
         );
         let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "27e5082e95fc04980d67deba6b9bda29fc64f13f76cab9c6f9fde790fd551cd7",
+            "0d86c18bf510a18529d2304a1aa8c56035268d59f44f513f494856e9d77dc479",
         );
     }
 
@@ -1669,10 +1671,10 @@ mod tests {
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt".into()),
             provider_termination: None,
-            failure: Some(crate::provider::ProviderFailure {
-                cause: crate::provider::ProviderFailureCause::UsageLimit,
+            failure: Some(crate::provider::TurnOutcome {
+                kind: crate::provider::TurnOutcomeKind::UsageLimit,
                 retryable: false,
-                message: "You've hit your usage limit.".into(),
+                reason: "You've hit your usage limit.".into(),
             }),
         };
         let snapshot = serde_json::to_value(&completion).unwrap();
@@ -1681,15 +1683,15 @@ mod tests {
             serde_json::json!({
                 "message_id": "failed-turn", "completed_at_ms": 1234,
                 "home_prompt_id": "home-prompt", "failure": {
-                    "cause": "usage_limit", "retryable": false,
-                    "message": "You've hit your usage limit.",
+                    "kind": "usage_limit", "retryable": false,
+                    "reason": "You've hit your usage limit.",
                 },
             })
         );
         let encoded = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(
             format!("{:x}", Sha256::digest(encoded.as_bytes())),
-            "7ccf2f84ef547c763fd104386a3e93c612089557dc883af214825d835d8e937c"
+            "78963c7a1dc75eb895450962abe3502d1b08b29b64e578e77c059d286abd1e15"
         );
         let old: RelayProjectedCompletion = serde_json::from_value(serde_json::json!({
             "message_id": "completed-turn", "completed_at_ms": 1234,

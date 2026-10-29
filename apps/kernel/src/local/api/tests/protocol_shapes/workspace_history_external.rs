@@ -274,7 +274,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 external_provider_turn_id: Some("turn-1".to_string()),
                 started_at_ms: 42,
                 lifecycle: crate::local::SessionHistoryOutlineTurnLifecycle::Open,
-                failure: None,
+                outcome: None,
                 completed_at_ms: None,
                 user_prompt,
                 entries: vec![assistant_entry],

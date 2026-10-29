@@ -64,7 +64,9 @@ pub(in crate::durable_state::agent_lifecycle) fn publish_task(
                     .take(512)
                     .collect(),
             ),
-            failure: None,
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
         },
         summary: task
             .reason

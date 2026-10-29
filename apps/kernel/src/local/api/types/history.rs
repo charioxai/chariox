@@ -66,9 +66,9 @@ pub struct SessionHistoryOutlineTurn {
     pub external_provider_turn_id: Option<String>,
     pub started_at_ms: u64,
     pub lifecycle: SessionHistoryOutlineTurnLifecycle,
-    /// Why a failed turn failed, typed from the provider's own error.
+    /// How the turn ended; absent while it is open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure: Option<crate::provider::ProviderFailure>,
+    pub outcome: Option<crate::provider::TurnOutcome>,
     #[serde(default)]
     pub completed_at_ms: Option<u64>,
     pub user_prompt: SessionHistoryPageEntry,

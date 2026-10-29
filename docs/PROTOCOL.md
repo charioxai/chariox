@@ -5446,29 +5446,51 @@ Only agent/task states, interaction state, terminal job exits, delivered steers 
 session changes are collected. Passkey interactions carry the section 8 approval pointer, without
 the prompt body. Session agents retain their existing session-scoped event tools.
 
-Typed failure cause (EA2-75, local protocol 640, relay peer 242): a turn that
-fails says why in one general shape, `failure { cause, retryable, message }`.
-`cause` is `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`,
-`network` or `other`. `retryable` is whether a later attempt may succeed without
-anyone changing anything (overload, crash, network loss and a plain HTTP 429 are;
-an exhausted plan, a missing sign-in and an unrecognised error are not). `message`
-is the harness's own error text, with credentials removed; whitespace and diagnostic length are preserved. Chariox adds no retry,
-backoff or quota policy; the provider's own behaviour is unchanged and the orchestrating agent
-decides. The kernel types it once from the harness's native error: Codex
+Turn outcome (EA2-75 and EA2-80, local protocol 642, relay peer 243): every turn that
+ends says how, in one general shape, `outcome { kind, retryable, reason }`. The same
+value appears in the three places a reader looks:
+
+- the `agent` outside event whose `run_state` is `idle` or `error`: `outcome` with the
+  `prompt_id` and `turn_id` of the turn it ends (summary `error: overloaded, retryable`
+  on an error); a `working` event carries none;
+- the history outline turn: `outcome` on every turn that is not `open`, read back from
+  the durable settlement entry (`turn_outcome`);
+- the state: `outcome` of the completed turn action (`last_completed_turn`), also
+  `provider_termination.failure` when the provider run's termination is known, and the
+  relay peer's projected completion `failure` and its persisted replay.
+
+`kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
+`overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
+`other`. A client that meets a `kind` it does not know, because a newer kernel added
+one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
+not errors: the agent is `idle` and the turn is not failed. Every other kind is an
+error and the agent is in the `error` state. `retryable` is whether a later attempt
+may succeed without anyone changing anything (overload, crash, network loss, a plain
+HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
+unrecognised error are not). A reader decides to retry or stop from `kind` and
+`retryable` only. `reason` is text for people: the harness's own error text with
+credentials removed, whitespace and diagnostic length preserved; it is empty for
+`completed` and `cancelled`. Chariox adds no retry, backoff or usage-limit policy; the
+provider's own behaviour is unchanged and the orchestrating agent decides.
+
+The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
-error names with their HTTP status and native `isRetryable` flag, then the words of the error; a process exit,
-signal or transport loss is `provider_crashed` or `network` without any text.
-The cause rides the existing representation of a failed turn: the `failure` of
-the completed turn action (`last_completed_turn`, also `provider_termination.failure`
-when the provider run's termination is known), the relay peer's projected completion
-and its persisted replay (including failures with no termination evidence), the `failure` of the `agent` event whose `run_state`
-is `error` (summary `error: overloaded, retryable`), and the `failure` of a `failed`
-history outline turn (read back from the durable settlement entry). All are omitted
-for turns that did not fail. A failure the provider reported without a protocol
+error names with their HTTP status and native `isRetryable` flag, then the words of
+the error; a process exit, signal or transport loss is `provider_crashed` or
+`network` without any text. A failure the provider reported without a protocol
 frame, such as a rejected dispatch, is typed from its text; it does not become
-termination evidence. If native sign-in recovery is declined, the failed turn retains
-the original native cause and message while the existing recovery notice explains
-what happened.
+termination evidence. If native sign-in recovery is declined, the failed turn
+retains the original native kind and reason while the existing recovery notice
+explains what happened.
+
+`interrupted_by_restart` is a turn the kernel restarted in the middle of and could
+not resume (for example the Vault stayed locked, or no provider session identified
+the turn). The turn settles as failed, not cancelled; the agent is in the `error`
+state; one `SubmitPrompt` on the same agent continues the same provider
+conversation and its turn ends `completed` with its own turn id. A turn that
+restart recovery does resume ends with the outcome of the resumed turn.
+A provider run whose process is gone and whose exit the kernel never saw is
+`provider_crashed`, retryable.
 The provider-error transcript entry of a failed turn, shown by every client, reads
 `<Cause headline>. <harness message>. <recovery>`, for example `Usage limit reached.
 You've hit your weekly limit · resets Oct 28, 9pm (UTC). Wait for the limit to reset

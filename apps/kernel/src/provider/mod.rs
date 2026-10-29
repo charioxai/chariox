@@ -25,7 +25,6 @@ pub(crate) use credential_environment::{
 mod executable_resolution;
 mod external_observation;
 pub(crate) use account_handoff::encode_account_handoff;
-mod failure;
 mod launch_contract;
 mod managed_isolation;
 mod mcp_proxy;
@@ -42,6 +41,7 @@ pub(crate) mod renewal_failure;
 mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
+mod turn_outcome;
 pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
@@ -104,7 +104,6 @@ pub(crate) use external_observation::{
     ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
     ObservedExternalProviderTurnRole,
 };
-pub use failure::{ProviderFailure, ProviderFailureCause};
 pub(crate) use launch_contract::TurnSubstitute;
 pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
@@ -171,6 +170,7 @@ pub(crate) use termination::{
     redact_provider_diagnostic, sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
+pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
