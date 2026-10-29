@@ -14,6 +14,8 @@ use std::os::unix::process::CommandExt;
 mod app_developer;
 #[path = "chariox-cli/arguments.rs"]
 mod arguments;
+#[path = "chariox-cli/child_lifecycle.rs"]
+mod child_lifecycle;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -89,8 +91,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
             cli.exec()
         ));
     }
-    let status = cli
-        .status()
+    let status = child_lifecycle::run(cli)
         .map_err(|error| format!("failed to launch TypeScript CLI with `{bun}`: {error}"))?;
 
     Ok(ExitCode::from(status.code().unwrap_or(1) as u8))

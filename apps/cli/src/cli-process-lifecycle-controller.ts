@@ -1,3 +1,9 @@
+// MP-08/MP-11: Chariox owns SIGINT until draft/archive/detach cleanup finishes.
+// Preserve OpenTUI 0.1.87's other terminal restoration signals.
+export const CLI_RENDERER_EXIT_SIGNALS: NodeJS.Signals[] = [
+  "SIGTERM", "SIGQUIT", "SIGABRT", "SIGHUP", "SIGBREAK", "SIGPIPE", "SIGBUS", "SIGFPE",
+]
+
 export type CliProcessLifecycleControllerDeps = {
   handleSigint: () => void
   handleStdinData: (chunk: Buffer | string) => void

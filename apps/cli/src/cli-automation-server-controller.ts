@@ -17,7 +17,7 @@ export type CliAutomationServerControllerDeps = {
     formatError: (error: unknown) => string
     onListening?: (socketPath: string) => void
   }) => Promise<CliAutomationServer>
-  stopServer: (server: CliAutomationServer, socketPath: string) => void
+  stopServer: (server: CliAutomationServer) => void
   formatError: (error: unknown) => string
   logger?: CliAutomationServerLogger | null
   flashFooter: (message: string, tone: "error") => void
@@ -60,11 +60,10 @@ export function createCliAutomationServerController(
     },
 
     stop() {
-      const socketPath = deps.socketPath
-      if (!server || !socketPath) {
+      if (!server) {
         return
       }
-      deps.stopServer(server, socketPath)
+      deps.stopServer(server)
       server = null
     },
   }
