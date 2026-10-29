@@ -46,10 +46,20 @@ test('MP-08 / MP-11 kernel-browser pixels are revealed only under a fenced CDP m
   assert.deepEqual(await run(browser([[], []])), [{pages:[]}]);
   assert.deepEqual(await run(null), [null]);
   assert.deepEqual(await run({ensureConnection:async()=>{throw Error('closed')}}),[{pages:[]}]);
-  await assert.rejects(run({ensureConnection:async()=>{throw Error('closed')}},{unknown:false,values:[],targets:[{kind:'browser',target_id:'t',value_hash:'public-hash'}]}),/fill-target capture fence unavailable/);
+  // A tracked fill whose page cannot be measured is covered whole by the helper (fill, no measurement), not refused.
+  assert.deepEqual(await run({ensureConnection:async()=>{throw Error('closed')}},{unknown:false,values:[],targets:[{kind:'browser',target_id:'t',value_hash:'public-hash'}]}),[null]);
   // Owner 2026-10-09: Vault values never black out the desktop; browser windows
   // keep their per-field/value masks from the same measured protection.
   assert.deepEqual(await run(browser([[], []]), {values:['v'],targets:[],unknown:false}), [{pages:[]}]);
+  const requests=[];
+  const unmeasurable={ensureConnection:async()=>{throw Error('closed')}};
+  const unmeasurableBinding={...binding,browser:()=>unmeasurable};
+  const covering=new NativeComputer({placement:'host',binding:()=>unmeasurableBinding,execute:async request=>{requests.push(request);return {data_base64:''};}});
+  await covering.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[{kind:'browser',target_id:'t',value_hash:'public-hash'}],unknown:false});
+  assert.deepEqual([requests[0].fill,requests[0].browser_protection],[true,undefined],'the helper is told a fill is tracked');
+  const plain=new NativeComputer({placement:'host',binding:()=>unmeasurableBinding,execute:async request=>{requests.push(request);return {data_base64:''};}});
+  await plain.request({op:'screenshot',surface_id:'surface',generation:'generation'},{values:[],targets:[],unknown:false});
+  assert.equal(requests[1].fill,undefined,'a capture without a Vault fill carries no fill flag');
   // A window AT-SPI has not yet bound is retried, and the count stays private.
   const withheld=[1,0],bound={...binding,browser:()=>browser([[],[],[],[]])};
   const adapter=new NativeComputer({placement:'host',binding:()=>bound,execute:async()=>({data_base64:'',browser_withheld:withheld.shift()})});
