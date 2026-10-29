@@ -107,7 +107,11 @@ impl KernelRuntimeState {
             message,
             safe_message: &safe_message,
             project_failure_output,
-            record_diagnostic: expected_prompt_id.is_some(),
+            // Exit reconciliation may guard the prompt after the provider has
+            // already supplied its definitive diagnostic. Keep that original.
+            record_diagnostic: expected_prompt_id.is_some()
+                && (provider_run.state() != crate::provider::ProviderRunState::Ended
+                    || provider_run.terminal_diagnostic().is_none()),
             termination: provider_termination.as_ref(),
         };
         let mut expected_active_prompt = None;
@@ -134,10 +138,12 @@ impl KernelRuntimeState {
                 )
                 .await?
             {
-                let diagnosed = owned
-                    .provider_store
-                    .record_terminal_diagnostic(provider_run_id, message.to_string())?;
-                owned.provider_run_projection.update(diagnosed);
+                if failed_attempt.record_diagnostic {
+                    let diagnosed = owned
+                        .provider_store
+                        .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+                    owned.provider_run_projection.update(diagnosed);
+                }
                 self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
                 self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
                     .await;
