@@ -3,6 +3,23 @@ use super::kernel_browser_runtime::host_error;
 use super::*;
 
 impl KernelRuntimeState {
+    /// Reconciling a holder only reads its session. The projection already holds the
+    /// published state, so rebuilding and republishing it per holder on every
+    /// transport wake would cost a full snapshot per holder.
+    fn grant_holder_session(
+        &self,
+        session_id: &str,
+    ) -> Result<std::sync::Arc<crate::session::RuntimeSession>, DaemonError> {
+        self.owned.durable_state_store.require_writer_healthy()?;
+        match self.owned.session_projection.get_shared(session_id) {
+            Some(session) => Ok(session),
+            None => self
+                .owned
+                .session_snapshot(session_id)
+                .map(std::sync::Arc::new),
+        }
+    }
+
     pub(crate) fn refresh_user_domain_grants(&self) {
         let turns = self.owned.active_turns.snapshot();
         for (owner, id) in self.owned.kernel_browser_host.grant_holders() {
@@ -10,7 +27,7 @@ impl KernelRuntimeState {
                 self.owned.kernel_browser_host.revoke_agent(&id);
                 continue;
             };
-            let Ok(session) = self.owned.session_snapshot(agent.session_id()) else {
+            let Ok(session) = self.grant_holder_session(agent.session_id()) else {
                 self.owned.kernel_browser_host.revoke_agent(&id);
                 continue;
             };
@@ -214,28 +231,36 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::runtime::router::CommandRouter;
+    use crate::runtime::state::session::call_counts;
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
 
-    // Detecting a catalog change visits every running provider. With one
-    // focused agent per attached session, each visit must not reconcile every
-    // grant holder again: on a busy kernel that made an idle monitor spend one
-    // full session snapshot per (provider, holder) pair and saturate a core.
-    // Listing the catalogs of 24 providers while 24 agents hold grants must cost
-    // about the same as listing them with no holder.
-    #[tokio::test]
-    async fn catalog_signatures_do_not_reconcile_every_grant_holder_per_provider() {
-        crate::test_support::isolated_env_test!();
-        const SESSIONS: usize = 24;
+    struct GrantHolders {
+        runtime: crate::runtime::state::KernelRuntimeState,
+        agents: Vec<crate::agent::AgentInstance>,
+        session_ids: Vec<String>,
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for GrantHolders {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// `sessions` sessions, each with a running provider, `extra_agents` more agents
+    /// and its first agent holding the browser focus grant.
+    fn grant_holders(sessions: usize, extra_agents: usize) -> GrantHolders {
         let root = std::env::temp_dir().join(format!(
-            "catalog-signature-grants-{}-{}",
+            "user-domain-grants-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
         std::fs::create_dir_all(&root).expect("workspace");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap");
         let mut agents = Vec::new();
-        for _ in 0..SESSIONS {
+        let mut session_ids = Vec::new();
+        for _ in 0..sessions {
             let (session, agent) = crate::app::KernelSessionService::new(&mut app)
                 .create_session(CreateSessionRequest::new(
                     root.to_string_lossy(),
@@ -253,7 +278,7 @@ mod tests {
                 .with_agent_id(agent.id()),
             )
             .expect("provider run");
-            for _ in 0..6 {
+            for _ in 0..extra_agents {
                 crate::app::KernelSessionService::new(&mut app)
                     .spawn_agent(crate::agent::CreateAgentRequest::new(
                         session.id(),
@@ -261,6 +286,7 @@ mod tests {
                     ))
                     .expect("extra agent");
             }
+            session_ids.push(session.id().to_string());
             agents.push(agent);
         }
         let runtime =
@@ -274,8 +300,37 @@ mod tests {
         }
         assert_eq!(
             runtime.owned.kernel_browser_host.grant_holders().len(),
-            SESSIONS
+            sessions
         );
+        GrantHolders {
+            runtime,
+            agents,
+            session_ids,
+            root,
+        }
+    }
+
+    fn count(counter: &'static std::thread::LocalKey<std::cell::Cell<usize>>) -> usize {
+        counter.with(std::cell::Cell::get)
+    }
+
+    fn reset_counts() {
+        call_counts::SNAPSHOT_BUILDS.with(|count| count.set(0));
+        call_counts::RUNTIME_VIEW_PROJECTIONS.with(|count| count.set(0));
+    }
+
+    // Detecting a catalog change visits every running provider. With one
+    // focused agent per attached session, each visit must not reconcile every
+    // grant holder again: on a busy kernel that made an idle monitor spend one
+    // full session snapshot per (provider, holder) pair and saturate a core.
+    // Listing the catalogs of 24 providers while 24 agents hold grants must cost
+    // about the same as listing them with no holder.
+    #[tokio::test]
+    async fn catalog_signatures_do_not_reconcile_every_grant_holder_per_provider() {
+        crate::test_support::isolated_env_test!();
+        const SESSIONS: usize = 24;
+        let holders = grant_holders(SESSIONS, 6);
+        let runtime = &holders.runtime;
         let tokens = runtime.runtime_tool_catalog_auth_tokens();
         assert_eq!(tokens.len(), SESSIONS);
 
@@ -292,7 +347,7 @@ mod tests {
                 .expect("timed signatures")
         };
         let with_holders = time_signatures();
-        for agent in &agents {
+        for agent in &holders.agents {
             runtime.owned.kernel_browser_host.revoke_agent(agent.id());
         }
         assert!(runtime.owned.kernel_browser_host.grant_holders().is_empty());
@@ -302,6 +357,78 @@ mod tests {
             with_holders < without_holders * 2,
             "signatures for {SESSIONS} providers took {with_holders:?} with {SESSIONS} grant holders and {without_holders:?} with none"
         );
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // The pump reconciles every holder on each change wake. A holder only needs the
+    // session state the kernel already published, not a rebuilt and republished one.
+    #[tokio::test]
+    async fn grant_reconciliation_reads_published_sessions_without_rebuilding_them() {
+        crate::test_support::isolated_env_test!();
+        const SESSIONS: usize = 12;
+        let holders = grant_holders(SESSIONS, 2);
+        let runtime = &holders.runtime;
+        for session_id in &holders.session_ids {
+            runtime
+                .owned
+                .session_snapshot(session_id)
+                .expect("publish session");
+        }
+
+        reset_counts();
+        runtime.refresh_user_domain_grants();
+
+        assert_eq!(
+            count(&call_counts::SNAPSHOT_BUILDS),
+            0,
+            "reconciling {SESSIONS} holders rebuilt published sessions"
+        );
+        assert_eq!(
+            runtime.owned.kernel_browser_host.grant_holders().len(),
+            SESSIONS
+        );
+    }
+
+    // A holder whose session was never published is still reconciled from the
+    // stored session, and one whose session is gone loses its grant.
+    #[tokio::test]
+    async fn grant_reconciliation_revokes_holders_of_removed_sessions() {
+        crate::test_support::isolated_env_test!();
+        let holders = grant_holders(2, 0);
+        let runtime = &holders.runtime;
+        runtime.refresh_user_domain_grants();
+        assert_eq!(runtime.owned.kernel_browser_host.grant_holders().len(), 2);
+
+        runtime
+            .owned
+            .session_projection
+            .remove(&holders.session_ids[0]);
+        runtime
+            .owned
+            .session_store
+            .delete_session(&holders.session_ids[0])
+            .expect("remove session");
+        runtime.refresh_user_domain_grants();
+
+        let remaining = runtime.owned.kernel_browser_host.grant_holders();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].1, holders.agents[1].id());
+    }
+
+    // A snapshot is built from the stores and projected once; publishing it must
+    // not project it again.
+    #[tokio::test]
+    async fn session_snapshot_projects_the_runtime_view_once() {
+        crate::test_support::isolated_env_test!();
+        let holders = grant_holders(1, 4);
+        let runtime = &holders.runtime;
+
+        reset_counts();
+        runtime
+            .owned
+            .session_snapshot(&holders.session_ids[0])
+            .expect("snapshot");
+
+        assert_eq!(count(&call_counts::SNAPSHOT_BUILDS), 1);
+        assert_eq!(count(&call_counts::RUNTIME_VIEW_PROJECTIONS), 1);
     }
 }
