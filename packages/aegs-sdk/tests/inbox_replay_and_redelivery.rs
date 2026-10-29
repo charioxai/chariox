@@ -133,9 +133,17 @@ fn seed_failed_event(database: &std::path::Path, delivery_id: &str) {
         .select_inbox_interests(delivery_id, &[(claim, Some(1))], received)
         .unwrap());
     for attempt in 1..=8u64 {
-        let claimed = store
-            .claim_inbox_deliveries(delivery_id, None, received + attempt * 3_600_000)
-            .unwrap();
+        let at = received + attempt * 3_600_000;
+        let claimed: Vec<_> = store
+            .due_inbox_bindings(delivery_id, None, at)
+            .unwrap()
+            .iter()
+            .filter_map(|binding| {
+                store
+                    .claim_inbox_delivery(delivery_id, binding, at)
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(claimed.len(), 1, "attempt {attempt} must be claimable");
         store
             .fail_inbox_delivery(

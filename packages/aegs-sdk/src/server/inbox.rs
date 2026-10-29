@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use chariox_event_protocol::{
@@ -81,8 +81,8 @@ impl AegsServer {
             if let Some(owner_id) = owner_id {
                 let owned = self
                     .store
-                    .connection(&subscription.connection_id)?
-                    .is_some_and(|connection| connection.owner_id == owner_id);
+                    .interest_owner(&subscription.connection_id, &subscription.binding_id)?
+                    .is_some_and(|owner| owner == owner_id);
                 if !owned {
                     continue;
                 }
@@ -187,18 +187,30 @@ impl AegsServer {
                 return Ok(InboxAttempt::Published(Vec::new()));
             }
         }
-        let claimed = self
-            .store
-            .claim_inbox_deliveries(delivery_id, owner_id, claimed_at_ms)?;
-        if claimed.is_empty() {
-            return Ok(InboxAttempt::NotRun);
-        }
+        // Each interest is claimed when its own publication starts, so its lease never runs
+        // while earlier interests are still waiting on AEDS. `claimed_at_ms` is the caller's
+        // clock at the start; it advances with real time.
+        let started = Instant::now();
+        let elapsed_ms = || started.elapsed().as_millis() as u64;
         let mut responses = Vec::new();
         let mut retrying = false;
+        let mut claimed_any = false;
         // Bindings that share an interest key publish once; a later one takes over only if the
         // earlier lost its authority.
         let mut published_keys = HashSet::new();
-        for delivery in claimed {
+        for binding_id in
+            self.store
+                .due_inbox_bindings(delivery_id, owner_id, claimed_at_ms + elapsed_ms())?
+        {
+            let Some(delivery) = self.store.claim_inbox_delivery(
+                delivery_id,
+                &binding_id,
+                claimed_at_ms + elapsed_ms(),
+            )?
+            else {
+                continue;
+            };
+            claimed_any = true;
             let key = delivery.interest.0.event_interest_key.clone();
             if published_keys.contains(&(delivery.interest.0.connection_id.clone(), key.clone())) {
                 self.store.finish_inbox_delivery(&delivery, now_ms())?;
@@ -240,7 +252,9 @@ impl AegsServer {
                 }
             }
         }
-        Ok(if retrying {
+        Ok(if !claimed_any {
+            InboxAttempt::NotRun
+        } else if retrying {
             InboxAttempt::Retrying
         } else {
             InboxAttempt::Published(responses)
@@ -249,8 +263,10 @@ impl AegsServer {
 
     /// Runs every stored event whose next attempt is due.
     pub(super) async fn deliver_due_inbox(&self, due_at_ms: u64) -> Result<(), String> {
+        let started = Instant::now();
         for delivery_id in self.store.due_inbox_deliveries(due_at_ms, RETRY_BATCH)? {
-            self.attempt_inbox_delivery(&delivery_id, None, due_at_ms)
+            let at_ms = due_at_ms + started.elapsed().as_millis() as u64;
+            self.attempt_inbox_delivery(&delivery_id, None, at_ms)
                 .await?;
         }
         Ok(())

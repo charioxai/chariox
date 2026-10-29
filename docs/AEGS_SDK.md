@@ -218,7 +218,11 @@ before it answers `202`, then publishes to AEDS from the stored copy: once inlin
 from a retry worker with exponential backoff (5 s doubling to 10 min, 8 attempts). AEDS
 dedupes on the occurrence ID, so retries and replays are safe. An AEDS outage therefore
 never discards an event and no longer turns into a `502` for the sender. After the
-attempts run out the event stays `failed` until it is replayed.
+attempts run out the event stays `failed` until it is replayed. Each interest takes a
+60 s lease when its own publication starts, so a slow AEDS never lets the retry worker
+reclaim an interest that is still waiting in line. An attempt that never reports back (the
+process died) counts against the same budget; when the last one's lease ends the event is
+`failed` with `attempt 8 did not finish before its lease expired`.
 
 - `webhook_delivery_id` returns the provider's unique delivery ID (GitHub:
   `X-GitHub-Delivery`). The inbox stores each ID once, so a provider redelivery is
@@ -230,7 +234,10 @@ attempts run out the event stays `failed` until it is replayed.
   `GET /app/hook/deliveries` and `POST /app/hook/deliveries/{id}/attempts`.
 - `POST /v1/events/query` and `POST /v1/events/replay` (management protocol, owner
   scoped) expose the stored events; the kernel serves them as
-  `/notifications connection events|replay <connection-id>`.
+  `/notifications connection events|replay <connection-id>`. A legacy subscription that
+  has no connection row belongs to the principal that reconciled it, so that principal
+  lists and replays its failed events; connection-owned events stay with the connection's
+  owner.
 
 The OSS repository intentionally contains no production AEDS and no
 Chariox-maintained production provider implementation. Those components live in
