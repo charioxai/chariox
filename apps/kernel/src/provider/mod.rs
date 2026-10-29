@@ -154,8 +154,8 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
-    ProviderRunOperationLanes,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
