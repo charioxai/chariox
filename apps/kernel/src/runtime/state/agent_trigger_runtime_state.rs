@@ -1,3 +1,4 @@
+use super::prompt_dispatch::TriggerSteerDelivery;
 use super::*;
 use crate::session::{
     AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
@@ -441,10 +442,23 @@ impl KernelRuntimeState {
             )
             .await
         {
-            Ok(_) => Ok(AgentTriggerFiring::Fired {
+            Ok(TriggerSteerDelivery::Confirmed) => Ok(AgentTriggerFiring::Fired {
                 outcome: AgentTriggerOutcome::Steered,
                 steer_refusal: None,
             }),
+            Ok(TriggerSteerDelivery::Unconfirmed) => {
+                self.record_agent_trigger_notice(
+                    dispatch,
+                    format!(
+                        "Trigger `{}`: the provider did not confirm the steer. It is not sent again by itself.",
+                        dispatch.trigger_id
+                    ),
+                );
+                Ok(AgentTriggerFiring::Fired {
+                    outcome: AgentTriggerOutcome::Steered,
+                    steer_refusal: None,
+                })
+            }
             Err(error) => {
                 let refusal = format!("steer refused, the firing stays queued: {error}");
                 self.record_agent_trigger_notice(
