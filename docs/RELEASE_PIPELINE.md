@@ -73,6 +73,18 @@ manifests fail closed; no previous automatic release was accepted under v1.
 A validated branch staging cannot be promoted, deployed or published to prod.
 A subsequent landing of the same source bytes still creates a main release.
 
+For MP-08 / MP-09 / MP-10 / MP-11, the OSS builder also checks the Cloud archive
+helper against reviewed SHA-256 bytes before executing any packaging code. The
+accepted helper is Cloud `369e65eee7`'s `create-cloud-staging-release.sh`, which
+runs the digest script from its own trusted directory. Older Cloud main tooling
+that runs a digest script from the selected source fails with
+`ERR_UNSUPPORTED_CLOUD_ARCHIVE_HELPER`; pin Cloud tooling containing the reviewed
+helper before retrying. A clean trusted checkout and exact workflow revision
+remain required. Any helper byte change requires a host-execution-chain review
+and an explicit OSS hash update. The regression includes verbatim unsafe and
+accepted Cloud helpers, their real extractor and digest, and malicious selected
+source scripts for both Cloud components.
+
 Cloud's `prepare-kit.mjs` invokes the manual stagenew kit builders for SQL
 rehearsal, relay/native activation and rollback. The exact previous validated
 manifest supplies each later migration/rollback base; initial bootstrap pins

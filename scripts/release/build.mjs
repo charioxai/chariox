@@ -8,6 +8,10 @@ import { resourceGuard, run } from './process.mjs'
 const toolsRoot = fileURLToPath(new URL('../..', import.meta.url))
 const components = ['cloud-web', 'cloud-services', 'oss', 'relay']
 const repositories = { 'cloud-web': 'chariox-cloud-web', 'cloud-services': 'chariox-cloud-services', oss: 'chariox-oss', relay: 'chariox-relay' }
+// Cloud 369e65eee7's helper executes the digest from its own trusted directory.
+// Pin reviewed bytes: trusting Cloud main alone admitted a transitive source execution.
+// Re-audit the host execution chain before accepting another helper hash.
+const cloudArchiveHelperSha256 = 'ba23a8a91ae1a7af6cbb7d15463d492f91d56615d4e3330e32680e8ba6e93dd6'
 
 export function boundedDockerfile(source) {
   return source.replace(/^(FROM[^\n]+\sAS\s+build)\s*$/gmi, '$1\nENV NODE_OPTIONS=--max-old-space-size=4096')
@@ -45,6 +49,10 @@ export async function build(options) {
   if (plan.component.startsWith('cloud-') && (!options.cloudTools?.startsWith('/') || !/^[0-9a-f]{40}$/.test(options.workflowRevision))) throw Error('trusted Cloud main tooling and exact workflow revision required')
   if (plan.component.startsWith('cloud-') && (run('git', ['rev-parse', 'HEAD'], { cwd: options.cloudTools }) !== options.workflowRevision ||
       run('git', ['status', '--porcelain'], { cwd: options.cloudTools }))) throw Error('trusted Cloud main tooling revision mismatch or dirty checkout')
+  if (plan.component.startsWith('cloud-') && await hashFile(join(options.cloudTools, 'deploy/openship/create-cloud-staging-release.sh')) !== cloudArchiveHelperSha256) {
+    throw Object.assign(Error('MP-08 / MP-09 / MP-10 / MP-11: unsupported Cloud archive helper; pin Cloud tooling containing the reviewed trusted digest helper'),
+      { code: 'ERR_UNSUPPORTED_CLOUD_ARCHIVE_HELPER' })
+  }
   await resourceGuard(plan.source)
   const { component, revision, version, source, output } = plan
   if (run('git', ['rev-parse', `${revision}^{commit}`], { cwd: source }) !== revision) throw Error('source commit missing')
@@ -116,5 +124,9 @@ export async function hashFile(path) { return hash(await readFile(path)) }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   readFile(process.argv[2], 'utf8').then(JSON.parse).then(build).then(result => console.log(canonical(result)))
-    .catch(() => { console.error('MP-07 / MP-11: build failed; inspect lane-owned build.log (no runtime secrets accepted)'); process.exitCode = 1 })
+    .catch(error => {
+      console.error(error.code === 'ERR_UNSUPPORTED_CLOUD_ARCHIVE_HELPER' ? error.message
+        : 'MP-07 / MP-11: build failed; inspect lane-owned build.log (no runtime secrets accepted)')
+      process.exitCode = 1
+    })
 }
