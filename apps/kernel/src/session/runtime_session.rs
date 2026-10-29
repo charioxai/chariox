@@ -413,6 +413,42 @@ impl RuntimeSession {
         )];
     }
 
+    /// MP-08/MP-10/MP-11: enrollment identifies the existing OS owner.
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        let local = super::DEFAULT_LOCAL_USER_ID;
+        if self.owner_user_id != local {
+            return;
+        }
+        self.owner_user_id = owner.into();
+        self.members.retain(|member| member.user_id() != owner);
+        for member in &mut self.members {
+            if member.user_id() == local {
+                *member = SessionMember::new(
+                    owner,
+                    member.joined_at_ms(),
+                    member.invited_by_user_id().map(str::to_owned),
+                    member.collaboration_level(),
+                );
+            }
+        }
+        for agent in &mut self.agents {
+            if agent.owner_user_id() == local {
+                agent.set_owner_user_id(owner);
+            }
+        }
+        for trigger in &mut self.agent_triggers.0 {
+            trigger.enroll_local_owner(owner);
+        }
+        for window in &mut self.sudo_windows {
+            if window.owner_user_id == local {
+                window.owner_user_id = owner.into();
+            }
+        }
+        for workflow in &mut self.workflows {
+            workflow.enroll_local_owner(owner);
+        }
+    }
+
     pub fn members(&self) -> &[SessionMember] {
         &self.members
     }

@@ -116,6 +116,12 @@ impl AgentTrigger {
         &self.agent_id
     }
 
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        if self.created_by_user_id.as_deref() == Some(super::DEFAULT_LOCAL_USER_ID) {
+            self.created_by_user_id = Some(owner.into());
+        }
+    }
+
     pub fn created_by_user_id(&self) -> Option<&str> {
         self.created_by_user_id.as_deref()
     }

@@ -293,6 +293,20 @@ impl RuntimeProviderRun {
     pub fn agent_instance_id(&self) -> Option<&str> {
         self.agent_instance_id.as_deref()
     }
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) -> Result<(), DaemonError> {
+        if self.owner_user_id != crate::session::DEFAULT_LOCAL_USER_ID {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider account authority",
+                message: "only a local run can follow Cloud enrollment",
+            });
+        }
+        if let Some(account) = self.resolved_provider_account.as_mut() {
+            account.enroll_local_runtime_owner(owner)?;
+        }
+        self.owner_user_id = owner.into();
+        Ok(())
+    }
+
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
     }
