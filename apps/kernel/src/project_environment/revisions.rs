@@ -29,16 +29,27 @@ pub fn environment_draft(environment: &ProjectEnvironment) -> EnvironmentRevisio
             .collect(),
     }
 }
-// Accepting a proposal is the explicit review that admits its currently attached folder.
+// Accepting or editing a proposal explicitly reviews its currently attached folder.
 // The historical snapshot and its CAS digest remain unchanged until Save commits.
 pub(crate) fn review_new_proposal_folders(
     current: &mut ProjectEnvironment,
-    request: &mut crate::local::SaveProjectEnvironmentRevisionRequest,
+    draft: &mut EnvironmentRevisionDraft,
+    accepted: &[String],
     attached: &[EnvironmentFolder],
 ) -> Result<(), DaemonError> {
-    for id in &request.accepted_proposal_ids {
-        let proposal = current.proposals.iter().find(|p| &p.proposal_id == id)
-            .ok_or_else(|| environment_error("Environment revision conflict; proposal is no longer pending; refresh and review"))?;
+    for id in accepted {
+        if !current.proposals.iter().any(|p| &p.proposal_id == id) {
+            return Err(environment_error(
+                "Environment revision conflict; proposal is no longer pending; refresh and review",
+            ));
+        }
+    }
+    for proposal in &current.proposals {
+        if !accepted.contains(&proposal.proposal_id)
+            && !requirements(draft).any(|r| r.requirement_id == proposal.requirement.requirement_id)
+        {
+            continue;
+        }
         let RequirementScope::Folder { folder_id } = &proposal.requirement.scope else {
             continue;
         };
@@ -49,13 +60,19 @@ pub(crate) fn review_new_proposal_folders(
             .ok_or_else(|| environment_error("Environment revision conflict; proposal folder is no longer attached; refresh and review"))?;
         let mut folder = folder.clone();
         folder.requirements.clear();
-        request.draft.folders.push(EnvironmentFolderSpecification {
-            folder_id: folder.folder_id.clone(),
-            portable_folder_key: folder.portable_folder_key.clone(),
-            label: folder.label.clone(),
-            optional_git: folder.optional_git.clone(),
-            requirements: vec![],
-        });
+        if !draft
+            .folders
+            .iter()
+            .any(|f| f.folder_id == folder.folder_id)
+        {
+            draft.folders.push(EnvironmentFolderSpecification {
+                folder_id: folder.folder_id.clone(),
+                portable_folder_key: folder.portable_folder_key.clone(),
+                label: folder.label.clone(),
+                optional_git: folder.optional_git.clone(),
+                requirements: vec![],
+            });
+        }
         current.folders.push(folder);
     }
     Ok(())
@@ -516,12 +533,12 @@ impl ProjectEnvironmentStore {
                     .ok_or_else(|| {
                         environment_error("Environment revision conflict; proposal is no longer pending; refresh and review")
                     })?;
-                if requirements(&draft)
-                    .any(|r| r.requirement_id == proposal.requirement.requirement_id)
-                {
-                    return Err(environment_error("proposal already present in draft"));
+                let present = requirements(&draft)
+                    .any(|r| r.requirement_id == proposal.requirement.requirement_id);
+                if present && decision == EnvironmentOptInDecision::Excluded {
+                    return Err(environment_error("edited proposal cannot also be excluded"));
                 }
-                if decision == EnvironmentOptInDecision::Accepted {
+                if decision == EnvironmentOptInDecision::Accepted && !present {
                     let mut requirement = proposal.requirement.clone();
                     requirement.required = true;
                     match &requirement.scope {
