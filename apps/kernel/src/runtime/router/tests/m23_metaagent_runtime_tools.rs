@@ -286,3 +286,4 @@ mod workflow_code_crud;
 mod workflow_code_patterns;
 
 mod room_admission;
+mod room_prompt_dispatch;

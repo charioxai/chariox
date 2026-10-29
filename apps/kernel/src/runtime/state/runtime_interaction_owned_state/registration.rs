@@ -11,6 +11,7 @@ impl KernelRuntimeOwnedState {
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         let _admission = self.begin_managed_activity_admission()?;
+        self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
             .pending_interactions
             .mutation
@@ -181,8 +182,8 @@ impl KernelRuntimeOwnedState {
                 })
                 .map(|existing| existing.id().to_owned())
                 .collect::<Vec<_>>();
-            for id in superseded {
-                if let Some(previous) = session.remove_active_interaction(&id) {
+            for id in &superseded {
+                if let Some(previous) = session.remove_active_interaction(id) {
                     self.publish_outside_interaction(
                         session_id,
                         &previous,
@@ -190,10 +191,21 @@ impl KernelRuntimeOwnedState {
                         None,
                     )?;
                 }
-                pending.remove(&id);
+                pending.remove(id);
+            }
+            if !superseded.is_empty() {
+                // This cleanup is definitive even when the new admission is refused.
+                sessions.restore_session(session.clone());
             }
             drop(pending);
-            self.ensure_kernel_decision_capacity(owner)?;
+            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
+                activity_mutation.record();
+                drop(sessions);
+                self.session_snapshot(session_id)?;
+                self.terminal_stream
+                    .notify_terminal_projection_change(session_id);
+                return Err(error);
+            }
         }
         if session
             .active_interactions()
@@ -301,7 +313,8 @@ impl KernelRuntimeOwnedState {
             &interaction,
             crate::session::unix_epoch_ms(),
         )?;
-        let pending = super::super::PendingInteraction {
+        let mut pending = super::super::PendingInteraction {
+            goal_approval: None,
             kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
@@ -338,12 +351,22 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         }
-        self.publish_outside_interaction(
+        if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
+            pending.goal_approval = self.begin_goal_native_approval(
+                session_id,
+                &interaction,
+                pending.agent_lifetime.as_ref(),
+            )?;
+        }
+        if let Err(error) = self.publish_outside_interaction(
             session_id,
             &interaction,
             crate::local::EventInteractionState::Pending,
             passkey_prompt.as_deref(),
-        )?;
+        ) {
+            self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
+            return Err(error);
+        }
         session.add_active_interaction(interaction.clone());
         let identity = pending.responder.clone();
         if passkey_prompt.is_some() {

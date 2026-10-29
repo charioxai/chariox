@@ -6,6 +6,124 @@ use crate::provider::{
 
 pub(super) const PASSKEY: &str = "sudo fixture passkey";
 
+// MP-08 / MP-09 / MP-10 / MP-11: agents cannot exhaust owner elevation capacity.
+#[tokio::test]
+async fn a12_owner_sudo_reaches_passkey_when_agent_decisions_fill_the_cap() {
+    let f = fixture();
+    let mut receivers = Vec::new();
+    for index in 0..8 {
+        let id = format!("agent-filled-cap-{index}");
+        receivers.push(
+            f.state
+                .create_kernel_operation_interaction(
+                    &f.request.session_id,
+                    "local",
+                    RuntimeInteraction::for_kernel_operation(
+                        &id,
+                        &id,
+                        "Agent decision",
+                        "Choose an action",
+                        vec![RuntimeInteractionChoice::new(
+                            "cancel", "Cancel", "cancel", None,
+                        )],
+                    )
+                    .with_timeout_sec(900),
+                )
+                .await
+                .unwrap(),
+        );
+    }
+    let state = f.state.clone();
+    let mut request = f.request.clone();
+    request.prompt = "/sudo protected task".into();
+    let pending = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    let prompt = tokio::time::timeout(Duration::from_secs(2), popup(&f.state)).await;
+    assert!(
+        prompt.is_ok(),
+        "owner elevation must reach the passkey even with eight live agent decisions; finished={}",
+        pending.is_finished()
+    );
+    let prompt = prompt.unwrap();
+    f.state
+        .owned
+        .timeout_runtime_interaction(&prompt.session_id, &prompt.interaction_id)
+        .unwrap();
+    assert!(pending.await.unwrap().is_err());
+    f.state.owned.sweep_kernel_operation_interactions(true);
+    drop(receivers);
+}
+
+#[tokio::test]
+async fn a12_external_sudo_keeps_the_agent_decision_quota() {
+    for cards in [7, 8] {
+        let f = fixture();
+        let mut receivers = Vec::new();
+        for index in 0..cards {
+            let id = format!("agent-cap-control-{index}");
+            receivers.push(
+                f.state
+                    .create_kernel_operation_interaction(
+                        &f.request.session_id,
+                        "local",
+                        RuntimeInteraction::for_kernel_operation(
+                            &id,
+                            &id,
+                            "Agent decision",
+                            "Choose an action",
+                            vec![RuntimeInteractionChoice::new(
+                                "cancel", "Cancel", "cancel", None,
+                            )],
+                        )
+                        .with_timeout_sec(900),
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        let grant = f.state.insert_access_grant_for_test(&f.request.session_id);
+        let request = external_request(&f);
+        if cards == 8 {
+            let Err(error) = f.state.request_kernel_sudo(&grant, request).await else {
+                panic!("an external requester cannot spend reserved owner capacity");
+            };
+            assert!(
+                error.to_string().contains("Kernel decision limit reached"),
+                "{error}"
+            );
+        } else {
+            let state = f.state.clone();
+            let pending =
+                tokio::spawn(async move { state.request_kernel_sudo(&grant, request).await });
+            let prompt = popup(&f.state).await;
+            f.state
+                .answer_terminal_runtime_interaction(
+                    &prompt.session_id,
+                    &prompt.interaction_id,
+                    "refuse",
+                    None,
+                    Some("local"),
+                    None,
+                    None,
+                    Some(KernelConnectionClass::Terminal),
+                )
+                .await
+                .unwrap();
+            assert!(
+                pending.await.unwrap().is_err(),
+                "the real owner refusal settles the request"
+            );
+        }
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+        assert!(f.state.list_sudo_turns("local").is_empty());
+        f.state.owned.sweep_kernel_operation_interactions(true);
+        drop(receivers);
+    }
+}
+
 // MP-08/MP-11: even an owner-authorized sudo turn cannot perform owner review.
 #[tokio::test]
 async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {

@@ -12,9 +12,24 @@ pub(crate) fn redact_response_for_user(
     workflow_run_context: Option<&RuntimeSession>,
     workflow_history: Option<&crate::durable_state::DurableKernelStateStore>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let redact_session = |session: RuntimeSession| match workflow_history {
-        Some(history) => session.redacted_for_user_with_workflow_history(caller_user_id, history),
-        None => Ok(session.redacted_for_user(caller_user_id)),
+    let redact_session = |session: RuntimeSession| -> Result<RuntimeSession, DaemonError> {
+        let mut session = match workflow_history {
+            Some(history) => {
+                session.redacted_for_user_with_workflow_history(caller_user_id, history)?
+            }
+            None => session.redacted_for_user(caller_user_id),
+        };
+        // Full trace visibility does not authorize reading another user's provider run.
+        // Attach must not direct the client to a run the provider API will refuse.
+        if session.active_provider_run_id().is_some_and(|id| {
+            provider_run_projection.get(id).map_or_else(
+                || session.owner_user_id() != caller_user_id,
+                |run| !run.owned_by(caller_user_id),
+            )
+        }) {
+            session.set_active_provider_run(None);
+        }
+        Ok(session)
     };
     Ok(match response {
         LocalDaemonResponse::SessionCreated { session, agent, .. } => {
@@ -681,6 +696,50 @@ mod tests {
             None,
         )
         .expect("workflow run response should redact")
+    }
+
+    #[test]
+    fn full_collaborator_session_projection_omits_unreadable_active_provider_run() {
+        let mut session = RuntimeSession::new(
+            "session-provider-visibility",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
+        session.set_owner_user_id("local");
+        session.add_member(
+            "collaborator",
+            None,
+            crate::session::CollaborationLevel::Full,
+        );
+        let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "owner-run",
+            session.id().to_string(),
+            None,
+            "codex".to_string(),
+        );
+        session.set_active_provider_run(Some(run.id().to_string()));
+        let projection = ProviderRunProjectionStore::default();
+        projection.update(run);
+        for (caller, expected) in [("local", Some("owner-run")), ("collaborator", None)] {
+            let response = redact_response_for_user(
+                LocalDaemonResponse::SessionResolved {
+                    session: session.clone(),
+                },
+                caller,
+                &projection,
+                None,
+                None,
+            )
+            .unwrap();
+            let LocalDaemonResponse::SessionResolved { session: projected } = response else {
+                panic!("unexpected response");
+            };
+            assert_eq!(projected.active_provider_run_id(), expected);
+        }
+        assert_eq!(session.active_provider_run_id(), Some("owner-run"));
     }
 
     #[test]

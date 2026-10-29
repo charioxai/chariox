@@ -186,7 +186,7 @@ pub(super) fn task_correction_text(task: &AgentTaskExecution) -> String {
     let with = |status: &str| {
         task.obligations
             .iter()
-            .filter(|o| o.status == status)
+            .filter(|o| o.status == status && o.requires_resolution())
             .collect::<Vec<_>>()
     };
     let (settling, running, failed) = (with("settling"), with("open"), with("failed"));
@@ -213,6 +213,17 @@ pub(super) fn task_public_outputs<'a>(
     prompt: &str,
     run: Option<&str>,
 ) -> Vec<&'a str> {
+    task_public_output_entries(entries, prompt, run)
+        .into_iter()
+        .map(|entry| entry.text.as_str())
+        .collect()
+}
+
+pub(super) fn task_public_output_entries<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
     let key = format!("prompt:{prompt}");
     let Some(start) = entries
@@ -252,8 +263,50 @@ pub(super) fn task_public_outputs<'a>(
                     .and_then(crate::history::parse_external_provider_observed_id)
                     .is_none_or(|id| !managed_items.contains(id.provider_turn_id.as_str()))
         })
-        .map(|e| e.text.as_str())
         .collect()
+}
+
+/// The same bounded message projection is used for current and prior goal work.
+pub(super) struct PublicTaskAnswer {
+    pub messages: Vec<String>,
+    pub shown_chars: usize,
+    pub total_chars: usize,
+}
+
+pub(super) fn task_public_answer(
+    entries: &[crate::history::SessionHistoryEntry],
+    prompt: &str,
+    run: Option<&str>,
+    limit: usize,
+) -> PublicTaskAnswer {
+    let output = task_public_output_entries(entries, prompt, task_answer_history_run(run));
+    let total_chars = output.iter().map(|e| e.text.chars().count()).sum();
+    let mut remaining = limit;
+    let mut messages: Vec<(Option<&str>, String)> = Vec::new();
+    // IDs distinguish commentary from a later answer. Without an ID, keep
+    // adjacent deltas together instead of inventing message boundaries.
+    for entry in output.into_iter().rev() {
+        if remaining == 0 {
+            break;
+        }
+        let count = entry.text.chars().count();
+        let shown = count.min(remaining);
+        if shown == 0 {
+            continue;
+        }
+        let tail = entry.text.chars().skip(count - shown).collect::<String>();
+        let key = entry.merge_key.as_deref();
+        match messages.last_mut() {
+            Some((last_key, text)) if *last_key == key => text.insert_str(0, &tail),
+            _ => messages.push((key, tail)),
+        }
+        remaining -= shown;
+    }
+    PublicTaskAnswer {
+        messages: messages.into_iter().rev().map(|(_, text)| text).collect(),
+        shown_chars: limit - remaining,
+        total_chars,
+    }
 }
 
 #[cfg(test)]

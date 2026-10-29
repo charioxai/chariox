@@ -392,6 +392,7 @@ impl KernelRuntimeOwnedState {
                         prompt.id(),
                         answer_run,
                     );
+                    self.trace_assessment_waiting_result(&task, prompt.id(), &result);
                 }
                 // What the owner already saw of the work turn; the receipt must not repeat it.
                 let work_output = ledger::completion::evaluation(&task)
@@ -500,6 +501,10 @@ impl KernelRuntimeState {
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
         }
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        self.owned
+            .require_agent_account_authenticated(target, None, "send agent message")?;
         // Room admission precedes resource lookup; no cross-room discovery.
         let id = args
             .idempotency_key
@@ -680,6 +685,8 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+            .await;
         let name = self.agent_notice_name(&task.agent_id);
         let message = super::agent_task_projection::task_status_notice(&task, &name);
         self.owned.record_notice_for_agent(

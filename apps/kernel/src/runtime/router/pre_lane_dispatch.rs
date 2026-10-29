@@ -62,7 +62,9 @@ impl CommandRouter {
         )
         .await
         {
-            return response.map(Some);
+            return self
+                .redact_result_for_user(response, caller_user_id)
+                .map(Some);
         }
         if let LocalDaemonRequest::RemoveEventConnection(removal) = request {
             let _connection_guard = self

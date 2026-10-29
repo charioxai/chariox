@@ -388,4 +388,6 @@ pub use workspace::*;
 /// health events), 632 (binary Room exec), 636 (archived-agent discovery), 640 (the typed cause, retryable flag and
 /// reset time of a failed turn on its outside event and history) and 642 (the turn outcome: one typed `kind`, `retryable`
 /// and `reason` for every turn that ends, with the prompt and turn id on the outside event); every earlier contract is retained.
+/// Protocol 643 answers `CancelActivePrompt` for a parked task with `AgentTaskUpdated`; 506 leaves the predecessor list to
+/// keep it within the 32-entry policy.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

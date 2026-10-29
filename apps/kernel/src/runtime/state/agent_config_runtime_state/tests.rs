@@ -22,6 +22,8 @@ mod failure_causes;
 #[path = "tests/turn_outcome.rs"]
 mod turn_outcome;
 
+#[path = "tests/assessment_sources.rs"]
+mod assessment_sources;
 #[path = "tests/goal_assessment.rs"]
 mod goal_assessment;
 

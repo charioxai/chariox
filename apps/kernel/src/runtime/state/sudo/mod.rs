@@ -12,6 +12,7 @@ use crate::session::{
 mod end_wake;
 mod entry;
 mod external;
+mod goal;
 pub(crate) mod leased;
 mod lifecycle;
 mod login_recovery;
@@ -30,7 +31,11 @@ pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod goal_tests;
+#[cfg(test)]
 mod operation_tests;
+#[cfg(test)]
+mod parked_task_tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod process_tests;
 #[cfg(test)]

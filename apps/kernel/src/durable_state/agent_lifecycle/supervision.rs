@@ -151,6 +151,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
+                    let next_check_in = t.goal.as_ref().and_then(|goal| goal.next_check_in_ms);
+                    let source_deadline = if let Some(wait) = t.wait.as_ref() {
+                        wakes::source_deadline(tx, &t, &wait.registration_ids)?
+                    } else {
+                        None
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         if !w.long_wait_notified
                             && now.saturating_sub(t.last_progress_at_ms) >= LONG_WAIT_MS
@@ -167,21 +173,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
                         let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                        let check_in = next_check_in.filter(|due| {
+                            *due <= now
+                                && source_deadline.is_none_or(|deadline| deadline > now)
+                                && !dead
+                                && now >= w.started_at_ms
+                                && !clock_rollback
+                        });
                         if (dead && unread == 0)
                             || w.deadline_ms <= now
                             || now < w.started_at_ms
                             || clock_rollback
+                            || check_in.is_some()
                         {
                             let kind = if dead {
                                 "wait_recheck"
                             } else {
                                 "deadline_reached"
                             };
+                            let occurrence_id = check_in.map_or_else(
+                                || format!("wait-{}-{kind}", w.started_at_ms),
+                                |due| format!("{}{due}", super::goals::CHECK_IN_OCCURRENCE_PREFIX),
+                            );
                             let e = occurrence(
                                 &t.room_id,
                                 &t.agent_id,
                                 &t.task_id,
-                                &format!("wait-{}-{kind}", w.started_at_ms),
+                                &occurrence_id,
                                 kind,
                                 serde_json::json!({"task_id":t.task_id,"reason":"re-evaluate"}),
                             );
@@ -424,6 +442,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            let blocked_revision = t.blocked_revision;
             super::goals::clock(&mut t, now);
             t.state = if resume {
                 ExecutionState::Working
@@ -449,6 +468,20 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.revision
                 ));
                 t.last_progress_at_ms = now;
+                if let Some(goal) = &t.goal {
+                    migration::audit(
+                        tx,
+                        "goal.owner_resume",
+                        &t.task_id,
+                        serde_json::json!({
+                            "task_id":t.task_id, "goal_id":goal.id,
+                            "objective_revision":goal.objective_revision,
+                            "prompt_id":t.pending_prompt_id, "action":"resume",
+                            "blocked_revision":blocked_revision, "resumed_revision":t.revision,
+                            "at_ms":now,
+                        }),
+                    )?;
+                }
             }
             save(tx, &t)?;
             Ok(Outcome::Task(t))

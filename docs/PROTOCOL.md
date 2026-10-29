@@ -5240,6 +5240,15 @@ kernel and never re-sent on its own. Protocol 670 projects that hold on the queu
 and may arrive twice) or discard with the existing `RemoveQueuedWorkflowPrompt`, which now also accepts
 a held item. At the deadline the kernel retires a held item with a notice that names the reason.
 TUI: `/workflow queue retry|remove <item>`. Clients send `retry_delivery` only to kernels at 670 or newer.
+### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
+
+`CancelActivePrompt` keeps its request shape. When the targeted agent has no active
+prompt but owns a parked task (a Waiting task whose provider turn has ended), the
+kernel cancels that task and answers `AgentTaskUpdated { session_id, task }` instead
+of `PromptCancelled`. A request that names `expected_prompt_id` never cancels a
+parked task. Clients treat `AgentTaskUpdated` as a successful Stop only with
+protocol 643 or newer; older kernels keep answering `PromptCancelled` or an error.
+The relay peer protocol is unchanged.
 
 ### Staging new UI union (599/205)
 

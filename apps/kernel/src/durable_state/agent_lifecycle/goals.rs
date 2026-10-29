@@ -2,6 +2,7 @@
 use super::*;
 mod adoption;
 mod controls;
+pub(super) mod native_approval;
 pub(super) use adoption::adopt;
 pub(super) use controls::control;
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,24 @@ use serde::{Deserialize, Serialize};
 pub(crate) const CHECK_BOUND_MS: u64 = 60_000;
 const EVALUATING_REASON: &str = "Evaluating original goal objective";
 const VAULT_WAIT_REASON: &str = "Waiting for the Vault unlock";
+pub(super) const CHECK_IN_OCCURRENCE_PREFIX: &str = "goal-check-in-";
 pub(crate) const RESULT_LIMIT: usize = 8_192;
+
+pub(super) fn is_check_in_event(task: &AgentTaskExecution, event: &InboxEvent) -> bool {
+    task.goal.is_some()
+        && event.kind == "deadline_reached"
+        && event.source_id == task.task_id
+        && event.occurrence_id.starts_with(CHECK_IN_OCCURRENCE_PREFIX)
+}
+
+fn schedule_wait_check_in(task: &mut AgentTaskExecution, now: u64) {
+    if let (Some(goal), Some(wait)) = (&mut task.goal, &task.wait) {
+        goal.next_check_in_ms = Some(
+            wait.deadline_ms
+                .min(now.saturating_add(u64::from(goal.check_in_minutes) * 60_000)),
+        );
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentGoal {
@@ -102,6 +120,42 @@ pub(crate) enum Assessment {
     },
 }
 
+/// Assessment references never admit sources: resolve only this task's live IDs.
+/// Exact references win; a shortened reference must identify exactly one source.
+pub(crate) fn resolve_live_registration_ids(
+    supplied: &[String],
+    registrations: &[Registration],
+) -> Option<Vec<String>> {
+    if supplied.is_empty() {
+        return None;
+    }
+    let mut resolved = Vec::with_capacity(supplied.len());
+    for id in supplied {
+        if id.is_empty() {
+            return None;
+        }
+        let source = if let Some(exact) = registrations.iter().find(|source| &source.id == id) {
+            if !exact.live {
+                return None;
+            }
+            &exact.id
+        } else {
+            let mut matches = registrations
+                .iter()
+                .filter(|source| source.live && source.id.starts_with(id.as_str()));
+            let source = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            &source.id
+        };
+        resolved.push(source.clone());
+    }
+    resolved.sort();
+    resolved.dedup();
+    Some(resolved)
+}
+
 pub(super) fn start(
     tx: &Transaction<'_>,
     task: String,
@@ -188,9 +242,14 @@ pub(super) fn blocked(t: &mut AgentTaskExecution, reason: &str) {
 }
 
 /// One persisted intent per work turn; duplicate EOF/ACK cannot spend again.
-pub(super) fn work_end(t: &mut AgentTaskExecution, has_answer: bool, now: u64) -> bool {
+pub(super) fn work_end(
+    t: &mut AgentTaskExecution,
+    has_answer: bool,
+    valid_wait: bool,
+    now: u64,
+) -> bool {
     clock(t, now);
-    if !has_answer {
+    if !has_answer && !valid_wait {
         blocked(
             t,
             "Goal provider ended without a public answer; reconcile failure and explicitly resume",
@@ -305,7 +364,7 @@ pub(super) fn evaluate(
         None => blocked(&mut t, "Goal evaluation timed out, was malformed or stale; inspect the receipt and explicitly resume"),
         Some(Assessment::Blocked { reason }) if !reason.trim().is_empty() => blocked(&mut t, &reason),
         Some(Assessment::Achieved { final_answer, evidence }) if !final_answer.trim().is_empty() && !evidence.is_empty() && evidence.iter().all(|e| !e.trim().is_empty()) => {
-            if t.obligations.iter().any(|o| matches!(o.status.as_str(), "open" | "settling" | "failed")) {
+            if t.obligations.iter().any(AgentObligation::requires_resolution) {
                 if t.correction_used {
                     blocked(&mut t, "Repeated achieved claim with unresolved obligations; owner must resume or cancel");
                 } else {
@@ -324,24 +383,23 @@ pub(super) fn evaluate(
             // again on live sources covering every obligation: honour that wait.
             if t.no_progress_wakes >= NO_PROGRESS_LIMIT && covered_wait(tx, &t, now)? {
                 blocked(&mut t, "Goal check-ins made no progress; owner must inspect and explicitly resume");
-            } else if t.no_progress_wakes > 0 && covered_wait(tx, &t, now)? {
+            } else if covered_wait(tx, &t, now)? {
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
-                let deadline = t.wait.as_ref().map(|w| w.deadline_ms);
-                if let Some(g) = &mut t.goal { g.next_check_in_ms = deadline; }
+                schedule_wait_check_in(&mut t, now);
             } else {
                 again = continue_work(&mut t, &reason);
             }
         }
         Some(Assessment::Waiting { reason, registration_ids, deadline_ms }) if !reason.trim().is_empty() => {
-            let interval = t.goal.as_ref().map_or(10, |g| g.check_in_minutes) as u64 * 60_000;
-            let deadline = deadline_ms.min(now.saturating_add(interval))
+            let regs = registrations(tx, &t.task_id)?;
+            let registration_ids = resolve_live_registration_ids(&registration_ids, &regs).unwrap_or(registration_ids);
+            let deadline = deadline_ms
                 .min(t.wait.as_ref().map_or(u64::MAX, |w| w.deadline_ms))
                 .min(wakes::source_deadline(tx, &t, &registration_ids)?.unwrap_or(u64::MAX));
-            let regs = registrations(tx, &t.task_id)?;
             let valid_sources = !registration_ids.is_empty() && deadline > now
                 && registration_ids.iter().all(|id| regs.iter().any(|r| &r.id == id && r.live))
-                && t.obligations.iter().filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+                && t.obligations.iter().filter(|o| o.requires_resolution())
                     .all(|o| regs.iter().any(|r| r.live && registration_ids.contains(&r.id) && r.obligation_id.as_deref() == Some(&o.id)));
             if !valid_sources {
                 // A source that already completed leaves its obligation settling until
@@ -363,7 +421,7 @@ pub(super) fn evaluate(
                 });
                 t.reason = reason;
                 t.state = ExecutionState::Waiting;
-                if let Some(g) = &mut t.goal { g.next_check_in_ms = Some(deadline); }
+                schedule_wait_check_in(&mut t, now);
             }
         }
         _ => blocked(&mut t, "Goal evaluation omitted its required answer/evidence or owner action; explicitly resume"),
@@ -404,7 +462,7 @@ fn covered_wait(
         && w.registration_ids.iter().all(live)
         && t.obligations
             .iter()
-            .filter(|o| matches!(o.status.as_str(), "open" | "settling" | "failed"))
+            .filter(|o| o.requires_resolution())
             .all(|o| {
                 regs.iter().any(|r| {
                     r.live
@@ -531,7 +589,7 @@ pub(super) fn begin_owner_wait(
     {
         return Ok(Outcome::Saved);
     }
-    completion::evaluation_mut(&mut t).unwrap().paused_at_ms = Some(now);
+    pause_check_clock(&mut t, &prompt, now);
     t.reason = VAULT_WAIT_REASON.into();
     save(tx, &t)?;
     Ok(Outcome::Task(t))
@@ -547,12 +605,10 @@ pub(super) fn end_owner_wait(
     now: u64,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, &task)?;
-    let Some(paused_at) = check_is_pending(&t, &prompt)
-        .then(|| completion::evaluation(&t).unwrap().paused_at_ms)
-        .flatten()
-    else {
+    if !check_is_pending(&t, &prompt) || completion::evaluation(&t).unwrap().paused_at_ms.is_none()
+    {
         return Ok(Outcome::Saved);
-    };
+    }
     if let Some(reason) = refusal {
         completion::evaluation_mut(&mut t).unwrap().paused_at_ms = None;
         return block_check(
@@ -564,15 +620,34 @@ pub(super) fn end_owner_wait(
             "owner did not unlock the Vault",
         );
     }
-    let waited = now.saturating_sub(paused_at);
-    let check = completion::evaluation_mut(&mut t).unwrap();
-    // The bound stays exactly `CHECK_BOUND_MS` after the start the ledger validates.
-    check.started_at_ms = check.started_at_ms.saturating_add(waited);
-    check.deadline_ms = check.deadline_ms.saturating_add(waited);
-    check.paused_at_ms = None;
+    resume_check_clock(&mut t, &prompt, now);
     t.reason = EVALUATING_REASON.into();
     save(tx, &t)?;
     Ok(Outcome::Task(t))
+}
+
+/// Stops the service bound of the pending check `prompt` while the owner is asked something.
+/// An earlier pause (the Vault unlock) keeps its start.
+pub(super) fn pause_check_clock(t: &mut AgentTaskExecution, prompt: &str, now: u64) {
+    if let Some(check) = completion::evaluation_mut(t)
+        .filter(|e| e.prompt_id == prompt && e.result.is_none() && e.paused_at_ms.is_none())
+    {
+        check.paused_at_ms = Some(now);
+    }
+}
+
+/// Gives the check back the time it was paused.
+pub(super) fn resume_check_clock(t: &mut AgentTaskExecution, prompt: &str, now: u64) {
+    let Some(check) = completion::evaluation_mut(t).filter(|e| e.prompt_id == prompt) else {
+        return;
+    };
+    let Some(paused_at) = check.paused_at_ms.take() else {
+        return;
+    };
+    let waited = now.saturating_sub(paused_at);
+    // The bound stays exactly `CHECK_BOUND_MS` after the start the ledger validates.
+    check.started_at_ms = check.started_at_ms.saturating_add(waited);
+    check.deadline_ms = check.deadline_ms.saturating_add(waited);
 }
 
 fn check_is_pending(t: &AgentTaskExecution, prompt: &str) -> bool {

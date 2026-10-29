@@ -310,6 +310,10 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       prompt: trimmed.replace(/^\/loop\s*/, "").trim(),
     }
   }
+  const sudoGoalControl = /^\/sudo\s+\/goal\s+((?:pause|resume|cancel|interval|edit)(?:\s+[\s\S]*)?)$/u.exec(trimmed)
+  if (sudoGoalControl) {
+    return { kind: "goal", raw: trimmed, prompt: sudoGoalControl[1]!.trim() }
+  }
   if (trimmed === "/goal" || trimmed.startsWith("/goal ")) {
     return {
       kind: "goal",

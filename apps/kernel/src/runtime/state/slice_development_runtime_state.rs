@@ -36,6 +36,16 @@ impl KernelRuntimeState {
             .map_err(|error| slice_development_io_error("resolve", &storage_parent, error))
     }
 
+    pub(crate) fn resolve_spawn_slice(
+        &self,
+        reference: &str,
+        caller_agent_id: &str,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.owned
+            .slice_store
+            .resolve_spawn_slice(reference, caller_agent_id)
+    }
+
     pub(crate) fn slice_development_selection_for_session(
         &self,
         session: &crate::session::RuntimeSession,
