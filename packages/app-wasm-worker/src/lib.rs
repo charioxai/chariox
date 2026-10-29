@@ -2,9 +2,9 @@
 
 pub mod containment;
 pub mod engine;
-mod supervised;
 #[cfg(target_os = "macos")]
 mod macos_code;
+mod supervised;
 
 mod attribution;
 mod bindings;
