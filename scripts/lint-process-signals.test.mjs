@@ -74,3 +74,11 @@ for (const source of ["trap 'kill 0' EXIT", 'kill 0', 'kill -- 0', 'kill -n 9 -"
     assert.ok(signalViolations(source).some(site => site.kind === 'shell-group'))
   })
 }
+
+test('MP-11 signal lint inspects Rust sources', () => {
+  const root = mkdtempSync(join(tmpdir(), 'chariox-signal-rust-'))
+  try {
+    writeFileSync(join(root, 'fixture.rs'), 'unsafe { libc::kill(-pgid, libc::SIGKILL) };\n')
+    assert.equal(lintProcessSignals({root, files:['fixture.rs']}).violationCount, 1)
+  } finally { rmSync(root, {recursive:true}) }
+})
