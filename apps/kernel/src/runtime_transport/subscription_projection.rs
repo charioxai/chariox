@@ -24,6 +24,7 @@ pub(crate) fn session_projection_events(
         previous.session == snapshot.session
             && previous.provider_run == snapshot.provider_run
             && previous.agent_activity == snapshot.agent_activity
+            && previous.room_workflows == snapshot.room_workflows
     });
     let replaces_snapshot = has_terminal_workflow_update
         || events.iter().any(|event| {
@@ -145,6 +146,22 @@ mod tests {
             session_projection_events(&after, Some(&before), false).as_slice(),
             [
                 KernelEvent::SessionProcessesChanged { .. },
+                KernelEvent::SessionSnapshot { .. }
+            ]
+        ));
+    }
+
+    #[test]
+    fn process_delta_keeps_the_room_workflow_inventory_snapshot() {
+        let before = snapshot();
+        let mut after = before.clone();
+        add_process(&mut after);
+        after.room_workflows.revision.push_str("-changed");
+        assert!(matches!(
+            session_projection_events(&after, Some(&before), false).as_slice(),
+            [
+                KernelEvent::SessionProcessesChanged { .. },
+                KernelEvent::RoomWorkflowsChanged { .. },
                 KernelEvent::SessionSnapshot { .. }
             ]
         ));
