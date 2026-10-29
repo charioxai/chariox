@@ -40,7 +40,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "outside_steer_events_v1",
             "provider_account_copy_v1",
             "agent_triggers_v1",
-            "agent_trigger_resend_v1"
+            "agent_trigger_resend_v1",
+            "agent_trigger_http_v1"
         ])
     );
     assert_eq!(

@@ -17,6 +17,24 @@ pub(crate) fn redact_response_for_user(
         None => Ok(session.redacted_for_user(caller_user_id)),
     };
     Ok(match response {
+        LocalDaemonResponse::AgentTriggerCreated { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerCreated {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::AgentTriggerUpdated { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerUpdated {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::AgentTriggerDeleted { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerDeleted {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
         LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             LocalDaemonResponse::SessionCreated {
                 session: redact_session(session)?,

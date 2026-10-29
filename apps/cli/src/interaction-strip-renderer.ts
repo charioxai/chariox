@@ -156,7 +156,7 @@ function renderAgentTriggerStrip(
 ): void {
   for (const trigger of triggers) {
     const state = trigger.enabled
-      ? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+      ? trigger.localUrl ?? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
       : "off"
     container.add(new TextRenderable(options.renderer, {
       content: [`⏱ ${trigger.label}`, trigger.busyPolicy, state, `${trigger.fired} fired`, trigger.id]

@@ -2004,7 +2004,7 @@ fn is_package_digest_mismatch(error: &DaemonError) -> bool {
     )
 }
 
-fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
+pub(super) fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
     if let Some(value) = std::env::var_os("CHARIOX_CLI_BIN") {
         return Ok(PathBuf::from(value));
     }

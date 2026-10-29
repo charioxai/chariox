@@ -4,17 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json",
+    "build": "pnpm --workspace-root run build:kernel-client && pnpm --filter @chariox/transcript-view run build && tsc -p tsconfig.json && node scripts/build-agent-trigger-view.mjs",
     "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
     "drill:live-publication-traces": "pnpm run build && node scripts/live-publication-trace-drill.mjs",
-    "test": "pnpm run build && node --test dist/index.test.js"
+    "test": "pnpm run build && node --test dist/index.test.js dist/agent-trigger-client.test.js dist/agent-trigger-live.test.js dist/agent-trigger-server.test.js dist/agent-trigger-assets.test.js"
   },
   "dependencies": {
     "@chariox/kernel-client": "workspace:*",
-    "fastify": "^5.1.0"
+    "fastify": "^5.1.0",
+    "@chariox/transcript-view": "workspace:*"
   },
   "bin": {
     "chariox-workflow-gateway": "dist/index.js",
     "chariox-workflow-call": "dist/workflow-call.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.0"
   }
 }

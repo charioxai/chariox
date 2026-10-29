@@ -298,5 +298,6 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "outside_steer_events_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     "agent_triggers_v1",
+    "agent_trigger_http_v1",
     "agent_trigger_resend_v1",
 ];

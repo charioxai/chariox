@@ -455,6 +455,16 @@ impl CommandRouter {
                     .await
                 })
             }
+            LocalDaemonRequest::ReadAgentTriggerTranscript(request) => {
+                boxed_handler(|| async move {
+                    // Gateway startup waits for this read before creation can settle.
+                    // Keep it outside the session command lane, like ordinary history reads.
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .read_agent_trigger_transcript(request, &caller, self.history_store.clone())
+                        .await
+                })
+            }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
             | LocalDaemonRequest::ListWaitingRoomSessions(_)) => boxed_handler(|| async move {
