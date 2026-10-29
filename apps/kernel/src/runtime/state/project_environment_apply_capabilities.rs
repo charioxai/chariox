@@ -355,8 +355,19 @@ mod tests {
         fixture_store
             .active_app_capabilities("alice", "installed")
             .unwrap();
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed("alice", "opencode", "Room App prompt fixture")
+            .unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(root.session_request().with_owner_user_id("alice"))
+            .create_session(
+                root.session_request()
+                    .with_owner_user_id("alice")
+                    .with_agent_defaults(
+                        crate::session::SessionAgentDefaults::new("opencode")
+                            .with_account_profile(profile.profile_id),
+                    ),
+            )
             .unwrap();
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(crate::attachment::AttachRequest::for_user(
