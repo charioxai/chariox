@@ -178,7 +178,11 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
         tasks.push(paced(1000 / o.promptIntervalMs, async () => {
           await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))))
           await delay(o.promptIntervalMs / 2)
-          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))))
+          // A prompt still being dispatched is ended by the next tick; that is not a load error.
+          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))).catch(error => {
+            if (!String(error.message).includes('has no active prompt')) throw error
+            out.complete_before_dispatch = (out.complete_before_dispatch ?? 0) + 1
+          }))
         }))
       }
     }
