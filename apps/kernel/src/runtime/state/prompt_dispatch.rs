@@ -3,16 +3,19 @@
 //! This layer validates runtime state, starts or queues prompts, and hands provider-specific
 //! submission work to the provider runtime without exposing owned-state internals to transports.
 
-use super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation;
+use super::prompt_queue_owned_state::{RemoteQueuedPromptSteerPreparation, TriggerFiring};
 use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
-/// Whether the provider confirmed a trigger's steer. `Unconfirmed` firings are
-/// consumed, never replayed, because the provider may already hold them.
+/// How a trigger's steer ended.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TriggerSteerDelivery {
-    Confirmed,
-    Unconfirmed,
+    /// A leased agent took the steer; the caller records the firing.
+    Delivered,
+    /// A local steer consumed its queue entry and recorded its firing in one
+    /// write. Unconfirmed means the provider never answered: it may hold the
+    /// message, so the firing is consumed, never replayed.
+    Settled { confirmed: bool },
 }
 
 struct RemoteQueuedPromptSteerReservation {
@@ -1007,6 +1010,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
+        firing: TriggerFiring,
     ) -> Result<TriggerSteerDelivery, DaemonError> {
         let owned = &self.owned;
         if owned
@@ -1024,7 +1028,7 @@ impl KernelRuntimeState {
                     None,
                 )
                 .await
-                .map(|_| TriggerSteerDelivery::Confirmed);
+                .map(|_| TriggerSteerDelivery::Delivered);
         }
         let prepared = owned.prepare_local_queued_prompt_steer(
             session_id,
@@ -1044,11 +1048,11 @@ impl KernelRuntimeState {
                 .enqueue_prompt_dispatch_with_receipt(&prepared.dispatch, SteerReceipt::Awaited)
                 .await
             {
-                Ok(true) => TriggerSteerDelivery::Confirmed,
+                Ok(true) => TriggerSteerDelivery::Settled { confirmed: true },
                 // The provider may already hold the message, so the firing
                 // leaves the queue instead of being replayed as a second one.
                 Err(DaemonError::ProviderPromptSteerUnconfirmed { .. }) => {
-                    TriggerSteerDelivery::Unconfirmed
+                    TriggerSteerDelivery::Settled { confirmed: false }
                 }
                 Ok(false) => {
                     release_steer_fence(owned, &prepared);
@@ -1062,7 +1066,7 @@ impl KernelRuntimeState {
                     return Err(error);
                 }
             };
-            owned.finish_local_queued_prompt_steer(&prepared)?;
+            owned.finish_local_queued_prompt_steer(&prepared, &firing)?;
             Ok(delivery)
         }
         .await;

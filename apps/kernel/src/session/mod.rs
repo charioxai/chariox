@@ -150,4 +150,5 @@ pub use agent_triggers::{
     AgentTriggerDispatch, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
 };
 
+pub(crate) use agent_triggers::AgentTriggerSettlement;
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

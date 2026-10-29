@@ -207,6 +207,19 @@ impl AgentTrigger {
         self.schedule_next_run(now_ms, 0);
     }
 
+    /// What recording a steered firing leaves behind, without recording it:
+    /// the durable write that consumes the steer's queue entry carries this,
+    /// so the entry and the occurrence it stood for settle together.
+    pub(crate) fn settled_by_steer(&self, now_ms: u64) -> AgentTriggerSettlement {
+        let mut settled = self.clone();
+        settled.mark_fired(now_ms, AgentTriggerOutcome::Steered, None);
+        if settled.is_one_shot() {
+            AgentTriggerSettlement::Removed(settled.id)
+        } else {
+            AgentTriggerSettlement::Updated(settled)
+        }
+    }
+
     pub(crate) fn defer_dispatch(&mut self, now_ms: u64) {
         self.dispatch_in_flight = false;
         self.schedule_next_run(now_ms, 1);
@@ -318,6 +331,15 @@ impl AgentTrigger {
             last_error: self.last_error.clone(),
         })
     }
+}
+
+/// A firing's recorded result: the trigger as it reads afterwards, or its id
+/// when a one-shot is done.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentTriggerSettlement {
+    Updated(AgentTrigger),
+    Removed(String),
 }
 
 /// The `/wait-in` and `/wait-every` kinds of protocol < 900 clients.

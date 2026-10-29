@@ -157,6 +157,16 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn apply_agent_trigger_settlement(
+        &mut self,
+        session_id: &str,
+        settlement: crate::session::AgentTriggerSettlement,
+    ) -> Result<(), DaemonError> {
+        self.agent_trigger_session_mut(session_id)?
+            .apply_agent_trigger_settlement(settlement);
+        Ok(())
+    }
+
     pub fn mark_agent_trigger_failed(
         &mut self,
         session_id: &str,

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -149,7 +149,36 @@ struct RemoteSteerReservation {
     uncertainty: Arc<Mutex<Option<DurableRemoteQueuedSteerUncertainty>>>,
     /// Set and persisted before a local steer reaches the provider, so a
     /// restart cannot turn a message the provider may hold into a fresh prompt.
-    delivery_fence: Arc<AtomicBool>,
+    delivery_fence: Arc<AtomicU8>,
+}
+
+/// A local steer the provider may already hold. Recovery settles what the
+/// steer stood for once; `Settled` records that it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalSteerFence {
+    InDoubt,
+    Settled,
+}
+
+impl LocalSteerFence {
+    const NONE: u8 = 0;
+
+    fn code(fence: Option<Self>) -> u8 {
+        match fence {
+            None => Self::NONE,
+            Some(Self::InDoubt) => 1,
+            Some(Self::Settled) => 2,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::InDoubt),
+            2 => Some(Self::Settled),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for RemoteSteerReservation {
@@ -206,8 +235,8 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
-    #[serde(default, skip_serializing_if = "is_false_bool")]
-    local_steer_fence: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_steer_fence: Option<LocalSteerFence>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -251,32 +280,32 @@ impl DurablePromptPrivateState {
             .as_deref()
             .cloned()
             .unwrap_or_default();
-        let local_steer_fence = prompt.local_steer_fenced();
+        let local_steer_fence = prompt.local_steer_fence();
         (prompt.private_metadata.is_some()
             || remote_steer_uncertainty.is_some()
-            || local_steer_fence)
-            .then(|| Self {
-                session_id: session_id.to_string(),
-                prompt_id: prompt.id.clone(),
-                agent_trigger_id: metadata.agent_trigger_id,
-                source_client_id: metadata.source_client_id,
-                source_user_id: metadata.source_user_id,
-                owner_request: metadata.owner_request,
-                hidden_system_context: metadata.hidden_system_context,
-                operation_id: metadata.operation_id,
-                operation_fingerprint: metadata.operation_fingerprint,
-                initially_queued: metadata.initially_queued,
-                delivery_phase: metadata.delivery_phase,
-                delivery_provider_run_id: metadata.delivery_provider_run_id,
-                delivery_provider_session_id: metadata.delivery_provider_session_id,
-                delivery_reconciliation_pending: metadata.delivery_reconciliation_pending,
-                delivery_failure_pending: metadata.delivery_failure_pending,
-                recovery_generation: metadata.recovery_generation,
-                recovery_operation_id: metadata.recovery_operation_id,
-                recovery_phase: metadata.recovery_phase,
-                remote_steer_uncertainty,
-                local_steer_fence,
-            })
+            || local_steer_fence.is_some())
+        .then(|| Self {
+            session_id: session_id.to_string(),
+            prompt_id: prompt.id.clone(),
+            agent_trigger_id: metadata.agent_trigger_id,
+            source_client_id: metadata.source_client_id,
+            source_user_id: metadata.source_user_id,
+            owner_request: metadata.owner_request,
+            hidden_system_context: metadata.hidden_system_context,
+            operation_id: metadata.operation_id,
+            operation_fingerprint: metadata.operation_fingerprint,
+            initially_queued: metadata.initially_queued,
+            delivery_phase: metadata.delivery_phase,
+            delivery_provider_run_id: metadata.delivery_provider_run_id,
+            delivery_provider_session_id: metadata.delivery_provider_session_id,
+            delivery_reconciliation_pending: metadata.delivery_reconciliation_pending,
+            delivery_failure_pending: metadata.delivery_failure_pending,
+            recovery_generation: metadata.recovery_generation,
+            recovery_operation_id: metadata.recovery_operation_id,
+            recovery_phase: metadata.recovery_phase,
+            remote_steer_uncertainty,
+            local_steer_fence,
+        })
     }
 }
 
@@ -605,9 +634,10 @@ impl PromptQueueItem {
         if !self.remote_steer_reservation_matches(reservation) {
             return false;
         }
-        self.remote_steer_reservation
-            .delivery_fence
-            .store(true, Ordering::Release);
+        self.remote_steer_reservation.delivery_fence.store(
+            LocalSteerFence::code(Some(LocalSteerFence::InDoubt)),
+            Ordering::Release,
+        );
         true
     }
 
@@ -619,14 +649,36 @@ impl PromptQueueItem {
         }
         self.remote_steer_reservation
             .delivery_fence
-            .store(false, Ordering::Release);
+            .store(LocalSteerFence::NONE, Ordering::Release);
         true
     }
 
+    pub(crate) fn local_steer_fence(&self) -> Option<LocalSteerFence> {
+        LocalSteerFence::from_code(
+            self.remote_steer_reservation
+                .delivery_fence
+                .load(Ordering::Acquire),
+        )
+    }
+
     pub(crate) fn local_steer_fenced(&self) -> bool {
-        self.remote_steer_reservation
-            .delivery_fence
-            .load(Ordering::Acquire)
+        self.local_steer_fence().is_some()
+    }
+
+    /// Claims the one settlement of an orphaned fence. True for the caller
+    /// that moved it from in doubt to settled, false for every later caller.
+    pub(crate) fn settle_orphaned_local_steer_fence(&self) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) == 0
+            && self
+                .remote_steer_reservation
+                .delivery_fence
+                .compare_exchange(
+                    LocalSteerFence::code(Some(LocalSteerFence::InDoubt)),
+                    LocalSteerFence::code(Some(LocalSteerFence::Settled)),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
     }
 
     /// A fence no in-flight steer owns: the kernel that wrote it is gone, so
@@ -974,11 +1026,11 @@ impl PromptQueueItem {
         self.restore_local_steer_fence(private.local_steer_fence);
     }
 
-    fn restore_local_steer_fence(&self, fenced: bool) {
-        if fenced {
+    fn restore_local_steer_fence(&self, fence: Option<LocalSteerFence>) {
+        if fence.is_some() {
             self.remote_steer_reservation
                 .delivery_fence
-                .store(true, Ordering::Release);
+                .store(LocalSteerFence::code(fence), Ordering::Release);
         }
     }
 

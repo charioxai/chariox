@@ -1282,6 +1282,11 @@ impl DaemonApp {
                     return Ok(());
                 }
                 prompt_state.restore_private_states();
+                if let Some(settlement) = prompt_state.trigger_settlement.take() {
+                    self.sessions
+                        .write()
+                        .apply_agent_trigger_settlement(&prompt_state.session_id, settlement)?;
+                }
                 if let Some(timestamp_ms) = prompt_state.last_prompt_sent_at_ms {
                     self.agents
                         .note_prompt_sent_at(&prompt_state.agent_id, timestamp_ms)?;

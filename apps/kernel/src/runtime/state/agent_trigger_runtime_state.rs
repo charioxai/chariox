@@ -1,4 +1,5 @@
 use super::prompt_dispatch::TriggerSteerDelivery;
+use super::prompt_queue_owned_state::TriggerFiring;
 use super::*;
 use crate::session::{
     AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
@@ -10,6 +11,8 @@ enum AgentTriggerFiring {
         outcome: AgentTriggerOutcome,
         steer_refusal: Option<String>,
     },
+    /// A local steer recorded the firing in the write that consumed its entry.
+    Settled,
     Coalesced,
     AgentGone,
     /// The agent is archived: nothing fires, and the trigger waits for its next run.
@@ -247,7 +250,7 @@ impl KernelRuntimeState {
             .write()
             .claim_due_agent_triggers(now_ms);
         for dispatch in dispatches {
-            let result = self.fire_agent_trigger(&dispatch).await;
+            let result = self.fire_agent_trigger(&dispatch, now_ms).await;
             let update = match result {
                 Ok(AgentTriggerFiring::Fired {
                     outcome,
@@ -273,7 +276,7 @@ impl KernelRuntimeState {
                     .session_store
                     .write()
                     .defer_agent_trigger(&dispatch.session_id, &dispatch.trigger_id, now_ms),
-                Ok(AgentTriggerFiring::Skipped) => continue,
+                Ok(AgentTriggerFiring::Settled | AgentTriggerFiring::Skipped) => continue,
                 Ok(AgentTriggerFiring::AgentGone) => {
                     self.record_agent_trigger_notice(
                         &dispatch,
@@ -325,6 +328,7 @@ impl KernelRuntimeState {
     async fn fire_agent_trigger(
         &self,
         dispatch: &AgentTriggerDispatch,
+        now_ms: u64,
     ) -> Result<AgentTriggerFiring, DaemonError> {
         match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Err(DaemonError::AgentNotFound { .. }) => return Ok(AgentTriggerFiring::AgentGone),
@@ -439,25 +443,28 @@ impl KernelRuntimeState {
                 &dispatch.agent_id,
                 &source_attachment_id,
                 &queued_prompt_id,
+                TriggerFiring {
+                    trigger_id: dispatch.trigger_id.clone(),
+                    now_ms,
+                },
             )
             .await
         {
-            Ok(TriggerSteerDelivery::Confirmed) => Ok(AgentTriggerFiring::Fired {
+            Ok(TriggerSteerDelivery::Delivered) => Ok(AgentTriggerFiring::Fired {
                 outcome: AgentTriggerOutcome::Steered,
                 steer_refusal: None,
             }),
-            Ok(TriggerSteerDelivery::Unconfirmed) => {
-                self.record_agent_trigger_notice(
-                    dispatch,
-                    format!(
-                        "Trigger `{}`: the provider did not confirm the steer. It is not sent again by itself.",
-                        dispatch.trigger_id
-                    ),
-                );
-                Ok(AgentTriggerFiring::Fired {
-                    outcome: AgentTriggerOutcome::Steered,
-                    steer_refusal: None,
-                })
+            Ok(TriggerSteerDelivery::Settled { confirmed }) => {
+                if !confirmed {
+                    self.record_agent_trigger_notice(
+                        dispatch,
+                        format!(
+                            "Trigger `{}`: the provider did not confirm the steer. It is not sent again by itself.",
+                            dispatch.trigger_id
+                        ),
+                    );
+                }
+                Ok(AgentTriggerFiring::Settled)
             }
             Err(error) => {
                 let refusal = format!("steer refused, the firing stays queued: {error}");
@@ -774,7 +781,7 @@ mod tests {
                     .await
                     .unwrap();
             }
-            runtime.fire_agent_trigger(&claims[0]).await.unwrap();
+            runtime.fire_agent_trigger(&claims[0], 0).await.unwrap();
             let session = runtime
                 .owned
                 .session_store

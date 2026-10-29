@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_triggers::{AgentTrigger, AgentTriggerOutcome, AgentTriggers};
+use super::agent_triggers::{AgentTrigger, AgentTriggerSettlement, AgentTriggers};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -366,32 +366,62 @@ impl RuntimeSession {
         Some(self.agent_triggers.0.remove(index))
     }
 
+    /// The trigger as it reads once its steered firing is recorded; `None`
+    /// when the trigger is gone.
+    pub(crate) fn settlement_of_steered_trigger(
+        &self,
+        trigger_id: &str,
+        now_ms: u64,
+    ) -> Option<AgentTriggerSettlement> {
+        self.agent_triggers
+            .0
+            .iter()
+            .find(|trigger| trigger.id() == trigger_id)
+            .map(|trigger| trigger.settled_by_steer(now_ms))
+    }
+
+    pub(crate) fn apply_agent_trigger_settlement(&mut self, settlement: AgentTriggerSettlement) {
+        match settlement {
+            AgentTriggerSettlement::Updated(settled) => {
+                if let Some(trigger) = self
+                    .agent_triggers
+                    .0
+                    .iter_mut()
+                    .find(|trigger| trigger.id() == settled.id())
+                {
+                    *trigger = settled;
+                }
+            }
+            AgentTriggerSettlement::Removed(trigger_id) => {
+                self.remove_agent_trigger(&trigger_id);
+            }
+        }
+    }
+
     /// A kernel that died while a trigger steer awaited its provider receipt
     /// leaves that occurrence due. The persisted delivery fence says the
     /// provider may already hold it, so the occurrence is settled as steered
-    /// here, before the fence can ever be dropped; a one-shot is done.
+    /// here, before the fence can ever be dropped; a one-shot is done. The
+    /// fence is marked settled in the same step, so a second restart before
+    /// the recovered turn ends does not count the occurrence again.
     pub(crate) fn settle_trigger_steers_in_doubt(&mut self, now_ms: u64) -> usize {
-        let in_doubt: BTreeSet<String> = self
+        let in_doubt: Vec<String> = self
             .prompt_runtime
             .prompt_states()
             .values()
             .flat_map(|state| state.queued_prompts())
-            .filter(|prompt| prompt.local_steer_fence_orphaned())
+            .filter(|prompt| prompt.settle_orphaned_local_steer_fence())
             .filter_map(|prompt| prompt.agent_trigger_id().map(str::to_owned))
             .collect();
-        let mut settled = Vec::new();
-        for trigger in self.agent_triggers.0.iter_mut() {
-            if in_doubt.contains(trigger.id()) {
-                trigger.mark_fired(now_ms, AgentTriggerOutcome::Steered, None);
-                settled.push((trigger.id().to_owned(), trigger.is_one_shot()));
-            }
+        let settlements: Vec<_> = in_doubt
+            .iter()
+            .filter_map(|trigger_id| self.settlement_of_steered_trigger(trigger_id, now_ms))
+            .collect();
+        let settled = settlements.len();
+        for settlement in settlements {
+            self.apply_agent_trigger_settlement(settlement);
         }
-        for (trigger_id, one_shot) in &settled {
-            if *one_shot {
-                self.remove_agent_trigger(trigger_id);
-            }
-        }
-        settled.len()
+        settled
     }
 
     pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {

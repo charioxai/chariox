@@ -1336,3 +1336,242 @@ async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
         Some(AgentTriggerOutcome::Steered)
     );
 }
+
+fn durable_config(name: &str) -> (DaemonConfig, std::path::PathBuf) {
+    let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
+        "{name}-{}-{}.db",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let mut config = DaemonConfig::for_tests();
+    config.user_config.state.path = Some(state_path.display().to_string());
+    (config, state_path)
+}
+
+fn restored_trigger(
+    config: &DaemonConfig,
+    session_id: &str,
+    trigger_id: &str,
+) -> Option<crate::session::AgentTrigger> {
+    let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restart");
+    app.sessions()
+        .get_session(session_id)
+        .expect("session should restore")
+        .agent_triggers()
+        .iter()
+        .find(|trigger| trigger.id() == trigger_id)
+        .cloned()
+}
+
+/// A kernel that dies right after a steer's queue entry is consumed must not
+/// admit the same occurrence again: the entry is consumed and the occurrence
+/// settled in one durable write. Every write that would settle the trigger
+/// separately is made to fail, which is the state a crash between the two
+/// writes leaves behind.
+async fn restart_after_a_confirmed_steer_consumed_its_fence(
+    repeat: crate::session::AgentTriggerRepeat,
+) -> (Option<crate::session::AgentTrigger>, u64) {
+    let (config, state_path) = durable_config("trigger-steer-settles-with-fence");
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-settles-with-fence");
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    install_structured_run(
+        &mut app,
+        &session,
+        &agent,
+        run.id(),
+        "dev-stub",
+        "slow-structured",
+    );
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let state_db = app.durable_state_store().path().to_path_buf();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            {
+                let mut request = every_minute(
+                    &session,
+                    &agent,
+                    crate::session::AgentTriggerBusyPolicy::Steer,
+                );
+                request.source = crate::local::AgentTriggerSourceRequest::Schedule {
+                    interval_seconds: 60,
+                    repeat,
+                };
+                request
+            },
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+    let due = trigger.next_run_at_ms();
+    let connection = rusqlite::Connection::open(&state_db).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER crash_before_trigger_update BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'session.updated'
+             BEGIN SELECT RAISE(FAIL, 'crash before the trigger update'); END;",
+        )
+        .unwrap();
+    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due)).await;
+    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    assert!(queued.is_empty(), "the acknowledged steer leaves the queue");
+    connection
+        .execute_batch("DROP TRIGGER crash_before_trigger_update;")
+        .unwrap();
+    drop(connection);
+    drop(prompt_owner);
+    drop(router);
+
+    let left_behind = restored_trigger(&config, session.id(), trigger.id());
+    let _ = std::fs::remove_file(state_path);
+    (left_behind, due)
+}
+
+#[tokio::test]
+async fn a_recurring_steer_is_settled_with_the_write_that_consumes_its_fence() {
+    let (trigger, due) = restart_after_a_confirmed_steer_consumed_its_fence(
+        crate::session::AgentTriggerRepeat::Every,
+    )
+    .await;
+    let trigger = trigger.expect("a recurring trigger stays");
+    assert_eq!(trigger.fired(), 1, "the steered occurrence is counted");
+    assert!(
+        trigger.next_run_at_ms() > due,
+        "the occurrence the provider already received must not be due again"
+    );
+}
+
+#[tokio::test]
+async fn a_one_shot_steer_is_settled_with_the_write_that_consumes_its_fence() {
+    let (trigger, _) = restart_after_a_confirmed_steer_consumed_its_fence(
+        crate::session::AgentTriggerRepeat::Once,
+    )
+    .await;
+    assert!(
+        trigger.is_none(),
+        "a one-shot whose provider already received it is done"
+    );
+}
+
+/// A second restart before the recovered turn ends finds the same retained
+/// fence; the occurrence it stands for was settled by the first restart.
+#[tokio::test]
+async fn a_second_restart_does_not_settle_the_same_steered_occurrence_again() {
+    let (config, state_path) = durable_config("trigger-steer-second-restart");
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-second-restart");
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    install_structured_run(
+        &mut app,
+        &session,
+        &agent,
+        run.id(),
+        "dev-stub",
+        "lost-ack-structured",
+    );
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+    let due = trigger.next_run_at_ms();
+    let dispatching = {
+        let runtime_state = router.runtime_state.clone();
+        tokio::spawn(async move {
+            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
+        })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+            if queued
+                .front()
+                .is_some_and(|prompt| prompt.remote_steer_reserved())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the steer should be in flight");
+    dispatching.abort();
+    let _ = dispatching.await;
+    drop(prompt_owner);
+    drop(router);
+
+    let mut settled_by_first_restart = None;
+    for restart in 1..=2 {
+        let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restart");
+        let restored = app.sessions().get_session(session.id()).unwrap();
+        assert!(
+            restored
+                .queued_prompts_for_agent(agent.id())
+                .is_some_and(|queued| queued.iter().any(|prompt| prompt.local_steer_fenced())),
+            "restart {restart} keeps the fence while the recovered turn is active"
+        );
+        let trigger = restored.agent_triggers()[0].clone();
+        match &settled_by_first_restart {
+            None => {
+                assert_eq!(
+                    trigger.fired(),
+                    1,
+                    "the first restart settles the occurrence"
+                );
+                settled_by_first_restart = Some(trigger);
+            }
+            Some(first) => {
+                assert_eq!(
+                    trigger.fired(),
+                    first.fired(),
+                    "settled once, not per restart"
+                );
+                assert_eq!(
+                    trigger.next_run_at_ms(),
+                    first.next_run_at_ms(),
+                    "a repeated restart does not push the next occurrence back"
+                );
+            }
+        }
+        drop(app);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_file(state_path);
+}
