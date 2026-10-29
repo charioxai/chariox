@@ -408,6 +408,7 @@ test('claimed text keeps native insertion and clears its claim after acknowledge
     connection.send = async (method,params,...args) => {
       const reply = await send(method,params,...args);
       if (fails && method === 'Input.insertText') throw new Error('uncertain native dispatch');
+      if (method === 'Runtime.evaluate' && /\.(startText|finishText)\(/.test(params.expression)) return {result:{value:true}};
       return reply;
     };
     let dispatched = 0;
@@ -415,9 +416,41 @@ test('claimed text keeps native insertion and clears its claim after acknowledge
     if (fails) await assert.rejects(running,/uncertain native dispatch/); else await running;
     assert.equal(dispatched,1);
     const editCalls = sent.filter(({method,params})=>method==='Input.insertText' || params.expression?.includes('__charioxViewInput'));
-    assert.deepEqual(editCalls.map(({method})=>method),['Runtime.evaluate','Input.insertText','Runtime.evaluate']);
+    assert.deepEqual(editCalls.map(({method})=>method),fails ? ['Runtime.evaluate','Runtime.evaluate','Input.insertText','Runtime.evaluate'] : ['Runtime.evaluate','Runtime.evaluate','Input.insertText','Runtime.evaluate','Runtime.evaluate']);
     assert.match(editCalls[0].params.expression,/\.armText\("Edit","caller"\)/);
-    assert.deepEqual(editCalls[1].params,{text:'Edit'});
-    assert.match(editCalls[2].params.expression,/\.clearText\("caller"\)/);
+    assert.match(editCalls[1].params.expression,/\.startText\("caller"\)/);
+    assert.deepEqual(editCalls[2].params,{text:'Edit'});
+    if (!fails) assert.match(editCalls[3].params.expression,/\.finishText\("caller"\)/);
+    assert.match(editCalls.at(-1).params.expression,/\.clearText\("caller"\)/);
   }
+});
+
+for (const refusal of ['startText','finishText']) {
+  test(`claimed insertion reports ${refusal} refusal and clears its claim`, async () => {
+    const {browser,sent} = fixture();
+    const {connection} = await browser.resolvePageTarget();
+    const send = connection.send;
+    connection.send = async (method,params,...args) => {
+      const reply = await send(method,params,...args);
+      if (method === 'Runtime.evaluate' && /\.(startText|finishText)\(/.test(params.expression))
+        return {result:{value:!params.expression.includes('.'+refusal+'(')}};
+      return reply;
+    };
+    await assert.rejects(inputHostTab(browser,tab,{kind:'text',text:'Edit'},{inputToken:'caller'}),{code:'stale_element_reference'});
+    assert.equal(sent.filter(item => item.method === 'Input.insertText').length,refusal === 'startText' ? 0 : 1);
+    assert.match(sent.at(-1).params.expression,/\.clearText\("caller"\)/);
+  });
+}
+
+test('cancellation after the text guard refuses dispatch and clears the claim', async () => {
+  const {browser,sent} = fixture(), controller = new AbortController();
+  const {connection} = await browser.resolvePageTarget(), send = connection.send;
+  connection.send = async (method,params,...args) => {
+    const reply = await send(method,params,...args);
+    if (params.expression?.includes('.startText(')) { controller.abort(); return {result:{value:true}}; }
+    return reply;
+  };
+  await assert.rejects(inputHostTab(browser,tab,{kind:'text',text:'Edit'},{inputToken:'caller',signal:controller.signal}),{code:'browser_action_cancelled'});
+  assert.equal(sent.some(item => item.method === 'Input.insertText'),false);
+  assert.match(sent.at(-1).params.expression,/\.clearText\("caller"\)/);
 });

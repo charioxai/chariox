@@ -2,6 +2,10 @@ import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
+// A definitive text refusal holds no keys/buttons and needs no browser reset.
+export class TextInsertionRefused extends BrowserActionError {
+  constructor() { super('stale_element_reference', 'App text target changed before insertion; observe it again and retry'); }
+}
 const canonicalViewport = { css_width: geometry.width, css_height: geometry.height };
 // MP-08: Chromium uses virtual key codes for native caret/editing commands.
 const keyCodes = { Tab: 9, Enter: 13, Escape: 27, Backspace: 8, Delete: 46,
@@ -98,8 +102,10 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
       await mirrorGuard?.();
     };
     const stamp = inputTimestamp === undefined ? {} : { timestamp: inputTimestamp };
-    const sendInput = async (method, params) => {
+    const sendInput = async (method, params, prepare) => {
       await admitInput();
+      if (prepare) await prepare();
+      assertNotCancelled(signal);
       const endDispatch = onDispatch?.();
       try {
         const result = await connection.send(method, method === "Input.dispatchMouseEvent" || method === "Input.dispatchKeyEvent" ? { ...params, ...stamp } : params, sessionId);
@@ -139,7 +145,16 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           try {
             // Chromium owns beforeinput, cancellation and the no-op on a
             // noneditable target. Attribution must not replace native editing.
-            await sendInput("Input.insertText", { text: input.text });
+            const claim = async method => {
+              const reply = await connection.send("Runtime.evaluate", {
+                expression: `globalThis.__charioxViewInput.${method}(${JSON.stringify(inputToken)})`, returnByValue: true,
+              }, sessionId);
+              if (reply.exceptionDetails || typeof reply.result?.value !== 'boolean')
+                throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
+              if (!reply.result.value) throw new TextInsertionRefused();
+            };
+            await sendInput("Input.insertText", { text: input.text }, () => claim('startText'));
+            await claim('finishText');
           } finally {
             await connection.send("Runtime.evaluate", {
               expression: `globalThis.__charioxViewInput.clearText(${JSON.stringify(inputToken)})`, returnByValue: true,
