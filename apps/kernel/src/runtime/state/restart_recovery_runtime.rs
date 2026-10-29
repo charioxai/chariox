@@ -390,6 +390,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return summary;
         }
+        summary.failed_reconciliations += self.recover_agent_moves_after_restart().await;
         let sessions = self.owned.session_store.list_all_sessions();
         // Queued workflow work (published, or started by a user) was durably admitted but never
         // delivered to a provider, so it can start without repeating any effects. Resume it

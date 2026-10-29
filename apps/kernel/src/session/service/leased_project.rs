@@ -13,7 +13,9 @@ impl SessionService {
         if !session.is_hidden()
             || project_id.is_empty()
             || (!session.project_id().is_empty() && session.project_id() != project_id)
-            || !workspace_ids.iter().any(|id| id == session.workspace_id())
+            || !workspace_ids
+                .iter()
+                .any(|id| id == session.workspace_id() || id == session.worktree_id())
         {
             return Err(project_error(
                 "leased project",

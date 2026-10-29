@@ -19,25 +19,76 @@ impl KernelRuntimeState {
         interactive: bool,
     ) -> Result<crate::managed_context::development::DevelopmentProjectEnvironment, DaemonError>
     {
+        self.prepare_project_environment_layer_for_project(
+            project_id,
+            repositories,
+            crate::transport::relay_peer::ProjectEnvironmentExportTarget {
+                context_id: context_id.into(),
+                kernel_id: target_kernel_id.into(),
+                public_key: target_public_key.into(),
+            },
+            interactive,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn prepare_agent_move_environment_layer(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        context_id: &str,
+        target_kernel_id: &str,
+        target_public_key: &str,
+        copied_project_id: &str,
+    ) -> Result<crate::managed_context::development::DevelopmentProjectEnvironment, DaemonError>
+    {
+        self.prepare_project_environment_layer_for_project(
+            project_id,
+            repositories,
+            crate::transport::relay_peer::ProjectEnvironmentExportTarget {
+                context_id: context_id.into(),
+                kernel_id: target_kernel_id.into(),
+                public_key: target_public_key.into(),
+            },
+            false,
+            Some(copied_project_id),
+        )
+        .await
+    }
+
+    async fn prepare_project_environment_layer_for_project(
+        &self,
+        project_id: &str,
+        repositories: &[crate::managed_context::development::DevelopmentRepositorySelection],
+        target: crate::transport::relay_peer::ProjectEnvironmentExportTarget,
+        interactive: bool,
+        copied_project_id: Option<&str>,
+    ) -> Result<crate::managed_context::development::DevelopmentProjectEnvironment, DaemonError>
+    {
         // MP-08 / MP-11: this layer travels with a context transfer that exports Vault artifacts.
         let prepared = self
             .refresh_project_environment_state_mode(
                 project_id,
                 repositories,
                 interactive,
-                target_kernel_id,
+                &target.kernel_id,
                 None,
                 true,
             )
             .await?;
         let config = self.owned.config_projection.snapshot();
+        let mut manifest = prepared.state.manifest.clone();
+        if let Some(project) = copied_project_id {
+            manifest.project_id = project.to_string();
+        }
         let sealed = seal_project_environment(
-            context_id,
+            &target.context_id,
             &config.daemon_id,
-            target_kernel_id,
+            &target.kernel_id,
             &config.relay_private_key,
-            target_public_key,
-            &prepared.state.manifest,
+            &target.public_key,
+            &manifest,
             &prepared.resolved,
         )?;
         Ok(

@@ -448,6 +448,13 @@ pub(crate) struct RemoteAgentBindingRefreshResult {
     _slice_recovery: Option<SliceBindingRecovery>,
 }
 
+#[derive(Clone, Copy)]
+enum RemoteBindingContext<'a> {
+    Fresh,
+    Recreated,
+    Move(&'a crate::agent_move::AgentMoveIdentity),
+}
+
 impl DaemonApp {
     pub(crate) async fn execute_remote_agent_binding_refresh(
         plan: RemoteAgentBindingRefreshPlan,
@@ -717,7 +724,7 @@ impl DaemonApp {
             worktree_placement,
             relay_override,
             authorize,
-            false,
+            RemoteBindingContext::Fresh,
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
@@ -739,7 +746,7 @@ impl DaemonApp {
         worktree_placement: Option<crate::agent::GitWorktreePlacement>,
         relay_override: Option<DaemonConfig>,
         authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
-        recreated_context: bool,
+        context: RemoteBindingContext<'_>,
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
         let relay_config = relay_override
@@ -761,23 +768,39 @@ impl DaemonApp {
         self.remember_remote_worker_public_key(&relay_config, worker_kernel)?;
         let use_connected_relay =
             self.hosted_shared_slice_uses_connected_relay(&worker_kernel.kernel_id);
+        let lease_request = match context {
+            RemoteBindingContext::Move(identity) => RelayPeerRequest::AgentMove {
+                request: crate::agent_move::peer::AgentMovePeerRequest::CreateLease {
+                    identity: identity.clone(),
+                    home_agent_metaagent: agent.is_metaagent(),
+                },
+            },
+            _ => RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: self.config.daemon_id.clone(),
+                home_session_id: agent.session_id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                home_agent_metaagent: agent.is_metaagent(),
+                owner_user_id: agent.owner_user_id().to_string(),
+            },
+        };
         let (lease, relay_peer_protocol_version) = match self
             .send_remote_binding_request_authorized(
                 &relay_config,
                 target.clone(),
-                RelayPeerRequest::CreateExecutionLease {
-                    home_kernel_id: self.config.daemon_id.clone(),
-                    home_session_id: agent.session_id().to_string(),
-                    home_agent_id: agent.id().to_string(),
-                    home_agent_metaagent: agent.is_metaagent(),
-                    owner_user_id: agent.owner_user_id().to_string(),
-                },
+                lease_request,
                 use_connected_relay,
                 authorize,
             )? {
             RelayPeerResponse::ExecutionLeaseCreated {
                 lease,
                 relay_peer_protocol_version,
+            }
+            | RelayPeerResponse::AgentMove {
+                response:
+                    crate::agent_move::peer::AgentMovePeerResponse::LeaseCreated {
+                        lease,
+                        relay_peer_protocol_version,
+                    },
             } => (lease, relay_peer_protocol_version),
             other => {
                 return Err(DaemonError::LocalTransport {
@@ -1034,7 +1057,7 @@ impl DaemonApp {
                 .and_then(|config| config.relay_token.clone()),
             relay_peer_protocol_version: Some(relay_peer_protocol_version),
         };
-        let bound_result = if recreated_context {
+        let bound_result = if matches!(context, RemoteBindingContext::Recreated) {
             self.commit_recreated_remote_execution(agent, remote_execution)
         } else {
             self.agents
@@ -1212,7 +1235,7 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
             authorize,
-            true,
+            RemoteBindingContext::Recreated,
         )?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1277,7 +1300,7 @@ impl DaemonApp {
             None,
             uses_remote_execution_relay.then_some(relay_config),
             &|| Ok(()),
-            true,
+            RemoteBindingContext::Recreated,
         )?;
         self.durable_state_store().append_event(
             "agent.updated",
@@ -1291,125 +1314,6 @@ impl DaemonApp {
             self.update_session_projection(session);
         }
         Ok(rebound)
-    }
-
-    pub(crate) fn move_agent_to_remote_authorized(
-        &mut self,
-        session_id: &str,
-        agent_ref: &str,
-        machine_ref: &str,
-        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
-    ) -> Result<AgentInstance, DaemonError> {
-        authorize()?;
-        let agent = self
-            .agents
-            .get_agent(agent_ref)
-            .or_else(|_| self.agents.get_agent_by_ref(agent_ref))?;
-        if agent.session_id() != session_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to remote",
-                message: format!("agent `{agent_ref}` does not belong to session `{session_id}`"),
-            });
-        }
-        if agent.remote_execution().is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to remote",
-                message: format!("agent `{agent_ref}` is already remote-backed"),
-            });
-        }
-        if self
-            .providers
-            .get_run_for_agent(session_id, agent.id())
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to remote",
-                message:
-                    "agent has a provider run; stop or destroy the provider run before moving it"
-                        .to_string(),
-            });
-        }
-        let relay_override = self.slice_relay_config_for_kernel_ref(machine_ref);
-        let relay_config = relay_override
-            .clone()
-            .unwrap_or_else(|| self.config.clone());
-        let discovery_config =
-            self.remote_worker_discovery_config(machine_ref, relay_config.clone())?;
-        let worker_kernel =
-            if slice_recovery::recorded_slice_worker_id(&self.slices, machine_ref)?.is_some() {
-                self.select_remote_kernel_by_ref_with_config(
-                    machine_ref,
-                    agent.provider(),
-                    &discovery_config,
-                )?
-            } else {
-                self.select_remote_kernel_for_machine_with_config(
-                    machine_ref,
-                    agent.provider(),
-                    &discovery_config,
-                )?
-            };
-        let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
-        authorize()?;
-        self.bind_remote_agent_to_worker_authorized(
-            &agent,
-            &worker_kernel,
-            worker_worktree_id,
-            None,
-            relay_override,
-            authorize,
-            false,
-        )
-    }
-
-    pub(crate) fn move_agent_to_local_authorized(
-        &mut self,
-        session_id: &str,
-        agent_ref: &str,
-        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
-    ) -> Result<AgentInstance, DaemonError> {
-        authorize()?;
-        let agent = self
-            .agents
-            .get_agent(agent_ref)
-            .or_else(|_| self.agents.get_agent_by_ref(agent_ref))?;
-        if agent.session_id() != session_id {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to local",
-                message: format!("agent `{agent_ref}` does not belong to session `{session_id}`"),
-            });
-        }
-        let Some(remote_execution) = agent.remote_execution().cloned() else {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to local",
-                message: format!("agent `{agent_ref}` is already local"),
-            });
-        };
-        if self
-            .providers
-            .get_run_for_agent(session_id, agent.id())
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "move agent to local",
-                message: "agent has a local provider run; stop or destroy the provider run before moving it"
-                    .to_string(),
-            });
-        }
-        self.destroy_remote_execution_binding(&remote_execution, authorize)?;
-        let moved = self.agents.clear_remote_execution(agent.id())?;
-        self.durable_state_store().append_event(
-            "agent.updated",
-            Some(moved.id().to_string()),
-            serde_json::json!({
-                "agent": &moved,
-                "source": "agent_moved_to_local",
-            }),
-        )?;
-        if let Ok(session) = self.sessions.get_session(moved.session_id()) {
-            self.update_session_projection(session);
-        }
-        Ok(moved)
     }
 
     pub(crate) fn destroy_remote_execution_binding(
@@ -3325,5 +3229,91 @@ mod cleanup_tests {
         assert!(history
             .remote_lease_context_pending(session.id(), agent.id(), &replacement)
             .unwrap());
+    }
+}
+
+impl DaemonApp {
+    pub(crate) fn resolve_agent_move_kernel(
+        &self,
+        agent: &AgentInstance,
+        kernel_id: &str,
+    ) -> Result<(RelayKernelPresence, Option<DaemonConfig>), DaemonError> {
+        let relay_override = self.slice_relay_config_for_kernel_ref(kernel_id);
+        let relay = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
+        let discovery = self.remote_worker_discovery_config(kernel_id, relay)?;
+        let worker =
+            self.select_remote_kernel_by_ref_with_config(kernel_id, agent.provider(), &discovery)?;
+        Ok((worker, relay_override))
+    }
+
+    pub(crate) fn resolve_agent_move_destination(
+        &self,
+        agent: &AgentInstance,
+        reference: &str,
+    ) -> Result<(RelayKernelPresence, Option<DaemonConfig>), DaemonError> {
+        let (_, projected) = self.remote_relay_inventory_projection_store().snapshot();
+        if reference.starts_with("kernel-")
+            || slice_recovery::recorded_slice_worker_id(&self.slices, reference)?.is_some()
+            || projected
+                .iter()
+                .any(|kernel| kernel_presence_matches_ref(kernel, reference))
+        {
+            return self.resolve_agent_move_kernel(agent, reference);
+        }
+        let relay_override = self.slice_relay_config_for_kernel_ref(reference);
+        let relay = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
+        let discovery = self.remote_worker_discovery_config(reference, relay)?;
+        let worker = self.select_remote_kernel_for_machine_with_config(
+            reference,
+            agent.provider(),
+            &discovery,
+        )?;
+        Ok((worker, relay_override))
+    }
+
+    pub(crate) fn bind_materialized_agent_move(
+        &mut self,
+        agent: &AgentInstance,
+        identity: &crate::agent_move::AgentMoveIdentity,
+        primary: &std::path::Path,
+        authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync),
+    ) -> Result<AgentInstance, DaemonError> {
+        let (worker, relay) = self.resolve_agent_move_kernel(agent, &identity.target_kernel_id)?;
+        if worker.kernel_id != identity.target_kernel_id
+            || crate::runtime::terminal_pairings::public_key_thumbprint(&worker.public_key)
+                != identity.target_key_thumbprint
+        {
+            return Err(crate::agent_move::error(
+                "Target kernel identity changed after the Project was imported",
+            ));
+        }
+        let mut execution = agent.clone();
+        execution.set_worktree_id(Some(primary.display().to_string()));
+        self.bind_remote_agent_to_worker_authorized(
+            &execution,
+            &worker,
+            Some(primary.display().to_string()),
+            None,
+            relay,
+            authorize,
+            RemoteBindingContext::Move(identity),
+        )?;
+        let moved = self.agents.update_agent_config(
+            agent.id(),
+            None,
+            None,
+            None,
+            Some(Some(primary.display().to_string())),
+        )?;
+        self.durable_state_store().append_event(
+            "agent.updated",
+            Some(moved.id().to_string()),
+            serde_json::json!({"agent":moved,"source":"agent_move_workspace"}),
+        )?;
+        Ok(moved)
     }
 }

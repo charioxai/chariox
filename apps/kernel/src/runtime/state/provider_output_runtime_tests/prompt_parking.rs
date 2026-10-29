@@ -254,13 +254,10 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
     let remote_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
     assert!(matches!(
         runtime
-            .owned
-            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
-                session.id(),
-                &remote_agent,
-            ),
+            .move_agent_transaction(session.id(), remote_agent, None)
+            .await,
         Err(crate::error::DaemonError::LocalTransport {
-            operation: "move agent to local",
+            operation: "update agent profile",
             ..
         })
     ));

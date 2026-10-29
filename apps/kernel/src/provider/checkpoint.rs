@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use super::{ProviderClientInterface, RuntimeProviderRun};
 
 mod codex;
+mod preflight;
+pub use preflight::NativeMoveCompatibility;
 #[cfg(unix)]
 mod files;
 #[cfg(test)]
@@ -43,7 +45,7 @@ pub enum NativeCheckpointFailure {
     TooLarge,
     #[error("The native session changed during export. Finish writes to that session and retry.")]
     SourceChanged,
-    #[error("The target already has different state for this native session. Preserve that state and choose a fresh destination profile.")]
+    #[error("The target already has divergent state for this native session. Preserve it and resolve the divergence before retrying. A pending Move can be cancelled before a target lease is bound.")]
     TargetConflict,
     #[error("The target provider profile cannot stage the checkpoint. Check its free space and directory permissions, then retry.")]
     StorageUnavailable,
@@ -147,6 +149,60 @@ impl ProviderNativeCheckpoint {
         codex::import(self, run)
     }
 
+    /// Probe and publish through the official profile utility without admitting a user run.
+    pub(crate) fn import_for_move(
+        &self,
+        request: &super::LaunchProviderRequest,
+    ) -> Result<super::ProviderResumeState, NativeCheckpointFailure> {
+        self.validate()?;
+        supported_interface(&request.adapter_key, request.client_interface)?;
+        let root = request
+            .provider_account_env
+            .get("CODEX_HOME")
+            .map(String::as_str)
+            .or_else(|| {
+                request
+                    .provider_credential_env
+                    .iter()
+                    .find_map(|(key, value)| (key == "CODEX_HOME").then_some(value))
+            })
+            .ok_or(NativeCheckpointFailure::AccountUnavailable)?
+            .to_string();
+        // The original home profile may have a catalog utility that predates
+        // the remote turns. Import must not resume a cached native writer.
+        super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
+        let endpoint = super::ensure_codex_account_endpoint(
+            &request.owner_user_id,
+            &request.account_profile,
+            std::collections::BTreeMap::from([("CODEX_HOME".into(), root.clone())]),
+        )
+        .map_err(|_| NativeCheckpointFailure::AccountUnavailable)?;
+        let mut probe = request.clone();
+        probe.mcp_servers.clear();
+        probe.runtime_mcp_binding = None;
+        probe.remote_extension_manifest = Default::default();
+        let run = super::RuntimeProviderRun::new(
+            "native-move-probe",
+            &probe,
+            super::ProviderLaunchResult {
+                endpoint_mode: super::AgentEndpointMode::Managed,
+                process_label: "native-move-probe".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::from([("CODEX_HOME".into(), root)]),
+                pty_env_remove: Vec::new(),
+                working_directory: request.working_directory.clone(),
+                structured_endpoint: Some(endpoint),
+            },
+        );
+        let imported = codex::import_for_move(self, &run);
+        // A resumed thread keeps its native writer even after its socket closes.
+        // Retire the utility before the real provider opens the same session.
+        super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
+        imported
+    }
+
     pub fn provider_session_id(&self) -> &str {
         &self.binding.session_id
     }
@@ -159,7 +215,7 @@ impl ProviderNativeCheckpoint {
         &self.binding.artifact_sha256
     }
 
-    fn validate(&self) -> Result<(), NativeCheckpointFailure> {
+    pub(crate) fn validate(&self) -> Result<(), NativeCheckpointFailure> {
         if self.contents.len() > MAX_NATIVE_CHECKPOINT_BYTES {
             return Err(NativeCheckpointFailure::TooLarge);
         }

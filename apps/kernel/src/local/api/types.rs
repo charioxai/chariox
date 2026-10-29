@@ -391,4 +391,6 @@ pub use workspace::*;
 /// Protocol 643 answers `CancelActivePrompt` for a parked task with `AgentTaskUpdated`; 506 leaves the predecessor list to
 /// keep it within the 32-entry policy.
 /// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
+/// Allocated 638/240 adds durable agent Move and Return: the `AgentMove` peer carrier, `MoveAgentToLocal` and its
+/// `abort_pending` cancellation, and Project materialization on the target.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

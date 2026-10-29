@@ -47,6 +47,15 @@ impl Fixture {
         hostile_alias: bool,
         only_second_slice: bool,
     ) -> Self {
+        Self::with_relay_fixture(slice_identity, hostile_alias, only_second_slice, true).await
+    }
+
+    async fn with_relay_fixture(
+        slice_identity: bool,
+        hostile_alias: bool,
+        only_second_slice: bool,
+        with_slices: bool,
+    ) -> Self {
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".into(),
             port: 0,
@@ -77,10 +86,17 @@ impl Fixture {
         config.relay_request_timeout_ms = 2_000;
         let mut home = DaemonApp::bootstrap(config.clone()).unwrap();
         let (room_a, agent) = crate::app::KernelSessionService::new(&mut home)
-            .create_session(CreateSessionRequest::new(
-                workspace_a.display().to_string(),
-                workspace_a.display().to_string(),
-            ))
+            .create_session(
+                CreateSessionRequest::new(
+                    workspace_a.display().to_string(),
+                    workspace_a.display().to_string(),
+                )
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::New {
+                        name: Some("Move Project".into()),
+                    },
+                ),
+            )
             .unwrap();
         let (room_b, _) = crate::app::KernelSessionService::new(&mut home)
             .create_session(CreateSessionRequest::new(
@@ -116,17 +132,21 @@ impl Fixture {
             } else {
                 format!("slice:room-{index}")
             });
-            worker_config.host_machine_id = config.host_machine_id.clone();
+            worker_config.host_machine_id = if with_slices {
+                config.host_machine_id.clone()
+            } else {
+                format!("ordinary-machine-{fixture_id}-{index}")
+            };
             worker_config.relay_url = Some(relay_url.clone());
             worker_config.relay_token = config.relay_token.clone();
             worker_config.relay_heartbeat_ms = 50;
             let presence = RelayKernelPresence {
                 kernel_id: worker_config.daemon_id.clone(),
-                machine_id: config.host_machine_id.clone(),
+                machine_id: worker_config.host_machine_id.clone(),
                 machine_alias: None,
                 relay_alias: None,
                 kernel_alias: worker_config.daemon_alias.clone(),
-                available_providers: vec![agent.provider().into()],
+                available_providers: vec![agent.provider().into(), "dev-stub".into()],
                 provider_accounts: Vec::new(),
                 capabilities: Vec::new(),
                 accepting_remote_leases: true,
@@ -145,71 +165,73 @@ impl Fixture {
                 ),
             ));
             shutdown.push(tx);
-            let slice = home
-                .slices()
-                .create(
-                    &config.daemon_id,
-                    &config.host_machine_id,
-                    crate::slice::CreateSliceInput {
-                        source_slice_ref: None,
-                        name: format!("room-{index}"),
-                        backend: crate::slice::SliceBackendKind::LocalDocker,
-                        os: "linux".into(),
-                        display_mode: crate::slice::SliceDisplayMode::Headed,
-                        display_backend: Default::default(),
-                        workspace_id: None,
-                        worktree_id: None,
-                        workspace_mount: Some("/workspace".into()),
-                        development: None,
-                        worker_kernel_ref: Some(presence.kernel_id.clone()),
-                        display_url: None,
-                        provider_auth: Vec::new(),
-                        from_saved_state: None,
-                        now_ms: 1,
-                    },
-                )
-                .unwrap();
-            home.slices()
-                .set_worker_presence(
-                    &slice.id,
-                    Some(presence.kernel_id.clone()),
-                    Some(config.host_machine_id.clone()),
-                    vec![agent.provider().into()],
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .set_relay_endpoint(
-                    &slice.id,
-                    Some(crate::slice::SliceRelayEndpoint {
-                        url: relay_url.clone(),
-                        private: false,
-                    }),
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .set_development_publication(
-                    &slice.id,
-                    crate::slice::SliceDevelopmentPublication {
-                        publication_id: format!("recovery-{index}"),
-                        destination_root: workspace_root.display().to_string(),
-                        primary_repository_path: if index == 0 {
-                            workspace_a.display().to_string()
-                        } else {
-                            workspace_b.display().to_string()
+            if with_slices {
+                let slice = home
+                    .slices()
+                    .create(
+                        &config.daemon_id,
+                        &config.host_machine_id,
+                        crate::slice::CreateSliceInput {
+                            source_slice_ref: None,
+                            name: format!("room-{index}"),
+                            backend: crate::slice::SliceBackendKind::LocalDocker,
+                            os: "linux".into(),
+                            display_mode: crate::slice::SliceDisplayMode::Headed,
+                            display_backend: Default::default(),
+                            workspace_id: None,
+                            worktree_id: None,
+                            workspace_mount: Some("/workspace".into()),
+                            development: None,
+                            worker_kernel_ref: Some(presence.kernel_id.clone()),
+                            display_url: None,
+                            provider_auth: Vec::new(),
+                            from_saved_state: None,
+                            now_ms: 1,
                         },
-                        repository_paths: Vec::new(),
-                    },
-                    2,
-                )
-                .unwrap();
-            home.slices()
-                .bind_environment(room, &slice.id, 3, |_| Ok(()))
-                .unwrap();
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_worker_presence(
+                        &slice.id,
+                        Some(presence.kernel_id.clone()),
+                        Some(config.host_machine_id.clone()),
+                        vec![agent.provider().into()],
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_relay_endpoint(
+                        &slice.id,
+                        Some(crate::slice::SliceRelayEndpoint {
+                            url: relay_url.clone(),
+                            private: false,
+                        }),
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .set_development_publication(
+                        &slice.id,
+                        crate::slice::SliceDevelopmentPublication {
+                            publication_id: format!("recovery-{index}"),
+                            destination_root: workspace_root.display().to_string(),
+                            primary_repository_path: if index == 0 {
+                                workspace_a.display().to_string()
+                            } else {
+                                workspace_b.display().to_string()
+                            },
+                            repository_paths: Vec::new(),
+                        },
+                        2,
+                    )
+                    .unwrap();
+                home.slices()
+                    .bind_environment(room, &slice.id, 3, |_| Ok(()))
+                    .unwrap();
+                slices.push(slice);
+            }
             workers.push(worker);
             presences.push(presence);
-            slices.push(slice);
         }
         for presence in &presences {
             tokio::time::timeout(Duration::from_secs(3), async {
@@ -224,7 +246,7 @@ impl Fixture {
             .update(Vec::new(), presences.clone());
         let binding = RemoteAgentBinding {
             worker_kernel_id: presences[0].kernel_id.clone(),
-            worker_machine_id: config.host_machine_id,
+            worker_machine_id: presences[0].machine_id.clone(),
             execution_lease_id: "missing-original-lease".into(),
             leased_agent_id: "missing-original-agent".into(),
             active_worker_provider_run_id: None,
@@ -789,23 +811,15 @@ async fn slice_selector_ordinary_explicit_alias_remains_supported() {
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_selector_move_to_canonical_worker_does_not_treat_it_as_machine() {
     let fixture = Fixture::new().await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.presences[0].kernel_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.presences[0].kernel_id)
         .unwrap();
-    assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id
-    );
+    assert_eq!(moved.kernel_id, fixture.presences[0].kernel_id);
     drop(home);
     fixture.assert_foreign_worker_untouched().await;
 }
@@ -876,24 +890,18 @@ async fn slice_recovery_off_lock_ordinary_machine_failover_still_uses_lower_load
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_cannot_move_ordinary_agent_into_room_slice() {
     let fixture = Fixture::with_worker_options(true, false, true).await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     home.slices()
         .restore_records(vec![home.slices().resolve(&fixture.slices[1].id).unwrap()]);
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.binding.worker_machine_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.binding.worker_machine_id)
         .unwrap();
     assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id,
+        moved.kernel_id, fixture.presences[0].kernel_id,
         "generic Machine placement must exclude the lower-load Room slice"
     );
     drop(home);
@@ -991,24 +999,18 @@ async fn slice_recovery_recorded_machine_disagreement_is_rejected_before_contact
 #[tokio::test(flavor = "multi_thread")]
 async fn slice_machine_selection_reserved_worker_without_local_record_is_excluded() {
     let fixture = Fixture::with_worker_options(true, false, true).await;
-    let mut home = fixture.home.lock().await;
+    let home = fixture.home.lock().await;
     home.slices().restore_records(Vec::new());
     let agent = home
         .agents()
         .clear_remote_execution(&fixture.agent_id)
         .unwrap();
-    let moved = home
-        .move_agent_to_remote_authorized(
-            agent.session_id(),
-            agent.id(),
-            &fixture.binding.worker_machine_id,
-            &|| Ok(()),
-        )
+    let (moved, _) = home
+        .resolve_agent_move_destination(&agent, &fixture.binding.worker_machine_id)
         .unwrap();
-    assert_eq!(
-        moved.remote_execution().unwrap().worker_kernel_id,
-        fixture.presences[0].kernel_id
-    );
+    assert_eq!(moved.kernel_id, fixture.presences[0].kernel_id);
     drop(home);
     fixture.assert_foreign_worker_untouched().await;
 }
+
+mod move_tests;

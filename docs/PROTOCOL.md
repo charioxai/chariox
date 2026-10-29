@@ -5770,3 +5770,16 @@ Projects and sessions persist `pinned_at_ms` when their pin changes from off to 
 MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
 
 MP-08 / MP-09 / MP-10 / MP-11: local 811 / peer 361 adds optional `problem` to the ephemeral `RuntimeProviderLogin` projection. The kernel supplies code-validation/rejection feedback and omits it for initial instructions. A newly attached client can show retry feedback without interpreting message wording; a new interaction request answers a submitted code even when the feedback repeats. The field follows the existing human-only login projection and is excluded from model context and history.
+
+### Durable agent Move peer carrier (638/240)
+
+MP-08 / MP-09 / MP-10 / MP-11: `AgentMove` peer messages identify the home,
+source, target, owner, operation generation, and pinned kernel keys. They
+prepare source capture, transfer bounded workspace/native chunks, publish a
+Project receipt, attach a backing, and activate or retire execution. The
+ordinary encrypted peer admission and lease caller checks apply. Temporary
+peer connection suffixes identify the same canonical home kernel.
+
+The home owns commitment and retries. Publishing files or probing native state
+does not authorize a prompt. Native bytes stay in protected artifacts and peer
+transport; the public client protocol gains no native-history projection.

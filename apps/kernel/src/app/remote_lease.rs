@@ -756,6 +756,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             candidate.id != leased_agent_id
                 && candidate.backing_session_id == agent.backing_session_id
         });
+        self.app.agent_moves.retire_backing(leased_agent_id)?;
         let mut phase = self
             .app
             .leased_agent_cleanup_phases

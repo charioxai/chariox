@@ -481,6 +481,7 @@ pub enum LocalDaemonResponse {
     },
     AgentMovedToRemote { agent: AgentInstance, },
     AgentMovedToLocal { agent: AgentInstance, },
+    AgentMoveAborted { agent: AgentInstance, },
     RemoteExtensionManifestSynced { agent: AgentInstance, },
     HomeExtensionAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
     SliceAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },

@@ -475,6 +475,7 @@ response_policies! {
         AgentForked,
         AgentMovedToRemote,
         AgentMovedToLocal,
+        AgentMoveAborted,
         RemoteExtensionManifestSynced,
         HomeExtensionAuditListed,
         SliceAuditListed,

@@ -103,10 +103,13 @@ impl KernelRuntimeOwnedState {
             selected_run.as_ref(),
             "submit prompt",
         )?;
-        if !queued_while_active && provider_run_id.is_none() {
+        let move_pending = self
+            .agent_moves
+            .dispatch_fenced(&session_id, &target_agent_id);
+        if !queued_while_active && provider_run_id.is_none() && !move_pending {
             return Ok(None);
         }
-        if !queued_while_active {
+        if !queued_while_active && !move_pending {
             if let Some(provider_run_id) = provider_run_id.as_deref() {
                 let provider_run =
                     self.ensure_provider_run_in_session(&session_id, provider_run_id)?;
@@ -120,7 +123,7 @@ impl KernelRuntimeOwnedState {
             .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting);
 
-        let force_queue = prepared.force_queue || provider_run_is_starting;
+        let force_queue = prepared.force_queue || provider_run_is_starting || move_pending;
         let will_queue = force_queue || queued_while_active;
         let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
             prepared

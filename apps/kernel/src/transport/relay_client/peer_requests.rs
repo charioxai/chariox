@@ -187,7 +187,10 @@ pub(super) async fn handle_daemon_peer_request(
         router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
     let lease_worker_caller = if !managed_context_request(&request)
         && (is_lease_worker
-            || matches!(&request, RelayPeerRequest::CreateExecutionLease { .. })
+            || matches!(
+                &request,
+                RelayPeerRequest::CreateExecutionLease { .. } | RelayPeerRequest::AgentMove { .. }
+            )
             || lease_resource(&request).is_some())
     {
         if is_lease_worker && !lease_worker_peer_request_allowed(&request) {
@@ -220,6 +223,30 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         };
+        if let RelayPeerRequest::AgentMove { request: movement } = &request {
+            let identity = movement.identity();
+            if caller.home_kernel_id != identity.home_kernel_id
+                || canonical_peer_daemon_id(from_daemon_id)
+                    != Some(identity.home_kernel_id.as_str())
+                || crate::runtime::terminal_pairings::public_key_thumbprint(&requester_public_key)
+                    != identity.home_key_thumbprint
+                || (caller_identity
+                    .as_ref()
+                    .and_then(|identity| identity.user_id.as_deref())
+                    .is_some()
+                    && caller.owner_user_id != identity.owner_user_id)
+            {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "move claims do not match the authenticated home kernel",
+                        false,
+                    )),
+                };
+            }
+        }
         if let RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,
             owner_user_id,
@@ -454,6 +481,18 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     let response = match request {
+        RelayPeerRequest::AgentMove { request } => {
+            match router.relay_agent_move(request, lease_worker_caller).await {
+                Ok(response) => RelayPeerResponse::AgentMove { response },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::SetLeasedComputerGrant {
             leased_agent_id,
             epoch,
@@ -2743,6 +2782,9 @@ mod selected_home_tests {
 
 fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
     match request {
+        RelayPeerRequest::AgentMove { request } => {
+            request.leased_agent_id().map(LeaseResource::LeasedAgent)
+        }
         RelayPeerRequest::DestroyExecutionLease { lease_id }
         | RelayPeerRequest::SpawnLeasedAgent { lease_id, .. } => {
             Some(LeaseResource::ExecutionLease(lease_id))
@@ -2843,7 +2885,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
 fn lease_worker_peer_request_allowed(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
-        RelayPeerRequest::Ping { .. } | RelayPeerRequest::CreateExecutionLease { .. }
+        RelayPeerRequest::Ping { .. }
+            | RelayPeerRequest::CreateExecutionLease { .. }
+            | RelayPeerRequest::AgentMove { .. }
     ) || lease_resource(request).is_some()
 }
 
@@ -2871,6 +2915,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod agent_move;
     mod signed_slice;
 
     use super::*;

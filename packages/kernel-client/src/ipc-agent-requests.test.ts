@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { archiveAgentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
+import { abortAgentMoveRequest, archiveAgentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("agent substitute add request carries the chosen account profile", () => {
@@ -50,4 +50,12 @@ test("agent substitute add request omits account profile for default semantics",
 
 test("archive and restore share one explicit agent-scoped request", () => {
   for (const archived of [true, false]) assert.deepEqual(archiveAgentRequest("room", "agent", archived), { ArchiveAgent: { session_id: "room", agent_id: "agent", archived } })
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11: older kernels must never interpret cancellation as Return.
+test("Move cancellation requires its allocated protocol", () => {
+  assert.throws(() => abortAgentMoveRequest("room", "agent", 637), /protocol 638/)
+  assert.deepEqual(abortAgentMoveRequest("room", "agent", 638), {
+    MoveAgentToLocal: { session_id: "room", agent_ref: "agent", abort_pending: true },
+  })
 })

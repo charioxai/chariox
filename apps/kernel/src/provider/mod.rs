@@ -11,10 +11,12 @@ pub(crate) use claude_runtime::usage::{
 };
 mod account_handoff;
 mod checkpoint;
-pub(crate) use checkpoint::supported_interface as native_checkpoint_support;
+pub(crate) use checkpoint::{
+    supported_interface as native_checkpoint_support, MAX_NATIVE_CHECKPOINT_BYTES,
+};
 pub use checkpoint::{
-    NativeCheckpointBinding, NativeCheckpointFailure, ProviderNativeCheckpoint,
-    RequiredNativeSession,
+    NativeCheckpointBinding, NativeCheckpointFailure, NativeMoveCompatibility,
+    ProviderNativeCheckpoint, RequiredNativeSession,
 };
 mod codex;
 pub(crate) use codex::configured_session_capacity as configured_codex_session_capacity;

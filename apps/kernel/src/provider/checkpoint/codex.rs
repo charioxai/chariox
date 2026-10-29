@@ -54,7 +54,7 @@ pub(super) fn valid_relative_path(path: &str, id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
 
-fn auth(client: &CodexClient, profile: &str) -> Result<ProviderAuthStatus, Failure> {
+pub(super) fn auth(client: &CodexClient, profile: &str) -> Result<ProviderAuthStatus, Failure> {
     let auth = client
         .auth_status(profile)
         .map_err(|_| Failure::AccountUnavailable)?;
@@ -95,6 +95,11 @@ fn metadata(client: &CodexClient, id: &str) -> Result<ThreadMetadata, crate::Dae
         json!({"threadId":id,"includeTurns":false}),
     )?;
     Ok(response.thread)
+}
+
+fn missing_thread(error: &crate::DaemonError, id: &str) -> bool {
+    matches!(error, crate::DaemonError::ProviderProtocol { operation: "thread/read", message, .. }
+        if message == &format!("thread not loaded: {id}") || message == &format!("no rollout found for thread id {id}"))
 }
 
 fn idle(metadata: &ThreadMetadata, id: &str) -> Result<(), Failure> {
@@ -170,6 +175,23 @@ pub(super) fn import(
     checkpoint: &ProviderNativeCheckpoint,
     run: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
+    import_checkpoint(checkpoint, run, false)
+}
+
+#[cfg(unix)]
+pub(super) fn import_for_move(
+    checkpoint: &ProviderNativeCheckpoint,
+    run: &RuntimeProviderRun,
+) -> Result<ProviderResumeState, Failure> {
+    import_checkpoint(checkpoint, run, true)
+}
+
+#[cfg(unix)]
+fn import_checkpoint(
+    checkpoint: &ProviderNativeCheckpoint,
+    run: &RuntimeProviderRun,
+    allow_extension: bool,
+) -> Result<ProviderResumeState, Failure> {
     if run.provider() != "codex"
         || model(run.model()) != checkpoint.binding.model
         || variant(run.variant()) != checkpoint.binding.variant.as_deref()
@@ -183,7 +205,7 @@ pub(super) fn import(
         .filter(|path| path.is_absolute() && path.is_dir())
         .ok_or(Failure::ConfigurationMismatch)?;
     let client = CodexClient::new(
-        "native-checkpoint-import",
+        run.id(),
         run.structured_endpoint().ok_or(Failure::ResumeFailed)?,
     )
     .map_err(|_| Failure::ResumeFailed)?;
@@ -193,7 +215,7 @@ pub(super) fn import(
     }
     let directory = super::files::Directory::open(root)?;
     let id = checkpoint.provider_session_id();
-    match metadata(&client, id) {
+    let already_published = match metadata(&client, id) {
         Ok(existing) => {
             idle(&existing, id)?;
             let relative = existing
@@ -202,32 +224,33 @@ pub(super) fn import(
                 .and_then(|p| p.strip_prefix(root).ok())
                 .and_then(Path::to_str)
                 .ok_or(Failure::TargetConflict)?;
-            if !valid_relative_path(relative, id)
-                || digest(&directory.read(relative)?) != checkpoint.sha256()
-            {
-                return Err(Failure::TargetConflict);
-            }
+            prepare_existing_artifact(&directory, relative, checkpoint, allow_extension)?;
+            true
         }
-        Err(crate::DaemonError::ProviderProtocol {
-            operation: "thread/read",
-            message,
-            ..
-        }) if message == format!("thread not loaded: {id}")
-            || message == format!("no rollout found for thread id {id}") => {}
+        Err(error) if missing_thread(&error, id) => false,
         Err(_) => return Err(Failure::ResumeFailed),
-    }
-    directory.publish(&checkpoint.relative_path, &checkpoint.contents)?;
-    let client = client
-        .with_mcp_servers(run.mcp_servers())
-        .with_provider_config_overrides(run.provider_config_overrides());
-    let client = if let Some(server_url) = run.runtime_mcp_server_url() {
-        client.with_runtime_mcp_binding(Some(server_url), run.runtime_mcp_auth_token())
-    } else {
-        client
     };
+    if !already_published {
+        match directory.publish(&checkpoint.relative_path, &checkpoint.contents) {
+            Err(Failure::TargetConflict) => {
+                prepare_existing_artifact(
+                    &directory,
+                    &checkpoint.relative_path,
+                    checkpoint,
+                    allow_extension,
+                )?;
+            }
+            result => result?,
+        }
+    }
+    // Check native continuity before normal startup installs this run's tools
+    // and interaction context. Process-level MCP entries must not run in a probe.
+    let client = client
+        .with_provider_config_overrides(run.provider_config_overrides())
+        .with_read_only_discovery_permissions();
     let mut socket = client
         .connect_initialized()
-        .map_err(|_| Failure::ResumeFailed)?;
+        .map_err(|error| resume_probe_failure(run, "connect", &error))?;
     let resumed = client
         .thread_resume(
             &mut socket,
@@ -241,7 +264,7 @@ pub(super) fn import(
             None,
             &mut Vec::new(),
         )
-        .map_err(|_| Failure::ResumeFailed)?;
+        .map_err(|error| resume_probe_failure(run, "thread/resume", &error))?;
     if resumed.thread.id != id {
         return Err(Failure::SessionChanged);
     }
@@ -257,12 +280,92 @@ pub(super) fn import(
     )
 }
 
+#[cfg(unix)]
+fn prepare_existing_artifact(
+    directory: &super::files::Directory,
+    relative: &str,
+    checkpoint: &ProviderNativeCheckpoint,
+    allow_extension: bool,
+) -> Result<(), Failure> {
+    match verify_required_artifact(directory, relative, &checkpoint.binding) {
+        Err(Failure::TargetConflict) if allow_extension => {
+            // A returned thread extends the stopped home thread. Preserve
+            // every home byte and refuse any divergent native history.
+            directory.extend(relative, &checkpoint.contents)?;
+            verify_required_artifact(directory, relative, &checkpoint.binding)
+        }
+        result => result,
+    }
+}
+
+fn resume_probe_failure(
+    run: &RuntimeProviderRun,
+    stage: &str,
+    error: &crate::DaemonError,
+) -> Failure {
+    let operation = match error {
+        crate::DaemonError::ProviderProtocol { operation, .. } => *operation,
+        _ => "native_checkpoint",
+    };
+    let failure_terms = match error {
+        crate::DaemonError::ProviderProtocol { message, .. } => {
+            let message = message.to_ascii_lowercase();
+            [
+                "missing field",
+                "invalid type",
+                "unknown variant",
+                "expected",
+                "mcp",
+                "config",
+                "model",
+                "thread",
+                "rollout",
+                "session",
+                "not found",
+                "already",
+                "permission",
+                "sandbox",
+                "approval",
+                "runtime",
+                "cwd",
+                "path",
+                "unsupported",
+                "invalid",
+                "disabled",
+                "schema",
+                "url",
+                "refused",
+                "failed",
+                "closed",
+            ]
+            .into_iter()
+            .filter(|term| message.contains(*term))
+            .collect::<Vec<_>>()
+        }
+        _ => Vec::new(),
+    };
+    crate::logging::warn_with_fields(
+        "provider.checkpoint",
+        "Native checkpoint probe failed",
+        json!({"provider_run_id":run.id(), "stage":stage, "operation":operation, "failure_terms":failure_terms}),
+    );
+    Failure::ResumeFailed
+}
+
 #[cfg(not(unix))]
 pub(super) fn export(_: &RuntimeProviderRun) -> Result<ProviderNativeCheckpoint, Failure> {
     Err(Failure::UnsupportedPlatform)
 }
 #[cfg(not(unix))]
 pub(super) fn import(
+    _: &ProviderNativeCheckpoint,
+    _: &RuntimeProviderRun,
+) -> Result<ProviderResumeState, Failure> {
+    Err(Failure::UnsupportedPlatform)
+}
+
+#[cfg(not(unix))]
+pub(super) fn import_for_move(
     _: &ProviderNativeCheckpoint,
     _: &RuntimeProviderRun,
 ) -> Result<ProviderResumeState, Failure> {
@@ -280,16 +383,30 @@ pub(super) fn verify_required_checkpoint(
     }
     #[cfg(unix)]
     {
-        let metadata = metadata(client, &binding.session_id).map_err(|_| Failure::ResumeFailed)?;
-        idle(&metadata, &binding.session_id)?;
         let root = profile_root(run.pty_env())?;
-        let relative = metadata
-            .path
-            .as_deref()
-            .and_then(|path| path.strip_prefix(root).ok())
-            .and_then(Path::to_str)
-            .ok_or(Failure::TargetConflict)?;
-        verify_required_artifact(&super::files::Directory::open(root)?, relative, binding)?;
+        let relative = match metadata(client, &binding.session_id) {
+            Ok(metadata) => {
+                idle(&metadata, &binding.session_id)?;
+                metadata
+                    .path
+                    .as_deref()
+                    .and_then(|path| path.strip_prefix(root).ok())
+                    .and_then(Path::to_str)
+                    .ok_or(Failure::TargetConflict)?
+                    .to_string()
+            }
+            Err(error) if missing_thread(&error, &binding.session_id) => {
+                // Startup still holds the exact imported artifact until a real
+                // native turn is accepted; a missing index cannot strip its binding.
+                run.native_checkpoint()
+                    .filter(|checkpoint| checkpoint.binding == *binding)
+                    .ok_or(Failure::ResumeFailed)?
+                    .relative_path
+                    .clone()
+            }
+            Err(_) => return Err(Failure::ResumeFailed),
+        };
+        verify_required_artifact(&super::files::Directory::open(root)?, &relative, binding)?;
     }
     Ok(())
 }
@@ -305,8 +422,9 @@ pub(super) fn verify_required_artifact(
     }
     let contents = directory.read(relative)?;
     // Official thread/resume appends native events before the first user turn.
-    // Import still requires exact bytes; continuity requires the full imported
-    // checkpoint to survive as a prefix ending at a JSONL record boundary.
+    // A Move readiness probe can resume this same thread before its first run.
+    // Re-import and continuity both retain the complete imported checkpoint
+    // as a prefix ending at a JSONL record boundary.
     let mut hash = Sha256::new();
     for record in contents.split_inclusive(|byte| *byte == b'\n') {
         hash.update(record);
@@ -315,4 +433,54 @@ pub(super) fn verify_required_artifact(
         }
     }
     Err(Failure::TargetConflict)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn mk03_native_checkpoint_probe_logs_static_failure_terms() {
+        let capture = crate::logging::capture::start();
+        let request = crate::provider::LaunchProviderRequest::new(
+            "room",
+            "codex",
+            "codex",
+            "profile",
+            "gpt-6-luna",
+        );
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-1",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        let error = crate::DaemonError::ProviderProtocol {
+            provider_run_id: "provider-run-1".into(),
+            operation: "thread/resume",
+            message: "missing field `model`; private-provider-value".into(),
+        };
+        assert_eq!(
+            super::resume_probe_failure(&run, "thread/resume", &error),
+            super::Failure::ResumeFailed
+        );
+        let records = capture.records();
+        let record = records
+            .iter()
+            .find(|row| row.contains("Native checkpoint probe failed"))
+            .unwrap();
+        assert!(
+            record.contains("missing field"),
+            "probe must retain a static failure classification"
+        );
+        assert!(record.contains("model"));
+        assert!(!record.contains("private-provider-value"));
+    }
 }

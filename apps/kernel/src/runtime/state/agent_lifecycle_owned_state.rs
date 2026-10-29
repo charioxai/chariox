@@ -272,7 +272,7 @@ impl KernelRuntimeOwnedState {
         Ok(terminated_run_ids)
     }
 
-    pub(super) fn terminate_idle_remote_provider_projection_for_agent_before_local_move(
+    pub(super) fn retire_agent_move_provider_projection(
         &self,
         session_id: &str,
         agent: &crate::agent::AgentInstance,
@@ -326,12 +326,8 @@ impl KernelRuntimeOwnedState {
                 self.clear_prompt_activity(projected_run.id());
                 self.provider_run_projection.update(projected_run.clone());
             }
-            self.agent_store
-                .set_remote_execution_active_worker_provider_run_id(agent.id(), None)?;
             Ok(Some(projected_run.id().to_string()))
         } else {
-            self.agent_store
-                .set_remote_execution_active_worker_provider_run_id(agent.id(), None)?;
             Ok(None)
         }
     }

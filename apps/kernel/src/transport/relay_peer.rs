@@ -145,6 +145,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// failure cause on provider run terminations).
 /// MP-08/MP-09/MP-10/MP-11: landing union 243 carries local 642 (peers 233 dialogs, 234 outside events,
 /// failure cause on provider run terminations) and 243 (that failure renamed to the turn outcome kind and reason).
+/// Allocated 240 carries the local 638 `AgentMove` peer messages.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -723,6 +724,9 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
 )]
 pub enum RelayPeerRequest {
+    AgentMove {
+        request: crate::agent_move::peer::AgentMovePeerRequest,
+    },
     ListWorkflowNotificationSources {
         protocol_version: u32,
     },
@@ -1230,6 +1234,9 @@ impl RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    AgentMove {
+        response: crate::agent_move::peer::AgentMovePeerResponse,
+    },
     LeasedWatchedProcess {
         receipt: Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>,
     },

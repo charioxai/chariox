@@ -58,9 +58,9 @@ first accepted native turn. Launch rejects missing or mismatched native state,
 and resume failure neither clears that state nor substitutes another provider.
 A successful official resume and accepted turn retire the constraint, preserving
 ordinary recovery behavior for subsequent work. Existing calls without a binding
-retain their previous behavior. No peer message changes in this PR, so reserved
-peer allocation 207 is unused; existing remote-native forwarding refuses the
-unsupported checkpoint/interface combination before sending anything.
+retain their previous behavior. Durable Move carries protected artifacts through
+the authenticated 638/240 peer contract described below; generic client launch
+requests continue to carry metadata only.
 
 The ignored `live_codex_native_checkpoint_driver` test exports/imports private
 artifacts for a real two-kernel/TUI drill. It accepts an explicit private manifest
@@ -74,5 +74,49 @@ provider turn that recalls previous context. A helper or fixture alone is not
 MK01 acceptance.
 
 No managed-only provider branch or shutdown policy is added. Integrated ordinary
-and managed lifecycle parity, peer fencing, Mac directions, full workspace
-transfer, UI and sustained Move drills remain separate acceptance cells.
+and managed lifecycle parity, Mac directions, route UI and sustained Move drills
+remain separate acceptance cells.
+
+## Durable Move and Return
+
+MP-08 / MP-09 / MP-10 / MP-11: protocol 638/240 composes this adapter with
+Project transfer. The home kernel journals one generation per agent. It fences
+prompt and provider admission, confirms source teardown, and captures the native
+checkpoint together with the current Project. Encrypted peer requests carry
+bounded private chunks; clients receive no native payload.
+
+The target imports into a new unused root and returns a receipt identifying the
+primary workspace and all supporting workspaces, including directories. Its
+agent must use that primary path. Native import and the official session probe
+finish before the home operation commits and retires its source. A readiness
+probe admits no user turn. The next real provider launch retains the complete
+checkpoint binding until native continuity is accepted.
+
+Return captures the current target Project again and creates a new Project
+identity and unused workspace root. It reuses the original home account
+profile. Native import extends the stopped home rollout only when every old
+byte is a complete-record prefix of the incoming history; divergent history
+is preserved and refused. Resolve that divergence before retrying, or cancel
+the pending Move before a target lease is bound. Ordinary checkpoint import
+remains strict and accepts only its required original prefix plus native
+appends from the readiness probe, including an unindexed rollout.
+
+The original home checkout and previous workspace materializations remain
+available. Return never resets or merges them. Home Room identity, history
+and authority stay at home. Only the agent's execution workspace changes.
+
+Private journals recover independently of periodic Room snapshots. An
+acknowledged worker backing restores idle with its original lease timestamps
+and caller bindings, without starting a provider run. An unacknowledged empty
+lease can be recreated from the same materialization receipt. Home recovery
+retries the same generation under the admission fence. Before binding, a
+recoverable failure can release the source and roll back. After commitment,
+recovery finishes target activation and source retirement. An unavailable peer
+leaves the operation fenced for retry after reconnection.
+
+A source with active provider work or a live leased process wake must finish or
+cancel that work first. If a restart lost the source run before its checkpoint
+was captured, the operation rolls back; resume the source for one completed
+turn before retrying. A stored, still-required checkpoint also supports an
+immediate Return before the first target turn. Scope remains the managed Codex
+adapter's supported CLI version and platform contract.

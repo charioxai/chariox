@@ -9,6 +9,11 @@ import { LocalIpcClient } from '../../../packages/kernel-client/dist/ipc.js';
 import { openTui } from '../context-switch/tui.mjs';
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedPid, descendants, processSnapshot } from '../context-switch/owned.mjs';
 import { registerTerminationCleanup } from '../context-switch/termination.mjs';
+import { checkpointDiagnostics } from './workspace-diagnostics.mjs';
+if (process.argv.includes('--help')) {
+    console.log('Run with absolute CHARIOX_WORKSPACE_KERNEL, CHARIOX_WORKSPACE_TUI, CHARIOX_WORKSPACE_PROFILE, CHARIOX_WORKSPACE_STATE and CHARIOX_WORKSPACE_EVIDENCE paths.');
+    process.exit(0);
+}
 const required = name => {
     const value = process.env[name];
     if (!value?.startsWith('/'))
@@ -41,12 +46,12 @@ async function record(name, data) {
 }
 const runtimes = [];
 let browser, closed = false;
-async function stop(child) {
+async function stop(child, signal = 'SIGINT') {
     if (!child)
         return;
     const owned = descendants(child.pid);
     if (child.exitCode === null && child.signalCode === null)
-        signalOwnedProcessGroup(child, 'SIGINT');
+        signalOwnedProcessGroup(child, signal);
     for (let n = 0; n < 60; n++) {
         if (!processSnapshot().some(p => p.state !== 'Z' && owned.some(x => p.pid === x.pid && p.start === x.start)))
             return;
@@ -71,6 +76,9 @@ async function close() {
     }
     await browser?.close();
     await sleep(500);
+    await record('checkpoint-diagnostics', {kernels: await Promise.all(runtimes.map(async r => ({
+        name: r.name, probes: await checkpointDiagnostics(r.path + '/home'),
+    })))});
     const remaining = processSnapshot().filter(p => p.state !== 'Z' && owned.some(x => p.pid === x.pid && p.start === x.start));
     await record('cleanup', { remaining: remaining.map(p => ({ pid: p.pid, start: p.start })), kernels: runtimes.map(r => ({ pid: r.child.pid, exitCode: r.child.exitCode, signal: r.child.signalCode })) });
     assert.equal(remaining.length, 0);
@@ -83,7 +91,7 @@ async function runtime(name) {
         await mkdir(path + '/' + dir, { recursive: true, mode: 0o700 });
     await writeFile(path + '/home/config.toml', 'version = 1\n[state]\npath = "' + path + '/home/state.db"\n[history.archive]\nmode = "disabled"\n[credential_vault]\nbackend = "chariox_encrypted"\npath = "' + path + '/home/private-vault.json"\nunlock_policy = "kernel_init"\nagent_management = "allow"\n', { mode: 0o600 });
     const ports = await Promise.all(Array.from({ length: 4 }, port));
-    const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: path + '/os-home', CHARIOX_HOME: path + '/home', TMPDIR: path + '/tmp', XDG_CONFIG_HOME: path + '/config', XDG_DATA_HOME: path + '/data', XDG_STATE_HOME: path + '/state', XDG_CACHE_HOME: path + '/cache', CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]), CHARIOX_DAEMON_SOCKET: path + '/daemon.sock', RUST_MIN_STACK: '16777216' };
+    const env = { PATH: process.env.PATH, LANG: 'C.UTF-8', HOME: path + '/os-home', CHARIOX_HOME: path + '/home', TMPDIR: path + '/tmp', XDG_CONFIG_HOME: path + '/config', XDG_DATA_HOME: path + '/data', XDG_STATE_HOME: path + '/state', XDG_CACHE_HOME: path + '/cache', IS_SANDBOX: '1', CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_CODEX_PORT: String(ports[2]), CHARIOX_OPENCODE_PORT: String(ports[3]), CHARIOX_DAEMON_SOCKET: path + '/daemon.sock', RUST_MIN_STACK: '16777216' };
     const url = `ws://127.0.0.1:${ports[0]}/kernel`;
     const child = spawnOwned(kernel, [], { cwd: path, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     const stream = createWriteStream(path + '/kernel.private.log', { mode: 0o600 });
@@ -107,6 +115,29 @@ async function runtime(name) {
         }
     }
     throw Error(name + ' readiness timeout');
+}
+// Restart only this harness's kernel and reconnect the same real TUI Room.
+async function restart(r, workspace, sessionId) {
+    // Interrupt the captured transaction before closing its client or TUI.
+    const exited = new Promise(resolve => r.child.once('exit', resolve));
+    await stop(r.child, 'SIGKILL');
+    if (r.child.exitCode === null && r.child.signalCode === null) await exited;
+    assert.equal(r.child.signalCode, 'SIGKILL', `Own kernel must be interrupted mid-Move (exit=${r.child.exitCode}, signal=${r.child.signalCode})`);
+    await r.tui?.close();
+    await r.client?.close();
+    r.child = spawnOwned(kernel, [], { cwd: r.path, env: r.env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const stream = createWriteStream(r.path + '/kernel-restart.private.log', { mode: 0o600 });
+    r.child.stdout.pipe(stream); r.child.stderr.pipe(stream);
+    let ready = false;
+    for (let n = 0; n < 120; n++) {
+        const client = new LocalIpcClient(r.url, { timeoutMs: 10000, localAuthEnvironment: r.env });
+        try { await client.send({ ListSessions: null }); r.client = client; ready = true; break; }
+        catch { await client.close(); if (r.child.exitCode !== null) throw Error('Restarted kernel exited'); await sleep(250); }
+    }
+    assert.ok(ready, 'Restarted kernel readiness');
+    r.tui = await openTui({ tree: workspace, env: r.env, url: r.url, profile: r.accountProfile.profile_id, root: r.path, binary, provider: 'codex', model: 'gpt-6-luna', session: sessionId, clientId: 'movekernel-restarted-' + r.name });
+    await unlock(r);
+    await record(r.name + '-restart', { pid: r.child.pid, sameRoom: sessionId, previousKernelSignal: 'SIGKILL' });
 }
 async function enroll(r) {
     const context = await browser.newContext(), page = await context.newPage();
@@ -187,7 +218,7 @@ async function project(r, paths, projectId) {
     r.accountProfile ??= variant(await r.client.send({ LinkProviderAccountProfile: { provider: 'codex', label: 'Workspace drill', path: required('CHARIOX_WORKSPACE_PROFILE') } }), 'ProviderAccountProfile').profile;
     const profile = r.accountProfile;
     await r.client.send({ RefreshProviderAccountProfile: { provider: 'codex', account_profile: profile.profile_id } });
-    const created = variant(await r.client.send({ CreateSession: { workspace_id: paths.primary, worktree_id: paths.primary, alias: 'Workspace ' + r.name, project_selection: projectId ? { kind: 'existing', project_id: projectId } : { kind: 'new', name: 'Move workspace ' + r.name }, agent_defaults: { provider: 'codex', account_profile: profile.profile_id, model: 'gpt-6-luna', effort: 'low', permission_level: 'required' } } }), 'SessionCreated');
+    const created = variant(await r.client.send({ CreateSession: { workspace_id: paths.workspace ?? paths.primary, worktree_id: paths.primary, alias: 'Workspace ' + r.name, project_selection: projectId ? { kind: 'existing', project_id: projectId } : { kind: 'new', name: 'Move workspace ' + r.name }, agent_defaults: { provider: 'codex', account_profile: profile.profile_id, model: 'gpt-6-luna', effort: 'low', permission_level: 'required' } } }), 'SessionCreated');
     await r.tui?.close();
     r.tui = await openTui({ tree: paths.primary, env: r.env, url: r.url, profile: profile.profile_id, root: r.path, binary, provider: 'codex', model: 'gpt-6-luna', session: created.session.id, clientId: 'movekernel-r6-' + r.name });
     let snap;
@@ -202,7 +233,7 @@ async function project(r, paths, projectId) {
     const state = variant(await r.client.send({ GetSessionState: { session_id: snap.session.id } }), 'SessionState');
     const id = state.session.project_id;
     assert.ok(id);
-    await r.client.send({ UpdateProjectWorkspaces: { project_id: id, workspace_ids: [paths.primary, paths.notes] } });
+    await r.client.send({ UpdateProjectWorkspaces: { project_id: id, workspace_ids: [paths.workspace ?? paths.primary, paths.notes] } });
     return id;
 }
 async function selection(source, target, id, paths) {
@@ -287,4 +318,5 @@ async function launchBrowser() {
     const { chromium } = await import('/w/valenv/tools/node_modules/playwright-core/index.mjs');
     browser = await chromium.launch({ headless: true, executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 }
-export { root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release };
+async function webContext(options) { assert.ok(browser, "Launch the viewer before opening a Web context"); return browser.newContext(options); }
+export { webContext, root, out, kernel, binary, origin, relay, sha, record, runtime, enroll, project, selection, copy, launchTarget, launchBrowser, close, release, restart, cli };

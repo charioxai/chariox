@@ -573,6 +573,8 @@ pub struct LaunchProviderRequest {
     pub resume_state: Option<ProviderResumeState>,
     #[serde(skip)]
     pub(crate) native_checkpoint: Option<super::ProviderNativeCheckpoint>,
+    #[serde(skip)]
+    pub(crate) agent_move_preparation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structured_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "ProviderClientInterface::is_chariox")]
@@ -734,6 +736,7 @@ impl LaunchProviderRequest {
             permission_level: None,
             resume_state: None,
             native_checkpoint: None,
+            agent_move_preparation: None,
             structured_endpoint: None,
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
