@@ -36,6 +36,24 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.dispatch_workflow_runtime_tool_call_with_prompt_settlement(
+            tool_name, arguments, context, false,
+        )
+    }
+
+    pub(super) fn dispatch_workflow_runtime_tool_call_with_prompt_settlement(
+        &self,
+        tool_name: String,
+        arguments: serde_json::Value,
+        context: crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+        defer_prompt_settlement: bool,
+    ) -> Result<
+        (
+            crate::transport::runtime_tools::RuntimeToolResult,
+            WorkflowPromptDispatches,
+        ),
+        DaemonError,
+    > {
         let canonical_tool_name = tool_name
             .strip_prefix("chariox_")
             .unwrap_or(tool_name.as_str())
@@ -85,7 +103,7 @@ impl KernelRuntimeOwnedState {
             {
                 let is_final = canonical_tool_name
                     == crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL;
-                self.workflow_submit_output_tool_result(&arguments, &context, is_final)
+                self.workflow_submit_output_tool_result(&arguments, &context, is_final, defer_prompt_settlement)
                     .map(|(result, next_dispatches)| {
                         dispatches.extend(next_dispatches);
                         result

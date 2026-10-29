@@ -606,8 +606,24 @@ async fn sweep_ends_a_stranded_plain_turn_without_asking_the_owner() {
 }
 
 #[tokio::test]
-async fn lane_deadline_stops_an_active_turn_and_fences_later_admission() {
-    let f = fixture("lane-deadline-active-turn", true).await;
+async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
+    let f = fixture("agent-deadline-active-turn", true).await;
+    f.runtime
+        .outside_part_request(
+            "deadline-follower",
+            true,
+            Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            &crate::local::LocalDaemonRequest::SubscribeEvents(
+                crate::local::SubscribeEventsRequest {
+                    targets: vec![crate::local::EventTarget {
+                        kernel: f.runtime.owned.config_projection.snapshot().daemon_id,
+                        session_id: f.room.clone(),
+                        agent_id: Some(f.agent.clone()),
+                    }],
+                },
+            ),
+        )
+        .unwrap();
     f.begin(&f.prompt_id);
     let now = crate::session::unix_epoch_ms();
     f.runtime
@@ -667,11 +683,31 @@ async fn lane_deadline_stops_an_active_turn_and_fences_later_admission() {
             .stopped_at_ms,
         deadline.stopped_at_ms
     );
+    let events = f
+        .store()
+        .outside_list("deadline-follower", None, 100)
+        .unwrap()
+        .unwrap()
+        .events;
+    let reached = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.value,
+                crate::local::OutsideEventValue::Agent { reason: Some(reason), .. }
+                    if reason == "deadline_reached"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reached.len(), 1, "cleanup publishes one deadline event");
+    assert_eq!(reached[0].session_id, f.room);
+    assert_eq!(reached[0].agent_id.as_deref(), Some(f.agent.as_str()));
+    assert!(reached[0].at_ms >= deadline.stopped_at_ms.unwrap());
 }
 
 #[tokio::test]
-async fn lane_deadline_is_not_stopped_while_an_owned_source_is_still_stopping() {
-    let f = fixture("lane-deadline-pending-source", false).await;
+async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping() {
+    let f = fixture("agent-deadline-pending-source", false).await;
     let task = f.begin("turn-1");
     f.driver.cancel_pending.store(true, Ordering::Release);
     f.arm(&task, "wake-resisting").unwrap();
@@ -1032,6 +1068,27 @@ async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     )
     .await
     .is_err());
+
+    // MP-08 / MP-09 / MP-10 / MP-11 A12-S04: a goal id is not a task id.
+    let refusal = call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({
+            "task_id": format!("goal:{}", task.task_id),
+            "reason": "Need the owner to pick a branch",
+        }),
+    )
+    .await
+    .expect_err("a goal id must not gain task authority");
+    assert!(
+        refusal
+            .to_string()
+            .contains(&format!("task_id is `{}`", task.task_id)),
+        "the agent needs this turn's task id to correct its call: {refusal}"
+    );
+    assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
 
     call(
         &f,

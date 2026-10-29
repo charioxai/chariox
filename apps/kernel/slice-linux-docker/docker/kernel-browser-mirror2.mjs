@@ -986,12 +986,17 @@ export class Mirror2 {
     // Nodes of a mirrored cross-origin frame live in that frame's own world.
     const frameOf = id => { const slot = id ? slotOf(id) : 0; if (!slot) return null; const entry = stream.frameSlots.get(slot); if (!entry) throw new Error('MP-11: changed mirror input target'); return entry; };
     const inFrame = async (entry, expression) => { assertNotCancelled(signal); assertEpoch(); await assertCurrentDocument(world.connection, world.sessionId, tab.target_id, tab.document_id); const value = await this.evaluate(entry.child, expression); assertEpoch(); return value; };
+    // A nested frame's owner lives in its host frame's world: the chain runs from the page's own child to the entry.
+    const hosts = entry => { const chain = []; for (let at = entry; at;) { chain.unshift(at); if (!at.hostSlot) break; at = stream.frameSlots.get(at.hostSlot); if (!at) throw new Error('MP-11: changed mirror input target'); } return chain; };
+    const onHost = (entry, expression) => entry.hostSlot ? inFrame(stream.frameSlots.get(entry.hostSlot), expression) : call(expression);
+    const ownerOf = entry => entry.hostSlot ? localId(entry.owner) : entry.owner;
     if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
     // A viewer scrolled ahead of the native page (smooth scrolling still animating): the point comes into range within a moment.
     const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
     if (action.kind === 'click' || action.kind === 'scroll') {
       const entry = frameOf(action.node_id);
       let at, local = null;
+      const chain = entry ? hosts(entry) : [], hostPoints = [];
       if (entry) {
         const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
         // The frame's point, then the frame as its owner's scrolling ancestors show it; each level reveals what the viewer scrolled ahead.
@@ -1002,16 +1007,23 @@ export class Mirror2 {
             await inFrame(entry, `${m}.reveal(${JSON.stringify({ node_id: localId(action.node_id) })})`);
             local = await localAt();
           }
-          return retryOffscreen(() => call(`${m}.frameOrigin(${JSON.stringify(entry.owner)},${JSON.stringify([local.x, local.y])})`));
+          // Level by level, inside out: the point in each host's viewport, the page's last.
+          let point = local;
+          for (const level of chain.toReversed()) {
+            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])})`));
+            point = { x: origin[0] + (origin[2] ?? 1) * point.x, y: origin[1] + (origin[3] ?? 1) * point.y }; hostPoints.unshift(point);
+          }
+          return point;
         };
-        let origin;
-        try { origin = await aim(); } catch (error) {
-          // The frame itself is clipped by a scroll pane of the page that owns it: scroll the native page to the frame.
+        let point;
+        try { point = await aim(); } catch (error) {
+          // A frame is clipped by a scroll pane of the document that owns it: scroll that document to the frame, outermost first.
           if (error?.mirrorReason !== 'offscreen_node') throw error;
-          stream.ownScrolls.set(null, JSON.stringify(await call(`${m}.reveal(${JSON.stringify({ node_id: entry.owner })})`))); stream.movedAt = Date.now();
-          origin = await aim();
+          hostPoints.length = 0;
+          for (const level of chain) { const revealed = await onHost(level, `${m}.reveal(${JSON.stringify({ node_id: ownerOf(level) })})`); if (!level.hostSlot) { stream.ownScrolls.set(null, JSON.stringify(revealed)); stream.movedAt = Date.now(); } }
+          point = await aim();
         }
-        at = { x: Math.floor(origin[0] + (origin[2] ?? 1) * local.x), y: Math.floor(origin[1] + (origin[3] ?? 1) * local.y) };
+        at = { x: Math.floor(point.x), y: Math.floor(point.y) };
         const {width,height} = this.host.pageSize(tab.tab_id);
         if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height) throw new Error('MP-11: changed mirror input target');
       } else {
@@ -1028,7 +1040,7 @@ export class Mirror2 {
       // physical event; release stays paired even if the page reacts.
       const guard = async () => {
         assertEpoch(); assertNotCancelled(signal); if (checked) return;
-        if (entry) { await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(entry.owner)})`); await inFrame(entry, `${m}.hitCheck(${JSON.stringify(local)},${JSON.stringify(localId(action.node_id))})`); }
+        if (entry) { for (const [depth, level] of chain.entries()) await onHost(level, `${m}.hitCheck(${JSON.stringify(depth ? hostPoints[depth] : at)},${JSON.stringify(ownerOf(level))})`); await inFrame(entry, `${m}.hitCheck(${JSON.stringify(local)},${JSON.stringify(localId(action.node_id))})`); }
         else await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`);
         checked = true;
       };
@@ -1051,7 +1063,7 @@ export class Mirror2 {
       const entry = frameOf(action.node_id), request = { ...action, node_id: entry ? localId(action.node_id) : action.node_id }, expression = `${m}.${action.kind}(${JSON.stringify(request)})`;
       return { perform: async () => {
         // Protocol 492: a committed control state names a control the viewer saw, inside a document it saw.
-        if (action.kind === 'set') { if (entry) { seen((await inFrame(entry, `${m}.ancestry(${JSON.stringify(request.node_id)})`)).map(id => rebaseId(id, entry.slot))); seen(await call(`${m}.ancestry(${JSON.stringify(entry.owner)})`)); } else seen(await call(`${m}.ancestry(${JSON.stringify(action.node_id)})`)); }
+        if (action.kind === 'set') { if (entry) { seen((await inFrame(entry, `${m}.ancestry(${JSON.stringify(request.node_id)})`)).map(id => rebaseId(id, entry.slot))); for (const level of hosts(entry)) seen((await onHost(level, `${m}.ancestry(${JSON.stringify(ownerOf(level))})`)).map(id => rebaseId(id, level.hostSlot))); } else seen(await call(`${m}.ancestry(${JSON.stringify(action.node_id)})`)); }
         await (entry ? inFrame(entry, expression) : call(expression));
       } };
     }

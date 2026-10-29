@@ -78,6 +78,10 @@ pub enum DaemonError {
     /// The owner revoked a gateway's key on this kernel; it gets no request and no stream.
     #[error("this kernel's owner revoked that gateway (unpaired or revoked)")]
     GatewayKeyRevoked,
+    /// The provider refused a prompt dispatch and `message` is its own reason.
+    /// Kernel-side dispatch errors never use this variant.
+    #[error("{message}")]
+    ProviderRefusal { message: String },
     #[error("local transport `{operation}` failed: {message}")]
     LocalTransport {
         operation: &'static str,
@@ -395,6 +399,10 @@ pub enum DaemonError {
         provider_run_id: String,
         operation: &'static str,
         message: String,
+    },
+    #[error("native provider checkpoint failed: {reason}")]
+    NativeProviderCheckpoint {
+        reason: crate::provider::NativeCheckpointFailure,
     },
     #[error("failed to spawn PTY for provider run `{provider_run_id}`: {message}")]
     PtySpawn {

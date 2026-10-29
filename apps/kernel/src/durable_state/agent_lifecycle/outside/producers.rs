@@ -1,6 +1,42 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: project existing producers into outside parts.
 use super::*;
 
+/// Commit the notification with the first successful physical cleanup receipt.
+pub(in crate::durable_state::agent_lifecycle) fn publish_deadline(
+    tx: &Transaction<'_>,
+    deadline: &crate::local::AgentDeadline,
+) -> Result<(), DaemonError> {
+    let Some((kernel, machine)) = identity(tx)? else {
+        return Ok(());
+    };
+    let event = OutsideEvent {
+        cursor: 0,
+        kernel,
+        machine,
+        session_id: deadline.session_id.clone(),
+        agent_id: Some(deadline.agent_id.clone()),
+        value: OutsideEventValue::Agent {
+            run_state: None,
+            task_state: None,
+            reason: Some("deadline_reached".into()),
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
+        },
+        summary: "deadline reached".into(),
+        at_ms: outside_now_ms()?,
+        refs: Default::default(),
+    };
+    publish(
+        tx,
+        &format!(
+            "deadline:{}",
+            encode(&(&deadline.session_id, &deadline.agent_id))?
+        ),
+        &event,
+    )
+}
+
 /// Called by the same writer transaction that changes task state.
 pub(in crate::durable_state::agent_lifecycle) fn publish_task(
     tx: &Transaction<'_>,
@@ -31,6 +67,9 @@ pub(in crate::durable_state::agent_lifecycle) fn publish_task(
                     .take(512)
                     .collect(),
             ),
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
         },
         summary: task
             .reason

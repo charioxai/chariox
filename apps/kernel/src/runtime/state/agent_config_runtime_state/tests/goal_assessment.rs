@@ -1,5 +1,137 @@
 // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: actual native context includes safe actionable receipts.
 use super::*;
+
+// MP-08 / MP-09 / MP-10 / MP-11: settled refusals still contradict invented success.
+#[tokio::test]
+async fn assessment_retains_bounded_rejected_dispatch_evidence() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| store.agent_lifecycle(op).unwrap();
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Have cold-peer summarize the README",
+    );
+    request.merge_key = Some("prompt:refused-work".into());
+    runtime
+        .owned
+        .append_operational_history_entry(&request, None, None, None);
+    let answer = SessionHistoryEntry::provider_output(
+        &room,
+        "run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "cold-peer summarized the README successfully",
+    );
+    runtime
+        .owned
+        .append_operational_history_entry(&answer, None, None, None);
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "refused-work".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {
+        task: "refused-work".into(),
+        owner: "owner".into(),
+        objective: "Have cold-peer summarize the README".into(),
+        minutes: 1,
+        now: 1,
+    });
+    for index in 0..66 {
+        let id = format!("receipt-{index}");
+        apply(Operation::RegisterObligation {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: "refused-work".into(),
+            run: Some("run".into()),
+            id: id.clone(),
+            kind: "delegate".into(),
+            resource: Some("cold-peer".into()),
+            now: 1,
+        });
+        apply(Operation::DispatchReceipt {
+            id,
+            accepted: false,
+            resource: None,
+        });
+    }
+    apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "refused-work".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 2,
+    });
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["coverage"]["total"], 0);
+    assert!(data["obligations"].as_array().unwrap().is_empty());
+    assert!(data["satisfied_obligations"].as_array().unwrap().is_empty());
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["cold-peer summarized the README successfully"])
+    );
+    assert_eq!(
+        data["rejected_dispatch_coverage"],
+        serde_json::json!({"shown":64,"total":66})
+    );
+    let refusals = data["rejected_dispatches"].as_array().unwrap();
+    assert_eq!(refusals.len(), 64);
+    assert_eq!(
+        refusals[0],
+        serde_json::json!({
+            "receipt_id":"receipt-0", "kind":"delegate", "target":"cold-peer",
+            "reason_class":"dispatch_rejected", "effect":"not_admitted",
+        })
+    );
+    assert_eq!(refusals[63]["receipt_id"], "receipt-63");
+    assert!(context.contains("rejected_dispatches is kernel-confirmed evidence"));
+    assert!(context.contains("An answer claiming that a rejected dispatch produced the requested effect cannot be achieved"));
+    assert!(context.contains("A refusal report may be achieved only when the original objective is fulfilled by reporting that refusal"));
+
+    // Admitted failure remains unresolved; successful delivery is not a refusal.
+    let mut task = task;
+    task.obligations[0].dispatch_state = "accepted".into();
+    task.obligations[1].dispatch_state = "accepted".into();
+    task.obligations[1].status = "satisfied".into();
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["coverage"]["total"], 1);
+    assert_eq!(data["obligations"][0]["id"], "receipt-0");
+    assert_eq!(data["satisfied_obligations"][0]["id"], "receipt-1");
+    assert_eq!(
+        data["rejected_dispatch_coverage"],
+        serde_json::json!({"shown":64,"total":64})
+    );
+    assert_eq!(data["rejected_dispatches"][0]["receipt_id"], "receipt-2");
+}
+
 #[tokio::test]
 async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
     use crate::durable_state::agent_lifecycle::{Operation, Registration};
@@ -107,6 +239,39 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         context.contains("handled:true"),
         "continue normal handling/verification before owner-blocking on terminal sources"
     );
+    apply(Operation::Ack {
+        room: room.clone(),
+        agent: agent.clone(),
+        sequence: events[0].sequence,
+        handled: true,
+        now: 4,
+    });
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.goal.is_some())
+        .unwrap();
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["handled_source_receipts"][0]["sequence"],
+        events[0].sequence
+    );
+    assert_eq!(
+        data["handled_source_receipts"][0]["kind"],
+        "source_completed"
+    );
+    assert_eq!(data["handled_source_receipts"][0]["state"], "handled");
+    assert_eq!(data["satisfied_obligations"][0]["id"], "delegate");
+    assert_eq!(data["satisfied_obligations"][0]["status"], "satisfied");
+    assert!(data["unhandled_receipts"].as_array().unwrap().is_empty());
+    assert!(!context.contains("DO_NOT_INCLUDE_RAW_RECEIPT_BODY"));
 }
 
 #[tokio::test]
@@ -332,8 +497,10 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
     assert_eq!(
-        data["latest_public_answer_tail"],
-        "GetDaemonHealth returned a healthy kernel with no projection mismatches."
+        data["latest_public_answer_messages"],
+        serde_json::json!([
+            "GetDaemonHealth returned a healthy kernel with no projection mismatches."
+        ])
     );
     assert_eq!(
         data["answer_coverage"]["shown_chars"],
@@ -352,6 +519,324 @@ async fn a10_completion_assesses_leased_public_result_without_requesting_private
     assert!(
         context.contains("deadline_ms is an absolute Unix epoch time in milliseconds"),
         "{context}"
+    );
+}
+
+// A full one-character answer is the A12-S04 result, not a cut-off excerpt.
+async fn count_answer_assessment_context(answer: &str) -> String {
+    count_messages_assessment_context(&[(None, answer)]).await
+}
+
+async fn count_messages_assessment_context(answers: &[(Option<&str>, &str)]) -> String {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let prompt = "count-answer";
+    let run = "leased:lease:worker-run";
+    let mut request = SessionHistoryEntry::user_prompt(
+        &room,
+        "owner",
+        &agent,
+        "Call ListSessions once and report only the count; no other tools or edits.",
+    );
+    request.merge_key = Some(format!("prompt:{prompt}"));
+    let answers = answers.iter().map(|(key, text)| {
+        SessionHistoryEntry::provider_output(
+            &room,
+            "worker-run",
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            key.map(str::to_owned),
+            *text,
+        )
+    });
+    let private_tool = SessionHistoryEntry::provider_output(
+        &room,
+        "worker-run",
+        Some(&agent),
+        TerminalOutputKind::ProviderTool,
+        None,
+        r#"{"id":"count-call","tool":"chariox_kernel_request","status":"completed","input":{"request":{"ListSessions":null}},"output":"PRIVATE_MCP_OUTPUT"}"#,
+    );
+    for entry in [request, private_tool].into_iter().chain(answers) {
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: 1,
+        },
+        Operation::StartGoal {
+            task: prompt.into(),
+            owner: "owner".into(),
+            objective: "Call ListSessions once and report only the count".into(),
+            minutes: 10,
+            now: 1,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: run.into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap()
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: real r12 guard3 check-1 recognized the
+// answer and receipt, but continued for an unproven conditional authority branch.
+#[tokio::test]
+async fn assessment_replays_admitted_call_without_requiring_authority_narrative() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_authority.json")).unwrap();
+    let objective: serde_json::Value = serde_json::from_str(
+        captured[0]["text"]
+            .as_str()
+            .unwrap()
+            .split_once("Goal objective and preceding assessment are public data: ")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let prompt = "task-resume-prompt-1793069960226-5";
+    let run = "provider-run-3";
+    for item in &captured {
+        let text = item["text"].as_str().unwrap();
+        let entry = if item["kind"] == "user_prompt" {
+            let mut entry = SessionHistoryEntry::user_prompt(&room, "owner", &agent, text);
+            entry.merge_key = Some(format!("prompt:{prompt}"));
+            entry
+        } else {
+            SessionHistoryEntry::provider_output(
+                &room,
+                run,
+                Some(&agent),
+                if item["kind"] == "provider_tool" {
+                    TerminalOutputKind::ProviderTool
+                } else {
+                    TerminalOutputKind::ProviderOutput
+                },
+                item["merge_key"].as_str().map(str::to_owned),
+                text,
+            )
+        };
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    }
+    let store = &runtime.owned.durable_state_store;
+    for op in [
+        Operation::Begin {
+            owner: "owner".into(),
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: Some(run.into()),
+            now: 1,
+        },
+        Operation::StartGoal {
+            task: prompt.into(),
+            owner: "owner".into(),
+            objective: objective["objective"].as_str().unwrap().into(),
+            minutes: 10,
+            now: 1,
+        },
+        Operation::Settle {
+            room: room.clone(),
+            agent: agent.clone(),
+            prompt: prompt.into(),
+            run: run.into(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        },
+    ] {
+        store.agent_lifecycle(op).unwrap();
+    }
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .remove(0);
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["2"])
+    );
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        data["completed_kernel_calls"][0]["authority_outcome"],
+        "admitted"
+    );
+    assert_eq!(data["coverage"]["total"], 0);
+    assert!(context.contains("Conditional refusal or owner-recovery steps apply to refused calls"));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: r11 check-1 received 91 characters ending
+// in `sudo window.2`; the last message must stay distinct from the retry plan.
+#[tokio::test]
+async fn assessment_preserves_captured_assistant_message_boundaries() {
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_count_messages.json")).unwrap();
+    let answers = captured
+        .iter()
+        .map(|item| (item["merge_key"].as_str(), item["text"].as_str().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        answers
+            .iter()
+            .map(|(_, text)| *text)
+            .collect::<String>()
+            .chars()
+            .count(),
+        91
+    );
+    let context = count_messages_assessment_context(&answers).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["latest_public_answer_messages"], serde_json::json!([
+        "I’m retrying the required typed request once under the resumed task’s current sudo window.",
+        "2"
+    ]));
+    assert_eq!(data["answer_coverage"]["shown_chars"], 91);
+    assert_eq!(data["answer_coverage"]["total_chars"], 91);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"][0]["request"], "ListSessions");
+    assert!(data.get("latest_public_answer_tail").is_none());
+}
+
+#[tokio::test]
+async fn assessment_keeps_provider_merged_text_in_one_message() {
+    let captured: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("goal_assessment_count_messages.json")).unwrap();
+    // These adjacent captured deltas all belong to the provider's first message.
+    let answers = captured
+        .iter()
+        .take(captured.len() - 1)
+        .map(|item| (item["merge_key"].as_str(), item["text"].as_str().unwrap()))
+        .collect::<Vec<_>>();
+    let context = count_messages_assessment_context(&answers).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!([
+        "I’m retrying the required typed request once under the resumed task’s current sudo window."
+    ])
+    );
+    // Text itself never creates a boundary, including a short trailing number.
+    let context = count_messages_assessment_context(&[
+        (Some("same-message"), "Retrying."),
+        (Some("same-message"), "2"),
+    ])
+    .await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["Retrying.2"])
+    );
+}
+
+#[tokio::test]
+async fn assessment_marks_the_full_one_character_count_as_complete() {
+    let context = count_answer_assessment_context("2").await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["2"])
+    );
+    assert_eq!(data["answer_coverage"]["shown_chars"], 1);
+    assert_eq!(data["answer_coverage"]["total_chars"], 1);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["answer_coverage"]["truncated"], false);
+    assert_eq!(data["completed_kernel_calls"][0]["request"], "ListSessions");
+    assert_eq!(data["completed_kernel_calls_omitted"], 0);
+    assert!(!context.contains("PRIVATE_MCP_OUTPUT"));
+    assert!(context.contains("even one character"));
+    assert!(context.contains("never treat it as truncated"));
+    assert!(context.contains("that complete result is the answer, not a plan or a missing report"));
+    assert!(context.contains("a narrative of prerequisite authority, blocking or resume steps"));
+}
+
+#[tokio::test]
+async fn assessment_empty_public_output_is_uncut_but_not_evidence_of_success() {
+    let context = count_answer_assessment_context("").await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["latest_public_answer_messages"], serde_json::json!([]));
+    assert_eq!(data["answer_coverage"]["shown_chars"], 0);
+    assert_eq!(data["answer_coverage"]["total_chars"], 0);
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["answer_coverage"]["truncated"], false);
+    assert!(context.contains("an empty result is not evidence of success"));
+}
+
+#[tokio::test]
+async fn assessment_keeps_a_genuinely_truncated_answer_incomplete() {
+    let context = count_answer_assessment_context(&"2".repeat(4097)).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(data["answer_coverage"]["shown_chars"], 4096);
+    assert_eq!(data["answer_coverage"]["total_chars"], 4097);
+    assert_eq!(data["answer_coverage"]["complete"], false);
+    assert_eq!(data["answer_coverage"]["truncated"], true);
+    assert!(context.contains("Truncated objective/evidence coverage or missing original public context cannot mean achieved"));
+}
+
+#[tokio::test]
+async fn assessment_bounds_message_text_without_inventing_unknown_boundaries() {
+    let long = "界".repeat(4096);
+    let context =
+        count_messages_assessment_context(&[(Some("commentary"), &long), (Some("answer"), "2")])
+            .await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["界".repeat(4095), "2"])
+    );
+    assert_eq!(data["answer_coverage"]["shown_chars"], 4096);
+    assert_eq!(data["answer_coverage"]["total_chars"], 4097);
+    assert_eq!(data["answer_coverage"]["truncated"], true);
+    let context = count_messages_assessment_context(&[(None, "Retrying."), (None, "2")]).await;
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["Retrying.2"])
     );
 }
 
@@ -439,8 +924,14 @@ async fn mp11_protected_assessment_context_omits_public_withheld_answer() {
     assert!(context.contains("Privacy withholding alone is never evidence of success"));
     let data: serde_json::Value =
         serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
-    assert!(data["latest_public_answer_tail"].is_null());
+    assert!(data["latest_public_answer_messages"].is_null());
     assert_eq!(data["answer_coverage"]["visibility"], "protected");
+    assert!(data["completed_kernel_calls"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(data["answer_coverage"]["complete"], false);
+    assert!(data["answer_coverage"]["truncated"].is_null());
     let mut leased = task.clone();
     leased
         .goal
@@ -1404,4 +1895,407 @@ async fn completion_check_keeps_notes_and_current_deadlines_in_hidden_context() 
         assert!(!envelope.visible_user_prompt.contains(private));
         assert!(envelope.hidden_system_context.contains(private));
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: r13 guard3 check-2 forgot a completed
+// receipt after check-1 asked for more work. Replay those real work messages.
+#[tokio::test]
+async fn assessment_keeps_recorded_work_across_continuations_and_fences_edits() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let captured: serde_json::Value =
+        serde_json::from_str(include_str!("goal_assessment_continuation.json")).unwrap();
+    assert_eq!(captured["recorded_lost_receipts"], serde_json::json!([]));
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| match store.agent_lifecycle(op).unwrap() {
+        Outcome::Task(task) | Outcome::Settled { task, .. } => task,
+        other => panic!("unexpected {other:?}"),
+    };
+    let append = |prompt: &str, group: &str| {
+        for item in captured[group].as_array().unwrap() {
+            let entry = if item["kind"] == "user_prompt" {
+                let mut entry = SessionHistoryEntry::user_prompt(
+                    &room,
+                    "owner",
+                    &agent,
+                    item["text"].as_str().unwrap(),
+                );
+                entry.merge_key = Some(format!("prompt:{prompt}"));
+                entry
+            } else {
+                SessionHistoryEntry::provider_output(
+                    &room,
+                    "run",
+                    Some(&agent),
+                    if item["kind"] == "provider_tool" {
+                        TerminalOutputKind::ProviderTool
+                    } else {
+                        TerminalOutputKind::ProviderOutput
+                    },
+                    item["merge_key"].as_str().map(str::to_owned),
+                    item["text"].as_str().unwrap(),
+                )
+            };
+            runtime
+                .owned
+                .append_operational_history_entry(&entry, None, None, None);
+        }
+    };
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "recorded-goal".into(),
+        run: Some("run".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {
+        task: "recorded-goal".into(),
+        owner: "owner".into(),
+        objective: captured["objective"].as_str().unwrap().into(),
+        minutes: 10,
+        now: 1,
+    });
+    let task = apply(Operation::Block {
+        task: "recorded-goal".into(),
+        prompt: "recorded-goal".into(),
+        reason: "Owner must renew authority".into(),
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 2,
+    });
+    let resumed = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: Some("run".into()),
+        now: 3,
+    });
+    append(&resumed, "work");
+    let task = apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 4,
+    });
+    let check = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: check.clone(),
+        run: Some("run".into()),
+        now: 4,
+    });
+    let task = apply(Operation::EvaluateGoal {
+        task: task.task_id.clone(),
+        prompt: check,
+        result: captured["recorded_assessment"].to_string(),
+        now: 5,
+    });
+    // An unrelated prompt on the reused provider run is outside the goal binding.
+    let mut unrelated =
+        SessionHistoryEntry::user_prompt(&room, "owner", &agent, "Independent request");
+    unrelated.merge_key = Some("prompt:unrelated-work".into());
+    runtime
+        .owned
+        .append_operational_history_entry(&unrelated, None, None, None);
+    let unrelated = SessionHistoryEntry::provider_output(
+        &room,
+        "run",
+        Some(&agent),
+        TerminalOutputKind::ProviderOutput,
+        None,
+        "UNRELATED_ANSWER",
+    );
+    runtime
+        .owned
+        .append_operational_history_entry(&unrelated, None, None, None);
+    let next = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 6,
+    });
+    append(&next, "continuation");
+    let task = apply(Operation::Settle {
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 7,
+    });
+    let data = |task: &crate::durable_state::agent_lifecycle::AgentTaskExecution| {
+        let text = runtime
+            .owned
+            .goal_continuation_context(task)
+            .unwrap()
+            .unwrap();
+        serde_json::from_str::<serde_json::Value>(
+            text.split_once("Untrusted assessment data: ").unwrap().1,
+        )
+        .unwrap()
+    };
+    let evidence = data(&task);
+    assert_eq!(
+        evidence["completed_kernel_calls"].as_array().unwrap().len(),
+        1,
+        "the recorded prior completed invocation must survive check-2"
+    );
+    let resumed_work = evidence["prior_work_results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["work_prompt_id"] == resumed)
+        .unwrap();
+    assert!(resumed_work["answer_messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|text| text == "2"));
+    assert_eq!(evidence["owner_recovery"][0]["action"], "resume");
+    assert_eq!(evidence["owner_recovery"][0]["prompt_id"], resumed);
+    assert_eq!(evidence["goal_evidence_coverage"]["journal_complete"], true);
+    assert!(!evidence.to_string().contains("UNRELATED_ANSWER"));
+    let prior_task = task.clone();
+    // An edited objective starts a new evidence scope, even with a reused run.
+    let task = apply(Operation::ControlGoal {
+        task: task.task_id.clone(),
+        owner: "owner".into(),
+        revision: task.revision,
+        action: "edit".into(),
+        value: Some("New objective".into()),
+        now: 8,
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 9,
+    });
+    let next = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: next.clone(),
+        run: Some("run".into()),
+        now: 10,
+    });
+    append(&next, "continuation");
+    let task = apply(Operation::Settle {
+        room,
+        agent,
+        prompt: next,
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 11,
+    });
+    let evidence = data(&task);
+    assert_eq!(evidence["objective_revision"], 2);
+    assert_eq!(evidence["completed_kernel_calls"], serde_json::json!([]));
+    assert_eq!(evidence["prior_work_results"], serde_json::json!([]));
+    assert_eq!(evidence["owner_recovery"].as_array().unwrap().len(), 1);
+    assert_ne!(evidence["owner_recovery"][0]["prompt_id"], resumed);
+    // A bounded journal cannot claim a known zero omitted-call count.
+    for _ in 0..130 {
+        store
+            .append_event(
+                "goal.owner_resume",
+                Some(task.task_id.clone()),
+                serde_json::json!({
+                    "task_id":task.task_id, "goal_id":task.goal.as_ref().unwrap().id,
+                    "objective_revision":2, "prompt_id":task.prompt_id,
+                }),
+            )
+            .unwrap();
+    }
+    let bounded = data(&task);
+    assert_eq!(bounded["goal_evidence_coverage"]["journal_complete"], false);
+    assert!(bounded["completed_kernel_calls_omitted"].is_null());
+    assert!(bounded["owner_recovery"].as_array().unwrap().len() <= 128);
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&prior_task.room_id, "PRIVATE_PRIOR_WORK_CANARY")
+        .unwrap();
+    let protected = data(&prior_task);
+    assert!(protected["prior_work_results"].is_null());
+    assert_eq!(protected["completed_kernel_calls"], serde_json::json!([]));
+    assert!(protected["completed_kernel_calls_omitted"].is_null());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the initial blocked work has no evaluation;
+// owner Resume must still retain its conditional recovery evidence for check-1.
+#[tokio::test]
+async fn assessment_preserves_initial_blocked_work_after_owner_resume() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::history::SessionHistoryEntry;
+    use crate::terminal::TerminalOutputKind;
+    let (_app, runtime, room, agent) = agent_config_runtime().await;
+    let store = &runtime.owned.durable_state_store;
+    let apply = |op| match store.agent_lifecycle(op).unwrap() {
+        Outcome::Task(task) | Outcome::Settled { task, .. } => task,
+        other => panic!("unexpected {other:?}"),
+    };
+    let append_work = |prompt: &str, run: &str, answer: &str, call_id: &str, status: &str| {
+        let mut entry = SessionHistoryEntry::user_prompt(
+            &room,
+            "owner",
+            &agent,
+            "ListSessions with conditional sudo recovery",
+        );
+        entry.merge_key = Some(format!("prompt:{prompt}"));
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+        let receipt = SessionHistoryEntry::provider_output(
+            &room,
+            run,
+            Some(&agent),
+            TerminalOutputKind::ProviderTool,
+            Some(call_id.into()),
+            serde_json::json!({"id":call_id,"tool":"chariox_kernel_request","status":status,
+                "input":{"request":{"ListSessions":null}},"output":"PRIVATE_TYPED_PAYLOAD"})
+            .to_string(),
+        );
+        runtime
+            .owned
+            .append_operational_history_entry(&receipt, None, None, None);
+        let entry = SessionHistoryEntry::provider_output(
+            &room,
+            run,
+            Some(&agent),
+            TerminalOutputKind::ProviderOutput,
+            None,
+            answer,
+        );
+        runtime
+            .owned
+            .append_operational_history_entry(&entry, None, None, None);
+    };
+    apply(Operation::Begin {
+        owner: "owner".into(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: "conditional".into(),
+        run: Some("provider-run-6".into()),
+        now: 1,
+    });
+    apply(Operation::StartGoal {task:"conditional".into(), owner:"owner".into(), objective:"Call ListSessions; if sudo is refused, block for fresh passkey, then retry once after Resume. Report only the count. No other tools.".into(), minutes:10, now:1});
+    append_work("conditional", "provider-run-6", "ListSessions was refused because sudo is missing. Please re-elevate with a fresh passkey, then press Resume.", "exec-85483108-b2d7-45fd-93ed-1a6c0d24ce93", "error");
+    let task = apply(Operation::Block {
+        task: "conditional".into(),
+        prompt: "conditional".into(),
+        reason: "Fresh owner passkey required after ListSessions refused missing sudo".into(),
+    });
+    let task = apply(Operation::OwnerResponse {
+        task: task.task_id.clone(),
+        revision: task.blocked_revision,
+        resume: true,
+        now: 2,
+    });
+    let resumed = task.pending_prompt_id.clone().unwrap();
+    apply(Operation::BeginContinuation {
+        task: task.task_id.clone(),
+        room: room.clone(),
+        agent: agent.clone(),
+        prompt: resumed.clone(),
+        run: Some("provider-run-7".into()),
+        now: 3,
+    });
+    append_work(
+        &resumed,
+        "provider-run-7",
+        "4",
+        "exec-b717e58a-7efe-47e8-bff3-1d748825e7aa",
+        "completed",
+    );
+    let task = apply(Operation::Settle {
+        room,
+        agent,
+        prompt: resumed.clone(),
+        run: "provider-run-7".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 4,
+    });
+    let context = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    let data: serde_json::Value =
+        serde_json::from_str(context.split_once("Untrusted assessment data: ").unwrap().1).unwrap();
+    assert_eq!(
+        data["latest_public_answer_messages"],
+        serde_json::json!(["4"])
+    );
+    assert!(context.contains("do not choose continue solely because the count cannot be recomputed or tied to the receipt"));
+    assert_eq!(data["answer_coverage"]["complete"], true);
+    assert_eq!(data["completed_kernel_calls"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        data["completed_kernel_calls"][0],
+        serde_json::json!({
+            "request":"ListSessions","status":"completed",
+            "call_id":"exec-b717e58a-7efe-47e8-bff3-1d748825e7aa",
+            "authority_outcome":"admitted",
+            "public_ref":format!("history:{}:prompt:{resumed}",task.room_id),
+        })
+    );
+    assert_eq!(data["completed_kernel_calls_omitted"], 0);
+    assert!(!context.contains("PRIVATE_TYPED_PAYLOAD"));
+    assert_eq!(data["prior_work_results"].as_array().unwrap().len(), 1,
+        "the first assessment after Resume needs the original blocked work, even without an earlier evaluation");
+    assert_eq!(
+        data["prior_work_results"][0]["work_prompt_id"],
+        "conditional"
+    );
+    assert!(data["prior_work_results"][0]["answer_messages"][0]
+        .as_str()
+        .unwrap()
+        .contains("sudo is missing"));
+    assert_eq!(data["owner_recovery"][0]["action"], "resume");
+    assert_eq!(
+        data["prior_work_results"][0]["blocked"]["reason"],
+        "Fresh owner passkey required after ListSessions refused missing sudo"
+    );
+    assert_eq!(data["goal_evidence_coverage"]["journal_complete"], true);
+    runtime
+        .owned
+        .room_secret_observations
+        .register(&task.room_id, "PRIVATE_BLOCKED_RECOVERY_CANARY")
+        .unwrap();
+    let protected = runtime
+        .owned
+        .goal_continuation_context(&task)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !protected.contains("Fresh owner passkey required after ListSessions refused missing sudo")
+    );
+    let protected: serde_json::Value = serde_json::from_str(
+        protected
+            .split_once("Untrusted assessment data: ")
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    assert!(protected["prior_work_results"].is_null());
 }

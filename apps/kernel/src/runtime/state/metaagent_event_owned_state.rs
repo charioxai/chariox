@@ -377,6 +377,22 @@ impl KernelRuntimeState {
                 });
             }
         }
+        // Account refusal is definite before submission can reserve or enqueue
+        // anything. Later submission failures may already have admitted work.
+        crate::runtime::room_dispatch_registration::reject_if_failed(
+            &self.owned.durable_state_store,
+            obligation.as_deref(),
+            self.owned
+                .agent_store
+                .get_agent(target_agent_id)
+                .and_then(|target| {
+                    if target.remote_execution().is_some() {
+                        return Ok(());
+                    }
+                    self.owned
+                        .require_agent_account_authenticated(&target, None, "submit prompt")
+                }),
+        )?;
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),

@@ -284,11 +284,15 @@ impl KernelRuntimeOwnedState {
                     {
                         self.provider_run_projection.update(run);
                     }
-                    self.record_provider_failure_output(
+                    let failure = self.record_dispatch_failure_output(
                         &finished.session_id,
                         &finished.provider_run_id,
                         &finished.agent_id,
-                        &diagnostic,
+                        provider_run
+                            .as_ref()
+                            .map(|run| run.adapter_key())
+                            .unwrap_or_default(),
+                        &error,
                     );
                     match self.settle_failed_local_prompt_without_advance(
                         &finished.session_id,
@@ -296,6 +300,7 @@ impl KernelRuntimeOwnedState {
                         &finished.prompt_id,
                         &finished.provider_run_id,
                         &diagnostic,
+                        failure,
                     ) {
                         Ok(Some(released_claim)) => {
                             self.record_failed_request(
@@ -380,6 +385,7 @@ impl KernelRuntimeOwnedState {
                     prompt.id(),
                     &finished.provider_run_id,
                     &format!("Provider prompt cancellation failed: {error}"),
+                    None,
                 );
             } else {
                 // Some providers do not emit a terminal event after a successful
@@ -480,6 +486,9 @@ impl KernelRuntimeOwnedState {
             )?;
         match cleared {
             crate::agent::ProviderResumeClearOutcome::Cleared => {}
+            crate::agent::ProviderResumeClearOutcome::Required => {
+                return Ok(FailedPromptResumePreparation::NotRequired)
+            }
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {
                 return Ok(FailedPromptResumePreparation::Cleared(settlement_claim));
             }

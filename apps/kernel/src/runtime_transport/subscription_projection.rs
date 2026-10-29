@@ -78,6 +78,66 @@ mod tests {
     }
 
     #[test]
+    fn mk03_return_projection_change_survives_other_deltas() {
+        let mut before = snapshot();
+        let mut agent = crate::agent::AgentInstance::new(
+            "agent",
+            "agent-ref",
+            before.session.id(),
+            None,
+            "codex",
+            Some("gpt-6-luna".into()),
+            Some("low".into()),
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker".into(),
+            worker_machine_id: "machine".into(),
+            execution_lease_id: "lease".into(),
+            leased_agent_id: "leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(240),
+        }));
+        before.session.set_agents(vec![agent.clone()]);
+        let mut after = before.clone();
+        agent.set_remote_execution(None);
+        agent.set_account_profile(Some("returned-account".into()));
+        after.session.set_agents(vec![agent]);
+        after
+            .session
+            .add_active_interaction(crate::session::RuntimeInteraction::new(
+                "interaction",
+                "agent",
+                crate::session::RuntimeInteractionKind::Permission,
+                crate::session::RuntimeInteractionLevel::Warning,
+                None,
+                "Owner decision",
+                vec![crate::session::RuntimeInteractionChoice::new(
+                    "cancel", "Cancel", "cancel", None,
+                )],
+                None,
+                None,
+                None,
+            ));
+        let events = session_projection_events(&after, Some(&before), false);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, KernelEvent::RuntimeInteractionsChanged { .. })));
+        assert!(
+            events.iter().any(
+                |event| matches!(event, KernelEvent::SessionSnapshot { session, .. }
+                    if session.agents()[0].remote_execution().is_none()
+                        && session.agents()[0].provider_account_profile() == "returned-account"
+                )
+            ),
+            "Return route/account changes must reach subscribers beside another projection delta"
+        );
+    }
+
+    #[test]
     fn metadata_delta_does_not_repeat_the_full_session() {
         let before = snapshot();
         let mut after = before.clone();

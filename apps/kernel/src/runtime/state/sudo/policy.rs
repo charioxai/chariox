@@ -238,6 +238,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::CoverKernelAccessProcess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::SubscribeEvents(_)
@@ -386,5 +387,18 @@ mod registry_tests {
         ] {
             assert!(sudo_request_forbidden(&request));
         }
+    }
+
+    // A sudo window belongs to one turn on one kernel: it cannot name a background process.
+    #[test]
+    fn sudo_cannot_cover_a_background_process() {
+        assert!(sudo_request_forbidden(
+            &LocalDaemonRequest::CoverKernelAccessProcess(
+                crate::local::CoverKernelAccessProcessRequest {
+                    pid: 2,
+                    start: None
+                }
+            )
+        ));
     }
 }

@@ -18,6 +18,10 @@ impl KernelRuntimeState {
         let failed_run = attempt.provider_run;
         if active_prompt.status() == crate::session::PromptStatus::Cancelling
             || active_prompt.is_external()
+            || failed_run
+                .resume_state()
+                .required_native_session()
+                .is_some()
             || !failed_run.client_interface().is_chariox()
             || failed_run
                 .turn_substitute()

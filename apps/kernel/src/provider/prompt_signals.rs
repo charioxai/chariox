@@ -174,8 +174,7 @@ pub(crate) fn claude_native_stop_failure(event: &serde_json::Value) -> Option<St
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
         })
-        .map(compact_provider_error_snippet)
-        .unwrap_or_else(|| "Provider ended the turn with an API error".to_string());
+        .unwrap_or("Provider ended the turn with an API error");
     Some(format!("Claude StopFailure [{error}]: {detail}"))
 }
 
@@ -256,15 +255,26 @@ pub(crate) fn provider_turn_failure_reason(
 }
 
 fn provider_failure_code(detail: &str) -> Option<&str> {
-    ["Codex error [", "Claude StopFailure ["]
+    split_coded_failure(detail).map(|(code, _, _)| code)
+}
+
+/// The code, native message and optional native retryability in an adapter frame.
+pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
+    ["Codex error [", "Claude StopFailure [", "OpenCode error ["]
         .into_iter()
         .find_map(|prefix| {
-            let (code, _) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+            let (info, message) = detail.strip_prefix(prefix)?.split_once("]: ")?;
+            let (code, retryable) = match info.split_once("; retryable=") {
+                Some((code, "true")) => (code, Some(true)),
+                Some((code, "false")) => (code, Some(false)),
+                Some(_) => return None,
+                None => (info, None),
+            };
             (!code.is_empty()
                 && code
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-            .then_some(code)
+            .then_some((code, message, retryable))
         })
 }
 
@@ -299,6 +309,14 @@ fn bounded_reason_snippet(text: &str) -> String {
         snippet.push_str("...");
     }
     snippet
+}
+
+/// A usage, quota, credit or rate limit in a provider's own words, including
+/// Claude's limit dialogs.
+pub(crate) fn text_reports_resource_limit(text: &str) -> bool {
+    let normalized = text.to_lowercase();
+    provider_normalized_text_reports_resource_limit(&normalized)
+        || claude_normalized_text_reports_resource_limit_dialog(&normalized)
 }
 
 fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
@@ -337,29 +355,22 @@ fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
 }
 
 fn claude_normalized_text_reports_resource_limit_dialog(normalized: &str) -> bool {
-    normalized
-        .trim_start()
-        .starts_with("you've hit your usage limit")
-        || normalized
-            .trim_start()
-            .starts_with("you have hit your usage limit")
-        || normalized
-            .trim_start()
-            .starts_with("you've hit your session limit")
-        || normalized
-            .trim_start()
-            .starts_with("you have hit your session limit")
-        || (normalized
-            .trim_start()
-            .starts_with("fable 5 now uses usage credits")
-            && (normalized.contains("don't have usage credits")
-                || normalized.contains("don’t have usage credits")))
-        || (normalized
-            .trim_start()
-            .starts_with("fable5nowusesusagecredits")
-            && (normalized.contains("don'thaveusagecredits")
-                || normalized.contains("don’thaveusagecredits")
-                || normalized.contains("donothaveusagecredits")))
+    let text = normalized.trim_start();
+    // "You've hit your session / weekly / usage / Opus limit · resets ...": the
+    // clause before the reset time names whichever limit Claude applied.
+    let reports_hit_limit = ["you've hit your ", "you have hit your "]
+        .into_iter()
+        .find_map(|prefix| text.strip_prefix(prefix))
+        .and_then(|rest| rest.split(['·', '.', '\n']).next())
+        .is_some_and(|clause| clause.contains("limit"));
+    reports_hit_limit
+        || (text.starts_with("fable 5 now uses usage credits")
+            && (text.contains("don't have usage credits")
+                || text.contains("don’t have usage credits")))
+        || (text.starts_with("fable5nowusesusagecredits")
+            && (text.contains("don'thaveusagecredits")
+                || text.contains("don’thaveusagecredits")
+                || text.contains("donothaveusagecredits")))
 }
 
 fn compact_provider_error_snippet(text: &str) -> String {

@@ -115,7 +115,7 @@ impl SessionService {
         let node_run = WorkflowNodeRun::new(
             reserved_run_identity
                 .map(|(_, node_run_id)| node_run_id.to_string())
-                .unwrap_or_else(|| self.next_workflow_node_run_id()),
+                .unwrap_or_else(new_workflow_node_run_id),
             entry_node.id().to_string(),
             runtime_instance
                 .and_then(|instance| instance.agent_id_for_node(entry_node.id()))
@@ -967,7 +967,7 @@ impl SessionService {
     > {
         loop {
             let workflow_run_id = self.next_workflow_run_id();
-            let workflow_node_run_id = self.next_workflow_node_run_id();
+            let workflow_node_run_id = new_workflow_node_run_id();
             let (queued_prompt, runtime_instance) = {
                 let session =
                     self.store

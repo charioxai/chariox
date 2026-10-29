@@ -1,3 +1,5 @@
+import type { TurnOutcome } from "./kernel-types-runtime.js"
+
 export type SessionHistoryPageEntry = {
   entry_index: number
   sequence_end?: number
@@ -64,6 +66,7 @@ export type SessionHistoryOutlineTurn = {
   external_provider_turn_id?: string | null
   started_at_ms: number
   lifecycle: "open" | "completed" | "cancelled" | "failed" | string
+  outcome?: TurnOutcome
   completed_at_ms: number | null
   user_prompt: SessionHistoryPageEntry
   entries: SessionHistoryPageEntry[]

@@ -197,23 +197,17 @@ impl KernelRuntimeState {
                 return Ok(ending);
             }
             let response = self.outside_list_response(id, request.since, request.limit)?;
-            // A grant kept for the next start keeps its inbox: the holder is
-            // told to ask again instead of being told its subscription ended.
+            // Shutdown interrupts this wait, while its retained subscription
+            // remains live. An early interruption is not a timeout.
             if self.kernel_access_stopping() {
-                return Ok(match response {
-                    LocalDaemonResponse::EventsListed {
-                        events,
-                        next_cursor,
-                        oldest_cursor,
-                        ..
-                    } => LocalDaemonResponse::EventsListed {
-                        timed_out: events.is_empty(),
-                        events,
-                        next_cursor,
-                        oldest_cursor,
-                    },
-                    other => other,
-                });
+                return match response {
+                    LocalDaemonResponse::EventsListed { ref events, .. } if events.is_empty() => {
+                        Err(crate::durable_state::agent_lifecycle::outside::refused(
+                            "kernel is shutting down; retry event wait after restart",
+                        ))
+                    }
+                    other => Ok(other),
+                };
             }
             match response {
                 LocalDaemonResponse::EventsListed {

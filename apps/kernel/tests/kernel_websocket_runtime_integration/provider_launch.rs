@@ -85,6 +85,7 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )
@@ -170,6 +171,7 @@ fn kernel_websocket_replaces_starting_provider_launch() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )
@@ -193,6 +195,7 @@ fn kernel_websocket_replaces_starting_provider_launch() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )

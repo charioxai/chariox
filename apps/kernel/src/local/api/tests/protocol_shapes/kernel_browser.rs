@@ -531,7 +531,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     let bytes = include_bytes!("browser-display-placement-529.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1396cbd02821e79f5fa2f4166548d9d1f4c1ca554cf7100873d556205cbae47b"
+        "03bc735de1f624775bc8e24f11f8104c827cacb2bb52e3b46a29a022ce385158"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -677,7 +677,7 @@ fn browser_dialog_protocol630_snapshot() {
     let bytes = include_bytes!("browser-dialog-630.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+        "f09652681a92d96b2f38b7eae399020b56c17b83c50454024923818d04f9eb43"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

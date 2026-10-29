@@ -376,6 +376,7 @@ impl KernelRuntimeOwnedState {
         }))
     }
 
+    #[cfg(test)]
     pub(super) fn complete_remote_prompt_owner(
         &self,
         session_id: &str,
@@ -383,33 +384,21 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
-        self.complete_remote_prompt_owner_with_termination(
-            session_id,
-            agent_id,
-            remote_provider_run_id,
-            next_queued_prompt,
-            None,
-        )
-    }
-
-    pub(super) fn complete_remote_prompt_owner_with_termination(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        remote_provider_run_id: &str,
-        next_queued_prompt: Option<&crate::session::PromptQueueItem>,
-        provider_termination: Option<crate::provider::ProviderRunTermination>,
-    ) -> Result<crate::session::PromptCompletion, DaemonError> {
         self.complete_remote_prompt_owner_for_receipt(
             session_id,
             agent_id,
             remote_provider_run_id,
             next_queued_prompt,
-            provider_termination,
+            None,
+            None,
             None,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the receipt binding and native failure separate from process termination evidence"
+    )]
     pub(super) fn complete_remote_prompt_owner_for_receipt(
         &self,
         session_id: &str,
@@ -417,6 +406,7 @@ impl KernelRuntimeOwnedState {
         remote_provider_run_id: &str,
         next_queued_prompt: Option<&crate::session::PromptQueueItem>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::TurnOutcome>,
         receipt: Option<(&str, &crate::agent::RemoteAgentBinding)>,
     ) -> Result<crate::session::PromptCompletion, DaemonError> {
         let sessions = self.session_store.read();
@@ -463,7 +453,7 @@ impl KernelRuntimeOwnedState {
             .archive
             .mode
             == crate::config::HistoryArchiveMode::External;
-        let settlement_status = if provider_termination.is_some() {
+        let settlement_status = if provider_termination.is_some() || failure.is_some() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Completed
@@ -476,6 +466,7 @@ impl KernelRuntimeOwnedState {
             Some(remote_provider_run_id),
             settled_at_ms,
             settlement_status.as_str(),
+            failure.as_ref(),
         );
         self.completed_git_turn_snapshots
             .record_prompt_settlement_with_termination(
@@ -487,8 +478,9 @@ impl KernelRuntimeOwnedState {
                 Some(completed.created_at_ms()),
                 settlement_status,
                 provider_termination.clone(),
+                failure,
             );
-        if provider_termination.is_some() {
+        if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
             let _ = self
                 .agent_store
                 .mark_unexpected_provider_exit_error(agent_id, true);
@@ -1615,6 +1607,7 @@ mod tests {
                     }],
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "partial-answer".into(),
                         completed_at_ms: now,
                         home_prompt_id: Some(prompt.id().into()),
@@ -1762,6 +1755,7 @@ mod tests {
                     output_chunks: chunks,
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        failure: None,
                         message_id: "check-completed".into(),
                         completed_at_ms: now,
                         home_prompt_id: Some(check),
@@ -1928,6 +1922,7 @@ mod tests {
                 "worker-run-1",
                 None,
                 None,
+                None,
                 Some((first.id(), &binding)),
             )
             .unwrap();
@@ -1943,6 +1938,7 @@ mod tests {
                 &session,
                 &agent,
                 "worker-run-1",
+                None,
                 None,
                 None,
                 Some((first.id(), &binding))
@@ -1971,6 +1967,7 @@ mod tests {
                 &session,
                 &agent,
                 "worker-run-1",
+                None,
                 None,
                 None,
                 Some((second.id(), &binding))
@@ -2018,6 +2015,7 @@ mod tests {
                     "worker-run-1",
                     None,
                     None,
+                    None,
                     Some((first.id(), &binding)),
                 )
             }
@@ -2029,6 +2027,7 @@ mod tests {
                 &session,
                 &agent,
                 "worker-run-1",
+                None,
                 None,
                 None,
                 Some((first.id(), &binding)),
@@ -2729,6 +2728,61 @@ mod tests {
                 .expect("agent should remain available")
                 .state(),
             crate::agent::AgentState::Focused
+        );
+    }
+    #[tokio::test]
+    async fn leased_failure_without_termination_reaches_home_history() {
+        let (runtime, session, agent, attachment, _binding) =
+            mp11_fixture(crate::DaemonConfig::for_tests()).await;
+        let prompt = mp11_submit(&runtime, &session, &agent, &attachment, "work");
+        let failure = crate::provider::TurnOutcome::classify(
+            "codex",
+            "Codex error [usage_limit_exceeded]: You've hit your usage limit.",
+        );
+        runtime
+            .project_relay_remote_runtime_projection(
+                crate::runtime::relay_peer_authority::test_projection_authority("worker-kernel-1"),
+                crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
+                    home_session_id: session.clone(),
+                    home_agent_id: agent.clone(),
+                    provider_run_id: "worker-run-1".into(),
+                    provider_run: None,
+                    prompts: Vec::new(),
+                    output_chunks: Vec::new(),
+                    notices: Vec::new(),
+                    completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        message_id: "failed-turn".into(),
+                        completed_at_ms: crate::session::unix_epoch_ms(),
+                        home_prompt_id: Some(prompt.id().into()),
+                        provider_termination: None,
+                        failure: Some(failure.clone()),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
+        let settled = runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session, &agent)
+            .unwrap();
+        assert_eq!(
+            settled.settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
+        );
+        assert_eq!(settled.outcome, Some(failure.clone()));
+        assert_eq!(settled.provider_termination, None);
+        let history = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session, &agent, prompt.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            history
+                .metadata
+                .get(crate::history::TURN_OUTCOME_METADATA_KEY),
+            Some(&serde_json::json!(failure))
         );
     }
 }

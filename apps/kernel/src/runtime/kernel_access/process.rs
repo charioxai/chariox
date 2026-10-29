@@ -2,6 +2,8 @@
 use std::io;
 use std::os::fd::AsRawFd;
 
+mod exit;
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ProcessIdentity {
     pub(crate) pid: u32,

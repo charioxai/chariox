@@ -599,6 +599,7 @@ impl KernelRuntimeState {
         let requires_authoritative_turn_completion =
             crate::provider::provider_run_requires_authoritative_turn_completion(&provider_run);
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
+        let adapter_key = provider_run.adapter_key().to_string();
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
                 provider_run.adapter_key(),
@@ -614,24 +615,36 @@ impl KernelRuntimeState {
             .terminal_failure
             .as_deref()
             .map(provider_prompt_dispatch_failure_notice);
+        // Typed from the harness's own error, before it is rendered into a
+        // bounded notice, so no client loses what the harness said.
+        let native_error = poll_result
+            .terminal_failure
+            .as_deref()
+            .map(|message| provider_error_message(message).unwrap_or_else(|| message.to_string()));
+        let failure = native_error
+            .as_deref()
+            .map(|message| crate::provider::TurnOutcome::classify(&adapter_key, message));
         // Only adapter-protocol error frames set this provenance bit. PTY or
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
         let provider_termination = poll_result
             .explicit_provider_error
-            .then_some(terminal_failure.as_deref())
+            .then_some(native_error.as_deref())
             .flatten()
             .map(|message| {
                 crate::provider::ProviderRunTermination::explicit_provider_error(
+                    &adapter_key,
                     message,
                     crate::session::unix_epoch_ms(),
                 )
             });
-        project_terminal_failure_chunk(&mut poll_result, terminal_failure.as_deref());
+        // Every client renders this one entry: the cause, the harness's own
+        // words and what to do next.
+        let failure_notice = failure.as_ref().map(crate::provider::TurnOutcome::notice);
+        project_terminal_failure_chunk(&mut poll_result, failure_notice.as_deref());
         let mut recorded_notice_messages = std::collections::HashSet::new();
-        if let Some(message) = terminal_failure.as_ref() {
-            recorded_notice_messages.insert(message.clone());
-        }
+        recorded_notice_messages.extend(terminal_failure.iter().cloned());
+        recorded_notice_messages.extend(failure_notice);
         for notice in &poll_result.notices {
             let message = provider_notice_message(notice);
             if !recorded_notice_messages.insert(message.clone()) {
@@ -766,12 +779,14 @@ impl KernelRuntimeState {
             }
         }
         if let Some(message) = terminal_failure {
-            self.fail_owned_provider_prompt_with_termination(
+            self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,
                 &message,
                 false,
+                None,
                 provider_termination,
+                failure,
             )
             .await?;
             return Ok(records);

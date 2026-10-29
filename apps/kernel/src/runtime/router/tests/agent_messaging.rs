@@ -394,6 +394,94 @@ fn agent_message_can_start_a_human_stopped_target() {
     });
 }
 
+// MP-08/MP-09/MP-10/MP-11 A12-S04: a message to a peer whose selected account cannot start work is
+// refused to the sender at the tool boundary, never left durable and pending behind its goal.
+#[test]
+fn durable_message_to_unauthenticated_peer_is_refused_to_the_sender() {
+    run_agent_message_test_with_large_stack("agent-message-unauthenticated-peer", || async {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "message-unauthenticated",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .expect("session should create");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Unavailable",
+            )
+            .expect("unavailable account should register");
+        app.provider_account_profile_registry()
+            .mark_logged_out(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+            )
+            .expect("account should log out");
+        let target = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "codex")
+                    .with_alias("target")
+                    .with_account_profile(profile.profile_id.clone()),
+            )
+            .expect("target should spawn");
+        let sender_run = launch_test_provider(
+            &mut app,
+            session.id(),
+            sender.id(),
+            "dev-stub",
+            "dev-stub",
+            "sender-model",
+        );
+        let sender_prompt_id = app
+            .sessions()
+            .get_session(session.id())
+            .unwrap()
+            .active_prompt_for_agent(sender.id())
+            .expect("the room fixture turn is running")
+            .id()
+            .to_string();
+        let sender_token = sender_run
+            .runtime_mcp_auth_token()
+            .expect("sender needs runtime MCP auth")
+            .to_string();
+        let app = Arc::new(Mutex::new(app));
+        let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
+        let refusal = router
+            .runtime_state
+            .dispatch_authenticated_runtime_tool_call(
+                &sender_token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": target.id(),
+                    "message": "read the README",
+                    "origin_prompt_id": sender_prompt_id,
+                    "reply_requested": true,
+                }),
+            )
+            .await
+            .expect_err("a peer that cannot start work must refuse the message");
+        assert!(
+            refusal.to_string().contains("not authenticated"),
+            "{refusal}"
+        );
+        assert!(
+            app.lock()
+                .await
+                .durable_state_store()
+                .agent_inbox(session.id(), target.id(), 0)
+                .unwrap()
+                .is_empty(),
+            "no durable event may wait behind the sender's goal"
+        );
+    });
+}
+
 #[test]
 fn settled_sender_cannot_start_a_new_agent_turn_with_old_tool_credentials() {
     run_agent_message_test_with_large_stack("agent-message-settled-sender", || async {

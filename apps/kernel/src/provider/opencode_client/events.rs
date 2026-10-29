@@ -205,10 +205,114 @@ fn session_error_message(error: Value, provider_run_id: &str) -> String {
         .and_then(|value| value.get("message"))
         .and_then(Value::as_str)
         .or_else(|| error.get("message").and_then(Value::as_str))
-        .map(str::to_string)
+        .map(|message| super::message::opencode_error_text(&error, message))
         .unwrap_or_else(|| {
             format!("OpenCode reported an unknown session error for `{provider_run_id}`")
         })
+}
+
+#[cfg(test)]
+mod failure_cause_tests {
+    use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
+
+    /// EA2-75: OpenCode `session.error` events keep the harness message and
+    /// give the typed cause from the error name and HTTP status. The error
+    /// objects follow OpenCode's `ProviderAuthError` / `APIError` /
+    /// `UnknownError` schema; none was recorded in earlier evidence.
+    fn session_error(error: serde_json::Value) -> TurnOutcome {
+        let payload = serde_json::json!({
+            "type": "session.error",
+            "properties": {"sessionID": "session", "error": error}
+        });
+        let Some(super::OpenCodeEvent::SessionError { message, .. }) =
+            super::parse_sse_event(&payload.to_string(), "run")
+        else {
+            panic!("missing session error")
+        };
+        TurnOutcome::classify("opencode", &message)
+    }
+
+    #[test]
+    fn opencode_errors_are_typed_from_name_and_status() {
+        let expected = |kind, retryable, reason: &str| TurnOutcome {
+            kind,
+            retryable,
+            reason: reason.to_string(),
+        };
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "ProviderAuthError",
+                "data": {"providerID": "opencode", "message": "Invalid API key"}
+            })),
+            expected(SignInRequired, false, "Invalid API key")
+        );
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "APIError",
+                "data": {"message": "Overloaded", "statusCode": 529, "isRetryable": true}
+            })),
+            expected(Overloaded, true, "Overloaded")
+        );
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "APIError",
+                "data": {"message": "Rate limit exceeded", "statusCode": 429, "isRetryable": true}
+            })),
+            expected(UsageLimit, true, "Rate limit exceeded")
+        );
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "APIError",
+                "data": {"message": "Internal Server Error", "statusCode": 500, "isRetryable": true}
+            })),
+            expected(Other, true, "Internal Server Error")
+        );
+        // Recorded from the official OpenCode server with an empty native home
+        // (extagent/r40/opencode-native-error.json), before any model generation.
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "UnknownError",
+                "data": {"message": "Model not found: opencode/glm-5.3-flash. Did you mean: glm-5.3-flash-free?"}
+            })),
+            expected(
+                Other,
+                false,
+                "Model not found: opencode/glm-5.3-flash. Did you mean: glm-5.3-flash-free?"
+            )
+        );
+        for (status, message, cause) in [
+            (403, "permission_error: model access denied", Other),
+            (403, "Invalid API key", SignInRequired),
+            (401, "Request rejected", SignInRequired),
+        ] {
+            assert_eq!(
+                session_error(serde_json::json!({
+                    "name": "APIError",
+                    "data": {"message": message, "statusCode": status, "isRetryable": false}
+                })),
+                expected(cause, false, message)
+            );
+        }
+        // The provider's explicit retryability wins over an HTTP-status default.
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "APIError",
+                "data": {"message": "Overloaded", "statusCode": 529, "isRetryable": false}
+            })),
+            expected(Overloaded, false, "Overloaded")
+        );
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "UnknownError",
+                "data": {"message": "Unable to connect. Is the computer able to access the url?"}
+            })),
+            expected(
+                Network,
+                true,
+                "Unable to connect. Is the computer able to access the url?"
+            )
+        );
+    }
 }
 
 #[cfg(test)]

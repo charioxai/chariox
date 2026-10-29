@@ -49,8 +49,7 @@ impl KernelRuntimeState {
             let terminal_diagnostic = exit.ended_run.terminal_diagnostic().map(str::to_string);
             if let Some(diagnostic) = terminal_diagnostic.as_deref() {
                 if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
-                    let termination = crate::provider::ProviderRunTermination::runtime_failure(
-                        "provider run was already ended during liveness reconciliation",
+                    let termination = crate::provider::ProviderRunTermination::exit_unobserved(
                         crate::session::unix_epoch_ms(),
                     );
                     self.settle_unexpected_provider_run_exit_with_diagnostic(
@@ -81,8 +80,7 @@ impl KernelRuntimeState {
             let session_outcome = if owned
                 .provider_run_has_active_prompt(session_id, &exit.ended_run)?
             {
-                let termination = crate::provider::ProviderRunTermination::runtime_failure(
-                    "provider run was already ended during liveness reconciliation",
+                let termination = crate::provider::ProviderRunTermination::exit_unobserved(
                     crate::session::unix_epoch_ms(),
                 );
                 let diagnosed = owned
@@ -312,6 +310,23 @@ impl KernelRuntimeState {
         termination: crate::provider::ProviderRunTermination,
         terminal_diagnostic: Option<&str>,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
+        let mut termination = termination;
+        // The failed turn's transcript entry renders the settled failure, so the
+        // provider's own terminal output has to be part of it.
+        if let (Some(diagnostic), Some(failure)) = (
+            terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty()),
+            termination.failure.as_mut(),
+        ) {
+            *failure = crate::provider::TurnOutcome::new(
+                failure.kind,
+                failure.retryable,
+                &format!(
+                    "{}. Provider terminal diagnostic: {}",
+                    failure.reason,
+                    crate::provider::sanitize_provider_diagnostic(diagnostic)
+                ),
+            );
+        }
         let provider_run = self
             .owned
             .ensure_provider_run_in_session(session_id, provider_run_id)?;

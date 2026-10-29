@@ -1374,6 +1374,12 @@ fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProvide
         .all
         .into_iter()
         .filter(|provider| !provider.models.is_empty())
+        // OpenCode advertises hundreds of providers; clients only use connected ones
+        // plus Zen/Go, whose authentication may come from the slice projection.
+        .filter(|provider| {
+            matches!(provider.id.as_str(), "opencode" | "opencode-go")
+                || source_connected.contains(&provider.id)
+        })
         .map(|mut provider| {
             provider.remote_machine_aliases.clear();
             provider
@@ -2512,6 +2518,50 @@ exit 2
         assert_eq!(catalog.all[2].id, "opencode-go");
         assert_eq!(catalog.all[2].name, "OpenCode Go");
         assert!(catalog.all[2].models.contains_key("deepseek-v4-pro"));
+    }
+
+    #[test]
+    fn opencode_backend_catalog_drops_unconnected_upstream_providers() {
+        let model = |id: &str| OpenCodeProviderModel {
+            id: id.to_string(),
+            name: id.to_string(),
+            status: "active".to_string(),
+            limit: None,
+            variants: Default::default(),
+        };
+        let provider = |id: String| OpenCodeProviderInfo {
+            name: id.clone(),
+            models: (0..30)
+                .map(|n| (format!("model-{n}"), model(&format!("model-{n}"))))
+                .collect(),
+            id,
+            remote_machine_aliases: Vec::new(),
+        };
+        let mut all = (0..200)
+            .map(|n| provider(format!("upstream-{n}")))
+            .collect::<Vec<_>>();
+        all.push(provider("openai".to_string()));
+        all.push(provider("opencode".to_string()));
+        all.push(provider("opencode-go".to_string()));
+        let catalog = opencode_backend_catalog(OpenCodeProviderCatalog {
+            default: all
+                .iter()
+                .map(|item| (item.id.clone(), "model-0".to_string()))
+                .collect(),
+            all,
+            connected: vec!["openai".to_string()],
+        });
+
+        let ids = catalog
+            .all
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["openai", "opencode", "opencode-go"]);
+        assert_eq!(catalog.connected, vec!["openai".to_string()]);
+        assert_eq!(catalog.default.len(), 3);
+        let bytes = serde_json::to_vec(&catalog).unwrap().len();
+        assert!(bytes < 40_000, "catalog response is {bytes} bytes");
     }
 
     #[test]

@@ -22,6 +22,10 @@ pub(crate) struct WorkerSudoGrant {
     catalog_ready: bool,
 }
 
+#[cfg(test)]
+#[path = "leased_transport_tests.rs"]
+mod transport_tests;
+
 impl KernelRuntimeState {
     /// Worker: install, renew or end the fence of one leased agent. A fresh
     /// fence reloads an idle provider that caches its tool catalog, so the
@@ -188,12 +192,11 @@ impl KernelRuntimeState {
                 "this leased turn has no live sudo window on this worker",
             ));
         }
-        // Home may wait up to 300 s for the owner's per-operation scope approval.
         self.forward_meta_runtime_tool(
             context,
             "chariox_kernel_request",
             arguments,
-            std::time::Duration::from_secs(345),
+            super::tool_dispatch::OWNER_DECISION_FORWARD_TIMEOUT,
         )
         .await
         .map(Some)
@@ -344,20 +347,35 @@ impl KernelRuntimeState {
         if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) {
             config.apply_remote_relay_override(url, token);
         }
-        match crate::transport::relay_client::send_peer_request_via_temporary_connection(
-            &config,
-            chariox_relay::protocol::ClientTarget {
-                daemon_id: Some(remote.worker_kernel_id.clone()),
-                daemon_alias: None,
-            },
-            RelayPeerRequest::UpdateLeasedSudo {
-                leased_agent_id: remote.leased_agent_id,
-                home_prompt_id: home_prompt_id.into(),
-                grant,
-            },
-        )
-        .await?
-        {
+        let target = chariox_relay::protocol::ClientTarget {
+            daemon_id: Some(remote.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedSudo {
+            leased_agent_id: remote.leased_agent_id,
+            home_prompt_id: home_prompt_id.into(),
+            grant,
+        };
+        // Slice activation already pins the worker on this relay. Its identity
+        // need not appear in the owner-directory metadata used by a new socket.
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                )
+                .await?
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection(
+                    &config, target, request,
+                )
+                .await?
+            }
+        };
+        match response {
             RelayPeerResponse::LeasedSudoUpdated => Ok(()),
             other => Err(error(format!("unexpected leased sudo response: {other:?}"))),
         }

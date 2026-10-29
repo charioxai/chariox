@@ -708,14 +708,16 @@ Ambiguous post-commit failures retain intent;
 PR1 does not add automatic replay, settlement, yield or recovery scheduling.
 Those lifecycle semantics belong to PR2.
 
-### Executor-local lane deadlines (MP-08 / MP-09 / MP-10 / MP-11)
+### Agent deadlines (MP-08 / MP-09 / MP-10 / MP-11)
 
 Allocated local protocol **585** adds `SetAgentDeadline {session_id, agent_id,
 deadline_ms}` and `GetAgentDeadline {session_id, agent_id}`. Both return
 `AgentDeadline {deadline}` with the executing kernel's durable deadline receipt.
 A deadline can shorten, never extend. The kernel rejects new work after it is
 reached and retries physical cleanup; `reached_at_ms` and `stopped_at_ms` distinguish
-admission fencing from completed cleanup. A kernel restart enforces overdue
+admission fencing from completed cleanup. The first stopped receipt and the
+outside agent event with `reason:"deadline_reached"` commit together; cleanup
+retries do not repeat the event. A kernel restart enforces overdue
 work on startup. This does not add a relay shape; peer **181** is inherited.
 Leased executors require their own deadline enforcement and are refused here.
 
@@ -1451,6 +1453,7 @@ Current slice-management surface:
 - Relay peer protocol v22 adds managed-slice relay credential activation and renewal. Relay tokens remain redacted from debug output and travel only inside encrypted peer payloads. The slice validates the token subject, owner target, machine, action set, expiry, and worker-key thumbprint before installing it. A token change forces a new relay socket; the relay independently closes active scoped connections at expiry. Before the refresh window closes, the slice requests a replacement from its recorded owner over the same encrypted owner-targeted lane.
 - Relay peer protocol v23 adds an offline-recovery credential beside the short-lived active credential. The recovery token is bound to the same slice relay key and exactly one owner target, permits only `daemon.register`, `daemon.heartbeat`, and `peer.request`, and is capped at 30 days. It cannot route packets or receive peer events. The slice persists it atomically with the relay owner and key, uses it only when the active credential is missing or expired, then asks that owner for a replacement active/recovery pair over the encrypted peer lane. Each successful refresh rotates the recovery credential. A restart after an outage spanning active-token expiry must retain this same-key recovery path; a key or owner mismatch fails closed.
 - Relay peer protocol v24 adds the nonce-bound `ConfirmManagedSliceRelayToken` request and `ManagedSliceRelayTokenActivated` response. The bootstrap credential cannot send a valid confirmation because it lacks the worker-key-bound kernel identity required by the owner. Owner expectations and worker retries are short-lived and bounded; a matching confirmation remains idempotently acknowledgeable for a short window so response loss does not strand the worker. A v24 owner rejects a worker that returns the older install response or cannot perform the confirmation handshake, so mixed-version activation fails closed and requires the owner and slice worker to run the same release.
+- MP-08 / MP-09 / MP-10 / MP-11: a Docker slice has 20 reserved Codex session endpoints. Worker admission counts idle and running Codex leased agents against that pool and refuses another agent with `provider_capacity_reached` before creating its backing session or agent. Delete an unused Codex agent or choose another worker. The endpoint ceiling does not guarantee that the container can run 20 providers: the default 4 GiB memory and 1024-process/thread limits supported roughly 12 Codex agents in a startup drill, with the actual count depending on provider threads, desktop activity and tools. Set `slices.linux.memory_mb` and the provisioner's `CHARIOX_SLICE_DOCKER_PIDS_LIMIT` for a larger workload, then validate it; increasing these resources does not enlarge the endpoint pool.
 - Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, `slice.backup.create` creates an immutable named backup, and `slice.backup.restore` transactionally restores a stopped, agent-free slice. Protocol v301 adds backup archive digests and Docker image identities: restore rejects legacy, corrupt, mismatched, cross-slice, or ambiguous backups before mutation, captures an internal rollback generation, and durably journals that recovery intent before it recreates the container or home volume. The restored state and journal resolution are published in one durable event; only then may the kernel reclaim the previous active generation and rollback backup. If replacement, active-state capture, or durable publication fails, the kernel restores the rollback generation and republishes it as active. After a process or host interruption, durable replay finds any unresolved journal and performs the same rollback before normal runtime reconciliation; failed rollback remains journaled and retains its artifacts so startup fails closed instead of accepting an uncertain machine state. While that journal remains unresolved, the kernel quarantines the slice and rejects start, stop, delete, state, backup, authentication, and Environment operations; it also refuses to journal a second restore for the slice. Durable commit or rollback resolution clears the quarantine. On managed slices, that same resolution event records the broker acknowledgement still owed for the published home generation; the kernel retries it at startup and before the slice's next restore, refuses a new restore while it is owed, retains any rollback archive it names until acknowledged, and never rolls the committed resolution back. A successful restore leaves the slice stopped. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Before save or backup mutates either generation, every local kernel sharing the Docker engine contends on one host-wide disk-admission lock. Chariox first quiesces the source; live capture stops the desktop and pauses the remaining container processes. While the source remains quiesced and the admission lock remains held, Chariox measures the real home volume, target writable layer, Docker capacity, and state-root capacity, budgets archive overhead, retains 2 GiB on both filesystems, and completes commit and archive publication. Missing or unsafe measurements fail closed, the read-only measurement helper is removed, and a paused live source is resumed even when admission rejects the snapshot. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
 
 The saved-state archive budget includes apparent home bytes, compression slack,
@@ -3662,6 +3665,27 @@ Workflow trigger and deployment direction:
   sub-process, asks again) and `kernel_access_already_granted` (a second access
   request while covered).
 
+  Protocol 641 (peer protocol unchanged) adds `CoverKernelAccessProcess { pid, start? }`,
+  over the Unix socket only. A caller the grant covers names a background process it
+  started; the kernel reads the process's identity itself (pid, start time, executable)
+  and the grant then covers that process, and the programs it starts, until the process
+  exits or the grant ends, even after its parent is gone. There is no token to copy.
+  The reply is `KernelAccessCovered { grant_id, process: { pid, start, executable } }`.
+  The target must be a running process of the kernel's user that the grant reaches now:
+  the holder, a covered process or a descendant of either. `start`, when given, must be
+  the target's start time. A cover adds no authority and cannot be used from a sudo
+  window. A grant covers at most 16 named processes. Each refusal has its own code:
+  `kernel_access_not_covered` (the caller is not covered), `kernel_access_ended`,
+  `kernel_access_cover_gone` (no such running process), `kernel_access_cover_identity_changed`
+  (`start` differs), `kernel_access_cover_kernel_process` (the kernel or a process it
+  started), `kernel_access_cover_outside` (not reached by the grant, another user, pid 1)
+  and `kernel_access_cover_limit`. `KernelAccessGrant.covered` lists the running covered
+  processes (`pid`, `start`, `executable`) in `ListKernelAccessGrants` for every client.
+  The audit log records each `covered` and `cover_ended` (`process_exit`) with the grant
+  id and the process. A grant that lasts until its holder exits keeps its covered
+  processes across a kernel restart, each re-checked by identity. A process that forks
+  twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term. These terms apply to
@@ -4965,8 +4989,9 @@ grants only; an extension adds minutes and refuses it). An unrecognised reply is
 `until_holder_exits` has no `expires_at_ms`, no "extend?" notice and no deadline; it ends when the
 holder process exits or its identity no longer matches (a reused PID never inherits it), on revoke,
 or on passkey rotation. It survives a kernel restart under the same grant id and event inbox while
-the same holder process lives: the stopping kernel answers a waiting holder with an empty,
-`timed_out` list (not `subscription_ended`), and the next start restores the grant after checking
+the same holder process lives: the stopping kernel returns unread events to a waiting holder, or an `events_refused` error
+with the reason `kernel is shutting down; retry event wait after restart` when none are ready
+(not an empty `timed_out` list or `subscription_ended`). The next start restores the grant after checking
 the holder again (a holder gone by then ends the grant as `process_exit`). Descendants of the holder
 are admitted as for every grant. `kernel_access.grant` audit events carry the term. Clients that list
 grants or draw the popup need 568.
@@ -5247,6 +5272,25 @@ ordinary `ListAgents` omits them. Session snapshots retain the archived flag,
 including across restart. New archive UI requires local636. See AGENT_ARCHIVE.md
 for edge cases, resource ownership and the proposal approval requirement.
 
+### Held notification delivery (670)
+
+A workflow notification whose injection into a running agent has no proven outcome is held by the
+kernel and never re-sent on its own. Protocol 670 projects that hold on the queued item as
+`WorkflowQueuedPrompt.delivery_uncertain_until_ms` and lets the user decide: retry with
+`UpdateQueuedWorkflowPrompt { retry_delivery: true }` (the item is re-admitted for a fresh injection
+and may arrive twice) or discard with the existing `RemoveQueuedWorkflowPrompt`, which now also accepts
+a held item. At the deadline the kernel retires a held item with a notice that names the reason.
+TUI: `/workflow queue retry|remove <item>`. Clients send `retry_delivery` only to kernels at 670 or newer.
+### MP-08 / MP-10 / MP-11: parked-task Stop reply (643 / peer 239)
+
+`CancelActivePrompt` keeps its request shape. When the targeted agent has no active
+prompt but owns a parked task (a Waiting task whose provider turn has ended), the
+kernel cancels that task and answers `AgentTaskUpdated { session_id, task }` instead
+of `PromptCancelled`. A request that names `expected_prompt_id` never cancels a
+parked task. Clients treat `AgentTaskUpdated` as a successful Stop only with
+protocol 643 or newer; older kernels keep answering `PromptCancelled` or an error.
+The relay peer protocol is unchanged.
+
 ### Staging new UI union (599/205)
 
 MP-08 / MP-09 / MP-10 / MP-11: this union combines Room stars (588/194),
@@ -5451,6 +5495,62 @@ agent, a typed state change, one-line summary, timestamp and resource references
 Only agent/task states, interaction state, terminal job exits, delivered steers and
 session changes are collected. Passkey interactions carry the section 8 approval pointer, without
 the prompt body. Session agents retain their existing session-scoped event tools.
+
+Turn outcome (EA2-75 and EA2-80, local protocol 642, relay peer 243): every turn that
+ends says how, in one general shape, `outcome { kind, retryable, reason }`. The same
+value appears in the three places a reader looks:
+
+- the `agent` outside event whose `run_state` is `idle` or `error`: `outcome` with the
+  `prompt_id` and `turn_id` of the turn it ends (summary `error: overloaded, retryable`
+  on an error); a `working` event carries none;
+- the history outline turn: `outcome` on every turn that is not `open`, read back from
+  the durable settlement entry (`turn_outcome`);
+- the state: `outcome` of the completed turn action (`last_completed_turn`), also
+  `provider_termination.failure` when the provider run's termination is known, and the
+  relay peer's projected completion `failure` and its persisted replay.
+
+`kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
+`overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
+`other`. A client that meets a `kind` it does not know, because a newer kernel added
+one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
+not errors: the agent is `idle` and the turn is not failed. Every other kind is an
+error and the agent is in the `error` state. `retryable` is whether a later attempt
+may succeed without anyone changing anything (overload, crash, network loss, a plain
+HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
+unrecognised error are not). A reader decides to retry or stop from `kind` and
+`retryable` only. `reason` is text for people: the harness's own error text with
+credentials removed, whitespace and diagnostic length preserved; it is empty for
+`completed` and `cancelled`. Chariox adds no retry, backoff or usage-limit policy; the
+provider's own behaviour is unchanged and the orchestrating agent decides.
+
+The kernel types a failure once from the harness's native error: Codex
+`codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
+error names with their HTTP status and native `isRetryable` flag, then the words of
+the error; a process exit, signal or transport loss is `provider_crashed` or
+`network` without any text. A failure the provider reported without a protocol
+frame, such as a rejected dispatch, is typed from its text; it does not become
+termination evidence. If native sign-in recovery is declined, the failed turn
+retains the original native kind and reason while the existing recovery notice
+explains what happened.
+
+`interrupted_by_restart` is a turn the kernel restarted in the middle of and could
+not resume (for example the Vault stayed locked, or no provider session identified
+the turn). The turn settles as failed, not cancelled; the agent is in the `error`
+state; one `SubmitPrompt` on the same agent continues the same provider
+conversation and its turn ends `completed` with its own turn id. A turn that
+restart recovery does resume ends with the outcome of the resumed turn.
+A provider run whose process is gone and whose exit the kernel never saw is
+`provider_crashed`, retryable.
+The provider-error transcript entry of a failed turn, shown by every client, reads
+`<Cause headline>. <harness message>. <recovery>`, for example `Usage limit reached.
+You've hit your weekly limit · resets Oct 28, 9pm (UTC). Wait for the limit to reset
+(the message gives the time when the provider does) or switch this agent to another
+account, then send the request again.` It replaces the earlier `Provider prompt
+dispatch failed: <message>` entry and, for a process exit, the bare exit text; the
+entry text carries no new serialized field. A Claude account whose plan limit is
+reached still passes the credential check, because the limit answer proves the token
+authenticated. Claude's `You've hit your <session|weekly|usage|...> limit` dialogs are
+all usage limits.
 
 Every source kernel filters its own durable part. The gateway commits imported
 records and each source cursor together before acknowledging that source. Target
@@ -5690,9 +5790,15 @@ field; older kernels keep their existing behavior and the overall Web minimum
 does not rise. Both native-window and mirror/video viewers use this shared
 state. The relay remains an opaque encrypted carrier.
 
-MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
-
-MP-08 / MP-09 / MP-10 / MP-11: local 811 / peer 361 adds optional `problem` to the ephemeral `RuntimeProviderLogin` projection. The kernel supplies code-validation/rejection feedback and omits it for initial instructions. A newly attached client can show retry feedback without interpreting message wording; a new interaction request answers a submitted code even when the feedback repeats. The field follows the existing human-only login projection and is excluded from model context and history.
+MP-08 / MP-09 / MP-10 / MP-11: local v710 exposes metadata-only
+`ListProviderAccountCopyOffers` and recipient-initiated
+`CopyProviderAccountFromKernel`. Recipient consent is an existing detached
+kernel operation interaction, answered through `AnswerUserDomainInteraction`.
+Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
+same-owner recipient's kernel identity and key. It reuses the independent
+Vault-backed account transfer and `ProviderAccountCopyReceipt`; it does not
+create a worker lease or enable synchronization. See
+[provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).
 ## Semantic session activity (local 780 / peer 330)
 
 MP-08 / MP-09 / MP-10 / MP-11: public snapshot schema 14 and persisted sessions carry `last_activity_at_ms`. The kernel advances it for prompt admission, agent turn start/end, completed agent messages, and answered interactions. Focus, configuration, output acknowledgement, presence, heartbeat, and connection updates never advance it. Clients order from this field, with creation time and id as fixed tie breakers. Session metadata writes and replay preserve the greatest activity timestamp.
@@ -5702,3 +5808,53 @@ The focused local 780 / peer 330 drill is `node scripts/session-activity-drill.m
 `ListWaitingRoomSessions` accepts `inventory_version` from the initial snapshot. A changed version returns `waiting_room_inventory_changed`; the client rereads the snapshot and publishes only a complete list. Cursors bind activity time, creation time, and session id.
 
 Projects and sessions persist `pinned_at_ms` when their pin changes from off to on. Clients preserve pin insertion order with this field; pinning never changes semantic session activity.
+MP-08 / MP-09 / MP-10 / MP-11: local 810 / peer 360 adds optional `identity_summary` to each `ProviderUsageAccount`. This is provider-reported public account identity, never a credential or profile path. Claude browser input is validated in the kernel: incomplete callbacks return `provider_login_code_incomplete`, malformed callbacks return `provider_login_code_invalid`, and neither consumes the running attempt. Duplicate completed account labels return `provider_account_name_taken`. Unfinished managed profiles reuse their isolated account root.
+
+MP-08 / MP-09 / MP-10 / MP-11: local 811 / peer 361 adds optional `problem` to the ephemeral `RuntimeProviderLogin` projection. The kernel supplies code-validation/rejection feedback and omits it for initial instructions. A newly attached client can show retry feedback without interpreting message wording; a new interaction request answers a submitted code even when the feedback repeats. The field follows the existing human-only login projection and is excluded from model context and history.
+
+### Durable agent Move peer carrier (638/240)
+
+MP-08 / MP-09 / MP-10 / MP-11: `AgentMove` peer messages identify the home,
+source, target, owner, operation generation, and pinned kernel keys. They
+prepare source capture, transfer bounded workspace/native chunks, publish a
+Project receipt, attach a backing, and activate or retire execution. The
+ordinary encrypted peer admission and lease caller checks apply. Temporary
+peer connection suffixes identify the same canonical home kernel.
+
+The home owns commitment and retries. Publishing files or probing native state
+does not authorize a prompt. Native bytes stay in protected artifacts and peer
+transport; the public client protocol gains no native-history projection.
+
+### MP-08 / MP-09 / MP-10 / MP-11: composed Move resource receipts (639/241)
+
+Move binds its selected account configuration, granted extension manifest,
+skill hashes and Project setup definition before source capture. Home checks
+that selection again across preparation waits and before committing. Home MCP
+authority and authenticated forwarding stay at home; required skills are
+materialized and verified through ordinary worker package admission.
+
+The encrypted AttachTarget reply carries a typed readiness receipt for the
+exact Move identity/generation, requirements digest, workspace/native artifact
+digests, target Project/account and backing agent. Project setup uses the
+ordinary target-native setup engine before readiness. ActivateTarget requires
+that receipt and durably records a separate commit receipt before replying.
+Repeating activation queries the same recorded result rather than starting a
+second execution. Account transfer retains the existing no-overwrite/native
+validation and rollback behavior; no Vault or provider profile tree is copied.
+These private peer carriers require peer protocol 241. Existing public Move requests retain
+their shapes; local protocol 639 binds the integrated contract.
+
+### MP-08 / MP-09 / MP-10 / MP-11: kernel-owned deferred Move (639)
+
+A `MoveAgentToRemote` / `MoveAgentToLocal` request made while the agent's turn
+runs is acknowledged at once. The reply is the ordinary `AgentMovedToRemote` /
+`AgentMovedToLocal` whose agent carries `agent_move: {"state":
+"waiting_for_turn", "target_ref"?}`; the home kernel, not the request, holds the
+wait, so a request that ends or a client that reloads does not lose it. The same
+`agent_move` status is published with every `agent.updated` event and Room
+snapshot: `moving` while the Move runs, and
+`{"state":"failed","reason"}` when it cannot continue. A failed status stays
+(with its journalled operation, if any) until the person cancels it with
+`MoveAgentToLocal{abort_pending}` or asks for the Move again. Success and a
+cancelled wait remove the status. A kernel restart ends a wait for a turn. A
+Move requested while the agent is idle still answers when it is done.

@@ -725,7 +725,7 @@ impl KernelRuntimeState {
             .agent_deadline(session_id, local_agent.id())?
             .is_some()
         {
-            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
+            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a agent deadline must stay on its executing kernel; start a new agent on the worker".into() });
         }
         let slice_admission = self
             .guard_slice_execution(
@@ -745,38 +745,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
-        // MP-08/MP-10/MP-11 D1: Apps remain home-owned across placement
-        // changes; their existing grant generation and expiry still apply.
-        self.owned
-            .kernel_browser_host
-            .revoke_agent(local_agent.id());
-        let terminated_run_ids = self
-            .owned
-            .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
-        for provider_run_id in terminated_run_ids {
-            let (_, process_key) = self
-                .with_app_side_effect(|app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
-                })
-                .await
-                .unwrap_or((false, None));
-            self.owned
-                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-        }
-        let agent = self
-            .with_app_side_effect(|app| {
-                self.authorize_current_external_command()?;
-                app.move_agent_to_remote_authorized(session_id, agent_ref, &worker_ref, &|| {
-                    self.authorize_current_external_command()
-                })
-            })
-            .await?;
-        if let Some(slice_ref) = target_slice_id {
-            self.with_external_command_authority(None)
-                .attach_slice_agent(&slice_ref, session_id, agent.id())
-                .await?;
-        }
-        Ok(agent)
+        self.move_agent_transaction(session_id, local_agent, Some(worker_ref))
+            .await
     }
 
     pub(crate) async fn move_agent_to_local(
@@ -789,46 +759,8 @@ impl KernelRuntimeState {
         let remote_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
-        let slice_ref = remote_agent
-            .remote_execution()
-            .and_then(|remote| {
-                self.owned
-                    .slice_store
-                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
-                    .or_else(|| {
-                        self.owned
-                            .slice_store
-                            .resolve_by_worker_kernel_ref(&remote.worker_machine_id)
-                    })
-            })
-            .map(|slice| slice.id);
-        self.owned
-            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
-                session_id,
-                &remote_agent,
-            )?;
-        let agent = self
-            .with_authorized_app_side_effect(|app| {
-                app.move_agent_to_local_authorized(session_id, agent_ref, &|| {
-                    self.authorize_current_external_command()
-                })
-            })
-            .await?;
-        // The move committed; finish its slice bookkeeping under kernel authority.
-        if let Some(slice_ref) = slice_ref {
-            let slice = self.owned.slice_store.detach_agent(
-                &slice_ref,
-                agent.id(),
-                crate::session::unix_epoch_ms(),
-            )?;
-            self.owned.durable_state_store.append_event(
-                "slice.updated",
-                Some(slice.id.clone()),
-                serde_json::json!({ "slice": &slice }),
-            )?;
-        }
-        let _ = self.owned.session_snapshot(session_id)?;
-        Ok(agent)
+        self.move_agent_transaction(session_id, remote_agent, None)
+            .await
     }
 
     pub(crate) async fn destroy_agent_in_session(

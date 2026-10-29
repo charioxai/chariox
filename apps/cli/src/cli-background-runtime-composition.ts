@@ -472,7 +472,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         patch.alias = nullableString(metadata.alias)
       }
       if (Object.prototype.hasOwnProperty.call(metadata, "last_activity_at_ms")) {
-        patch.last_activity_at_ms = nullableNumber(metadata.last_activity_at_ms) ?? undefined
+        const activityAt = nullableNumber(metadata.last_activity_at_ms)
+        if (activityAt !== null) patch.last_activity_at_ms = activityAt
       }
       if (Object.prototype.hasOwnProperty.call(metadata, "last_used_at_ms")) {
         patch.last_used_at_ms = nullableNumber(metadata.last_used_at_ms)

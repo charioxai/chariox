@@ -35,11 +35,16 @@ impl KernelRuntimeState {
             project_failure_output,
             None,
             provider_termination,
+            None,
         )
         .await
         .map(|_| ())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep native failure evidence separate from termination and recovery diagnostics"
+    )]
     pub(super) async fn fail_owned_provider_prompt_with_termination_if_matches(
         &self,
         session_id: &str,
@@ -48,6 +53,7 @@ impl KernelRuntimeState {
         project_failure_output: bool,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure_override: Option<crate::provider::TurnOutcome>,
     ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
@@ -79,8 +85,21 @@ impl KernelRuntimeState {
         }
         let guarded_prompt_id = active_prompt.id().to_string();
         self.flush_provider_history(provider_run_id).await?;
+        // The settled turn always says why it failed. A failure without
+        // termination evidence, such as a rejected dispatch, is typed from its
+        // text but never becomes evidence of how the provider run ended. Login
+        // recovery keeps the same failure for when it ends in a failed turn.
+        let failure = failure_override
+            .or_else(|| {
+                provider_termination
+                    .as_ref()
+                    .and_then(|termination| termination.failure.clone())
+            })
+            .unwrap_or_else(|| {
+                crate::provider::TurnOutcome::classify(provider_run.adapter_key(), message)
+            });
         if self
-            .try_provider_auth_recovery(&provider_run, message, expected_prompt_id)
+            .try_provider_auth_recovery(&provider_run, message, failure.clone(), expected_prompt_id)
             .await?
         {
             return Ok(true);
@@ -91,12 +110,11 @@ impl KernelRuntimeState {
         } else {
             safe_message
         };
-
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
             message,
-            safe_message: &safe_message,
+            failure: &failure,
             project_failure_output,
             record_diagnostic: expected_prompt_id.is_some(),
             termination: provider_termination.as_ref(),
@@ -122,6 +140,7 @@ impl KernelRuntimeState {
                     provider_run_id,
                     Some(expected_prompt_id),
                     provider_termination.clone(),
+                    failure.clone(),
                 )
                 .await?
             {
@@ -150,6 +169,7 @@ impl KernelRuntimeState {
                     Some(provider_run_id),
                     Some(expected_prompt_id),
                     provider_termination.clone(),
+                    failure.clone(),
                 ) {
                 Ok(completion) => completion,
                 Err(DaemonError::NoActivePrompt { .. }) => return Ok(false),
@@ -166,6 +186,7 @@ impl KernelRuntimeState {
                 &agent_id,
                 provider_run_id,
                 provider_termination.clone(),
+                failure.clone(),
             )
             .await?
         {
@@ -271,6 +292,7 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 Some(active_prompt.id()),
                 provider_termination,
+                failure,
             )?
         };
         if completion.is_none() {
@@ -343,11 +365,11 @@ impl KernelRuntimeState {
             self.owned.provider_run_projection.update(diagnosed);
         }
         if attempt.project_failure_output {
-            self.owned.record_provider_failure_output(
+            self.owned.record_provider_failure_notice(
                 session_id,
                 provider_run.id(),
                 attempt.agent_id,
-                attempt.safe_message,
+                attempt.failure,
             );
         }
         self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run.id())
@@ -490,6 +512,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         provider_run_id: &str,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<bool, DaemonError> {
         self.settle_leased_workflow_provider_failure_if_matches(
             session_id,
@@ -497,6 +520,7 @@ impl KernelRuntimeState {
             provider_run_id,
             None,
             provider_termination,
+            failure,
         )
         .await
     }
@@ -508,6 +532,7 @@ impl KernelRuntimeState {
         provider_run_id: &str,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<bool, DaemonError> {
         let leased_context = self
             .with_app_side_effect(|app| {
@@ -542,6 +567,7 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 expected_prompt_id,
                 provider_termination,
+                failure,
             ) {
             Ok(completion) => completion,
             Err(DaemonError::NoActivePrompt { .. }) if expected_prompt_id.is_some() => {
@@ -567,7 +593,14 @@ impl KernelRuntimeState {
         };
         let diagnostic =
             format!("Structured provider output polling failed after repeated failures: {error}");
+        let adapter_key = self
+            .owned
+            .provider_store
+            .get_run(provider_run_id)?
+            .adapter_key()
+            .to_string();
         let termination = crate::provider::ProviderRunTermination::explicit_provider_error(
+            &adapter_key,
             &diagnostic,
             crate::session::unix_epoch_ms(),
         );
@@ -578,6 +611,7 @@ impl KernelRuntimeState {
             false,
             Some(expected_prompt_id),
             Some(termination),
+            None,
         )
         .await
     }
@@ -588,7 +622,8 @@ pub(super) struct FailedProviderAttempt<'a> {
     pub(super) provider_run: &'a crate::provider::RuntimeProviderRun,
     pub(super) agent_id: &'a str,
     pub(super) message: &'a str,
-    pub(super) safe_message: &'a str,
+    /// The failure the turn settles with; the transcript entry renders this one.
+    pub(super) failure: &'a crate::provider::TurnOutcome,
     pub(super) project_failure_output: bool,
     pub(super) record_diagnostic: bool,
     pub(super) termination: Option<&'a crate::provider::ProviderRunTermination>,

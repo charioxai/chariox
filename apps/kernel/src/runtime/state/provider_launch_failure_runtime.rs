@@ -205,6 +205,10 @@ impl KernelRuntimeState {
                             agent_id,
                             started.run.id(),
                             None,
+                            crate::provider::TurnOutcome::classify(
+                                started.run.adapter_key(),
+                                &diagnostic,
+                            ),
                         )
                         .await
                     {
@@ -350,7 +354,8 @@ fn clear_failed_provider_resume_state_for_runtime(
         )? {
         crate::agent::ProviderResumeClearOutcome::Cleared => {}
         crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
-        crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
+        crate::agent::ProviderResumeClearOutcome::Superseded { .. }
+        | crate::agent::ProviderResumeClearOutcome::Required => return Ok(false),
     }
     owned.record_notice(
         started.run.session_id(),

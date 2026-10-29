@@ -140,6 +140,13 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
 /// MP-08/MP-09/MP-10/MP-11: allocated 361 carries structured login retry feedback.
+/// MP-08/MP-09/MP-10/MP-11: landing union 242 carries local 640 (peers 233 dialogs, 234 outside events,
+/// 235 binary Room exec, 239 archived-agent discovery with the saved provider thread handoff and 242 the typed
+/// failure cause on provider run terminations).
+/// MP-08/MP-09/MP-10/MP-11: landing union 243 carries local 642 (peers 233 dialogs, 234 outside events,
+/// failure cause on provider run terminations) and 243 (that failure renamed to the turn outcome kind and reason).
+/// Allocated 240 carries the local 638 `AgentMove` peer messages.
+/// Allocated 241 carries the composed Move resource receipts and probe messages of local 639.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
@@ -718,6 +725,9 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
 )]
 pub enum RelayPeerRequest {
+    AgentMove {
+        request: crate::agent_move::peer::AgentMovePeerRequest,
+    },
     ListWorkflowNotificationSources {
         protocol_version: u32,
     },
@@ -1149,6 +1159,9 @@ pub enum RelayPeerRequest {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     },
+    RequestProviderAccountCopy {
+        request: crate::local::CopyProviderAccountToKernelRequest,
+    },
     InstallProviderAccountCopy {
         binding: crate::provider_account_copy::ProviderAccountCopyBinding,
         credential: crate::provider_account_copy::ProviderAccountCopyCredential,
@@ -1222,6 +1235,9 @@ impl RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    AgentMove {
+        response: crate::agent_move::peer::AgentMovePeerResponse,
+    },
     LeasedWatchedProcess {
         receipt: Option<crate::durable_state::agent_lifecycle::LeasedProcessReceipt>,
     },
@@ -1517,6 +1533,8 @@ pub struct RelayProjectedCompletion {
     pub home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_termination: Option<crate::provider::ProviderRunTermination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::provider::TurnOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1619,6 +1637,7 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let completion = RelayProjectedCompletion {
+            failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
             home_prompt_id: Some("home-prompt-1".to_string()),
@@ -1641,12 +1660,52 @@ mod tests {
             snapshot.pointer("/provider_termination/timestamp_ms"),
             Some(&serde_json::json!(1_234)),
         );
+        assert_eq!(
+            snapshot.pointer("/provider_termination/failure/kind"),
+            Some(&serde_json::json!("provider_crashed")),
+        );
         let serialized = serde_json::to_string(&snapshot).expect("completion should encode");
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "33a761cae057a2577bc65fad2c73a002d42cabd29919aff086cea248f156a238",
+            "0d86c18bf510a18529d2304a1aa8c56035268d59f44f513f494856e9d77dc479",
         );
+    }
+
+    #[test]
+    fn leased_failure_without_termination_shape_is_versioned() {
+        let completion = RelayProjectedCompletion {
+            message_id: "failed-turn".into(),
+            completed_at_ms: 1234,
+            home_prompt_id: Some("home-prompt".into()),
+            provider_termination: None,
+            failure: Some(crate::provider::TurnOutcome {
+                kind: crate::provider::TurnOutcomeKind::UsageLimit,
+                retryable: false,
+                reason: "You've hit your usage limit.".into(),
+            }),
+        };
+        let snapshot = serde_json::to_value(&completion).unwrap();
+        assert_eq!(
+            snapshot,
+            serde_json::json!({
+                "message_id": "failed-turn", "completed_at_ms": 1234,
+                "home_prompt_id": "home-prompt", "failure": {
+                    "kind": "usage_limit", "retryable": false,
+                    "reason": "You've hit your usage limit.",
+                },
+            })
+        );
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(encoded.as_bytes())),
+            "78963c7a1dc75eb895450962abe3502d1b08b29b64e578e77c059d286abd1e15"
+        );
+        let old: RelayProjectedCompletion = serde_json::from_value(serde_json::json!({
+            "message_id": "completed-turn", "completed_at_ms": 1234,
+        }))
+        .unwrap();
+        assert_eq!(old.failure, None);
     }
 
     #[test]
@@ -1658,6 +1717,7 @@ mod tests {
             ),
             (
                 crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "codex",
                     "provider rejected request",
                     1_235,
                 ),
@@ -1667,6 +1727,7 @@ mod tests {
 
         for (provider_termination, category) in cases {
             let completion = RelayProjectedCompletion {
+                failure: None,
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
                 home_prompt_id: Some("home-prompt-1".to_string()),

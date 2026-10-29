@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -756,53 +756,12 @@ impl DurableKernelStateStore {
         subject_id: &str,
         limit: usize,
     ) -> Result<Vec<DurableStateEvent>, DaemonError> {
-        let limit = limit.clamp(1, 200);
-        let connection = self.lock_connection("durable_state.load_subject_events")?;
-        let mut statement = connection
-            .prepare(
-                "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
-                 FROM durable_state_events
-                 WHERE subject_id = ?1
-                 ORDER BY sequence DESC
-                 LIMIT ?2",
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events",
-                message: error.to_string(),
-            })?;
-        let mut rows = statement
-            .query(params![subject_id, limit as i64])
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events",
-                message: error.to_string(),
-            })?;
-        let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.load_subject_events",
-            message: error.to_string(),
-        })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_subject_events",
-                        message: error.to_string(),
-                    })?;
-            events.push(DurableStateEvent {
-                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
-                event_id: row.get::<_, String>(1).unwrap_or_default(),
-                kind: row.get::<_, String>(2).unwrap_or_default(),
-                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
-                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
-                payload: serde_json::from_str(&payload_json).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "durable_state.decode_event",
-                        message: error.to_string(),
-                    }
-                })?,
-            });
-        }
-        events.reverse();
-        Ok(events)
+        self.query_subject_events(
+            "durable_state.load_subject_events",
+            "WHERE subject_id = ?1",
+            vec![SqlValue::from(subject_id.to_string())],
+            limit,
+        )
     }
 
     pub fn load_subject_events_by_kind(
@@ -811,37 +770,72 @@ impl DurableKernelStateStore {
         kind: &str,
         limit: usize,
     ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        self.query_subject_events(
+            "durable_state.load_subject_events_by_kind",
+            "WHERE subject_id = ?1 AND kind = ?2",
+            vec![
+                SqlValue::from(subject_id.to_string()),
+                SqlValue::from(kind.to_string()),
+            ],
+            limit,
+        )
+    }
+
+    /// The newest `limit` events of a subject whose kind starts with one of `prefixes`, oldest
+    /// first. The kinds are chosen before the limit, so other events never push them out.
+    pub fn load_subject_events_by_kind_prefixes(
+        &self,
+        subject_id: &str,
+        prefixes: &[&str],
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        if prefixes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut parameters = vec![SqlValue::from(subject_id.to_string())];
+        let mut matches = Vec::new();
+        for (index, prefix) in prefixes.iter().enumerate() {
+            let number = index + 2;
+            matches.push(format!("substr(kind, 1, length(?{number})) = ?{number}"));
+            parameters.push(SqlValue::from((*prefix).to_string()));
+        }
+        self.query_subject_events(
+            "durable_state.load_subject_events_by_kind_prefixes",
+            &format!("WHERE subject_id = ?1 AND ({})", matches.join(" OR ")),
+            parameters,
+            limit,
+        )
+    }
+
+    /// Runs `WHERE ...` over one subject's events, newest first up to `limit` (1 to 200), and
+    /// returns them oldest first. `parameters` fill `?1`, `?2`, ... of the clause.
+    fn query_subject_events(
+        &self,
+        operation: &'static str,
+        filter: &str,
+        parameters: Vec<SqlValue>,
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        let transport = |message: String| DaemonError::LocalTransport { operation, message };
         let limit = limit.clamp(1, 200);
-        let connection = self.lock_connection("durable_state.load_subject_events_by_kind")?;
+        let connection = self.lock_connection(operation)?;
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "SELECT sequence, event_id, kind, subject_id, timestamp_ms, payload_json
                  FROM durable_state_events
-                 WHERE subject_id = ?1 AND kind = ?2
+                 {filter}
                  ORDER BY sequence DESC
-                 LIMIT ?3",
-            )
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events_by_kind",
-                message: error.to_string(),
-            })?;
+                 LIMIT {limit}"
+            ))
+            .map_err(|error| transport(error.to_string()))?;
         let mut rows = statement
-            .query(params![subject_id, kind, limit as i64])
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.load_subject_events_by_kind",
-                message: error.to_string(),
-            })?;
+            .query(rusqlite::params_from_iter(parameters))
+            .map_err(|error| transport(error.to_string()))?;
         let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.load_subject_events_by_kind",
-            message: error.to_string(),
-        })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_subject_events_by_kind",
-                        message: error.to_string(),
-                    })?;
+        while let Some(row) = rows.next().map_err(|error| transport(error.to_string()))? {
+            let payload_json = row
+                .get::<_, String>(5)
+                .map_err(|error| transport(error.to_string()))?;
             events.push(DurableStateEvent {
                 sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
                 event_id: row.get::<_, String>(1).unwrap_or_default(),

@@ -66,6 +66,9 @@ pub(crate) fn sanitize_resume_state_for_launch(
         return resume_state;
     }
 
+    if resume_state.required_native_session().is_some() {
+        return resume_state;
+    }
     resume_state.without_provider_session_id(&request.adapter_key)
 }
 
@@ -260,6 +263,95 @@ mod tests {
         assert!(
             status.success(),
             "ordinary provider launches must retain their XDG runtime directory"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_native_checkpoint_launch_preparation_retains_integrity_binding() {
+        use crate::agent::GridPosition;
+        let binding = serde_json::json!({
+            "provider": "codex", "session_id": "native-thread",
+            "account_sha256": "a".repeat(64), "artifact_sha256": "b".repeat(64),
+            "model": "gpt-6-luna", "variant": "low",
+            "cli_version": "codex-cli 0.159.3", "source_os": "linux"
+        });
+        let state: ProviderResumeState = serde_json::from_value(serde_json::json!({
+            "codex_thread_id": "native-thread",
+            "required_native_session": {"provider": "codex", "session_id": "native-thread", "checkpoint": binding}
+        })).unwrap();
+        let mut agent = AgentInstance::new(
+            "a",
+            "ref",
+            "s",
+            None,
+            "codex",
+            Some("gpt-6-luna".into()),
+            Some("low".into()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_provider_resume_state(state.clone());
+        for (model, effort) in [("gpt-6.1-sol", "low"), ("gpt-6-luna", "high")] {
+            let request = LaunchProviderRequest::new("s", "codex", "codex", "profile", model)
+                .with_variant(Some(effort.into()));
+            let prepared = sanitize_resume_state_for_launch(&request, &agent);
+            assert_eq!(
+                prepared, state,
+                "launch preparation must retain the account/artifact/version binding"
+            );
+            let request = request.with_resume_state(prepared.clone());
+            assert_eq!(
+                prepared
+                    .required_native_session()
+                    .unwrap()
+                    .validate_request(&request),
+                Err(crate::provider::NativeCheckpointFailure::ConfigurationMismatch)
+            );
+            let mut service = crate::provider::ProviderProcessService::new();
+            assert!(matches!(
+                service.start_run_provider_only(request),
+                Err(DaemonError::NativeProviderCheckpoint {
+                    reason: crate::provider::NativeCheckpointFailure::ConfigurationMismatch
+                })
+            ));
+            assert!(
+                service.list_runs().is_empty(),
+                "changed configuration cannot plan a provider run"
+            );
+        }
+    }
+
+    #[test]
+    fn mp08_mp10_required_codex_resume_never_recovers_with_a_fresh_session() {
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-required",
+            "session-required".to_string(),
+            Some("agent-required".to_string()),
+            "codex".to_string(),
+        );
+        let state = serde_json::from_value(serde_json::json!({
+            "codex_thread_id": "native-thread",
+            "required_native_session": {"provider": "codex", "session_id": "native-thread"}
+        }))
+        .expect("decode durable required-resume state");
+        run.set_resume_state(state);
+        let error = DaemonError::ProviderProtocol {
+            provider_run_id: run.id().to_string(),
+            operation: "thread/resume",
+            message: "no rollout found for thread".to_string(),
+        };
+        assert!(
+            failed_provider_resume_state_replacement(&run, &error).is_none(),
+            "a required native resume must preserve the checkpoint instead of clearing it"
+        );
+        assert!(
+            failed_provider_resume_state_replacement_from_message(
+                &run,
+                &format!("Provider prompt dispatch failed: {error}"),
+            )
+            .is_none(),
+            "asynchronous provider errors must retain the same requirement"
         );
     }
 

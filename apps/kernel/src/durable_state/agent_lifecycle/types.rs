@@ -57,6 +57,15 @@ pub struct AgentObligation {
     pub dispatch_state: String,
 }
 impl AgentObligation {
+    pub(crate) fn requires_resolution(&self) -> bool {
+        match self.status.as_str() {
+            "open" | "settling" => true,
+            // A rejected dispatch has no admitted work to reconcile.
+            "failed" => self.dispatch_state != "rejected",
+            _ => false,
+        }
+    }
+
     pub(crate) fn tracks_workflow_run(&self) -> bool {
         matches!(self.kind.as_str(), "workflow" | "workflow_run")
     }
@@ -217,6 +226,17 @@ pub(crate) enum Operation {
         task: String,
         prompt: String,
         lease: super::goals::CheckLease,
+        now: u64,
+    },
+    BeginGoalApproval {
+        task: String,
+        prompt: String,
+        now: u64,
+    },
+    AnswerGoalApproval {
+        task: String,
+        prompt: String,
+        revision: u64,
         now: u64,
     },
     BeginOwnerWait {

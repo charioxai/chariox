@@ -133,9 +133,12 @@ impl ProviderProcessService {
                 self.apply_claude_run_selection(run_id, binding.selection)?;
             }
             ProviderRuntimeBinding::Codex(binding) => {
+                // An unindexed rollout still needs its exact artifact during the
+                // first native resume. Acceptance releases it in set_resume_state.
                 self.run_actor_mailbox
                     .insert_codex_runtime(run_id.to_string(), binding.state);
                 self.apply_codex_run_selection(run_id, binding.selection)?;
+                self.get_run_mut(run_id)?.mark_native_checkpoint_imported();
             }
             ProviderRuntimeBinding::OpenCode(binding) => {
                 self.run_actor_mailbox
@@ -461,6 +464,24 @@ impl ProviderProcessService {
                 settlement_retry_attempt: 0,
             },
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bind_opencode_runtime_for_test(
+        &self,
+        run_id: &str,
+        endpoint: &str,
+        session_id: &str,
+    ) {
+        let state = crate::provider::opencode_runtime::OpenCodeRuntimeState::new(
+            endpoint.to_string(),
+            session_id.to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        self.run_actor_mailbox
+            .insert_opencode_runtime(run_id.to_string(), state);
     }
 
     #[cfg(test)]

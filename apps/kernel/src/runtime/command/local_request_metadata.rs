@@ -227,6 +227,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .optional_session(request.session_id.as_deref())
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_) => {
+            LocalRequestMetadata::new("provider_account.copy_offers", Normal)
+        }
+        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => {
+            LocalRequestMetadata::new("provider_account.copy_from", Interactive)
+        }
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => {
             LocalRequestMetadata::new("provider_account.copy", Normal)
         }
@@ -633,6 +639,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
+        LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::ExtendKernelSudo(_) => "kernel_access.sudo_extend",
         LocalDaemonRequest::RenewKernelSudoRequester(_) => "kernel_access.sudo_requester_renew",
@@ -889,6 +896,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => "provider_account.copy",
+        LocalDaemonRequest::ListProviderAccountCopyOffers(_) => "provider_account.copy_offers",
+        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => "provider_account.copy_from",
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",

@@ -642,6 +642,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RequestKernelSudo(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)
@@ -727,6 +728,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RemoveProviderAccountProfile(_)
         | LocalDaemonRequest::DeleteProviderAccountProfileData(_)
         | LocalDaemonRequest::CopyProviderAccountToKernel(_)
+        | LocalDaemonRequest::ListProviderAccountCopyOffers(_)
+        | LocalDaemonRequest::CopyProviderAccountFromKernel(_)
         | LocalDaemonRequest::SetProviderAccountCredential(_)
         | LocalDaemonRequest::InstallMcpServer(_)
         | LocalDaemonRequest::UpdateMcpServer(_)
@@ -1073,6 +1076,7 @@ mod tests {
             structured_endpoint: None,
             provider_session_id: None,
             native_tui: false,
+            native_checkpoint_binding: None,
         }
     }
 }

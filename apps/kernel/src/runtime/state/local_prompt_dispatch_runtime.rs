@@ -53,7 +53,7 @@ fn claude_headless_dispatch_failure_requires_provider_retirement(
         } | DaemonError::ProviderProtocol {
             operation: "submit Claude headless prompt",
             ..
-        }
+        } | DaemonError::ProviderRefusal { .. }
     )
 }
 
@@ -634,11 +634,7 @@ impl KernelRuntimeState {
                         if let Some(message) =
                             claude_native_dispatch_terminal_failure(&provider_run)
                         {
-                            return Err(DaemonError::ProviderProtocol {
-                                provider_run_id: dispatch.provider_run_id.clone(),
-                                operation: "submit Claude headless prompt",
-                                message,
-                            });
+                            return Err(DaemonError::ProviderRefusal { message });
                         }
                         if tokio::time::Instant::now() >= deadline {
                             return Err(DaemonError::LocalTransport {
@@ -763,8 +759,10 @@ impl KernelRuntimeState {
                 .owned
                 .provider_store
                 .get_run(&dispatch.provider_run_id)?;
+            let message = error.to_string();
+            let failure = crate::provider::TurnOutcome::classify(run.adapter_key(), &message);
             if self
-                .try_provider_auth_recovery(&run, &error.to_string(), Some(&dispatch.prompt_id))
+                .try_provider_auth_recovery(&run, &message, failure, Some(&dispatch.prompt_id))
                 .await?
             {
                 return Ok(());
@@ -850,6 +848,10 @@ impl KernelRuntimeState {
                         )?;
                         return Err(error);
                     }
+                    Ok(crate::agent::ProviderResumeClearOutcome::Required) => {
+                        return Err(crate::provider::NativeCheckpointFailure::ResumeFailed
+                            .into_daemon_error())
+                    }
                     Err(clear_error) => return Err(clear_error),
                 }
                 _delivery_settlement_claim = Some(settlement_claim);
@@ -910,14 +912,22 @@ impl KernelRuntimeState {
                 .as_ref()
                 .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
             let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
-            if failed_prompt_matches {
-                owned.record_provider_failure_output(
+            let adapter_key = owned
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .map(|run| run.adapter_key().to_string())
+                .unwrap_or_default();
+            let failure = if failed_prompt_matches {
+                owned.record_dispatch_failure_output(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
                     &dispatch.agent_id,
-                    &dispatch_failure,
-                );
-            }
+                    &adapter_key,
+                    &error,
+                )
+            } else {
+                None
+            };
             let (should_advance, released_claim) = match owned
                 .settle_failed_local_prompt_without_advance(
                     &dispatch.session_id,
@@ -925,6 +935,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
                     &crate::terminal::user_facing_dispatch_failure(&error),
+                    failure,
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -956,11 +967,6 @@ impl KernelRuntimeState {
                 .as_ref()
                 .filter(|_| should_advance && failed_prompt_matches)
             {
-                let adapter_key = owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)
-                    .map(|run| run.adapter_key().to_string())
-                    .unwrap_or_default();
                 owned.record_failed_request(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
@@ -4236,6 +4242,99 @@ pub(in crate::runtime::state) mod tests {
         assert!(!tasks[0].reason.contains("late duplicate"));
     }
 
+    /// What a room agent's owner sees after the dispatch fails with `error`:
+    /// the provider-error transcript and the failure recorded on the settlement.
+    async fn owner_view_of_failed_dispatch(
+        error: DaemonError,
+    ) -> (String, Vec<String>, Option<serde_json::Value>) {
+        let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
+            runtime_with_admitted_prompt().await;
+        let mut config = runtime.owned.config_projection.snapshot();
+        config.room_agent_tools = true;
+        runtime.owned.config_projection.update(config);
+        let adapter_key = runtime
+            .owned
+            .provider_store
+            .get_run(&provider_run_id)
+            .unwrap()
+            .adapter_key()
+            .to_string();
+        let prompt_id = dispatch.prompt_id.clone();
+
+        runtime
+            .fail_prompt_dispatch(dispatch, error)
+            .await
+            .expect_err("dispatch failure should be returned");
+
+        let transcript = runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(&session_id, &observer_id)
+            .into_iter()
+            .filter(|record| record.kind == crate::terminal::TerminalOutputKind::ProviderError)
+            .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
+            .collect::<Vec<_>>();
+        let visible_history = runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&session_id, Some(&agent_id))
+            .unwrap()
+            .into_iter()
+            .filter(|event| !event.is_internal_dispatch_diagnostic())
+            .filter_map(|event| event.content)
+            .collect::<Vec<_>>();
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .unwrap()
+            .expect("the refused turn settles");
+        let failure = settlement
+            .metadata
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+            .cloned();
+        (adapter_key, [transcript, visible_history].concat(), failure)
+    }
+
+    #[tokio::test]
+    async fn a_refused_dispatch_shows_a_room_agent_owner_the_providers_reason() {
+        const REFUSAL: &str = "Codex error [server_overloaded]: Selected model is at capacity. \
+             Please try a different model.";
+        let (adapter_key, visible, failure) =
+            owner_view_of_failed_dispatch(DaemonError::ProviderRefusal {
+                message: REFUSAL.to_string(),
+            })
+            .await;
+        let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
+        assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
+        assert!(visible.contains(&expected.notice()));
+        assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_kernel_dispatch_error_stays_hidden_from_a_room_agent_owner() {
+        for message in [
+            "provider process for `run-1` was not ready",
+            "provider run actor queue rejected command for `run-1`: queue is full",
+        ] {
+            let (_, visible, failure) =
+                owner_view_of_failed_dispatch(DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: message.to_string(),
+                })
+                .await;
+            assert!(
+                !visible.iter().any(|text| text.contains(message)),
+                "{message} reached the owner: {visible:?}"
+            );
+            assert_eq!(
+                failure,
+                Some(serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap()),
+                "the cancelled dispatch has one outcome without a provider error"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn failed_local_dispatch_emits_completion_and_marks_agent_error() {
         let (_worktree, runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
@@ -4327,6 +4426,7 @@ pub(in crate::runtime::state) mod tests {
                 &dispatch.prompt_id,
                 &provider_run_id,
                 "provider retired before settlement",
+                None,
             )
             .expect("failed prompt should settle")
             .is_some());
@@ -4345,6 +4445,7 @@ pub(in crate::runtime::state) mod tests {
                 &dispatch.prompt_id,
                 &provider_run_id,
                 "duplicate failed settlement",
+                None,
             )
             .expect("duplicate settlement should be harmless")
             .is_none());
@@ -5266,7 +5367,12 @@ pub(in crate::runtime::state) mod tests {
         );
 
         runtime
-            .finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
+            .finalize_cancelled_local_prompt_after_restart(
+                &session_id,
+                &agent_id,
+                &prompt,
+                super::prompt_cancellation_owned_state::PromptEnding::Cancelled,
+            )
             .await
             .expect("restart recovery should finish the durable failure intent");
         assert_eq!(
@@ -5796,6 +5902,7 @@ pub(in crate::runtime::state) mod tests {
                 "stale-prompt-id",
                 &provider_run_id,
                 "late dispatch failure",
+                None,
             )
             .expect("stale failure should be ignored");
         assert!(settlement.is_none());

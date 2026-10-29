@@ -4,6 +4,7 @@ import test from "node:test"
 import type { AgentTaskExecution, RuntimeSession } from "./kernel-types-session.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { sessionAgentTaskStatus, sessionFocusedStatusBadge } from "./session-runtime-status.js"
+import { agentTaskStatus } from "@chariox/tool-display/agent-task-status"
 function task(state: AgentTaskExecution["state"]): AgentTaskExecution {
   return { task_id: state, room_id: "room", owner_user_id: "owner", agent_id: "agent", prompt_id: state,
     provider_run_id: null, revision: 1, blocked_revision: 0, state, reason: "delegate result",
@@ -11,6 +12,24 @@ function task(state: AgentTaskExecution["state"]): AgentTaskExecution {
     wait: { registration_ids: ["reg"], deadline_ms: 60000, started_at_ms: 0, inbox_cursor: 0, long_wait_notified: false, last_checked_at_ms: 0 },
     last_progress_at_ms: 0, progress_sequence: 0, no_progress_wakes: 0, correction_used: false, pending_prompt_id: null }
 }
+test("rejected dispatch does not remain outstanding in the footer", () => {
+  const done = task("done")
+  done.wait = null
+  done.obligations[0]!.status = "failed"
+  done.obligations[0]!.dispatch_state = "rejected"
+  assert.equal(agentTaskStatus({ agent_tasks: [done] }, "agent")!.label, "DONE")
+  done.state = "working"
+  done.obligations[0]!.dispatch_state = "accepted"
+  assert.equal(agentTaskStatus({ agent_tasks: [done] }, "agent")!.label, "WORKING (1 obligations)")
+})
+test("completed refusal goal has zero outstanding obligations", () => {
+  const done = { ...task("done"), wait: null, goal: { id: "goal:done", objective: "report the refusal", paused: false,
+    active_elapsed_ms: 1, waiting_elapsed_ms: 0, state_since_ms: 1, check_in_minutes: 10,
+    next_check_in_ms: null, check_count: 1, evaluation: null } } as unknown as AgentTaskExecution
+  done.obligations[0]!.status = "failed"
+  done.obligations[0]!.dispatch_state = "rejected"
+  assert.match(sessionAgentTaskStatus({ agent_tasks: [done] } as RuntimeSession, "agent", 1)!.label, /0 obligations/)
+})
 test("MP-08/MP-10/MP-11 A02 newer done cannot hide older waiting task", () => {
   const session = { agent_tasks: [task("waiting"), { ...task("done"), obligations: [] }] } as RuntimeSession
   assert.match(sessionAgentTaskStatus(session, "agent")!.label, /^WAITING ON delegate result UNTIL .*\(1 obligations\)$/)

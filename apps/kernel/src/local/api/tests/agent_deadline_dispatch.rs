@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn lane_deadline_public_dispatch_sets_reads_and_rejects_wrong_room() {
+fn agent_deadline_public_dispatch_sets_reads_and_rejects_wrong_room() {
     let worktree = crate::test_support::TestWorktree::new("deadline-public-dispatch");
     let harness = LocalRouterTestHarness::new();
     let create = || match harness

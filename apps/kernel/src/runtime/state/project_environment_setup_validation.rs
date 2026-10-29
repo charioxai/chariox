@@ -539,7 +539,7 @@ pub(super) fn worker_validation_environment_with_home_and_definition(
     environment
 }
 
-fn worker_preparation_path(
+pub(super) fn worker_preparation_path(
     preparation_home: &Path,
     workspace_root: Option<&Path>,
     current_path: &str,

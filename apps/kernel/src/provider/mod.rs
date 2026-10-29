@@ -10,7 +10,16 @@ pub(crate) use claude_runtime::usage::{
     claude_status_line_context_usage, claude_status_line_usage_snapshot,
 };
 mod account_handoff;
+mod checkpoint;
+pub(crate) use checkpoint::{
+    supported_interface as native_checkpoint_support, MAX_NATIVE_CHECKPOINT_BYTES,
+};
+pub use checkpoint::{
+    NativeCheckpointBinding, NativeCheckpointFailure, NativeMoveCompatibility,
+    ProviderNativeCheckpoint, RequiredNativeSession,
+};
 mod codex;
+pub(crate) use codex::configured_session_capacity as configured_codex_session_capacity;
 mod codex_client;
 mod codex_runtime;
 mod command_catalog;
@@ -40,6 +49,7 @@ pub(crate) mod renewal_failure;
 mod reported_transcript_file;
 mod run_actor;
 mod runtime_run;
+mod turn_outcome;
 pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
@@ -133,6 +143,8 @@ pub(crate) use opencode::{
     shutdown_opencode_account_endpoints, OpenCodeDiscoveryConfigDirectory,
 };
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
+#[cfg(test)]
+pub(crate) use opencode_client::fake_server::{FakeOpenCodeServer, PromptReply};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,
@@ -145,7 +157,7 @@ pub(crate) use prompt_signals::{
     classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
     classify_provider_terminal_failure_text, claude_native_stop_failure,
     provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
-    PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
@@ -168,6 +180,7 @@ pub(crate) use termination::{
     redact_provider_diagnostic, sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
+pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,

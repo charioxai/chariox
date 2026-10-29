@@ -64,6 +64,7 @@ fn kernel_websocket_provider_process_gc_reaps_idle_managed_process() {
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
+                native_checkpoint_binding: None,
                 native_tui: false,
             }),
         )

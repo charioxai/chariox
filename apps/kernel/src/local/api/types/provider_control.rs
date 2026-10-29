@@ -15,6 +15,8 @@ pub struct LaunchProviderRunRequest {
     pub provider_session_id: Option<String>,
     #[serde(default)]
     pub native_tui: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_checkpoint_binding: Option<crate::provider::NativeCheckpointBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -404,6 +406,23 @@ pub struct CopyProviderAccountToKernelRequest {
     pub operation_id: String,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
+    #[serde(default)]
+    pub replace: bool,
+}
+
+/// A receiving kernel discovers only metadata for eligible, independently owned copies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListProviderAccountCopyOffersRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyProviderAccountFromKernelRequest {
+    pub provider: String,
+    pub account_profile: String,
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
     #[serde(default)]
     pub replace: bool,
 }

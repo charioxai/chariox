@@ -373,11 +373,28 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
+/// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
+/// Allocated 670 lets a user retry (`UpdateQueuedWorkflowPrompt.retry_delivery`) or discard
+/// (`RemoveQueuedWorkflowPrompt`) a workflow notification whose delivery is uncertain, and projects that hold as
+/// `WorkflowQueuedPrompt.delivery_uncertain_until_ms`.
+/// Recipient account offers and kernel-owned copy consent.
+/// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
+/// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
+/// MP-08/MP-09/MP-10/MP-11: landing union 642 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
+/// health events), 632 (binary Room exec), 636 (archived-agent discovery), 640 (the typed cause, retryable flag and
+/// reset time of a failed turn on its outside event and history) and 642 (the turn outcome: one typed `kind`, `retryable`
+/// and `reason` for every turn that ends, with the prompt and turn id on the outside event); every earlier contract is retained.
+/// Protocol 643 answers `CancelActivePrompt` for a parked task with `AgentTaskUpdated`; 506 leaves the predecessor list to
+/// keep it within the 32-entry policy.
+/// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
+/// Allocated 638/240 adds durable agent Move and Return: the `AgentMove` peer carrier, `MoveAgentToLocal` and its
+/// `abort_pending` cancellation, and Project materialization on the target.
+/// Allocated 639/241 composes a Move onto a target kernel with native Project setup: resource receipts, probe gating and
+/// the kernel-held deferred Move published on the agent (`agent_move`).
 /// MP-08/MP-09/MP-10/MP-11: 721 pairs bounded raw binary relay chunks with relay capability 97.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity (public snapshot schema 14).
-/// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
 /// MP-08/MP-09/MP-10/MP-11: allocated 910 adds the optional `images` data-URL list and `images_omitted` count to the
 /// provider tool payload (Claude tool results), and Codex web search and image view tool calls with their lifecycle status.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 910;

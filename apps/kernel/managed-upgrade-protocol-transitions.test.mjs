@@ -73,3 +73,16 @@ test("MP-08/MP-09/MP-10/MP-11 managed upgrades admit only the target and the cur
     await rm(scratch, { recursive: true, force: true })
   }
 })
+
+
+test("main protocol 636 upgrades to account copy and rolls back", async (context) => {
+  const policy = JSON.parse(await readFile(POLICY_PATH, "utf8"))
+  const scratch = await mkdtemp(join(tmpdir(), "chariox-protocol-636-"))
+  context.after(() => rm(scratch, {recursive: true, force: true}))
+  const current = join(scratch, "current"), previous = join(scratch, "previous")
+  await mkdir(dirname(join(current, POLICY_RELATIVE_PATH)), {recursive: true})
+  await writeFile(join(current, POLICY_RELATIVE_PATH), JSON.stringify(policy))
+  for (const [fromRoot, from, toRoot, to] of [[previous, 636, current, localProtocolVersion], [current, localProtocolVersion, previous, 636]]) {
+    assert.equal(execFileSync(process.execPath, [UPGRADE_STATE_SCRIPT, "validate-protocol-transition", fromRoot, String(from), toRoot, String(to)], {encoding: "utf8", stdio: ["ignore", "pipe", "pipe"]}), "")
+  }
+})

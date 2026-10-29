@@ -9,7 +9,7 @@ export async function sendClaudeRemoteRenderedInput(client: LocalIpcClient, sess
     const state = await client.send<{ SessionState?: { agent_activity?: Record<string, { active_prompt_count: number }> } }>(getSessionStateRequest(sessionId))
     if (state.SessionState?.agent_activity?.[agentId]?.active_prompt_count) {
       const result = await client.send<Record<string, unknown>>(cancelActivePromptRequest(sessionId, attachmentId, agentId))
-      if (!("PromptCancelled" in result)) throw new Error("Rendered Claude interruption was not admitted by the kernel")
+      if (!("PromptCancelled" in result) && !("AgentTaskUpdated" in result)) throw new Error("Rendered Claude interruption was not admitted by the kernel")
       return
     }
   }

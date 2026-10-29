@@ -386,13 +386,21 @@ def room_input_guard():
     return module.input_guard()
 
 
+# MP-11: bare keys that move the caret or scroll the page and insert no text.
+# The native focus proof exists for typed text; Chromium is never traversed
+# by it, so these keys would otherwise be refused on every web page.
+NAVIGATION_KEYS = frozenset(('up', 'down', 'left', 'right', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright',
+                             'home', 'end', 'pageup', 'pagedown', 'prior', 'next', 'page_up', 'page_down'))
+
+
 def main(args, stream):
     agent = os.environ.get('CHARIOX_COMPUTER_AGENT_INPUT') == '1'
-    guard = room_input_guard() if agent and (not args or args[0] == 'key-repeat') else None
     if args == ['prepare-owned-keymap'] and not agent:
         prepare_owned_text_keymap()
     elif len(args) == 2 and args[0] == 'key-repeat':
-        key_repeat(stream.read(129).decode('ascii', errors='strict'), int(args[1]), before_press=guard)
+        value = stream.read(129).decode('ascii', errors='strict')
+        guard = room_input_guard() if agent and value.lower() not in NAVIGATION_KEYS else None
+        key_repeat(value, int(args[1]), before_press=guard)
     elif len(args) == 2 and args[0] == 'hold-key':
         hold_input('key', stream.read(129).decode('ascii', errors='strict'), int(args[1]))
     elif len(args) == 5 and args[0] == 'hold-button':
@@ -422,7 +430,7 @@ def main(args, stream):
             raise ValueError('invalid secret target')
         type_text(stream.read().decode('utf-8', errors='strict'), expected_target)
     elif not args:
-        type_text(stream.read().decode('utf-8', errors='strict'), before_press=guard)
+        type_text(stream.read().decode('utf-8', errors='strict'), before_press=room_input_guard() if agent else None)
     else:
         raise ValueError('unsupported keyboard operation')
 

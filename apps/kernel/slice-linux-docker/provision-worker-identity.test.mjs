@@ -63,7 +63,8 @@ test("the production kernel startup function uses canonical ID for normal and pr
   try {
     for (const probe of [false, true]) {
       const script = `set -eu
-ROOT="$HOME"; KERNEL_LOCAL_AUTH_FILE="$HOME/auth-fixture"; kernel_relay_env=()
+ROOT="$HOME"; KERNEL_LOCAL_AUTH_FILE="$HOME/auth-fixture"
+CLOUD_RELAY_CONFIG_JSON=""; RELAY_URL=ws://relay-fixture; RELAY_TOKEN=synthetic-relay-auth
 LOGS="$HOME/logs"; PRIVATE_RUNTIME_ROOT="$HOME/private"; mkdir -p "$LOGS"
 KERNEL_PORT=1; MCP_PORT=2; CODEX_PORT_RANGE=3; OPENCODE_PORT_RANGE=4; PROVIDER_BIND_HOST=fixture
 DAEMON_ID="$TEST_DAEMON_ID"; DAEMON_ALIAS=slice:drill; MACHINE_ID=slice:synthetic; MACHINE_ALIAS=drill

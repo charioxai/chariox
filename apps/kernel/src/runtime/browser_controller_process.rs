@@ -3170,8 +3170,10 @@ done
             fs::read_to_string(format!("/proc/{pid}/stat"))
                 .ok()
                 .is_some_and(|s| {
+                    // A killed process goes Z (zombie), then X (dead) when its
+                    // parent reaps it; both are gone, so liveness cannot flicker.
                     s.rsplit_once(')')
-                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with(['Z', 'X']))
                 })
         }
         for crash in [true, false] {

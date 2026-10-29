@@ -252,18 +252,15 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
         .provider_run_has_active_prompt(session.id(), &projected)
         .unwrap());
     let remote_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
-    assert!(matches!(
-        runtime
-            .owned
-            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
-                session.id(),
-                &remote_agent,
-            ),
-        Err(crate::error::DaemonError::LocalTransport {
-            operation: "move agent to local",
-            ..
-        })
-    ));
+    // The unacknowledged prompt keeps the agent busy, so the Move waits for it instead of starting.
+    let waiting = runtime
+        .move_agent_transaction(session.id(), remote_agent, None)
+        .await
+        .expect("a Move requested while the prompt is unacknowledged is deferred");
+    assert_eq!(
+        waiting.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
     assert_eq!(
         runtime
             .owned

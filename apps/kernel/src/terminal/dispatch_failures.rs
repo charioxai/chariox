@@ -15,12 +15,26 @@ pub(crate) fn is_internal_dispatch_diagnostic(message: &str) -> bool {
 pub(crate) fn user_facing_dispatch_failure(error: &DaemonError) -> String {
     let message = match error {
         DaemonError::ProviderProtocol { operation, .. } => operation_failure_summary(operation),
-        DaemonError::LocalTransport { message, .. } => {
+        DaemonError::LocalTransport { message, .. } | DaemonError::ProviderRefusal { message } => {
             return crate::provider::sanitize_provider_diagnostic(message);
         }
         _ => "The provider could not complete the request.",
     };
     message.to_string()
+}
+
+/// The provider's own failure when it refused the dispatch. A kernel-side
+/// error carries none and stays an internal diagnostic.
+pub(crate) fn provider_dispatch_failure(
+    adapter_key: &str,
+    error: &DaemonError,
+) -> Option<crate::provider::TurnOutcome> {
+    match error {
+        DaemonError::ProviderRefusal { message } => {
+            Some(crate::provider::TurnOutcome::classify(adapter_key, message))
+        }
+        _ => None,
+    }
 }
 
 fn operation_failure_summary(operation: &str) -> &'static str {

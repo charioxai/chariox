@@ -7,11 +7,13 @@ use serde::Serialize;
 const DEFAULT_TERMINAL_TURN_TRACE_MAX_MB: u64 = 100;
 const DEFAULT_TERMINAL_TURN_TRACE_DIR_MAX_MB: u64 = 500;
 
+pub(crate) fn terminal_turn_trace_enabled() -> bool {
+    std::env::var_os("CHARIOX_DISABLE_TERMINAL_TURN_TRACE").is_none()
+        && std::env::var("CHARIOX_TERMINAL_TURN_TRACE").ok().as_deref() == Some("1")
+}
+
 pub(crate) fn record_terminal_turn(session_id: &str, source: &str, payload: impl Serialize) {
-    if std::env::var_os("CHARIOX_DISABLE_TERMINAL_TURN_TRACE").is_some() {
-        return;
-    }
-    if std::env::var("CHARIOX_TERMINAL_TURN_TRACE").ok().as_deref() != Some("1") {
+    if !terminal_turn_trace_enabled() {
         return;
     }
     let Some(path) = terminal_turn_trace_path(session_id) else {

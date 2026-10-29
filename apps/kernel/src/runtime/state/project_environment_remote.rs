@@ -11,6 +11,22 @@ impl KernelRuntimeState {
         if !self.remote_agent_is_home_managed_slice(agent) {
             return Ok(());
         }
+        if let Some(operation) = self
+            .owned
+            .agent_moves
+            .for_agent(agent.session_id(), agent.id())
+        {
+            if matches!(
+                operation.phase,
+                crate::agent_move::HomeMovePhase::Complete { .. }
+            ) && agent.remote_execution().is_some_and(|binding| {
+                binding.worker_kernel_id == operation.identity.target_kernel_id
+            }) {
+                // Move already installed the receipt's Project and target-sealed
+                // environment. A Room's older slice selection cannot replace it.
+                return Ok(());
+            }
+        }
         let active = self
             .owned
             .agent_store

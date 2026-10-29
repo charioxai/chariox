@@ -1,5 +1,6 @@
 //! Startup reconciliation for durable prompt work left active by a previous kernel process.
 
+use super::prompt_cancellation_owned_state::PromptEnding;
 use super::*;
 
 /// Prefix stamped onto the `source_attachment_id` of every kernel-internal
@@ -240,8 +241,13 @@ impl KernelRuntimeState {
                     active_prompt,
                     queued_prompts,
                 )?;
-                self.finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
-                    .await?;
+                self.finalize_cancelled_local_prompt_after_restart(
+                    &session_id,
+                    &agent_id,
+                    &prompt,
+                    PromptEnding::InterruptedByRestart(reason),
+                )
+                .await?;
                 Ok::<_, DaemonError>(true)
             }
             .await;
@@ -266,7 +272,9 @@ impl KernelRuntimeState {
                         None,
                         Some(&agent_id),
                         recipients,
-                        reason,
+                        PromptEnding::InterruptedByRestart(reason)
+                            .outcome()
+                            .notice(),
                     );
                 }
                 Ok(false) => {}
@@ -330,7 +338,7 @@ impl KernelRuntimeState {
                     .filter(|(_, prompt_state)| prompt_state.active_prompt().is_none())
                     .filter_map(|(agent_id, prompt_state)| {
                         let prompt = prompt_state.queued_prompts().front()?;
-                        recoverable_queued_publication_prompt(&session, prompt).then(|| {
+                        recoverable_queued_workflow_prompt(&session, prompt).then(|| {
                             (
                                 session.id().to_string(),
                                 agent_id.to_string(),
@@ -382,10 +390,12 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return summary;
         }
+        summary.failed_reconciliations += self.recover_agent_moves_after_restart().await;
         let sessions = self.owned.session_store.list_all_sessions();
-        // Publication work is autonomous and already durably admitted. Resume it before
-        // transcript reconciliation for unrelated interactive sessions, which may require slow
-        // provider scans or retries.
+        // Queued workflow work (published, or started by a user) was durably admitted but never
+        // delivered to a provider, so it can start without repeating any effects. Resume it
+        // before transcript reconciliation for unrelated interactive sessions, which may require
+        // slow provider scans or retries.
         for (session_id, agent_id, prompt_id) in queued_recovery_targets {
             match self
                 .recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id, true)
@@ -490,6 +500,7 @@ impl KernelRuntimeState {
                             session.id(),
                             agent_id,
                             &prompt,
+                            PromptEnding::Cancelled,
                         )
                         .await
                     {
@@ -693,7 +704,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: &str,
-        require_publication: bool,
+        require_workflow_run: bool,
     ) -> Result<Option<WorkflowPromptDispatches>, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         if self
@@ -717,7 +728,7 @@ impl KernelRuntimeState {
         if prompt.id() != expected_prompt_id {
             return Ok(None);
         }
-        if require_publication && !recoverable_queued_publication_prompt(&session, &prompt) {
+        if require_workflow_run && !recoverable_queued_workflow_prompt(&session, &prompt) {
             return Ok(None);
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -774,6 +785,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
+        ending: PromptEnding,
     ) -> Result<CancelledLocalPromptRestartOutcome, DaemonError> {
         let failed_delivery = prompt
             .durable_delivery_provider_run_id()
@@ -792,6 +804,11 @@ impl KernelRuntimeState {
                 failed_provider_run_id,
                 "unresponsive_provider_resume_state_cleared_after_restart",
             )? {
+                crate::agent::ProviderResumeClearOutcome::Required => {
+                    return Err(
+                        crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error()
+                    )
+                }
                 crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
                 crate::agent::ProviderResumeClearOutcome::Superseded {
@@ -840,14 +857,13 @@ impl KernelRuntimeState {
                 .map(|run| run.id().to_string())
         };
         self.owned.workflow_cancel_prompt(session_id, prompt)?;
-        let cancellation = self
-            .owned
-            .finalize_local_prompt_cancellation_with_queued_advance(
-                session_id,
-                agent_id,
-                prompt.id(),
-                provider_run_id.as_deref(),
-            )?;
+        let cancellation = self.owned.finalize_local_prompt_ending(
+            session_id,
+            agent_id,
+            prompt.id(),
+            provider_run_id.as_deref(),
+            ending,
+        )?;
         if cancellation.released_claim {
             self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         }
@@ -887,18 +903,46 @@ impl KernelRuntimeState {
         Ok(CancelledLocalPromptRestartOutcome::Finalized)
     }
 
+    async fn recover_local_prompt_provider(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<String, DaemonError> {
+        let session_id = session_id.to_string();
+        let agent_id = agent_id.to_string();
+        let prompt = prompt.clone();
+        self.with_app_side_effect(move |app| {
+            if let Some(workflow_run_id) = prompt.workflow_run_id() {
+                let node_run_id =
+                    prompt
+                        .workflow_node_run_id()
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "recover workflow provider",
+                            message: "workflow prompt has no node binding".into(),
+                        })?;
+                crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+                    app,
+                    &session_id,
+                    &agent_id,
+                    workflow_run_id,
+                    node_run_id,
+                )
+            } else {
+                app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
+            }
+        })
+        .await
+    }
+
     async fn redispatch_local_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        let session_id_owned = session_id.to_string();
-        let agent_id_owned = agent_id.to_string();
         let provider_run_id = self
-            .with_app_side_effect(move |app| {
-                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-            })
+            .recover_local_prompt_provider(session_id, agent_id, prompt)
             .await?;
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
@@ -944,8 +988,21 @@ impl KernelRuntimeState {
         let workflow_rendered_prompt = session
             .as_ref()
             .and_then(|session| workflow_turn_rendered_prompt(session, &prompt));
-        let recovery_material =
-            restart_recovery_prompt_material(&prompt, workflow_rendered_prompt.as_deref());
+        let workflow_dispatch_prompt = workflow_rendered_prompt.as_ref().and_then(|rendered| {
+            Some(
+                crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                    session.as_ref()?,
+                    prompt.workflow_run_id()?,
+                    prompt.workflow_node_run_id()?,
+                    rendered,
+                ),
+            )
+        });
+        let recovery_material = restart_recovery_prompt_material(
+            &prompt,
+            workflow_rendered_prompt.as_deref(),
+            workflow_dispatch_prompt.as_deref(),
+        );
         let prompt_text = recovery_material.transcript_match_text.clone();
         let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
             session
@@ -1049,12 +1106,8 @@ impl KernelRuntimeState {
             &operation_id,
             crate::session::DurablePromptDeliveryPhase::Dispatching,
         )?;
-        let session_id_owned = session_id.to_string();
-        let agent_id_owned = agent.id().to_string();
         let provider_run_id = match self
-            .with_app_side_effect(move |app| {
-                app.ensure_prompt_provider_run_for_agent(&session_id_owned, &agent_id_owned)
-            })
+            .recover_local_prompt_provider(session_id, agent.id(), &prompt)
             .await
         {
             Ok(provider_run_id) => provider_run_id,
@@ -1191,6 +1244,7 @@ struct RestartRecoveryPromptMaterial {
 fn restart_recovery_prompt_material(
     prompt: &crate::session::PromptQueueItem,
     workflow_rendered_prompt: Option<&str>,
+    workflow_dispatch_prompt: Option<&str>,
 ) -> RestartRecoveryPromptMaterial {
     let transcript_match_text = workflow_rendered_prompt
         .unwrap_or_else(|| prompt.prompt())
@@ -1199,7 +1253,8 @@ fn restart_recovery_prompt_material(
         Some(rendered_prompt) => join_restart_recovery_context(
             prompt.hidden_system_context(),
             &format!(
-                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{rendered_prompt}"
+                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{}",
+                workflow_dispatch_prompt.unwrap_or(rendered_prompt)
             ),
         ),
         None => prompt.hidden_system_context().to_string(),
@@ -1236,7 +1291,7 @@ fn join_restart_recovery_context(existing: &str, recovery: &str) -> String {
     }
 }
 
-fn recoverable_queued_publication_prompt(
+fn recoverable_queued_workflow_prompt(
     session: &crate::session::RuntimeSession,
     prompt: &crate::session::PromptQueueItem,
 ) -> bool {
@@ -1253,7 +1308,7 @@ fn recoverable_queued_publication_prompt(
         .iter()
         .find(|run| run.id() == workflow_run_id)
         .is_some_and(|run| {
-            run.publication_invocation().is_some_and(|invocation| {
+            run.publication_invocation().is_none_or(|invocation| {
                 session.workflow_publications().iter().any(|publication| {
                     publication.id() == invocation.publication_id && publication.enabled()
                 })
@@ -1500,8 +1555,11 @@ mod tests {
         .with_hidden_system_context("existing hidden context")
         .with_attachments(vec![attachment.clone()]);
 
-        let material =
-            restart_recovery_prompt_material(&prompt, Some("authoritative rendered workflow turn"));
+        let material = restart_recovery_prompt_material(
+            &prompt,
+            Some("authoritative rendered workflow turn"),
+            Some("current delivery copy"),
+        );
 
         assert_eq!(
             material.transcript_match_text,
@@ -1511,6 +1569,9 @@ mod tests {
             .hidden_system_context
             .starts_with("existing hidden context\n\n"));
         assert!(material
+            .hidden_system_context
+            .contains("current delivery copy"));
+        assert!(!material
             .hidden_system_context
             .contains("authoritative rendered workflow turn"));
         assert_eq!(material.attachments, vec![attachment]);
@@ -1558,14 +1619,26 @@ mod tests {
         (worktree, router.runtime_state(), session_id, agent_id)
     }
 
-    fn runtime_with_queued_prompt() -> (KernelRuntimeState, String, String) {
+    fn runtime_with_queued_workflow_prompt(
+        published: bool,
+    ) -> (KernelRuntimeState, String, String) {
+        runtime_with_workflow_prompt(published, false)
+    }
+
+    fn runtime_with_workflow_prompt(
+        published: bool,
+        active: bool,
+    ) -> (KernelRuntimeState, String, String) {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let workspace = std::env::current_dir().expect("test workspace should resolve");
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new(
-                workspace.to_string_lossy(),
-                workspace.to_string_lossy(),
-            ))
+            .create_session(
+                CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                    .with_agent_defaults(crate::session::SessionAgentDefaults {
+                        provider: "dev-stub".into(),
+                        ..Default::default()
+                    }),
+            )
             .expect("session should create");
         let mut session_with_agents = session.clone();
         session_with_agents.set_agents(vec![agent.clone()]);
@@ -1594,49 +1667,59 @@ mod tests {
                 Some("entry".to_string()),
             )
             .expect("workflow endpoint should create");
-        let publication = app
-            .sessions_mut()
-            .create_workflow_publication(
-                session.id(),
-                workflow.id(),
-                endpoint.id(),
-                Some("default".to_string()),
-                Some("restart-publication".to_string()),
-                Some(crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()),
-                Some("/restart".to_string()),
-                vec!["POST".to_string()],
-                None,
-                None,
-                None,
-                None,
-                Some("async".to_string()),
-                None,
-                None,
-                "local".to_string(),
-            )
-            .expect("workflow publication should create");
-        let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
-            publication_id: publication.id().to_string(),
-            hook_id: None,
-            invocation_id: "invocation-restart".to_string(),
-            transport: "event".to_string(),
-            endpoint_id: endpoint.id().to_string(),
-            queue_ref: Some("default".to_string()),
-            input: serde_json::json!({"prompt": "resume queued work"}),
-            artifacts: Vec::new(),
-            mode: None,
-            caller: serde_json::json!({"type": "event"}),
+        let workflow_run = if published {
+            let publication = app
+                .sessions_mut()
+                .create_workflow_publication(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("default".to_string()),
+                    Some("restart-publication".to_string()),
+                    Some(crate::session::WORKFLOW_PUBLICATION_KIND_INGRESS.to_string()),
+                    Some("/restart".to_string()),
+                    vec!["POST".to_string()],
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("async".to_string()),
+                    None,
+                    None,
+                    "local".to_string(),
+                )
+                .expect("workflow publication should create");
+            let publication_invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+                publication_id: publication.id().to_string(),
+                hook_id: None,
+                invocation_id: "invocation-restart".to_string(),
+                transport: "event".to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                queue_ref: Some("default".to_string()),
+                input: serde_json::json!({"prompt": "resume queued work"}),
+                artifacts: Vec::new(),
+                mode: None,
+                caller: serde_json::json!({"type": "event"}),
+            };
+            app.sessions_mut()
+                .invoke_workflow_endpoint_with_publication_invocation(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("resume queued work".to_string()),
+                    Some(publication_invocation),
+                )
+                .expect("published workflow run should create")
+        } else {
+            app.sessions_mut()
+                .invoke_workflow_endpoint(
+                    session.id(),
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("resume queued work".to_string()),
+                )
+                .expect("manual workflow run should create")
         };
-        let workflow_run = app
-            .sessions_mut()
-            .invoke_workflow_endpoint_with_publication_invocation(
-                session.id(),
-                workflow.id(),
-                endpoint.id(),
-                Some("resume queued work".to_string()),
-                Some(publication_invocation),
-            )
-            .expect("published workflow run should create");
         let node_run_id = workflow_run.node_runs()[0].id().to_string();
         app.sessions_mut()
             .prepare_workflow_turn(
@@ -1656,14 +1739,30 @@ mod tests {
             "resume queued work",
             PromptStatus::Queued,
         )
-        .with_workflow_context(workflow_run.id(), &node_run_id);
+        .with_workflow_context(workflow_run.id(), &node_run_id)
+        .with_durable_operation("workflow-restart", "workflow-restart");
         let outcome = app
-            .prompt_owner_submit_prepared_prompt(session.id(), prompt, true)
-            .expect("prompt should queue");
-        assert!(matches!(
-            outcome,
-            crate::session::PromptSubmissionOutcome::Queued { .. }
-        ));
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, !active)
+            .expect("workflow prompt should be admitted");
+        if active {
+            let crate::session::PromptSubmissionOutcome::Started { prompt } = outcome else {
+                panic!("workflow prompt should start");
+            };
+            app.mark_active_prompt_delivery(
+                session.id(),
+                agent.id(),
+                prompt.id(),
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+                None,
+                None,
+            )
+            .expect("accepted delivery should persist");
+        } else {
+            assert!(matches!(
+                outcome,
+                crate::session::PromptSubmissionOutcome::Queued { .. }
+            ));
+        }
         let session_id = session.id().to_string();
         let agent_id = agent.id().to_string();
         let app = Arc::new(Mutex::new(app));
@@ -1703,8 +1802,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_user_started_workflow_prompt_starts_provider_after_restart() {
+        // MP-08/MP-10/MP-11: a kernel killed between creating a user-started workflow run and
+        // delivering its prompt left the run Created and the prompt Queued forever.
+        let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(false);
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.queued_local_prompts_started, 1);
+        assert_eq!(summary.failed_reconciliations, 0);
+        runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("queued workflow prompt recovery should launch its provider");
+    }
+
+    #[tokio::test]
     async fn queued_local_prompt_starts_provider_after_restart() {
-        let (runtime, session_id, agent_id) = runtime_with_queued_prompt();
+        let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(true);
 
         let summary = runtime.recover_durable_runtime_after_restart().await;
 
@@ -1720,6 +1836,90 @@ mod tests {
             crate::provider::ProviderRunState::Starting
                 | crate::provider::ProviderRunState::Running
         ));
+    }
+
+    #[tokio::test]
+    async fn queued_manual_workflow_prompt_starts_provider_after_restart() {
+        let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(false);
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.queued_local_prompts_started, 1);
+        assert_eq!(summary.failed_reconciliations, 0);
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("queued workflow recovery should launch its provider");
+        assert!(run.workflow_tools_enabled());
+        assert!(matches!(
+            run.state(),
+            crate::provider::ProviderRunState::Starting
+                | crate::provider::ProviderRunState::Running
+        ));
+    }
+
+    #[tokio::test]
+    async fn accepted_workflow_restart_keeps_its_runtime_tools() {
+        let (runtime, session_id, agent_id) = runtime_with_workflow_prompt(false, true);
+        let before = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let original = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&before, &agent_id)
+            .unwrap();
+        let original_binding = (
+            original.workflow_run_id().unwrap().to_string(),
+            original.workflow_node_run_id().unwrap().to_string(),
+        );
+
+        let summary = runtime.recover_durable_runtime_after_restart().await;
+
+        assert_eq!(summary.accepted_local_redispatched, 1, "{summary:?}");
+        assert_eq!(summary.failed_reconciliations, 0);
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .unwrap();
+        assert!(
+            run.workflow_tools_enabled(),
+            "recovered node needs its runtime tools before dispatch"
+        );
+        let tools =
+            runtime.runtime_tool_specs_for_auth_token(run.runtime_mcp_auth_token().unwrap());
+        for name in [
+            "ack_workflow_turn",
+            "validate_workflow_handoff",
+            "validate_and_submit_workflow_run_output",
+        ] {
+            assert!(tools.iter().any(|tool| tool.name == name), "missing {name}");
+        }
+        let after = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let recovered = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&after, &agent_id)
+            .unwrap();
+        assert_eq!(recovered.id(), original.id());
+        assert_eq!(
+            recovered.workflow_run_id(),
+            Some(original_binding.0.as_str())
+        );
+        assert_eq!(
+            recovered.workflow_node_run_id(),
+            Some(original_binding.1.as_str())
+        );
+        assert_eq!(after.workflow_runs().len(), 1);
+        assert_eq!(after.workflow_runs()[0].node_runs().len(), 1);
     }
 
     #[tokio::test]
@@ -1943,6 +2143,106 @@ mod tests {
             task.reason.contains("could not be restored"),
             "{}",
             task.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+        );
+        // A provider whose account is not signed in cannot launch.
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("claude".into()), None, None)
+            .expect("agent provider should change");
+        runtime
+            .outside_part_request(
+                "follower",
+                true,
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                &crate::local::LocalDaemonRequest::SubscribeEvents(
+                    crate::local::SubscribeEventsRequest {
+                        targets: vec![crate::local::EventTarget {
+                            kernel: runtime.owned.config_projection.snapshot().daemon_id,
+                            session_id: session_id.clone(),
+                            agent_id: Some(agent_id.clone()),
+                        }],
+                    },
+                ),
+            )
+            .expect("the follower subscribes");
+        let targets = runtime.durable_restart_recovery_targets();
+
+        runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        runtime
+            .owned
+            .publish_outside_runtime_activity()
+            .expect("the follower's state is published");
+        let events: Vec<serde_json::Value> = runtime
+            .outside_store()
+            .outside_list("follower", None, 100)
+            .expect("events list")
+            .expect("the follower has events")
+            .events
+            .into_iter()
+            .map(|event| serde_json::to_value(event.value).expect("event serializes"))
+            .filter(|value| value["type"] == "agent" && value["value"]["run_state"].is_string())
+            .map(|value| value["value"].clone())
+            .collect();
+        let ended = events.last().expect("the follower hears the turn end");
+        assert_eq!(ended["run_state"], "error", "{ended}");
+        assert_eq!(
+            ended["outcome"]["kind"], "interrupted_by_restart",
+            "{ended}"
+        );
+        assert_eq!(ended["outcome"]["retryable"], true, "{ended}");
+        assert!(
+            ended["outcome"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("could not be restored")),
+            "{ended}"
+        );
+        assert_eq!(ended["prompt_id"], prompt_id.as_str(), "{ended}");
+        assert_eq!(ended["turn_id"], prompt_id.as_str(), "{ended}");
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .expect("history loads")
+            .expect("the turn has settlement history");
+        assert_eq!(
+            settlement.metadata["prompt_settlement_status"], "failed",
+            "an interrupted turn is not a cancelled one"
+        );
+        assert_eq!(
+            settlement.metadata["turn_outcome"]["kind"],
+            "interrupted_by_restart"
+        );
+        let turn = runtime
+            .owned
+            .completed_git_turn_snapshots
+            .latest_projection_for_agent(&session_id, &agent_id)
+            .expect("the turn is in the state");
+        assert_eq!(
+            serde_json::to_value(turn).expect("turn serializes")["outcome"]["kind"],
+            "interrupted_by_restart"
         );
     }
 

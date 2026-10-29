@@ -126,6 +126,8 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+        // Aliases and adoption relationships do not prove live work. Legacy runs
+        // use the same prompt and admitted-task ownership as every other run.
         Ok(targets)
     }
 
@@ -146,7 +148,7 @@ impl KernelRuntimeOwnedState {
                 || task
                     .obligations
                     .iter()
-                    .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+                    .any(ledger::AgentObligation::requires_resolution)
                 || self.agent_task_resources_unsettled(&task)?
             {
                 return Ok(true);

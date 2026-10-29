@@ -43,10 +43,7 @@ pub(super) fn bind(
             .rev()
             // A spawned child's completion and delivered prompt can match
             // the same source. Cover the unresolved completion first.
-            .find(|o| {
-                matches!(o.status.as_str(), "open" | "settling" | "failed")
-                    && source_for(o).is_some()
-            })
+            .find(|o| o.requires_resolution() && source_for(o).is_some())
             .or_else(|| {
                 task.obligations
                     .iter()
@@ -58,7 +55,7 @@ pub(super) fn bind(
         let source = source_for(obligation).ok_or_else(|| {
             error("source does not cover this obligation; use its exact task_id from subscriptions")
         })?;
-        if matches!(obligation.status.as_str(), "open" | "settling" | "failed") {
+        if obligation.requires_resolution() {
             registration.obligation_id = Some(obligation.id.clone());
         } else if obligation.kind == "message"
             && obligation.status == "satisfied"

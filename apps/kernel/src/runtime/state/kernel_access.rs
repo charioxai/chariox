@@ -10,6 +10,8 @@ use crate::runtime::kernel_access::{
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
 use std::time::{Duration, Instant};
 
+mod holder_exit;
+
 impl KernelRuntimeState {
     fn audit_access(
         &self,
@@ -43,6 +45,7 @@ impl KernelRuntimeState {
         if matches!(outcome, "revoked" | "expired") {
             return self.end_grant(OwedEnd {
                 grant: grant.clone(),
+                covered: Vec::new(),
                 outcome: outcome.to_string(),
                 reason: reason.unwrap_or(outcome).to_string(),
                 recorded: false,
@@ -60,7 +63,9 @@ impl KernelRuntimeState {
     /// first: it is what a restart reads, so an inbox that cannot be closed
     /// never brings a revoked grant back. A step that fails stays owed and is
     /// tried again by the next revoke or sweep, so neither a lost revocation
-    /// nor an open inbox outlives a storage failure.
+    /// nor an open inbox outlives a storage failure. Covered-process ends follow
+    /// the durable grant end, so an audit failure never restores authority; a
+    /// restart reconstructs any missing process ends from this same stream.
     fn end_grant(&self, mut owed: OwedEnd) -> Result<(), DaemonError> {
         let id = owed.grant.grant_id.clone();
         self.owned
@@ -96,6 +101,15 @@ impl KernelRuntimeState {
                     reason: owed.reason.clone(),
                 },
             );
+        }
+        if result.is_ok() {
+            while let Some(process) = owed.covered.last() {
+                result = self.audit_cover(&owed.grant, process, "cover_ended", Some(&owed.reason));
+                if result.is_err() {
+                    break;
+                }
+                owed.covered.pop();
+            }
         }
         if result.is_err() {
             self.owned
@@ -152,8 +166,8 @@ impl KernelRuntimeState {
         self.revoke_access(owner, id, reason, false)
     }
 
-    /// The kernel stops. Holders waiting on events are released with an empty
-    /// answer; sudo windows and timed grants end as always, but a grant that
+    /// The kernel stops. Holders waiting on events receive a shutdown
+    /// reason; sudo windows and timed grants end as always, but a grant that
     /// lasts until its holder exits is kept for the next start. Returns how
     /// many grants and windows it ended or released.
     pub(crate) fn end_kernel_access_for_shutdown(&self) -> Result<usize, DaemonError> {
@@ -187,7 +201,24 @@ impl KernelRuntimeState {
     /// is gone, or whose pid was reused, ends its grant now.
     pub(crate) fn restore_kernel_access_grants(&self) -> Result<usize, DaemonError> {
         let mut restored = 0;
-        for (id, summary, holder) in recorded_until_exit_grants(&self.owned.durable_state_store)? {
+        for recorded in recorded_access_grants(&self.owned.durable_state_store)? {
+            let RecordedGrant {
+                id,
+                summary,
+                holder,
+                covered,
+                end,
+            } = recorded;
+            if let Some((outcome, reason)) = end {
+                self.end_grant(OwedEnd {
+                    grant: summary,
+                    covered,
+                    outcome,
+                    reason,
+                    recorded: true,
+                })?;
+                continue;
+            }
             match holder.filter(ProcessIdentity::alive) {
                 Some(holder) => {
                     self.owned
@@ -200,12 +231,28 @@ impl KernelRuntimeState {
                             Grant {
                                 summary,
                                 holder,
+                                covered: covered
+                                    .into_iter()
+                                    .filter(ProcessIdentity::alive)
+                                    .collect(),
                                 clock: None,
                             },
                         );
+                    self.owned
+                        .kernel_access
+                        .lock()
+                        .expect("access state poisoned")
+                        .holder_changed
+                        .notify_one();
                     restored += 1;
                 }
-                None => self.audit_access(&summary, "revoked", Some("process_exit"))?,
+                None => self.end_grant(OwedEnd {
+                    grant: summary,
+                    covered,
+                    outcome: "revoked".into(),
+                    reason: "process_exit".into(),
+                    recorded: false,
+                })?,
             }
         }
         Ok(restored)
@@ -241,7 +288,7 @@ impl KernelRuntimeState {
             .filter_map(|id| state.grants.remove(&id))
             .collect::<Vec<_>>();
         for grant in &revoked {
-            state.remember_ended(&grant.holder);
+            state.remember_ended(grant);
         }
         let pending_keys = state
             .pending
@@ -269,7 +316,13 @@ impl KernelRuntimeState {
         }
         for grant in revoked {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
-            if let Err(error) = self.audit_access(&grant.summary, "revoked", Some(reason)) {
+            if let Err(error) = self.end_grant(OwedEnd {
+                grant: grant.summary,
+                covered: grant.covered,
+                outcome: "revoked".into(),
+                reason: reason.into(),
+                recorded: false,
+            }) {
                 audit_error.get_or_insert(error);
             }
         }
@@ -333,22 +386,41 @@ impl KernelRuntimeState {
             .filter_map(|(id, reason)| state.grants.remove(&id).map(|grant| (grant, reason)))
             .collect::<Vec<_>>();
         for (grant, _) in &removed {
-            state.remember_ended(&grant.holder);
+            state.remember_ended(grant);
         }
+        let exited = state
+            .grants
+            .values_mut()
+            .flat_map(|grant| {
+                let (live, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut grant.covered)
+                    .into_iter()
+                    .partition(ProcessIdentity::alive);
+                grant.covered = live;
+                gone.into_iter()
+                    .map(|process| (grant.summary.clone(), process))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         drop(state);
+        for (grant, process) in exited {
+            let _ = self.audit_cover(&grant, &process, "cover_ended", Some("process_exit"));
+        }
         let _ = self.settle_owed_ends(None, None);
         for (grant, reason) in removed {
             self.retire_notification_grants(Some(&grant.summary.grant_id));
             self.cancel_access_prompt(&grant.summary, "extension");
-            let _ = self.audit_access(
-                &grant.summary,
-                if reason == "expiry" {
+            let _ = self.end_grant(OwedEnd {
+                grant: grant.summary,
+                covered: grant.covered,
+                outcome: if reason == "expiry" {
                     "expired"
                 } else {
                     "revoked"
-                },
-                Some(reason),
-            );
+                }
+                .into(),
+                reason: reason.into(),
+                recorded: false,
+            });
         }
     }
 
@@ -372,7 +444,7 @@ impl KernelRuntimeState {
             .grants
             .values()
             .filter_map(|grant| {
-                let distance = chain.iter().position(|p| *p == grant.holder)?;
+                let distance = grant.covering(&chain)?;
                 grant.holder.alive().then(|| (distance, grant.clone()))
             })
             .collect();
@@ -404,7 +476,10 @@ impl KernelRuntimeState {
             .expect("access state poisoned")
             .grants
             .get(id)
-            .is_some_and(|grant| grant.holder.contains(peer))
+            .is_some_and(|grant| {
+                grant.holder.contains(peer)
+                    || grant.covered.iter().any(|process| process.contains(peer))
+            })
     }
 
     pub(crate) fn access_grant_summary(&self, id: &str) -> Option<KernelAccessGrant> {
@@ -426,7 +501,7 @@ impl KernelRuntimeState {
             .grants
             .values()
             .filter(|grant| grant.summary.owner_user_id == owner)
-            .map(|grant| grant.summary.clone())
+            .map(Grant::listed)
             .collect()
     }
 
@@ -460,6 +535,7 @@ impl KernelRuntimeState {
         let id = format!("access-{:016x}", rand::random::<u64>());
         let key = (holder.pid, holder.start, holder.executable.clone());
         let summary = KernelAccessGrant {
+            covered: Vec::new(),
             grant_id: id.clone(),
             owner_user_id: self.owned.config_projection.local_owner_user_id(),
             holder_pid: holder.pid,
@@ -542,9 +618,11 @@ impl KernelRuntimeState {
             Grant {
                 summary,
                 holder,
+                covered: Vec::new(),
                 clock,
             },
         );
+        state.holder_changed.notify_one();
         Ok(())
     }
 
@@ -686,37 +764,89 @@ impl KernelRuntimeState {
     }
 }
 
+mod cover;
 mod policy;
 #[cfg(test)]
 pub(super) mod test_support;
 
-/// Grants that last until their holder exits and were never revoked, each
-/// with the holder process recorded when it was granted.
-fn recorded_until_exit_grants(
+/// The last durable grant state: a live until-exit grant, or covered-process
+/// ends still owed after a recorded grant end.
+struct RecordedGrant {
+    id: String,
+    summary: KernelAccessGrant,
+    holder: Option<ProcessIdentity>,
+    covered: Vec<ProcessIdentity>,
+    end: Option<(String, String)>,
+}
+
+fn recorded_access_grants(
     store: &crate::durable_state::DurableKernelStateStore,
-) -> Result<Vec<(String, KernelAccessGrant, Option<ProcessIdentity>)>, DaemonError> {
+) -> Result<Vec<RecordedGrant>, DaemonError> {
     let mut recorded = std::collections::BTreeMap::new();
     for event in store.load_events_by_kind("kernel_access.grant")? {
         let Some(id) = event.subject_id else { continue };
         match event.payload["outcome"].as_str() {
             Some("granted") => {
-                if let Ok(grant) =
+                if let Ok(summary) =
                     serde_json::from_value::<KernelAccessGrant>(event.payload["grant"].clone())
                 {
                     let holder = serde_json::from_value(event.payload["holder"].clone()).ok();
-                    recorded.insert(id, (grant, holder));
+                    recorded.insert(
+                        id.clone(),
+                        RecordedGrant {
+                            id,
+                            summary,
+                            holder,
+                            covered: Vec::new(),
+                            end: None,
+                        },
+                    );
                 }
             }
-            Some("revoked" | "expired") => {
-                recorded.remove(&id);
+            Some("covered") => {
+                if let (Some(grant), Ok(process)) = (
+                    recorded.get_mut(&id),
+                    serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
+                ) {
+                    grant.covered.retain(|known| *known != process);
+                    grant.covered.push(process);
+                }
+            }
+            Some("cover_ended") => {
+                if let (Some(grant), Ok(process)) = (
+                    recorded.get_mut(&id),
+                    serde_json::from_value::<ProcessIdentity>(event.payload["process"].clone()),
+                ) {
+                    grant.covered.retain(|known| *known != process);
+                    if grant.end.is_some() && grant.covered.is_empty() {
+                        recorded.remove(&id);
+                    }
+                }
+            }
+            Some(outcome @ ("revoked" | "expired")) => {
+                if let Some(grant) = recorded.get_mut(&id) {
+                    if grant.covered.is_empty() {
+                        recorded.remove(&id);
+                    } else {
+                        grant.end = Some((
+                            outcome.into(),
+                            event.payload["reason"].as_str().unwrap_or(outcome).into(),
+                        ));
+                    }
+                }
             }
             _ => {}
         }
     }
     Ok(recorded
-        .into_iter()
-        .filter(|(_, (grant, _))| grant.term == KernelAccessTerm::UntilHolderExits)
-        .map(|(id, (grant, holder))| (id, grant, holder))
+        .into_values()
+        .filter(|grant| {
+            if grant.end.is_some() {
+                !grant.covered.is_empty()
+            } else {
+                grant.summary.term == KernelAccessTerm::UntilHolderExits
+            }
+        })
         .collect())
 }
 
@@ -725,9 +855,11 @@ fn recorded_until_exit_grants(
 pub(crate) fn grant_inboxes_to_keep(
     store: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<Vec<String>, DaemonError> {
-    Ok(recorded_until_exit_grants(store)?
+    Ok(recorded_access_grants(store)?
         .into_iter()
-        .filter(|(_, _, holder)| holder.as_ref().is_some_and(ProcessIdentity::alive))
-        .map(|(id, ..)| id)
+        .filter(|grant| {
+            grant.end.is_none() && grant.holder.as_ref().is_some_and(ProcessIdentity::alive)
+        })
+        .map(|grant| grant.id)
         .collect())
 }
