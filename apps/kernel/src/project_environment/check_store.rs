@@ -85,8 +85,54 @@ impl ProjectEnvironmentStore {
         project: &str,
         checks: &EnvironmentChecks,
     ) -> Result<(), crate::error::DaemonError> {
-        let bytes = serde_json::to_vec(checks)
+        let mut bytes = serde_json::to_vec(checks)
             .map_err(|_| environment_error("Check journal encoding failed"))?;
+        if bytes.len() > 8 * 1024 * 1024 {
+            let mut retained = checks.clone();
+            // Preserve lookup/replay identities and the latest operation's body.
+            // Current observations remain authoritative after older bodies expire.
+            let older = retained.operations.len().saturating_sub(1);
+            for index in 0..older {
+                let operation = &mut retained.operations[index];
+                if matches!(
+                    operation.phase,
+                    EnvironmentOperationPhase::Ready
+                        | EnvironmentOperationPhase::Failed
+                        | EnvironmentOperationPhase::Cancelled
+                ) && !operation.per_item_results.is_empty()
+                {
+                    operation.per_item_results.clear();
+                    bytes = serde_json::to_vec(&retained)
+                        .map_err(|_| environment_error("Check journal encoding failed"))?;
+                    if bytes.len() <= 8 * 1024 * 1024 {
+                        break;
+                    }
+                }
+            }
+            // Request metadata also consumes capacity (for example 4,096 long IDs).
+            // Retire the oldest completed entries under the same bounded-history
+            // lookup contract as the existing count limit; never retire the latest.
+            while bytes.len() > 8 * 1024 * 1024 {
+                let Some(index) = retained
+                    .operations
+                    .iter()
+                    .take(retained.operations.len().saturating_sub(1))
+                    .position(|operation| {
+                        matches!(
+                            operation.phase,
+                            EnvironmentOperationPhase::Ready
+                                | EnvironmentOperationPhase::Failed
+                                | EnvironmentOperationPhase::Cancelled
+                        )
+                    })
+                else {
+                    break;
+                };
+                retained.operations.remove(index);
+                bytes = serde_json::to_vec(&retained)
+                    .map_err(|_| environment_error("Check journal encoding failed"))?;
+            }
+        }
         if bytes.len() > 8 * 1024 * 1024 {
             return Err(environment_error("Check journal exceeds bounds"));
         }

@@ -8,9 +8,12 @@ use std::sync::{
 };
 use std::time::Duration;
 
+pub(super) type Termination = Box<dyn FnOnce(&mut Child) -> std::io::Result<()> + Send>;
+
 pub(super) struct Pending {
     pub(super) child: Child,
     pub(super) pipes: Vec<OwnedFd>,
+    pub(super) terminate: Option<Termination>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) descendants: Vec<super::descendants::Descendant>,
     pub(super) cleaned: bool,
@@ -29,6 +32,11 @@ impl Pending {
                     child.signal(libc::SIGSTOP)?;
                 }
             }
+            // Keep frozen ancestors alive until every descendant has been pinned.
+            // A late setsid helper with redirected pipes still has its owned parent here.
+            if let Some(terminate) = self.terminate.take() {
+                let _ = terminate(&mut self.child);
+            }
             for child in &self.descendants {
                 child.signal(libc::SIGKILL)?;
             }
@@ -46,6 +54,10 @@ impl Pending {
             if !fds.is_empty() && super::pipe_writers_open(&fds)? {
                 super::pipe_owners::terminate(&fds)?;
             }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        if let Some(terminate) = self.terminate.take() {
+            let _ = terminate(&mut self.child);
         }
         self.cleaned = true;
         Ok(())

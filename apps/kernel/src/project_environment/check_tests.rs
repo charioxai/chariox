@@ -458,3 +458,196 @@ mod review0440;
 
 #[path = "review0440_migration_tests.rs"]
 mod review0440_migration;
+
+// MP-08 / MP-10 / MP-11: full Check publication cannot exhaust retained journal bodies.
+#[test]
+fn r6_environment_repeated_full_checks_keep_history_within_byte_capacity() {
+    let (root, store, env) = environment();
+    let project = crate::session::RuntimeProject::new(
+        "check",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Check",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let mut draft = environment_draft(&env);
+    draft.project_requirements = (0..4096)
+        .map(|index| {
+            let mut r = requirement(&format!("public-setting-{index:04}"));
+            r.spec = RequirementSpec::Secrets {
+                name: format!("SETTING_{index}"),
+                vault: None,
+            };
+            r
+        })
+        .collect();
+    let env = store
+        .save_revision_locked(
+            &env,
+            &crate::local::SaveProjectEnvironmentRevisionRequest {
+                project_id: project.id().into(),
+                expected_revision: env.revision,
+                expected_content_digest: env.content_digest.clone(),
+                draft,
+                accepted_proposal_ids: vec![],
+                excluded_proposal_ids: vec![],
+            },
+            "owner",
+        )
+        .unwrap()
+        .0;
+    let target = EnvironmentTargetBinding {
+        machine_id: "machine".into(),
+        target_instance_generation: "generation".into(),
+        slice_ref: None,
+    };
+    let context = EnvironmentCheckContext {
+        config: crate::config::DaemonConfig::for_tests(),
+        owner: "owner".into(),
+        profiles: crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.path().join("profiles"),
+        )
+        .unwrap(),
+        apps: crate::durable_state::DurableKernelStateStore::open(root.path().join("apps.db"))
+            .unwrap(),
+    };
+    let mut seed = super::check_store::EnvironmentChecks {
+        folder_binding_digest: folder_bindings_digest(&env),
+        ..Default::default()
+    };
+    // Establish identical current evidence so progress exercises bounded batch publication.
+    for r in &env.project_requirements {
+        seed.observations.push(check_requirement(
+            &context,
+            &env,
+            r,
+            &target,
+            "seed",
+            &mut seed.public_bindings,
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        ));
+    }
+    store.save_checks(project.id(), &seed).unwrap();
+    for index in 0..12 {
+        let request = crate::local::CheckProjectEnvironmentRequest {
+            project_id: project.id().into(),
+            revision_digest: env.content_digest.clone(),
+            target: target.clone(),
+            operation_id: format!("full-{index}"),
+            selected_items: env
+                .project_requirements
+                .iter()
+                .map(|r| r.requirement_id.clone())
+                .collect(),
+        };
+        let super::check_start::CheckStart::New { mut operation, .. } = store
+            .start_check(request, "owner", target.clone(), || Ok(project.clone()))
+            .expect("full Check admission must remain available")
+        else {
+            panic!("new Check expected")
+        };
+        let mut progress = store.load_checks(project.id()).unwrap();
+        operation.phase = EnvironmentOperationPhase::Running;
+        operation.per_item_results = progress
+            .observations
+            .iter_mut()
+            .map(|observation| {
+                observation.check_operation_id = Some(operation.operation_id.clone());
+                EnvironmentItemResult {
+                    requirement_id: observation.requirement_id.clone(),
+                    status: observation.status.clone(),
+                    reason_code: observation.reason_code.clone(),
+                    safe_summary: observation.safe_summary.clone(),
+                    receipt_ids: vec![],
+                }
+            })
+            .collect();
+        *progress.operations.last_mut().unwrap() = operation.clone();
+        store
+            .save_checks(project.id(), &progress)
+            .expect("full Check progress must fit the journal");
+        operation.phase = EnvironmentOperationPhase::Ready;
+        operation.recovery_state = EnvironmentRecoveryState::Settled;
+        *progress.operations.last_mut().unwrap() = operation;
+        store
+            .save_checks(project.id(), &progress)
+            .expect("full Check settlement must fit the journal");
+        let journal = store.load_checks(project.id()).unwrap();
+        assert!(serde_json::to_vec(&journal).unwrap().len() <= 8 * 1024 * 1024);
+        assert_eq!(journal.observations.len(), 4096);
+        assert_eq!(
+            journal.operations.last().unwrap().per_item_results.len(),
+            4096
+        );
+        assert_eq!(journal.operations.len(), index + 1);
+        for prior in 0..=index {
+            let retained = store
+                .check_operation(project.id(), &format!("full-{prior}"), &target)
+                .unwrap()
+                .expect("retained operation identity must remain queryable");
+            assert_eq!(retained.phase, EnvironmentOperationPhase::Ready);
+            assert_eq!(retained.selected_items.len(), 4096);
+        }
+    }
+    assert!(store
+        .load_checks(project.id())
+        .unwrap()
+        .operations
+        .iter()
+        .any(|o| o.per_item_results.is_empty()));
+    let request = crate::local::CheckProjectEnvironmentRequest {
+        project_id: project.id().into(),
+        revision_digest: env.content_digest.clone(),
+        target: target.clone(),
+        operation_id: "after-full-history".into(),
+        selected_items: vec![env.project_requirements[0].requirement_id.clone()],
+    };
+    let super::check_start::CheckStart::New {
+        environment,
+        operation,
+        ..
+    } = store
+        .start_check(request, "owner", target, || Ok(project.clone()))
+        .unwrap()
+    else {
+        panic!("new Check expected")
+    };
+    store
+        .run_check(context, *environment, operation, || Ok(project.clone()))
+        .expect("ordinary Check must remain usable after repeated full result publication");
+}
+
+#[cfg(unix)]
+#[test]
+fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::test_support::TestWorktree::new("r6-prerelease-probe");
+    let executable = root.path().join("rustc");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'rustc 1.93.0-nightly (abc123 2026-10-28)\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("PATH", root.path());
+    let version = inventory::version("rustc", &[]);
+    assert!(
+        version
+            .as_ref()
+            .ok()
+            .and_then(|v| v.as_deref())
+            .is_none_or(|v| inventory::satisfies(v, ">=1.93.0") != Some(true)),
+        "prerelease output cannot establish stable readiness: {version:?}"
+    );
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'rustc 1.93.0 (abc123 2026-10-28)\\n'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        inventory::version("rustc", &[]).unwrap().as_deref(),
+        Some("1.93.0")
+    );
+}
