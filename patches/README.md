@@ -21,8 +21,12 @@ guard until upstream empty replacements reuse or reset their native arena.
 MP-08 / MP-10: the stdin parser keeps an incomplete CSI report until its final
 byte arrives, so an SGR mouse report or key sequence delayed by SSH or renderer
 work is never flushed as Escape plus text. While a mouse button is held, a
-pending Escape waits for the next report instead of cancelling the drag on a
-timer. A new ESC and the pending-byte bound still recover malformed input; a
-standalone Escape keeps its 10 ms deadline. `apps/cli/src/tui-mouse-acquisition.bun-test.ts`
+pending Escape waits up to 500 ms for the rest of a report. A release the terminal
+never delivered (a drag that left the window) therefore cannot hold Escape for
+ever: after the hold the Escape is its own key and the stale button state is
+cleared, so the next key is not an Alt chord and later Escapes are back on the
+10 ms deadline. This applies to the renderer's parser and the CLI's own stdin
+parser alike. A new ESC and the pending-byte bound still recover malformed input.
+`apps/cli/src/tui-mouse-acquisition.bun-test.ts`
 covers delayed reports through the real renderer and parser. Keep it on OpenTUI
 upgrades.

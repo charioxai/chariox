@@ -53,3 +53,64 @@ test("MP-08 / MP-10 an incomplete CSI is abandoned when a new escape sequence st
   assert.ok(names.includes("up"), `the arrow key after an abandoned report must decode, got ${JSON.stringify(names)}`)
   parser.destroy()
 })
+
+// A release the terminal never delivered (drag left the window) must not make
+// Escape wait for ever: after the bounded hold the Escape is its own key, the
+// stale button state is dropped and the next key is not an Alt chord.
+const missedReleaseHoldMs = 500
+
+test("MP-08 / MP-10 a missed mouse release does not turn Escape plus a key into an Alt chord", () => {
+  let now = 0
+  const parser = new StdinParser({ timeoutMs: 10, armTimeouts: false, clock: { now: () => now, setTimeout, clearTimeout } })
+  const keys: Array<{ name: string; meta: boolean }> = []
+  const drain = () => parser.drain(event => { if (event.type === "key" && event.key) keys.push({ name: event.key.name, meta: event.key.meta }) })
+  parser.push(Buffer.from(down))
+  parser.push(Buffer.from("\x1b"))
+  now = 100
+  parser.flushTimeout(now)
+  drain()
+  assert.deepEqual(keys, [], "a pending Escape still waits briefly for a delayed report while a button is down")
+  now = missedReleaseHoldMs + 100
+  parser.flushTimeout(now)
+  drain()
+  assert.deepEqual(keys, [{ name: "escape", meta: false }])
+  parser.push(Buffer.from("c"))
+  drain()
+  assert.deepEqual(keys.slice(1), [{ name: "c", meta: false }])
+  parser.push(Buffer.from("\x1b"))
+  now += 20
+  parser.flushTimeout(now)
+  drain()
+  assert.deepEqual(keys.slice(2), [{ name: "escape", meta: false }], "the next lone Escape is back on the 10 ms deadline")
+  parser.destroy()
+})
+
+test("MP-08 / MP-10 the armed timer recovers Escape after a missed mouse release", async () => {
+  let flushed!: () => void
+  const flushedOnce = new Promise<void>(resolve => { flushed = resolve })
+  const parser = new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush: () => flushed() })
+  const keys: Array<{ name: string; meta: boolean }> = []
+  const drain = () => parser.drain(event => { if (event.type === "key" && event.key) keys.push({ name: event.key.name, meta: event.key.meta }) })
+  parser.push(Buffer.from(down))
+  parser.push(Buffer.from("\x1b"))
+  await flushedOnce
+  drain()
+  parser.push(Buffer.from("c"))
+  drain()
+  assert.deepEqual(keys, [{ name: "escape", meta: false }, { name: "c", meta: false }])
+  parser.destroy()
+})
+
+test("MP-08 / MP-10 the renderer keeps Escape and the next key apart after a missed mouse release", async () => {
+  const harness = await createTestRenderer({ width: 50, height: 5, useThread: false })
+  const keys: Array<{ name: string; meta: boolean }> = []
+  harness.renderer.keyInput.on("keypress", key => keys.push({ name: key.name, meta: key.meta }))
+  const send = (bytes: string) => harness.renderer.stdin.emit("data", Buffer.from(bytes))
+  try {
+    send(down)
+    send("\x1b")
+    await new Promise(resolve => setTimeout(resolve, missedReleaseHoldMs + 200))
+    send("c")
+    assert.deepEqual(keys, [{ name: "escape", meta: false }, { name: "c", meta: false }])
+  } finally { harness.renderer.destroy() }
+})
