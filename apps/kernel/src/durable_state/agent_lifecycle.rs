@@ -406,6 +406,11 @@ fn for_turn(
     row.map(|(id, payload)| decode_task(&id, room, agent, prompt, &payload))
         .transpose()
 }
+#[cfg(test)]
+thread_local! {
+    /// Tasks decoded on this thread, so a test can bound what one operation reads.
+    static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn decode_task(
     id: &str,
     room: &str,
@@ -413,6 +418,8 @@ fn decode_task(
     prompt: &str,
     payload: &str,
 ) -> Result<AgentTaskExecution, DaemonError> {
+    #[cfg(test)]
+    DECODED_TASKS.with(|n| n.set(n.get() + 1));
     let t: AgentTaskExecution = decode(payload)?;
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
@@ -492,22 +499,43 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
         .map_err(sql)?
         .collect::<Result<_, _>>()
         .map_err(sql)?;
-    for (column, path) in [
-        ("state", "$.state"),
-        ("pending_prompt_id", "$.pending_prompt_id"),
-    ] {
+    for (column, value) in [
+        ("state", "TEXT", "json_extract(payload,'$.state')"),
+        ("pending_prompt_id", "TEXT", "json_extract(payload,'$.pending_prompt_id')"),
+        (
+            "obligated",
+            "INTEGER",
+            "json_array_length(payload,'$.obligations')>0",
+        ),
+    ]
+    .map(|(column, kind, value)| (column, format!("{kind} GENERATED ALWAYS AS (CASE WHEN json_valid(payload) THEN {value} END) VIRTUAL")))
+    {
         if !columns.iter().any(|c| c == column) {
-            db.execute_batch(&format!(
-                "ALTER TABLE agent_tasks ADD COLUMN {column} TEXT GENERATED ALWAYS AS \
-                 (CASE WHEN json_valid(payload) THEN json_extract(payload,'{path}') END) VIRTUAL"
-            ))
-            .map_err(sql)?;
+            db.execute_batch(&format!("ALTER TABLE agent_tasks ADD COLUMN {column} {value}"))
+                .map_err(sql)?;
         }
+    }
+    let registration_columns: Vec<String> = db
+        .prepare("PRAGMA table_xinfo(agent_registrations)")
+        .map_err(sql)?
+        .query_map([], |r| r.get(1))
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    if !registration_columns.iter().any(|c| c == "source_id") {
+        db.execute_batch(
+            "ALTER TABLE agent_registrations ADD COLUMN source_id TEXT GENERATED ALWAYS AS \
+             (CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_id') END) VIRTUAL",
+        )
+        .map_err(sql)?;
     }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
          CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
-         CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);",
+         CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);
+         CREATE INDEX IF NOT EXISTS agent_tasks_obligated ON agent_tasks(room_id,obligated,state);
+         CREATE INDEX IF NOT EXISTS agent_registrations_task ON agent_registrations(task_id);
+         CREATE INDEX IF NOT EXISTS agent_registrations_source ON agent_registrations(source_id);",
     )
     .map_err(sql)
 }
@@ -529,6 +557,21 @@ fn live_tasks(
         "room_id=?1 AND agent_id=?2 AND (state IN ('working','waiting','blocked') OR state IS NULL)",
         params![room, agent],
     )
+}
+/// The room's tasks a terminal outcome of `source` can change, in ledger order: those
+/// registered on it, those holding obligations, and unreadable ones so they are quarantined.
+/// Plain turns stay in the ledger, so the outcome of every turn would otherwise read them all.
+const SOURCE_TASKS: &str = "rowid IN (\
+    SELECT t.rowid FROM agent_registrations r CROSS JOIN agent_tasks t ON t.task_id=r.task_id \
+    WHERE (r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1 \
+    UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
+    UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
+fn source_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    source: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, SOURCE_TASKS, params![room, source])
 }
 /// A room's tasks (one agent's when given), in ledger order.
 fn room_tasks(

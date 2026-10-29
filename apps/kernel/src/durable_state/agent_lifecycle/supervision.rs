@@ -54,7 +54,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
-            for mut t in room_tasks(tx, &room, None)? {
+            for mut t in source_tasks(tx, &room, &source)? {
                 if t.room_id != room || t.state == ExecutionState::Done {
                     continue;
                 }

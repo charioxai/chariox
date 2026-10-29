@@ -3627,3 +3627,53 @@ fn per_turn_task_lookups_read_an_index() {
         .unwrap();
     assert_eq!(indexed, ("waiting".into(), "next".into()));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: every turn's terminal outcome reaches the room, and plain
+// turns stay in the ledger, so the outcome must read only the tasks it can change.
+#[test]
+fn source_outcome_reads_only_the_tasks_it_can_change() {
+    let outcome = |turns: usize| {
+        let f = Fixture::new();
+        f.begin("p");
+        f.register();
+        f.subscribe();
+        for i in 0..turns {
+            f.begin(&format!("turn-{i}"));
+            if i % 2 == 0 {
+                f.settle(&format!("turn-{i}"), true);
+            }
+        }
+        let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+        let tx = db.transaction().unwrap();
+        DECODED_TASKS.with(|n| n.set(0));
+        apply(
+            &tx,
+            Operation::SourceOutcome {
+                public_answer: None,
+                room: "room".into(),
+                source: "child".into(),
+                occurrence: "child-done".into(),
+                success: true,
+                now: 4,
+            },
+        )
+        .unwrap();
+        let decoded = DECODED_TASKS.with(|n| n.get());
+        tx.commit().unwrap();
+        let task = f
+            .store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.task_id == "p")
+            .unwrap();
+        assert_eq!(task.obligations[0].status, "settling");
+        assert!(!f.store.agent_registrations("p").unwrap()[0].live);
+        decoded
+    };
+    let (few, many) = (outcome(2), outcome(40));
+    assert_eq!(
+        few, many,
+        "a terminal outcome decoded {few} tasks with 2 other turns and {many} with 40"
+    );
+}
