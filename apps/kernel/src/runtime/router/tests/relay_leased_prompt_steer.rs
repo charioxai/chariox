@@ -309,3 +309,76 @@ async fn leased_provider_tool_list_exposes_workflow_tools_for_fresh_and_reused_d
         .iter()
         .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }));
 }
+
+#[tokio::test]
+async fn leased_workflow_context_read_uses_the_same_home_route_as_acknowledgement() {
+    crate::test_support::isolated_env_test!();
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease("home-kernel", "home-room", "home-agent", false, "home-user")
+        .unwrap();
+    let agent = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            "default",
+            Some("default".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let (run, _) = crate::app::RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &agent.id,
+            "read the assigned workflow turn",
+            Vec::new(),
+            Some(crate::execution_lease::RemoteWorkflowTurnContext {
+                home_kernel_id: "home-kernel".into(),
+                home_session_id: "home-room".into(),
+                home_agent_id: "home-agent".into(),
+                workflow_run_id: "home-workflow".into(),
+                workflow_node_run_id: "home-node".into(),
+                delivery_token: "home-delivery".into(),
+            }),
+            Some(remote_git_context("home-prompt")),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let token = router
+        .runtime_state
+        .runtime_mcp_auth_token_for_provider_run(&run)
+        .unwrap();
+    // This worker has no relay configured. Both tools must reach that same
+    // transport boundary, rather than resolving the home's turn in the worker.
+    let ack = router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL,
+            serde_json::json!({"delivery_token":"home-delivery"}),
+        )
+        .await
+        .unwrap_err();
+    let read = router
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL,
+            serde_json::json!({"delivery_token":"home-delivery"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        read.to_string(),
+        ack.to_string(),
+        "leased context reads must reach their owning kernel"
+    );
+}
