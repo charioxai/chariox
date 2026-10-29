@@ -222,6 +222,8 @@ pub struct ProviderLoginStatus {
     pub login_id: String,
     pub state: ProviderLoginProcessState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interaction: Option<crate::session::RuntimeInteraction>,
     /// Ephemeral PTY output. It is never written to durable state or logs.
     pub terminal_output_base64: String,
@@ -237,6 +239,7 @@ impl std::fmt::Debug for ProviderLoginStatus {
             .field("account_profile", &self.account_profile)
             .field("login_id", &self.login_id)
             .field("state", &self.state)
+            .field("message", &self.message)
             .field("interaction", &self.interaction)
             .field("terminal_output_base64", &"[REDACTED]")
             .field("started_at_ms", &self.started_at_ms)

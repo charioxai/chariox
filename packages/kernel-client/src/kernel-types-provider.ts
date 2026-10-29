@@ -173,6 +173,7 @@ export type ProviderLoginStatus = {
   account_profile: string
   login_id: string
   state: ProviderLoginProcessState
+  message?: string | null
   interaction?: Record<string, unknown> | null
   terminal_output_base64: string
   started_at_ms: number
@@ -352,7 +353,7 @@ export type QueuedPromptUpdatedPayload = {
 }
 
 /** Local 770: read-only account identity and status, with no credential/profile locations. */
-export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "auth_state" | "services" | "usage"> & { account_id: string }
+export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "identity_summary" | "auth_state" | "services" | "usage"> & { account_id: string }
 export type AgentUsageSnapshot = {
   session_id: string
   agent_id: string

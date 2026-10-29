@@ -84,5 +84,66 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     const after = harness.captureCharFrame()
     assert.match(after, / {2}Code: \*{10} +> 1\.Cancel +Enter sends/)
     assert.doesNotMatch(after, /code#state/)
+
+    for (const message of [
+      "The code looks incomplete. Copy the whole code and try again.",
+      "That code was not accepted. Open the new sign-in link and copy a new code.",
+    ]) {
+      logins.codeSent(interaction)
+      interaction.message = message
+      interaction.provider_login!.problem = message
+      interaction.requested_at_ms += 1
+      render()
+      await harness.renderOnce()
+      const retry = harness.captureCharFrame()
+      assert.ok(retry.includes(message))
+      assert.match(retry, /Code:/)
+      assert.doesNotMatch(retry, /Checking the code/)
+    }
   } finally { harness.renderer.destroy() }
+})
+
+test("MP-08/MP-10/MP-11 first attachment at a forwarded retry keeps the explanation and restores the field after an identical retry", async () => {
+  const harness = await createTestRenderer({ width: 100, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { width: 100 })
+  harness.renderer.root.add(box)
+  const store = createInteractionChoiceStoreController()
+  const timers: Array<() => void> = []
+  const message = "The code could not be read. Copy the whole code and try again."
+  const retry = { ...interaction, message, provider_login: { ...interaction.provider_login!, problem: message } }
+  const logins = createProviderLoginInteractionController({
+    getKernelId: async () => "home",
+    getLoginStatus: async () => { throw Error("forwarded login must use projections") },
+    getAccountProfile: async () => { throw Error("unused") },
+    accountLabel: () => "disposable-claude", localDesktop: () => false, openUrl: async () => false,
+    copyUrl: async () => "", appendNotice: () => {}, flashFooter: () => {}, render: () => {},
+    setTimer: callback => { timers.push(callback); return timers.length }, clearTimer: () => {},
+  })
+  const render = async () => {
+    renderAgentInteractionStrips({
+      renderer: harness.renderer, primaryBox: box, auxiliaryBoxes: [], visibleAgents: [{ id: "agent-1" }] as never,
+      maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => retry,
+      selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
+      customReply: store.customReply, customEditing: store.isCustomEditing,
+      queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {},
+      providerLoginState: logins.stripState, focusCustomChoiceOnce: store.focusCustomChoiceOnce,
+    })
+    await harness.renderOnce()
+    return harness.captureCharFrame()
+  }
+  try {
+    assert.ok((await render()).includes(retry.message))
+    timers.shift()!()
+    await Promise.resolve(); await Promise.resolve()
+    assert.equal(timers.length, 0)
+    logins.codeSent(retry)
+    const checking = await render()
+    assert.match(checking, /Checking the code/)
+    assert.doesNotMatch(checking, /Code:/)
+    retry.requested_at_ms++
+    const answered = await render()
+    assert.ok(answered.includes(retry.message))
+    assert.match(answered, /> Code: <paste the code>▏/)
+    assert.doesNotMatch(answered, /Checking the code/)
+  } finally { logins.dispose(); harness.renderer.destroy() }
 })

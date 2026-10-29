@@ -1,0 +1,56 @@
+{
+  "local_protocol": 810,
+  "peer_protocol": 360,
+  "requests": [
+    {
+      "GetProviderUsageSnapshot": {}
+    },
+    {
+      "GetAgentUsageSnapshot": {
+        "session_id": "room",
+        "agent_id": "reviewer"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "ProviderUsageSnapshot": {
+        "accounts": [
+          {
+            "provider": "claude",
+            "profile_id": "work",
+            "label": "Work",
+            "usage": {
+              "profile_id": "work",
+              "provider": "claude",
+              "availability": "unavailable",
+              "source": "claude.native_usage"
+            },
+            "account_id": "opaque-account-id",
+            "auth_state": "not_configured",
+            "services": [],
+            "identity_summary": "work@example.test"
+          }
+        ]
+      }
+    },
+    {
+      "AgentUsageSnapshot": {
+        "snapshot": {
+          "session_id": "room",
+          "agent_id": "reviewer",
+          "context": {
+            "used_tokens": 500,
+            "limit_tokens": 2000
+          },
+          "route": {
+            "target": "Review intake",
+            "target_kernel_id": "worker",
+            "via": "PR reviewer",
+            "via_kernel_id": "home"
+          }
+        }
+      }
+    }
+  ]
+}

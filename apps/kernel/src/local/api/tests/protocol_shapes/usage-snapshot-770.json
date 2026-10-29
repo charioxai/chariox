@@ -1,6 +1,6 @@
 {
-  "local_protocol": 770,
-  "peer_protocol": 320,
+  "local_protocol": 810,
+  "peer_protocol": 360,
   "requests": [
     {
       "GetProviderUsageSnapshot": {}
@@ -26,9 +26,7 @@
               "availability": "unavailable",
               "source": "claude.native_usage"
             },
-            "account_id": "opaque-account-id",
-            "auth_state": "not_configured",
-            "services": []
+            "identity_summary": "work@example.test"
           }
         ]
       }

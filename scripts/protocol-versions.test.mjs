@@ -38,7 +38,6 @@ test("managed upgrades retain the target and the current and previous releases",
 
 test("dictation603 keeps its allocated protocol floors", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
-  const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
   assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])

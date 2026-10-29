@@ -9,7 +9,7 @@ pub struct GetAgentUsageSnapshotRequest {
     pub agent_id: String,
 }
 
-/// Usage references omit private profile locations and credential material.
+/// Usage references contain safe account identity, never profile locations or credentials.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderUsageAccount {
     /// Opaque identity shared by reports of the same provider account.
@@ -19,6 +19,8 @@ pub struct ProviderUsageAccount {
     pub provider: String,
     pub profile_id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_summary: Option<String>,
     pub usage: crate::account_profile::ProviderAccountUsageSnapshot,
 }
 

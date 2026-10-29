@@ -302,3 +302,58 @@ fn usage_snapshot_omits_unconfigured_defaults_and_reports_account_status() {
     assert_eq!(accounts[0]["profile_id"], profile.profile_id);
     assert!(accounts[0].get("services").is_some());
 }
+
+#[test]
+fn usage_snapshot_projects_claude_identity_without_private_profile_fields() {
+    crate::test_support::isolated_env_test!();
+    let harness = LocalRouterTestHarness::new();
+    let profile = harness.with_app_mut(|app| {
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "Work")
+            .unwrap();
+        registry
+            .update_observation(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                Some("work@example.test".into()),
+                Some("pro".into()),
+                None,
+                None,
+            )
+            .unwrap()
+    });
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetProviderUsageSnapshot(
+            crate::local::GetProviderUsageSnapshotRequest {},
+        ))
+        .unwrap();
+    let value = serde_json::to_value(response).unwrap();
+    let account = value["ProviderUsageSnapshot"]["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|account| account["profile_id"] == profile.profile_id)
+        .unwrap();
+    assert_eq!(account["identity_summary"], "work@example.test");
+    assert_eq!(
+        account
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "account_id",
+            "auth_state",
+            "identity_summary",
+            "label",
+            "profile_id",
+            "provider",
+            "services",
+            "usage"
+        ]
+    );
+}
