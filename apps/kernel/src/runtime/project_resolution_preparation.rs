@@ -49,10 +49,11 @@ fn matching_workspace<'a>(candidate: &'a Candidate, workspace: &str) -> Option<&
         })
         .or_else(|| {
             let canonical = std::fs::canonicalize(workspace).ok()?;
-            candidate
-                .workspaces
-                .iter()
-                .find(|path| std::fs::canonicalize(path).ok().as_ref() == Some(&canonical))
+            // A saved folder that is gone cannot be this folder; do not resolve it.
+            candidate.workspaces.iter().find(|path| {
+                std::fs::symlink_metadata(path).is_ok()
+                    && std::fs::canonicalize(path).ok().as_ref() == Some(&canonical)
+            })
         })
         .map(String::as_str)
 }

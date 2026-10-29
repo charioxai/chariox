@@ -62,6 +62,27 @@ impl KernelRuntimeState {
             }),
             defaults: defaults.clone(),
         };
+        let (metadata, deadline) = self.measure_project_workspace(input).await?;
+        let Metadata {
+            workspace,
+            name,
+            project_id: matched,
+        } = metadata;
+        Ok(PreparedProjectResolution {
+            request,
+            caller: caller.into(),
+            selected,
+            defaults,
+            workspace,
+            name,
+            matched,
+            deadline,
+        })
+    }
+    async fn measure_project_workspace(
+        &self,
+        input: Input,
+    ) -> Result<(Metadata, Instant), DaemonError> {
         let budget = Duration::from_secs(10);
         #[cfg(test)]
         let budget = std::env::var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS")
@@ -88,21 +109,64 @@ impl KernelRuntimeState {
                 "Project folder preparation returned invalid metadata; retry",
             ));
         };
-        let Metadata {
-            workspace,
-            name,
-            project_id: matched,
-        } = metadata.map_err(|failure| failure.error())?;
-        Ok(PreparedProjectResolution {
-            request,
-            caller: caller.into(),
-            selected,
-            defaults,
-            workspace,
-            name,
-            matched,
-            deadline,
-        })
+        Ok((metadata.map_err(|failure| failure.error())?, deadline))
+    }
+    // Ordinary session creation reuses the saved Default Project's folder spelling, so a Project
+    // restored under a symlink keeps its identity and Environment.
+    pub(crate) async fn prepare_session_workspace(
+        &self,
+        mut request: crate::session::CreateSessionRequest,
+    ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+        if request.hidden
+            || !matches!(
+                request.project_selection,
+                crate::session::SessionProjectSelection::Default
+            )
+        {
+            return Ok(request);
+        }
+        let saved = defaults(
+            &self
+                .owned
+                .session_store
+                .list_projects(&request.owner_user_id, true),
+        );
+        if saved.is_empty()
+            || saved.iter().any(|candidate| {
+                candidate.workspaces.iter().any(|path| {
+                    crate::session::RuntimeProject::workspace_paths_match(
+                        path,
+                        &request.workspace_id,
+                    )
+                })
+            })
+        {
+            return Ok(request);
+        }
+        let (metadata, _) = self
+            .measure_project_workspace(Input {
+                workspace: request.workspace_id.clone(),
+                create: true,
+                selected: None,
+                defaults: saved.clone(),
+            })
+            .await?;
+        if metadata.project_id.is_none() {
+            return Ok(request);
+        }
+        if defaults(
+            &self
+                .owned
+                .session_store
+                .list_projects(&request.owner_user_id, true),
+        ) != saved
+        {
+            return Err(resolution_error(
+                "Project changed while its folder was checked; refresh and retry",
+            ));
+        }
+        request.workspace_id = metadata.workspace;
+        Ok(request)
     }
     pub(crate) fn resolve_prepared_project(
         &self,
@@ -734,5 +798,79 @@ char *realpath(const char *path, char *resolved) {
             .write()
             .sessions_in_project(saved.id())
             .is_empty());
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: ordinary session admission shares Project folder identity.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r9_environment_create_session_keeps_project_restored_under_a_symlink() {
+        let root = crate::test_support::TestWorktree::new("r9-restored-symlink-session");
+        let folder = root.path().join("source");
+        std::fs::create_dir(&folder).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&folder, &alias).unwrap();
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let mut saved = crate::session::RuntimeProject::new(
+            "restored-symlink",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            alias.to_str().unwrap(),
+            "Saved",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        let definition = crate::session::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".into(),
+            source_path: None,
+            inputs: vec![],
+            path_entries: vec![],
+            setup_steps: vec![],
+            validation_commands: vec![],
+        };
+        saved.set_environment_definition(definition.clone());
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![saved.clone()]);
+        let mut created = Vec::new();
+        for (index, requested) in [&folder, &alias].into_iter().enumerate() {
+            let LocalDaemonResponse::SessionCreated { session, .. } = r4_dispatch(
+                &router,
+                &format!("r9-create-restored-symlink-{index}"),
+                crate::local::LocalDaemonRequest::CreateSession(
+                    crate::session::CreateSessionRequest::new(
+                        requested.to_str().unwrap(),
+                        requested.to_str().unwrap(),
+                    ),
+                ),
+            )
+            .await
+            .unwrap()
+            .expect("a session in a restored Project folder must be created") else {
+                panic!("Session expected")
+            };
+            assert_eq!(
+                session.project_id(),
+                saved.id(),
+                "a session requested as {requested:?} must join the saved Project, not allocate another"
+            );
+            assert_eq!(session.workspace_id(), saved.workspace_id());
+            created.push(session.id().to_string());
+        }
+        let projects = state
+            .list_projects(crate::session::DEFAULT_LOCAL_USER_ID, true)
+            .await;
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].id(), saved.id());
+        assert_eq!(projects[0].environment_definition(), Some(&definition));
+        for id in created {
+            state.delete_session_id(&id).await.unwrap();
+        }
     }
 }

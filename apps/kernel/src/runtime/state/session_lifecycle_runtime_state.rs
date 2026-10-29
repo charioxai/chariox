@@ -56,6 +56,9 @@ impl KernelRuntimeState {
             request = prepare_local_session_worktree_placement(request)?;
         }
         request = canonicalize_session_workspace(request);
+        if slice_ref.is_none() && kernel_ref.is_none() {
+            request = self.prepare_session_workspace(request).await?;
+        }
         let existing_project_ids = self
             .owned
             .session_store
