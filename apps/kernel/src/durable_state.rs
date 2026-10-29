@@ -508,6 +508,35 @@ impl DurableKernelStateStore {
         Ok(event)
     }
 
+    /// Queues an event nobody waits for; it commits with the writer's next batch and is
+    /// not announced to live subscribers.
+    pub(crate) fn append_event_detached(
+        &self,
+        kind: impl Into<String>,
+        subject_id: Option<String>,
+        payload: serde_json::Value,
+    ) -> Result<(), DaemonError> {
+        let timestamp_ms = unix_epoch_ms();
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_event",
+                message: error.to_string(),
+            })?;
+        let (response, _) = mpsc::channel();
+        self.writer
+            .enqueue(DurableWriterRequest::Ordinary(DurableWriteRequest {
+                observation: None,
+                operation: DurableWriteOperation::Event {
+                    event_id: format!("state_evt_{timestamp_ms}_{}", rand_suffix()),
+                    kind: kind.into(),
+                    subject_id,
+                    timestamp_ms,
+                    payload_json,
+                },
+                response,
+            }))
+    }
+
     /// Every event appended through `append_event` from now on, for live subscribers.
     pub(crate) fn subscribe_appended_events(
         &self,

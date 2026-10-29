@@ -106,3 +106,65 @@ async fn the_target_refuses_the_human_only_set_without_knowing_the_origin_grant(
         assert_eq!(Refusal::of(&error), Refusal::HumanOnly, "{request:?}");
     }
 }
+
+fn gateway_origin(grant: String) -> crate::local::OnBehalfOf {
+    crate::local::OnBehalfOf {
+        origin_kernel: "origin-kernel".into(),
+        origin_name: None,
+        grant_id: grant,
+        harness: "test".into(),
+    }
+}
+
+fn gateway_audit_rows(state: &KernelRuntimeState) -> i64 {
+    let store = &state.owned.durable_state_store;
+    // The writer commits in queue order, so a waited append settles the audits before it.
+    store
+        .append_event("test.barrier", None, serde_json::json!({}))
+        .unwrap();
+    rusqlite::Connection::open(store.path())
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM durable_state_events WHERE kind='kernel_gateway.request'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: status, list and state polls through the gateway leave
+// no audit row; a state change leaves one.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_target_audits_state_changes_and_skips_polls() {
+    let (state, grant) = state_with_live_grant();
+    let origin = gateway_origin(grant);
+    for poll in [
+        LocalDaemonRequest::RelayStatus(crate::local::RelayStatusRequest),
+        LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+        LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+            session_id: "remote-room".into(),
+        }),
+    ] {
+        state.audit_gateway_request(&origin, &poll);
+    }
+    assert_eq!(gateway_audit_rows(&state), 0);
+    state.audit_gateway_request(&origin, &answer(false));
+    assert_eq!(gateway_audit_rows(&state), 1);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a gateway request does not wait for its audit row.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_target_audit_does_not_hold_the_request() {
+    let (state, grant) = state_with_live_grant();
+    let origin = gateway_origin(grant);
+    let metrics = crate::runtime::request_metrics::RequestMetrics::default();
+    metrics
+        .observe("gateway".into(), async {
+            state.audit_gateway_request(&origin, &answer(false));
+            Ok(LocalDaemonResponse::CloudRelayLoggedOut)
+        })
+        .await
+        .unwrap();
+    assert_eq!(metrics.snapshot()[0].durable_wait_us.max, 0);
+    assert_eq!(gateway_audit_rows(&state), 1);
+}
