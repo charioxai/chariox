@@ -94,8 +94,8 @@ function textFixture() {
   const event = (type, overrides = {}) => ({type,target:element,isTrusted:true,timeStamp:50,inputType:'insertText',data:'Edit',
     preventDefault(){this.defaultPrevented = true;},stopImmediatePropagation(){this.stopped = true;},...overrides});
   const dispatch = value => {listeners.get(value.type)?.(value);return inputs.token(value);};
-  const insert = (transform = text => text) => {
-    const before = event('beforeinput'), caller = dispatch(before);
+  const insert = (transform = text => text, text = 'Edit') => {
+    const before = event('beforeinput',{data:text}), caller = dispatch(before);
     if (before.defaultPrevented) return {before,caller};
     element.value += transform(before.data);
     const input = event('input',{data:transform(before.data)});
@@ -182,10 +182,20 @@ test('cancel, expiry, acknowledgement and invocation end cannot lend a text call
 });
 
 test('an identical physical key edit during dispatch remains human and refuses the later CDP insertion', () => {
-  const f = textFixture();f.inputs.armText('Edit','caller');assert.equal(f.inputs.startText('caller'),true);
-  f.dispatch(f.event('keydown',{key:'Edit'}));f.dispatch(f.event('keypress',{key:'Edit'}));
-  const human = f.insert();assert.equal(human.caller,undefined);assert.equal(human.after,undefined);
-  const agent = f.insert();assert.equal(agent.before.defaultPrevented,true);assert.equal(agent.caller,undefined);
-  assert.equal(f.element.value,'Edit');assert.equal(f.inputs.finishText('caller'),false);
+  const f = textFixture();f.inputs.armText('h','caller');assert.equal(f.inputs.startText('caller'),true);
+  f.dispatch(f.event('keydown',{key:'h'}));f.dispatch(f.event('keypress',{key:'h'}));
+  const human = f.insert(undefined,'h');assert.equal(human.caller,undefined);assert.equal(human.after,undefined);
+  const agent = f.insert(undefined,'h');assert.equal(agent.before.defaultPrevented,true);assert.equal(agent.caller,undefined);
+  assert.equal(f.element.value,'h');assert.equal(f.inputs.finishText('caller'),false);
   f.inputs.clearText('caller');
+});
+
+test('nonediting key names can be inserted literally with the queued caller', () => {
+  for (const key of ['Shift','ArrowLeft','ArrowRight','Home','End','Control','Alt']) {
+    const f = textFixture();f.inputs.armText(key,'caller');f.dispatch(f.event('keydown',{key}));
+    assert.equal(f.inputs.startText('caller'),true);
+    assert.equal(f.dispatch(f.event('beforeinput',{data:key})),'caller',key+' is text, not a physical default edit');
+    f.element.value = key;assert.equal(f.dispatch(f.event('input',{data:key})),'caller');
+    assert.equal(f.inputs.finishText('caller'),true);f.inputs.clearText('caller');
+  }
 });
