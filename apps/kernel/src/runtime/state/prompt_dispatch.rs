@@ -870,10 +870,13 @@ impl KernelRuntimeState {
             .await
             .and_then(|retired| {
                 retired
-                    .then(|| self.owned.session_store.get_session(submission.session.id()))
+                    .then(|| {
+                        self.owned
+                            .session_store
+                            .get_session(submission.session.id())
+                    })
                     .transpose()
-            })
-        {
+            }) {
             Ok(Some(session)) => submission.session = session,
             Ok(None) => {}
             Err(error) => {

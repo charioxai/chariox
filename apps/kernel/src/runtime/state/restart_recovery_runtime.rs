@@ -2128,27 +2128,23 @@ mod tests {
             crate::durable_state::agent_lifecycle::ExecutionState::Cancelled,
             "a superseded restart attempt must not keep the agent blocked"
         );
-        assert!(
-            !runtime
-                .owned
-                .session_store
-                .get_session(&session_id)
-                .unwrap()
-                .active_interactions()
-                .iter()
-                .any(|interaction| interaction
-                    .id()
-                    .starts_with(&format!("task-blocked-{}-", old_task.task_id)))
-        );
-        assert!(
-            !started
-                .session
-                .active_interactions()
-                .iter()
-                .any(|interaction| interaction
-                    .id()
-                    .starts_with(&format!("task-blocked-{}-", old_task.task_id)))
-        );
+        assert!(!runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+        assert!(!started
+            .session
+            .active_interactions()
+            .iter()
+            .any(|interaction| interaction
+                .id()
+                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
     }
 
     #[tokio::test]
