@@ -30,9 +30,9 @@ pub(crate) fn provider_dispatch_failure(
     error: &DaemonError,
 ) -> Option<crate::provider::TurnOutcome> {
     match error {
-        DaemonError::ProviderRefusal { message } => Some(
-            crate::provider::TurnOutcome::classify(adapter_key, message),
-        ),
+        DaemonError::ProviderRefusal { message } => {
+            Some(crate::provider::TurnOutcome::classify(adapter_key, message))
+        }
         _ => None,
     }
 }

@@ -4306,10 +4306,7 @@ pub(in crate::runtime::state) mod tests {
             })
             .await;
         let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
-        assert_eq!(
-            expected.kind,
-            crate::provider::TurnOutcomeKind::Overloaded
-        );
+        assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
         assert!(visible.contains(&expected.notice()));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
     }
