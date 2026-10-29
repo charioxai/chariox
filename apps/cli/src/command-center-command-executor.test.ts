@@ -43,7 +43,7 @@ test("command center command executor dispatches wait commands", async () => {
 
   await harness.executor.execute("/wait-in 3 Check later")
 
-  assert.deepEqual(harness.calls, ["wait:once:3:Check later"])
+  assert.deepEqual(harness.calls, [`trigger:${JSON.stringify({ type: "create", repeat: "once", minutes: 3, busyPolicy: "queue", prompt: "Check later" })}`])
 })
 
 test("command center routes App commands and contains transport failures", async () => {
@@ -118,7 +118,7 @@ function createHarness(overrides: Partial<Parameters<typeof createCommandCenterC
     onWorkflow: (command) => calls.push(`workflow:${command.args.join(" ")}`),
     onLoop: (command) => calls.push(`loop:${command.prompt}`),
     onGoal: (command) => calls.push(`goal:${command.prompt}`),
-    onWait: (command) => calls.push(`wait:${command.scheduleKind}:${command.minutes}:${command.prompt}`),
+    onTrigger: (command) => calls.push(`trigger:${JSON.stringify(command.action)}`),
     onMcp: (command) => calls.push(`mcp:${command.args.join(" ")}`),
     onSkill: (command) => calls.push(`skill:${command.args.join(" ")}`),
     onEnv: (command) => calls.push(`env:${command.args.join(" ")}`),

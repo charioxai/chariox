@@ -329,6 +329,61 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     );
 }
 
+/// Protocol 901: a trigger firing the provider did not confirm is listed on the
+/// session, and the person resends it.
+#[test]
+fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let resend = serde_json::json!(LocalDaemonRequest::ResendTriggerDelivery(
+        crate::local::ResendTriggerDeliveryRequest {
+            session_id: "session-1".into(),
+            prompt_id: "prompt-7".into(),
+        }
+    ));
+    assert_eq!(
+        resend,
+        serde_json::json!({
+            "ResendTriggerDelivery": { "session_id": "session-1", "prompt_id": "prompt-7" }
+        })
+    );
+    let hash = Sha256::digest(serde_json::to_string(&resend).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "38c08e5e006324a79d32f7fcb1cd5df52224349a2b3ddac5d064dff3c4a3adab"
+    );
+
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    session.note_unconfirmed_trigger_delivery(crate::session::TriggerDelivery::not_confirmed(
+        "prompt-7",
+        "trigger-1",
+        "agent-1",
+        crate::session::PromptOrigin::Schedule,
+        "Check the build.",
+        crate::session::AgentTriggerBusyPolicy::Steer,
+        2_000,
+    ));
+    let snapshot = serde_json::to_value(LocalDaemonResponse::TriggerDeliveryResent { session })
+        .expect("trigger delivery response should encode");
+    assert_eq!(
+        snapshot.pointer("/TriggerDeliveryResent/session/trigger_deliveries"),
+        Some(&serde_json::json!([{
+            "prompt_id": "prompt-7", "trigger_id": "trigger-1", "agent_id": "agent-1",
+            "origin": "schedule", "prompt": "Check the build.", "busy_policy": "steer",
+            "state": "not_confirmed", "recorded_at_ms": 2_000,
+        }]))
+    );
+}
+
 /// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
 /// older clients keep reading them as `agent_prompt_schedules`.
 #[test]

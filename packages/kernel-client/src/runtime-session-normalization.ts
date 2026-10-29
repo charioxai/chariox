@@ -39,6 +39,8 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     queued_metaagent_tasks: Array.isArray(session.queued_metaagent_tasks) ? session.queued_metaagent_tasks : [],
     agent_tasks: Array.isArray(session.agent_tasks) ? session.agent_tasks : [],
     agent_wakes: Array.isArray(session.agent_wakes) ? session.agent_wakes : [],
+    agent_triggers: Array.isArray(session.agent_triggers) ? session.agent_triggers : [],
+    trigger_deliveries: Array.isArray(session.trigger_deliveries) ? session.trigger_deliveries : [],
     agent_prompt_schedules: Array.isArray(session.agent_prompt_schedules) ? session.agent_prompt_schedules : [],
     workflows: Array.isArray(session.workflows) ? session.workflows : [],
     workflow_publications: Array.isArray(session.workflow_publications) ? session.workflow_publications : [],

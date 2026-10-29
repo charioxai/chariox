@@ -1,3 +1,4 @@
+import { agentTriggersCapability, triggerDeliveryResendCapability } from "@chariox/kernel-client/ipc-requests"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
@@ -169,7 +170,7 @@ import {
   updateMetaagentTask,
 } from "./session-api.js"
 import { SESSION_CONFIG_RESPONSE_LAYOUT_KEY } from "@chariox/kernel-client/session-config-projection"
-import { submitPromptRequest, createAgentPromptScheduleRequest } from "@chariox/kernel-client/ipc-requests"
+import { submitPromptRequest } from "@chariox/kernel-client/ipc-requests"
 import { formatSessionList } from "./sessions.js"
 import {
   createSlice,
@@ -829,21 +830,21 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       resumeMetaagentTask(client, sessionId, metaagentId),
     abortMetaagentTask: (sessionId, metaagentId, reason) =>
       abortMetaagentTask(client, sessionId, metaagentId, reason),
-    createAgentPromptSchedule: async (sessionId, agentId, kind, intervalSeconds, prompt) => {
-      const response = await client.send<Record<string, unknown>>(
-        createAgentPromptScheduleRequest({
-          sessionId,
-          agentId,
-          kind,
-          intervalSeconds,
-          prompt,
-        }),
-      )
-      const payload = "AgentPromptScheduleCreated" in response
-        ? response.AgentPromptScheduleCreated as { session?: RuntimeSession }
-        : null
+    supportsAgentTriggers: async () => {
+      const response = await client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
+      return response.RelayStatus.status.capabilities?.includes(agentTriggersCapability) ?? false
+    },
+    supportsTriggerDeliveryResend: async () => {
+      const response = await client.send<{ RelayStatus: { status: { capabilities?: string[] } } }>({ RelayStatus: null })
+      return response.RelayStatus.status.capabilities?.includes(triggerDeliveryResendCapability) ?? false
+    },
+    sendAgentTriggerRequest: async (request) => {
+      const response = await client.send<Record<string, unknown>>(request)
+      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted", "AgentPromptScheduleCreated", "TriggerDeliveryResent"]
+        .map((key) => response[key] as { session?: RuntimeSession } | undefined)
+        .find(Boolean)
       if (!payload?.session) {
-        throw new Error("kernel did not return the scheduled session")
+        throw new Error("kernel did not return the session after the trigger change")
       }
       return { session: payload.session }
     },

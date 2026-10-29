@@ -39,6 +39,14 @@ pub(super) fn execute_submit_command(
         serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
     );
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        // A provider that took the write but lost its acknowledgement.
+        #[cfg(test)]
+        if run.process_label() == "ack-lost" {
+            return Err(DaemonError::LocalTransport {
+                operation: "acknowledge structured prompt",
+                message: "connection closed after the prompt was written".into(),
+            });
+        }
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),

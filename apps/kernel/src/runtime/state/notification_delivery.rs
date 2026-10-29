@@ -102,6 +102,7 @@ impl KernelRuntimeState {
                 &dispatch.prompt_id,
                 &dispatch.prompt,
                 &dispatch.attachments,
+                crate::session::PromptOrigin::Notification,
             ) {
                 Err(error)
             } else {
@@ -117,6 +118,9 @@ impl KernelRuntimeState {
                         .owned
                         .settle_notification_injection(&session, &injection, accepted);
                 }
+                // The steer may already be with the provider: the persisted submit
+                // intent holds it until acknowledgement or expiry.
+                Err(DaemonError::ProviderPromptSteerUnconfirmed { .. }) if structured => {}
                 Err(_) if structured => {
                     let _ = self
                         .owned
@@ -474,6 +478,7 @@ impl KernelRuntimeOwnedState {
                 id,
                 item.prompt().unwrap_or_default(),
                 &[],
+                crate::session::PromptOrigin::Notification,
             )?;
         }
         settle_injection(

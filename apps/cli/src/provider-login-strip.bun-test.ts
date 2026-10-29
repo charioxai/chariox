@@ -40,7 +40,7 @@ test("MP-08/MP-11 a login strip shows steps, a countdown, the focused code field
     maxAgentsPerScreen: 1, focusedAgentId: "agent-1", activeInteractionForAgent: () => interaction,
     selectedChoiceIndex: store.selectedChoiceIndex, setSelectedChoiceIndex: store.setSelectedIndex,
     customReply: store.customReply, customEditing: store.isCustomEditing,
-    queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {},
+    queuedPromptStripItemsForAgent: () => [], selectedQueuedPromptIndexForAgent: () => -1, onQueuedPromptAction: () => {}, agentTriggerStripItemsForAgent: () => [],
     providerLoginState: logins.stripState, focusCustomChoiceOnce: store.focusCustomChoiceOnce,
     onProviderLoginLinkClick: (value) => clicks.push(value.id),
   })

@@ -355,6 +355,11 @@ impl SessionRuntimeCommandExecutor {
                     .delete_agent_trigger(request, &caller_user_id)
                     .await
             }),
+            LocalDaemonRequest::ResendTriggerDelivery(request) => Box::pin(async move {
+                self.store
+                    .resend_trigger_delivery(request, &caller_user_id)
+                    .await
+            }),
             LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
                     .update_agent_config(request, caller_user_id)

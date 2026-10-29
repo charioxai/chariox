@@ -509,7 +509,10 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
+        DaemonError,
+    > {
         self.write().enqueue_structured_prompt_submit(
             session_id,
             provider_run_id,

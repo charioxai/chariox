@@ -43,7 +43,7 @@
   {
     "id": "wait-in",
     "label": "/wait-in",
-    "description": "Usage: /wait-in <minutes> <prompt> · send once after the delay",
+    "description": "Usage: /wait-in <minutes> <prompt> · send once after the delay (a queued schedule trigger)",
     "value": "/wait-in ",
     "examples": [
       "/wait-in 15 Check the latest build"
@@ -58,7 +58,7 @@
   {
     "id": "wait-every",
     "label": "/wait-every",
-    "description": "Usage: /wait-every <minutes> <prompt> · repeat until cancelled",
+    "description": "Usage: /wait-every <minutes> <prompt> · repeat until removed (a queued schedule trigger)",
     "value": "/wait-every ",
     "examples": [
       "/wait-every 30 Report progress"
@@ -67,6 +67,22 @@
       "recurring prompt",
       "repeat reminder",
       "continue periodically",
+      "timer"
+    ]
+  },
+  {
+    "id": "trigger",
+    "label": "/trigger",
+    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
+    "value": "/trigger ",
+    "examples": [
+      "/trigger every 30 --steer Check the build",
+      "/trigger list"
+    ],
+    "searchAliases": [
+      "agent trigger",
+      "schedule trigger",
+      "recurring prompt",
       "timer"
     ]
   },

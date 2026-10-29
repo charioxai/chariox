@@ -334,6 +334,22 @@ impl DaemonApp {
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
+        // Admission receipts survive completed prompts, stale session events
+        // and snapshots captured before the live projection caught up.
+        for receipt in self.durable_state.admitted_trigger_resends()? {
+            if self.sessions.get_session(&receipt.session_id).is_err() {
+                continue;
+            }
+            let moved = self.sessions.write().move_trigger_delivery(
+                &receipt.session_id,
+                &receipt.original_prompt_id,
+                crate::session::TriggerDeliveryState::NotConfirmed,
+                crate::session::TriggerDeliveryState::Resent,
+            )?;
+            if moved.is_some() {
+                self.update_session_projection(self.sessions.get_session(&receipt.session_id)?);
+            }
+        }
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
         self.reconcile_restored_duplicate_project_names()?;

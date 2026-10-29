@@ -5056,6 +5056,31 @@ schedule triggers in the old shape), and `CreateAgentPromptSchedule` / `CancelAg
 still create and delete schedule triggers. The shape is pinned by
 `local_daemon_protocol_agent_trigger_shape_is_versioned`.
 
+Allocated 901 (relay peer unchanged) makes every trigger firing a labelled prompt and lets a person
+resend one the provider did not confirm. A firing's transcript prompt carries `prompt_origin`
+`schedule` (a schedule trigger) or `notification` (a workflow notification) and is recorded before
+the provider write, so it exists even if the kernel stops first. A steered firing that the provider
+did not confirm, whether a receipt was lost or the kernel restarted mid-delivery, is never sent
+again by itself: the session lists it in `trigger_deliveries` as `{prompt_id, trigger_id,
+agent_id, origin, prompt, busy_policy, state: "not_confirmed"|"resent", recorded_at_ms}` (newest
+last, 32 kept). `ResendTriggerDelivery {session_id, prompt_id}` answers `TriggerDeliveryResent
+{session}`: it admits one more labelled prompt under the entry's `busy_policy` (queue or steer)
+and refuses a second resend. A transient claim excludes concurrent clicks. The replacement's
+durable admission atomically consumes the resend; a failed admission leaves it `not_confirmed`.
+Once admitted, it stays `resent` even after the replacement finishes, a later processing error,
+or a restart from a stale session event or snapshot. Whoever may prompt the agent may resend. The shape is
+pinned by `local_daemon_protocol_trigger_delivery_shape_is_versioned`.
+
+The TUI advertises `/trigger resend <prompt-id>` and shows unconfirmed firings
+in the existing trigger stripe and `/trigger list`, including their origin and
+busy policy. Clients require the `agent_trigger_resend_v1` capability before
+sending Resend; the general `agent_triggers_v1` capability alone is insufficient.
+
+
+Steered trigger settlement records an internal SQLite firing receipt atomically with its session event. Recovery uses that prompt identity to avoid advancing a recurring trigger twice after interrupted hold removal.
+
+Steered trigger settlement records an internal SQLite firing receipt atomically with its session event. Recovery uses that prompt identity to avoid advancing a recurring trigger twice after interrupted hold removal.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that

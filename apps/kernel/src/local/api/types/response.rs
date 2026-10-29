@@ -388,6 +388,7 @@ pub enum LocalDaemonResponse {
     AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
     AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    TriggerDeliveryResent { session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

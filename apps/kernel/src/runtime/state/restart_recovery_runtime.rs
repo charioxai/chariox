@@ -74,11 +74,17 @@ impl Drop for DurableRestartRecoveryTask {
 
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
+        // A steer that was being handed to the provider when the kernel stopped
+        // may already be in its turn: drop it before recovery can promote it.
+        self.owned.reconcile_inactive_local_steers();
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
         let recovery_targets = self.durable_restart_recovery_targets();
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
+        // Read after the hold cleanup: a previous run may have stopped between
+        // removing a hold and promoting the work behind it.
+        let idle_queue_agents = self.durable_restart_idle_queue_agents(&queued_recovery_targets);
         let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
@@ -93,6 +99,7 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            state.resume_idle_agent_trigger_queues(idle_queue_agents);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
                 state.spawn_remote_queued_steer_receipt_reconciliation(
                     session_id, agent_id, prompt_id,
@@ -337,6 +344,38 @@ impl KernelRuntimeState {
                                 prompt.id().to_string(),
                             )
                         })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Agents that stopped idle with ordinary accepted work still queued.
+    /// Publication prompts have their own recovery path and are left to it.
+    fn durable_restart_idle_queue_agents(
+        &self,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> BTreeSet<(String, String)> {
+        self.owned
+            .session_store
+            .list_all_sessions()
+            .into_iter()
+            .flat_map(|session| {
+                session
+                    .prompt_states()
+                    .iter()
+                    .filter(|(_, prompt_state)| prompt_state.active_prompt().is_none())
+                    .filter_map(|(agent_id, prompt_state)| {
+                        let prompt = prompt_state.queued_prompts().front()?;
+                        let held = prompt.local_steer_submitted()
+                            || prompt.remote_steer_outcome_uncertainty().is_some();
+                        let publication = queued_recovery_targets.iter().any(
+                            |(session_id, queued_agent_id, _)| {
+                                session_id == session.id() && queued_agent_id == agent_id
+                            },
+                        );
+                        (!held && !publication)
+                            .then(|| (session.id().to_string(), agent_id.to_string()))
                     })
                     .collect::<Vec<_>>()
             })

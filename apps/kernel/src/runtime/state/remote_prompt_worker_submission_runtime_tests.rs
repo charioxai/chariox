@@ -1252,3 +1252,159 @@ fn a_worker_account_refusal_fails_the_prompt_instead_of_reconciling() {
                 && !remote_prompt_error_should_refresh_binding(error)
     ));
 }
+
+// MP-08/MP-10/MP-11: failed idle admission must retry through the real peer
+// dispatch path, rather than consuming a resend with no dispatch left to run.
+#[tokio::test]
+async fn trigger_resend_idle_remote_admission_failure_retries_one_peer_submission() {
+    let mut config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+        "resend-remote-admission-failure",
+    );
+    config.relay_url = Some(CANCELLATION_GUARD_RELAY_URL.into());
+    config.relay_token = Some("resend-worker-test-token".into());
+    let (_worktree, runtime, config, session_id, agent_id, _) =
+        super::super::agent_trigger_runtime_state::tests::durable_unconfirmed_trigger_delivery_with_config(config).await;
+    let session = runtime.owned.session_snapshot(&session_id).unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &agent_id)
+        .unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(&session_id, &agent_id, active, queued)
+        .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .write()
+        .bind_remote_execution(
+            &agent_id,
+            crate::agent::RemoteAgentBinding {
+                worker_kernel_id: CANCELLATION_GUARD_WORKER_ID.into(),
+                worker_machine_id: "resend-worker-machine".into(),
+                execution_lease_id: "resend-worker-lease".into(),
+                leased_agent_id: CANCELLATION_GUARD_LEASED_AGENT_ID.into(),
+                active_worker_provider_run_id: None,
+                relay_url: None,
+                relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
+            },
+        )
+        .unwrap();
+    let worker_config = crate::config::DaemonConfig::for_tests();
+    let relay_state = Arc::clone(&runtime.owned.relay_state);
+    let (outgoing_tx, mut peer_requests, _event_rx) =
+        crate::transport::relay_client::RelayOutgoingSender::channel(8);
+    {
+        let mut relay = relay_state.write().await;
+        relay.test_set_connected_sender(outgoing_tx, CANCELLATION_GUARD_RELAY_URL);
+        relay.remember_peer_public_key(
+            CANCELLATION_GUARD_WORKER_ID,
+            worker_config.relay_public_key.clone(),
+        );
+    }
+    let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    let request = crate::local::ResendTriggerDeliveryRequest {
+        session_id: session_id.clone(),
+        prompt_id: "original-firing".into(),
+    };
+    let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path()).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_remote_resend BEFORE INSERT ON durable_trigger_resends
+             BEGIN SELECT RAISE(FAIL, 'injected remote resend admission failure'); END;",
+        )
+        .unwrap();
+    let error = runtime
+        .resend_trigger_delivery(request.clone(), owner.owner_user_id())
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected remote resend admission failure"));
+    assert!(peer_requests.try_recv().is_err());
+    let session = runtime.owned.session_snapshot(&session_id).unwrap();
+    let (active, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(active.is_none() && queued.is_empty());
+    connection
+        .execute_batch("DROP TRIGGER reject_remote_resend;")
+        .unwrap();
+    let retry_runtime = runtime.clone();
+    let retry_request = request.clone();
+    let owner_user_id = owner.owner_user_id().to_string();
+    let retry = tokio::spawn(async move {
+        retry_runtime
+            .resend_trigger_delivery(retry_request, &owner_user_id)
+            .await
+    });
+    retry.await.unwrap().unwrap();
+    let current = runtime.owned.session_snapshot(&session_id).unwrap();
+    let pending = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&current, &agent_id)
+        .expect("idle resend must admit a dispatchable prompt");
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while peer_requests.is_empty() { tokio::task::yield_now().await; }
+    }).await.unwrap_or_else(|_| panic!("resend dispatch stalled at {}; interaction {:?}",
+        super::super::remote_prompt_dispatch_execution_runtime::remote_prompt_dispatch_test_stages(pending.id()),
+        runtime.owned.session_snapshot(&session_id).unwrap().active_interaction_for_agent(&agent_id).map(|item| item.title())));
+    let (request_id, received) =
+        receive_fake_worker_request(&mut peer_requests, &worker_config.relay_private_key).await;
+    let crate::transport::relay_peer::RelayPeerRequest::SubmitLeasedPrompt {
+        git_context: Some(context),
+        prompt,
+        ..
+    } = received
+    else {
+        panic!("retry must submit one replacement to the worker");
+    };
+    assert_eq!(
+        context.prompt_origin,
+        Some(crate::session::PromptOrigin::Schedule)
+    );
+    let response = crate::transport::relay_peer::RelayPeerResponse::LeasedPromptSubmitted {
+        provider_run_id: "resend-worker-run".into(),
+        outcome: crate::session::PromptSubmissionOutcome::Started {
+            prompt: PromptQueueItem::new(
+                "resend-worker-prompt",
+                "resend-worker-attachment",
+                CANCELLATION_GUARD_LEASED_AGENT_ID,
+                prompt,
+                PromptStatus::Running,
+            ),
+        },
+    };
+    let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+        &worker_config.relay_private_key,
+        &config.relay_public_key,
+        &serde_json::to_vec(&response).unwrap(),
+    )
+    .unwrap();
+    crate::transport::relay_client::resolve_pending_peer_response_for_test(
+        &relay_state,
+        request_id,
+        CANCELLATION_GUARD_WORKER_ID.into(),
+        encrypted,
+    )
+    .await;
+    assert!(runtime
+        .owned
+        .durable_state_store
+        .trigger_resend_admitted(&session_id, "original-firing")
+        .unwrap());
+    assert!(runtime
+        .resend_trigger_delivery(request, owner.owner_user_id())
+        .await
+        .is_err());
+}

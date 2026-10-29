@@ -60,6 +60,7 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentTriggerCreated { session, .. }
         | LocalDaemonResponse::AgentTriggerUpdated { session, .. }
         | LocalDaemonResponse::AgentTriggerDeleted { session, .. }
+        | LocalDaemonResponse::TriggerDeliveryResent { session }
         | LocalDaemonResponse::SessionEnded { session }
         | LocalDaemonResponse::SessionAliased { session } => {
             Some(SessionProjectionAction::Update(session.clone()))
@@ -208,6 +209,7 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::CreateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::DeleteAgentTrigger(request) => &request.session_id,
+        LocalDaemonRequest::ResendTriggerDelivery(request) => &request.session_id,
         LocalDaemonRequest::StartRoomEnvironment(request) => &request.session_id,
         LocalDaemonRequest::BindRoomEnvironmentSlice(request) => &request.session_id,
         LocalDaemonRequest::StopRoomEnvironment(request) => &request.session_id,

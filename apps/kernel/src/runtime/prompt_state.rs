@@ -1452,6 +1452,29 @@ impl PromptStateOwner {
         state.queued_prompts.remove(index)
     }
 
+    pub(crate) fn set_queued_prompt_local_steer_submitted(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        submitted: bool,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        let Some(queued) = state
+            .queued_prompts
+            .iter_mut()
+            .find(|queued| queued.id() == prompt_id)
+        else {
+            return false;
+        };
+        queued.set_local_steer_submitted(submitted);
+        true
+    }
+
     pub(crate) fn update_queued_prompt(
         &self,
         session: &RuntimeSession,

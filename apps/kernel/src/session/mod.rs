@@ -148,6 +148,7 @@ pub(crate) fn is_zero(value: &usize) -> bool {
 pub use agent_triggers::{
     AgentPromptSchedule, AgentPromptScheduleKind, AgentTrigger, AgentTriggerBusyPolicy,
     AgentTriggerDispatch, AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource,
+    TriggerDelivery, TriggerDeliveryState,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

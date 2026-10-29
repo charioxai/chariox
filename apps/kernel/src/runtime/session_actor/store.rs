@@ -976,6 +976,21 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
+    pub(super) async fn resend_trigger_delivery(
+        &self,
+        request: crate::local::ResendTriggerDeliveryRequest,
+        caller_user_id: &str,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .resend_trigger_delivery(request, caller_user_id)
+            .await;
+        self.with_session_projection_action_result(result).await
+    }
+
     pub(super) async fn respond_to_interaction(
         &self,
         request: RespondToInteractionRequest,

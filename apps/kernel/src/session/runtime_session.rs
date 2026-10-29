@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_triggers::{AgentTrigger, AgentTriggers};
+use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -136,6 +136,9 @@ pub struct RuntimeSession {
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
     #[serde(flatten)]
     agent_triggers: AgentTriggers,
+    /// Trigger firings the provider did not confirm, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    trigger_deliveries: Vec<TriggerDelivery>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -287,6 +290,7 @@ impl RuntimeSession {
             agent_wakes: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
+            trigger_deliveries: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             pinned: false,
             config_state: SessionConfigState::default(),
@@ -364,6 +368,41 @@ impl RuntimeSession {
             .iter()
             .position(|trigger| trigger.id() == trigger_id)?;
         Some(self.agent_triggers.0.remove(index))
+    }
+
+    pub fn trigger_deliveries(&self) -> &[TriggerDelivery] {
+        &self.trigger_deliveries
+    }
+
+    /// Keeps the first record of a firing, so recovery can run more than once.
+    pub(crate) fn note_unconfirmed_trigger_delivery(&mut self, delivery: TriggerDelivery) {
+        const KEPT_DELIVERIES: usize = 32;
+        if self
+            .trigger_deliveries
+            .iter()
+            .any(|known| known.prompt_id() == delivery.prompt_id())
+        {
+            return;
+        }
+        self.trigger_deliveries.push(delivery);
+        if self.trigger_deliveries.len() > KEPT_DELIVERIES {
+            self.trigger_deliveries.remove(0);
+        }
+    }
+
+    /// Moves a delivery between its two states; `None` when it was not in `from`.
+    pub(crate) fn move_trigger_delivery(
+        &mut self,
+        prompt_id: &str,
+        from: TriggerDeliveryState,
+        to: TriggerDeliveryState,
+    ) -> Option<TriggerDelivery> {
+        let delivery = self
+            .trigger_deliveries
+            .iter_mut()
+            .find(|delivery| delivery.prompt_id() == prompt_id && delivery.state() == from)?;
+        delivery.set_state(to);
+        Some(delivery.clone())
     }
 
     pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {

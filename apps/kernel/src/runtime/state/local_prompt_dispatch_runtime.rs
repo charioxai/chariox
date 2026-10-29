@@ -1792,7 +1792,9 @@ pub(in crate::runtime::state) mod tests {
         assert!(CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT >= std::time::Duration::from_secs(30));
     }
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    pub(in crate::runtime::state) async fn owned_runtime_state(
+        app: &Arc<Mutex<DaemonApp>>,
+    ) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -3022,7 +3024,7 @@ pub(in crate::runtime::state) mod tests {
         runtime_with_active_prompt_and_config(DaemonConfig::for_tests(), prior).await
     }
 
-    async fn runtime_with_active_prompt_and_config(
+    pub(in crate::runtime::state) async fn runtime_with_active_prompt_and_config(
         config: DaemonConfig,
         prior: &[&str],
     ) -> (
