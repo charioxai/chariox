@@ -137,7 +137,7 @@ fn project_launch_environment_selected_with_reader(
     workspace_id: &str,
     directory: &Path,
     selected: impl Fn(&ProjectEnvironmentEntry) -> bool,
-    read: &mut dyn FnMut(&Path, &str) -> Result<zeroize::Zeroizing<String>, DaemonError>,
+    read: &mut impl FnMut(&Path, &str) -> Result<zeroize::Zeroizing<String>, DaemonError>,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
     let mut environment = crate::provider::ProviderCredentialEnvironment::default();
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
