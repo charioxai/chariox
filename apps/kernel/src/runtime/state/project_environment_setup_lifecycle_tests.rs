@@ -1966,7 +1966,7 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             "user_id": "user-1",
             "account_slug": "account-transport-recovery",
             "realm_id": SETUP_TRANSPORT_RECOVERY_REALM,
-            "relay_url": "wss://relay.example.test",
+            "relay_url": relay_url.clone(),
             "issuer_id": "issuer-transport-recovery",
             "machine_id": config_worker.host_machine_id,
             "machine_credential": format!("mcred_{}", "c".repeat(40))
@@ -4823,7 +4823,7 @@ async fn stale_binding_recovery_retry_is_ordered_with_concurrent_cancel_inner() 
             "user_id": "user-1",
             "account_slug": "account-stale-binding-cancel",
             "realm_id": SETUP_TRANSPORT_RECOVERY_REALM,
-            "relay_url": "wss://relay.example.test",
+            "relay_url": relay_url.clone(),
             "issuer_id": "issuer-stale-binding-cancel",
             "machine_id": config_worker.host_machine_id,
             "machine_credential": format!("mcred_{}", "c".repeat(40))

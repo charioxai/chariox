@@ -1803,7 +1803,7 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
             completed
                 .provider_termination
                 .as_ref()
-                .is_some_and(|termination| termination.reason.contains("already ended")),
+                .is_some_and(|termination| termination.reason.contains("exit was not observed")),
             "provider termination must be recorded exactly once for the stale run"
         );
         assert_mixed_old_provider_runtime_cleared(&runtime, old_run_id);
