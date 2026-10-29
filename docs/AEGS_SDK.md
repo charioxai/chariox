@@ -220,7 +220,9 @@ dedupes on the occurrence ID, so retries and replays are safe. An AEDS outage th
 never discards an event and no longer turns into a `502` for the sender. After the
 attempts run out the event stays `failed` until it is replayed. Each interest takes a
 60 s lease when its own publication starts, so a slow AEDS never lets the retry worker
-reclaim an interest that is still waiting in line.
+reclaim an interest that is still waiting in line. An attempt that never reports back (the
+process died) counts against the same budget; when the last one's lease ends the event is
+`failed` with `attempt 8 did not finish before its lease expired`.
 
 - `webhook_delivery_id` returns the provider's unique delivery ID (GitHub:
   `X-GitHub-Delivery`). The inbox stores each ID once, so a provider redelivery is

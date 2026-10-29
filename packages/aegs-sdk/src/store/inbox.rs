@@ -207,7 +207,8 @@ impl AegsStore {
     }
 
     /// The bindings of `delivery_id` that are due for a publication attempt (limited to
-    /// `owner_id`'s when given), in publication order.
+    /// `owner_id`'s when given), in publication order. An attempt whose lease ran out with the
+    /// budget spent is failed here instead of being offered again.
     pub fn due_inbox_bindings(
         &self,
         delivery_id: &str,
@@ -215,6 +216,7 @@ impl AegsStore {
         now_ms: u64,
     ) -> Result<Vec<String>, String> {
         let connection = self.lock()?;
+        fail_exhausted_leases(&connection, now_ms)?;
         let mut statement = connection
             .prepare(
                 "SELECT binding_id FROM webhook_inbox_delivery
@@ -234,7 +236,7 @@ impl AegsStore {
 
     /// Takes the next publication attempt of one due, pending interest, at the moment its
     /// publication starts, so its lease covers that publication and not the ones before it.
-    /// `None` when another caller holds the row or it is not due.
+    /// `None` when another caller holds the row, it is not due, or its attempt budget is spent.
     /// Only one caller gets a row until its lease expires, so the inline attempt and the retry
     /// worker never publish the same interest at once.
     pub fn claim_inbox_delivery(
@@ -250,13 +252,14 @@ impl AegsStore {
                 "UPDATE webhook_inbox_delivery
                  SET attempts = attempts + 1, next_due_at_ms = ?4, attempt_token = ?5
                  WHERE delivery_id = ?1 AND binding_id = ?2 AND status = 'pending'
-                   AND next_due_at_ms <= ?3",
+                   AND next_due_at_ms <= ?3 AND attempts < ?6",
                 params![
                     delivery_id,
                     binding_id,
                     now_ms as i64,
                     (now_ms + ATTEMPT_LEASE_MS) as i64,
                     token,
+                    MAX_PUBLICATION_ATTEMPTS,
                 ],
             )
             .map_err(|error| error.to_string())?;
@@ -301,6 +304,7 @@ impl AegsStore {
     /// with a pending interest that is due.
     pub fn due_inbox_deliveries(&self, now_ms: u64, limit: usize) -> Result<Vec<String>, String> {
         let connection = self.lock()?;
+        fail_exhausted_leases(&connection, now_ms)?;
         let mut statement = connection
             .prepare(
                 "SELECT delivery_id FROM (
@@ -559,6 +563,23 @@ fn insert_deliveries(
             )
             .map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+/// Fails the interests whose last allowed attempt never reported back: the process stopped or
+/// stalled, its lease ended, and no attempt is left to claim. Without this a row that keeps
+/// crashing would stay pending for ever.
+fn fail_exhausted_leases(connection: &rusqlite::Connection, now_ms: u64) -> Result<(), String> {
+    connection
+        .execute(
+            "UPDATE webhook_inbox_delivery
+             SET status = 'failed', attempt_token = NULL,
+                 last_error = 'attempt ' || attempts || ' did not finish before its lease expired'
+             WHERE status = 'pending' AND attempt_token IS NOT NULL AND next_due_at_ms <= ?1
+               AND attempts >= ?2",
+            params![now_ms as i64, MAX_PUBLICATION_ATTEMPTS],
+        )
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -834,6 +855,43 @@ mod tests {
             store.inbox_event("d1").unwrap().unwrap().status,
             InboxStatus::Failed
         );
+    }
+
+    #[test]
+    fn crashed_attempts_spend_the_budget_and_the_last_one_fails_with_a_lease_reason() {
+        let (store, _) = selected_store(&[("c1", "owner")]);
+        let mut now = 0;
+        for attempt in 1..=MAX_PUBLICATION_ATTEMPTS {
+            let claimed = store.claim_all_inbox_deliveries("d1", None, now).unwrap();
+            assert_eq!(claimed.len(), 1, "attempt {attempt}");
+            assert_eq!(claimed[0].attempts, attempt);
+            // Still leased: it is neither claimable nor failed.
+            assert!(store
+                .claim_all_inbox_deliveries("d1", None, now + ATTEMPT_LEASE_MS - 1)
+                .unwrap()
+                .is_empty());
+            now += ATTEMPT_LEASE_MS;
+        }
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Pending,
+            "the last attempt may still be running until its lease ends"
+        );
+        assert_eq!(
+            store.due_inbox_deliveries(now, 8).unwrap(),
+            Vec::<String>::new()
+        );
+        let entry = store.inbox_event("d1").unwrap().unwrap();
+        assert_eq!(entry.status, InboxStatus::Failed);
+        assert_eq!(entry.attempts, MAX_PUBLICATION_ATTEMPTS);
+        assert_eq!(
+            entry.last_error.as_deref(),
+            Some("attempt 8 did not finish before its lease expired")
+        );
+        assert!(store
+            .claim_all_inbox_deliveries("d1", None, now + RETENTION_MS)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

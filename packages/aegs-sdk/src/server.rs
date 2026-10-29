@@ -3299,6 +3299,65 @@ mod mp11_delivery_http_tests {
     }
 
     #[tokio::test]
+    async fn attempts_that_keep_crashing_end_in_failed_with_a_lease_reason_and_can_be_replayed() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        let mut at = now_ms();
+        store
+            .record_inbox_event("crashy", None, &event(), at)
+            .unwrap();
+        let selected = store
+            .matching_for_delivery("dev.chariox.github", "event", "scope")
+            .await
+            .unwrap();
+        store
+            .select_inbox_interests("crashy", &selected, at)
+            .unwrap();
+        // Each attempt is claimed and its process dies before reporting back.
+        for attempt in 1..=8 {
+            let claimed = store
+                .claim_all_inbox_deliveries("crashy", None, at)
+                .unwrap();
+            assert_eq!(claimed.len(), 1, "attempt {attempt} is within the budget");
+            at += 60 * 60_000;
+        }
+        server.deliver_due_inbox(at).await.unwrap();
+        assert_eq!(
+            publisher.calls.load(Ordering::SeqCst),
+            0,
+            "no ninth attempt"
+        );
+        let stored = store.inbox_event("crashy").unwrap().unwrap();
+        assert_eq!(stored.status, crate::InboxStatus::Failed);
+        assert_eq!(stored.attempts, 8);
+        assert!(
+            stored
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("lease expired"),
+            "{:?}",
+            stored.last_error
+        );
+        let (_, page) = management_post(
+            &server,
+            "/v1/events/query",
+            "owner",
+            serde_json::json!({"generator_id": "dev.chariox.github", "owner_id": "owner", "limit": 10}),
+        )
+        .await;
+        assert_eq!(page["events"][0]["status"], "failed");
+        let (status, replayed) = replay_as(&server, "owner", "crashy").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(replayed["event"]["status"], "published");
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn legacy_subscription_without_a_connection_is_published_once_and_never_retried() {
         let publisher = PublisherFixture::new();
         let (server, store) = server_without_connection_rows(&publisher);
