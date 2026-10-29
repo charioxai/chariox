@@ -1,5 +1,5 @@
 {
-  "local_protocol": 811,
+  "local_protocol": 910,
   "peer_protocol": 361,
   "allocation": "mirror unreleased539/147 additive, coordinator2026-10-16T04:55Z",
   "max_failures": 128,
