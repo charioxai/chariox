@@ -34,6 +34,13 @@ model appropriate to it. Never copy credentials into the repository.
    its listener must retire. Probe the kernel's non-loopback address from another
    machine: this ingress must not be reachable or published through the relay.
 
+The kernel side of steps 3-6 and the schedule triggers run without a browser through
+`scripts/drills/agent-triggers.mjs` (usage in its header): schedule once and every,
+HTTP invoke, QUEUE order and STEER into the running turn while busy, then after a
+kernel restart the same URL, 503 while the agent is offline, 403 when disabled, a
+refused connection after removal and no triggers after archive. It checks the
+provider's own answers, not the prompt text, and complements the web steps.
+
 Record source commits, binary hashes, resolved model, actual turns, screenshots,
 console output, exact HTTP statuses and cleanup outside the repository. These
 functional cells do not establish latency gates or multi-hour stability. Report
