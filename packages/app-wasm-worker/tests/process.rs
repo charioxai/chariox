@@ -1,6 +1,10 @@
 //! Real worker subprocess drills; build the source App with scripts/drill.sh.
+#[path = "process/broker.rs"]
+mod broker;
 #[path = "process/support.rs"]
 mod support;
+#[path = "process/transactions.rs"]
+mod transactions;
 use chariox_app_runtime::wire::{Message, Outcome, WIRE_VERSION};
 use chariox_app_wasm_worker::ipc::wall_ms;
 use serde_json::{json, Value};
@@ -205,7 +209,11 @@ async fn real_worker_streams_have_backpressure_and_cancel_resources() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            worker.channel.receive(Duration::from_secs(1))
+            worker
+                .channel
+                .as_mut()
+                .unwrap()
+                .receive(Duration::from_secs(1))
         )
         .await
         .is_err(),

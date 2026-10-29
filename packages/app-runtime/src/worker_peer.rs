@@ -52,8 +52,14 @@ pub type Result<T> = std::result::Result<T, PeerError>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PeerLimits {
+    /// Maximum supervisor calls executing in the shared App instance.
     pub pending_calls: usize,
+    /// Maximum kernel callbacks, including responses awaiting publication.
     pub broker_handlers: usize,
+    /// Additional supervisor calls waiting for execution (at most 16).
+    pub queued_calls: usize,
+    /// Additional worker imports waiting for a kernel callback (at most 16).
+    pub queued_broker_requests: usize,
     pub queued_frames: usize,
     pub frame_timeout: Duration,
     pub max_deadline: Duration,
@@ -62,7 +68,9 @@ impl Default for PeerLimits {
     fn default() -> Self {
         Self {
             pending_calls: 64,
-            broker_handlers: 16,
+            broker_handlers: 64,
+            queued_calls: 16,
+            queued_broker_requests: 16,
             queued_frames: 4,
             frame_timeout: Duration::from_secs(5),
             max_deadline: Duration::from_secs(30),
@@ -72,7 +80,9 @@ impl Default for PeerLimits {
 impl PeerLimits {
     fn validate(self) -> Result<Self> {
         if !(1..=64).contains(&self.pending_calls)
-            || !(1..=16).contains(&self.broker_handlers)
+            || !(1..=64).contains(&self.broker_handlers)
+            || self.queued_calls > 16
+            || self.queued_broker_requests > 16
             || !(1..=16).contains(&self.queued_frames)
             || self.frame_timeout.is_zero()
             || self.frame_timeout > Duration::from_secs(30)
@@ -252,14 +262,14 @@ impl WorkerPeer {
     {
         let limits = limits.validate()?;
         let generation = channel.generation().to_string();
-        let (commands, receiver) = mpsc::channel(limits.pending_calls);
+        let (commands, receiver) = mpsc::channel(limits.pending_calls + limits.queued_calls);
         let (events, event_receiver) = mpsc::channel(limits.queued_frames);
         let (stopped, stop_receiver) = watch::channel(false);
         let peer = Self {
             control: Arc::new(Control {
                 generation: generation.clone(),
                 sequence: AtomicU64::new(0),
-                slots: Arc::new(Semaphore::new(limits.pending_calls)),
+                slots: Arc::new(Semaphore::new(limits.pending_calls + limits.queued_calls)),
                 commands,
                 stopped: stopped.clone(),
                 limits,
@@ -278,7 +288,7 @@ impl WorkerPeer {
         Ok((peer, event_receiver, PeerTask(task)))
     }
 
-    /// Reserves bounded transport admission before the kernel prepares a call.
+    /// Reserves bounded running-or-queued admission before the kernel prepares a call.
     /// IDs belong to this peer and are never accepted from a worker or client.
     pub fn reserve(&self, timeout: Duration) -> Result<RequestSlot> {
         if self.is_closed() {
