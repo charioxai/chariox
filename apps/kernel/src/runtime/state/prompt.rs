@@ -137,7 +137,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         provider_run_id: &str,
         message: &str,
-        failure: Option<crate::provider::ProviderFailure>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<Option<bool>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self

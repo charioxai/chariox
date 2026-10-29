@@ -4291,7 +4291,7 @@ pub(in crate::runtime::state) mod tests {
             .expect("the refused turn settles");
         let failure = settlement
             .metadata
-            .get(crate::history::PROMPT_FAILURE_METADATA_KEY)
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
             .cloned();
         (adapter_key, [transcript, visible_history].concat(), failure)
     }
@@ -4305,10 +4305,10 @@ pub(in crate::runtime::state) mod tests {
                 message: REFUSAL.to_string(),
             })
             .await;
-        let expected = crate::provider::ProviderFailure::classify(&adapter_key, REFUSAL);
+        let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
         assert_eq!(
-            expected.cause,
-            crate::provider::ProviderFailureCause::Overloaded
+            expected.kind,
+            crate::provider::TurnOutcomeKind::Overloaded
         );
         assert!(visible.contains(&expected.notice()));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));

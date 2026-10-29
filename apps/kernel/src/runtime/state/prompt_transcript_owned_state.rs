@@ -132,7 +132,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         adapter_key: &str,
         error: &DaemonError,
-    ) -> Option<crate::provider::ProviderFailure> {
+    ) -> Option<crate::provider::TurnOutcome> {
         let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
         match &failure {
             Some(failure) => {

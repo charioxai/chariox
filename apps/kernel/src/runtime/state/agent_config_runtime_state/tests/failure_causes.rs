@@ -360,7 +360,7 @@ async fn a_room_agent_owner_sees_the_providers_reason_for_a_failed_turn() {
     turn.fail_run(&turn.failed_run_id, OVERLOADED).await;
 
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert_eq!(failure.cause, ProviderFailureCause::Overloaded);
+    assert_eq!(failure.kind, TurnOutcomeKind::Overloaded);
     assert!(
         provider_error_outputs(&turn).contains(&failure.notice()),
         "the transcript line carries the headline and the provider message"

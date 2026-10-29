@@ -261,7 +261,7 @@ async fn owner_view_of_failed_submit(
         .expect("the failed turn settles");
     let failure = settlement
         .metadata
-        .get(crate::history::PROMPT_FAILURE_METADATA_KEY)
+        .get(crate::history::TURN_OUTCOME_METADATA_KEY)
         .cloned();
     (transcript, failure)
 }
@@ -278,7 +278,7 @@ async fn an_opencode_refusal_shows_a_room_agent_owner_the_providers_reason() {
         },
     ))
     .await;
-    let expected = crate::provider::ProviderFailure::classify("opencode", REFUSAL);
+    let expected = crate::provider::TurnOutcome::classify("opencode", REFUSAL);
     assert_eq!(transcript, vec![expected.notice()]);
     assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
 }

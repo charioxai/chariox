@@ -66,6 +66,7 @@ impl KernelRuntimeState {
                             .unwrap_or("remote-provider-run-completed"),
                         None,
                         None,
+                        None,
                         Some((&prompt_id, &binding)),
                     )?;
                     if completion.completed.workflow_run_id().is_some() {

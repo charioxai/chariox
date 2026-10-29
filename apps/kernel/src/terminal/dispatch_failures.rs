@@ -28,10 +28,10 @@ pub(crate) fn user_facing_dispatch_failure(error: &DaemonError) -> String {
 pub(crate) fn provider_dispatch_failure(
     adapter_key: &str,
     error: &DaemonError,
-) -> Option<crate::provider::ProviderFailure> {
+) -> Option<crate::provider::TurnOutcome> {
     match error {
         DaemonError::ProviderRefusal { message } => Some(
-            crate::provider::ProviderFailure::classify(adapter_key, message),
+            crate::provider::TurnOutcome::classify(adapter_key, message),
         ),
         _ => None,
     }

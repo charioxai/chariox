@@ -389,8 +389,8 @@ impl KernelRuntimeOwnedState {
             agent_id,
             remote_provider_run_id,
             next_queued_prompt,
-            provider_termination.clone(),
-            provider_termination.and_then(|termination| termination.failure),
+            None,
+            None,
             None,
         )
     }
