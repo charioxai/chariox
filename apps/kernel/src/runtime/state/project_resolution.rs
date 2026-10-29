@@ -240,4 +240,206 @@ mod tests {
             }
         }
     }
+
+    fn r4_dispatch(
+        router: &crate::runtime::router::CommandRouter,
+        command_id: &str,
+        request: crate::local::LocalDaemonRequest,
+    ) -> tokio::task::JoinHandle<Result<LocalDaemonResponse, DaemonError>> {
+        let router = router.clone();
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            command_id, None, None, &request,
+        );
+        tokio::spawn(async move { router.dispatch(command, request).await })
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r4_project_resolution_dispatcher_stalled_git_keeps_project_and_session_lane_live() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let original_path = std::env::var_os("PATH").unwrap();
+        let git = std::env::split_paths(&original_path)
+            .map(|path| path.join("git"))
+            .find(|path| path.is_file())
+            .unwrap()
+            .canonicalize()
+            .unwrap();
+        for release_before_deadline in [false, true] {
+            let root = crate::test_support::TestWorktree::new("r4-resolution-worker");
+            let blocked = root.path().join("blocked");
+            let bin = root.path().join("metadata-tools");
+            std::fs::create_dir(&blocked).unwrap();
+            std::fs::create_dir(&bin).unwrap();
+            let marker = root.path().join("git.pid");
+            let release = root.path().join("release-git");
+            std::fs::write(bin.join("git"), format!("#!/bin/sh\nif [ \"$PWD\" = '{}' ]; then\n echo $$ > '{}'\n while [ ! -f '{}' ]; do /bin/sleep 0.02; done\n exit 1\nfi\nexec '{}' \"$@\"\n", blocked.display(), marker.display(), release.display(), git.display())).unwrap();
+            std::fs::set_permissions(bin.join("git"), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            std::env::set_var(
+                "PATH",
+                std::env::join_paths(
+                    std::iter::once(bin).chain(std::env::split_paths(&original_path)),
+                )
+                .unwrap(),
+            );
+            std::env::set_var(
+                "CHARIOX_PROJECT_RESOLUTION_BUDGET_MS",
+                if release_before_deadline {
+                    "5000"
+                } else {
+                    "1000"
+                },
+            );
+            let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+            let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                Arc::new(Mutex::new(app)),
+                4,
+            );
+            let state = router.runtime_state();
+            let mut resolution = r4_dispatch(
+                &router,
+                "r4-stalled-resolution",
+                crate::local::LocalDaemonRequest::ResolveProject(
+                    crate::local::ResolveProjectRequest {
+                        project_id: None,
+                        workspace_id: blocked.to_string_lossy().into_owned(),
+                        create_if_missing: true,
+                    },
+                ),
+            );
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !marker.exists() && std::time::Instant::now() < end {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let entered = marker.exists();
+            let mut listing = r4_dispatch(
+                &router,
+                "r4-projects-during-resolution",
+                crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+                    include_archived: true,
+                }),
+            );
+            let listed = tokio::time::timeout(std::time::Duration::from_secs(1), &mut listing)
+                .await
+                .ok();
+            let other = crate::test_support::TestWorktree::new("r4-create-during-resolution");
+            let mut creation = r4_dispatch(
+                &router,
+                "r4-session-during-resolution",
+                crate::local::LocalDaemonRequest::CreateSession(other.session_request()),
+            );
+            let created = tokio::time::timeout(std::time::Duration::from_secs(2), &mut creation)
+                .await
+                .ok();
+            let listed_live = listed.is_some();
+            let created_live = created.is_some();
+            if release_before_deadline {
+                std::fs::write(&release, "release").unwrap();
+            }
+            let bounded = tokio::time::timeout(std::time::Duration::from_secs(5), &mut resolution)
+                .await
+                .ok();
+            let settled_before_release = bounded.is_some();
+            std::fs::write(&release, "release").unwrap();
+            let resolution = match bounded {
+                Some(result) => result.unwrap(),
+                None => resolution.await.unwrap(),
+            };
+            let listed = match listed {
+                Some(result) => result.unwrap(),
+                None => listing.await.unwrap(),
+            };
+            let created = match created {
+                Some(result) => result.unwrap(),
+                None => creation.await.unwrap(),
+            };
+            let no_late_project = !state
+                .list_projects(crate::session::DEFAULT_LOCAL_USER_ID, true)
+                .await
+                .iter()
+                .any(|project| {
+                    project
+                        .workspace_ids()
+                        .iter()
+                        .any(|path| std::path::Path::new(path) == blocked)
+                });
+            let session = match created {
+                Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session),
+                _ => None,
+            };
+            if let Some(session) = &session {
+                state.delete_session_id(session.id()).await.unwrap();
+            }
+            assert!(
+                entered,
+                "the real Git subprocess must reach the stalled folder"
+            );
+            assert!(
+                listed_live && listed.is_ok(),
+                "Project listing was blocked behind filesystem/Git preparation"
+            );
+            assert!(
+                created_live && session.is_some(),
+                "session creation was blocked behind filesystem/Git preparation"
+            );
+            assert!(
+                settled_before_release,
+                "Project resolution did not settle its owned deadline"
+            );
+            assert!(
+                resolution.is_err(),
+                "expired metadata or changed Project topology cannot commit after preparation"
+            );
+            assert!(
+                no_late_project,
+                "late preparation must not publish a Project"
+            );
+            let pid = std::fs::read_to_string(&marker)
+                .unwrap()
+                .trim()
+                .parse::<i32>()
+                .unwrap();
+            assert!(pid > 1 && pid != std::process::id() as i32);
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "owned Git subprocess was not reaped"
+            );
+        }
+        std::env::set_var("PATH", original_path);
+        std::env::remove_var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS");
+    }
+
+    #[tokio::test]
+    async fn r4_project_resolution_worker_keeps_ordinary_protected_directory_admission() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let protected = crate::test_support::TestWorktree::new("r4-resolution-protected");
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", protected.path());
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let result = r4_dispatch(
+            &router,
+            "r4-protected-resolution",
+            crate::local::LocalDaemonRequest::ResolveProject(crate::local::ResolveProjectRequest {
+                project_id: None,
+                workspace_id: protected.path().to_string_lossy().into_owned(),
+                create_if_missing: true,
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(result.unwrap_err().to_string().contains("protected"));
+        assert!(router
+            .runtime_state()
+            .list_projects(crate::session::DEFAULT_LOCAL_USER_ID, true)
+            .await
+            .is_empty());
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+    }
 }

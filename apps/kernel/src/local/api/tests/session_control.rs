@@ -2396,3 +2396,79 @@ fn envp03_secret_references_allow_names_but_not_plaintext_or_protected_variables
         .contains("credential-shaped"));
     assert_eq!(envp02b_read(&harness).revision, environment.revision);
 }
+
+fn r4_file_review_request(
+    harness: &LocalRouterTestHarness,
+    path: &str,
+    preview: bool,
+) -> LocalDaemonRequest {
+    let current = envp02b_read(harness);
+    let folder = &current.folders[0].folder_id;
+    let mut save = serde_json::to_value(envp02b_save(&current, "Node")).unwrap();
+    save["SaveProjectEnvironmentRevision"]["draft"]["folders"][0]["requirements"] = serde_json::json!([{
+        "requirement_id":"manual-file","title":"Selected file","scope":{"kind":"folder","folder_id":folder},"origins":[],"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null,
+        "spec":{"kind":"files","folder_id":folder,"entries":[{"relative_path":path,"kind":"file","folder_id":folder,"user_selected":true,"content_digest":null,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked","transfer_inclusion":"include","reason":null,"secret_looking":false}]}
+    }]);
+    if preview {
+        serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":current.revision,"draft":save["SaveProjectEnvironmentRevision"]["draft"]}})).unwrap()
+    } else {
+        serde_json::from_value(save).unwrap()
+    }
+}
+
+#[test]
+fn r4_environment_files_capacity_reason_survives_preview_and_save_worker() {
+    let root = crate::test_support::TestWorktree::new("r4-files-capacity");
+    std::fs::File::create(root.path().join("oversize.bin"))
+        .unwrap()
+        .set_len(8 * 1024 * 1024 * 1024 + 1)
+        .unwrap();
+    let harness = envp02b_harness();
+    harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":[root.path().to_string_lossy()]}})).unwrap()).unwrap();
+    for preview in [true, false] {
+        let error = harness
+            .dispatch(r4_file_review_request(&harness, "oversize.bin", preview))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("selected Files exceed the 8 GiB review capacity"),
+            "actionable capacity failure lost: {error}"
+        );
+        assert_eq!(envp02b_read(&harness).revision, 0);
+    }
+}
+
+#[test]
+fn r4_environment_files_changed_reason_survives_preview_and_save_worker() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("r4-files-changed");
+    let selected = root.path().join("document.txt");
+    let marker = root.path().join("measurement-started");
+    let harness = envp02b_harness();
+    harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":[root.path().to_string_lossy()]}})).unwrap()).unwrap();
+    std::env::set_var("CHARIOX_FILES_CHECK_IO_STALL_MARKER", &marker);
+    for preview in [true, false] {
+        std::fs::write(&selected, "before\n").unwrap();
+        let _ = std::fs::remove_file(&marker);
+        let request = r4_file_review_request(&harness, "document.txt", preview);
+        let (reached, result) = std::thread::scope(|scope| {
+            let pending = scope.spawn(|| harness.dispatch(request));
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !marker.exists() && std::time::Instant::now() < end {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let reached = marker.exists();
+            std::fs::write(&selected, "changed during the owner's file review\n").unwrap();
+            (reached, pending.join().unwrap())
+        });
+        assert!(reached, "owned Files worker must reach the admitted read");
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("selected File changed during review; retry Save"),
+            "actionable changed-file failure lost: {error}"
+        );
+        assert_eq!(envp02b_read(&harness).revision, 0);
+    }
+    std::env::remove_var("CHARIOX_FILES_CHECK_IO_STALL_MARKER");
+}
