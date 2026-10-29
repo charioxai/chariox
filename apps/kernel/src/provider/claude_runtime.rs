@@ -1226,16 +1226,30 @@ done
 
     #[test]
     fn runtime_mcp_config_cleans_up_when_child_spawn_fails() {
-        let token = format!(
-            "runtime-bearer-spawn-failure-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        );
         let missing_program = std::env::temp_dir().join(format!(
             "chariox-missing-claude-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        assert_failed_runtime_cleans_up_mcp_config(&missing_program);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_mcp_config_cleans_up_when_child_is_not_executable() {
+        let worktree = crate::test_support::TestWorktree::new("nonexecutable-claude");
+        let program = worktree.path().join("claude");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_failed_runtime_cleans_up_mcp_config(&program);
+    }
+
+    fn assert_failed_runtime_cleans_up_mcp_config(missing_program: &std::path::Path) {
+        let token = format!(
+            "runtime-bearer-spawn-failure-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
         let request =
             LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
@@ -1261,10 +1275,11 @@ done
             },
         );
 
-        assert!(
-            initialize_claude_runtime(&run).is_err(),
-            "missing Claude executable should fail"
-        );
+        let result = initialize_claude_runtime(&run);
+        assert!(result.is_err(), "unavailable Claude executable should fail");
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("reinstall Claude Code and retry"));
+        assert_eq!(message.lines().count(), 1);
 
         let leaked_config = std::fs::read_dir(std::env::temp_dir())
             .expect("kernel temp directory should be readable")

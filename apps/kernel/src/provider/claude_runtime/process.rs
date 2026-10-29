@@ -44,6 +44,8 @@ pub(super) fn spawn_claude_child(
             message: error.to_string(),
         }
     })?;
+    #[cfg(unix)]
+    let inner_program = program;
     let (program, args) = prepared.command(program.to_string(), args.to_vec());
     let mut command = crate::process_spawn::command(program);
     command
@@ -72,6 +74,9 @@ pub(super) fn spawn_claude_child(
     if let Some(working_directory) = working_directory {
         command.current_dir(working_directory);
     }
+
+    #[cfg(unix)]
+    ensure_claude_executable(inner_program, &command, operation)?;
 
     #[cfg(unix)]
     unsafe {
@@ -169,6 +174,41 @@ pub(super) fn spawn_claude_child(
     });
 
     Ok((child, stdin, receiver, resources))
+}
+
+#[cfg(unix)]
+fn ensure_claude_executable(
+    program: &str,
+    command: &std::process::Command,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    // The resource shell can start even when its inner executable cannot.
+    // Preserve immediate launch failure using the child's cwd and environment.
+    let cwd = command.get_current_dir().unwrap_or_else(|| Path::new("."));
+    let executable = |path: &Path| {
+        std::fs::metadata(cwd.join(path))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    let available = if program.contains('/') {
+        executable(Path::new(program))
+    } else {
+        let path = match command.get_envs().find(|(name, _)| *name == "PATH") {
+            Some((_, value)) => value.map(std::ffi::OsStr::to_os_string),
+            None => std::env::var_os("PATH"),
+        }
+        .unwrap_or_else(|| "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+        std::env::split_paths(&path).any(|directory| executable(&directory.join(program)))
+    };
+    if !available {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: "Claude Code executable is missing or not executable; reinstall Claude Code and retry".into(),
+        });
+    }
+    Ok(())
 }
 
 pub(super) fn stop_child(child: &mut Child) {
