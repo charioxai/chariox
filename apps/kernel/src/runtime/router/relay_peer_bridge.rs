@@ -193,6 +193,10 @@ impl CommandRouter {
         }
         Ok(grant)
     }
+    /// The user an admitted terminal acts as (see `self_host_terminal_grants::owner_user_id`).
+    pub(crate) fn self_host_terminal_owner_user_id(&self) -> String {
+        crate::runtime::self_host_terminal_grants::owner_user_id(&self.config_projection.snapshot())
+    }
     pub(crate) fn self_host_terminal_pairing_required(&self) -> bool {
         crate::runtime::self_host_terminal_grants::required(&self.config_projection.snapshot())
     }

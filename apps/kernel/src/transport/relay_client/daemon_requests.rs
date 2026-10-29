@@ -132,7 +132,10 @@ pub(super) async fn handle_prepared_daemon_request(
                             }
                         }
                     };
-                    KernelCaller::from_paired_terminal(grant)
+                    KernelCaller::from_paired_terminal(
+                        grant,
+                        router.self_host_terminal_owner_user_id(),
+                    )
                 }
             } else {
                 KernelCaller::for_relay_request(caller_identity)

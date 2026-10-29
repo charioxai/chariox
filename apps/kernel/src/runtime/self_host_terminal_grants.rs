@@ -58,6 +58,17 @@ pub(crate) fn pairing_transport_token(token: String) -> String {
     }
 }
 
+/// The runtime identity an admitted terminal acts as: the kernel owner, the same user the
+/// kernel's own sessions are created under. Admission never confers Cloud authority; that
+/// needs the Cloud realm on the selected Cloud transport.
+pub(crate) fn owner_user_id(config: &DaemonConfig) -> String {
+    config
+        .cloud_relay
+        .as_ref()
+        .map(|profile| profile.user_id.clone())
+        .unwrap_or_else(|| crate::session::DEFAULT_LOCAL_USER_ID.to_string())
+}
+
 pub(crate) fn required(config: &DaemonConfig) -> bool {
     config.relay_url.is_some()
         && !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config)
