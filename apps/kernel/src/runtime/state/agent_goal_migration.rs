@@ -8,17 +8,23 @@ pub(super) fn is_legacy_goal_template(workflow: &crate::session::WorkflowDefinit
     })
 }
 
-impl KernelRuntimeState {
+impl KernelRuntimeOwnedState {
     /// Old snapshots cannot prove whether the registry template was invoked
-    /// through `/goal` or manually. Offer adoption without changing its work.
-    pub(super) fn offer_legacy_goal_adoption(&self) -> Result<(), DaemonError> {
-        for session in self.owned.session_store.list_all_sessions() {
-            for run in session
-                .workflow_runs()
-                .iter()
-                .filter(|r| !r.status().is_terminal())
-            {
-                let Some(workflow) = session
+    /// through `/goal` or manually, so a live planner/worker/reviewer run no
+    /// goal tracks keeps draining until the owner adopts or stops it.
+    pub(super) fn unadopted_legacy_runs<'a>(
+        &self,
+        session: &'a crate::session::RuntimeSession,
+    ) -> Result<Vec<&'a crate::session::WorkflowRun>, DaemonError> {
+        let tasks = self
+            .durable_state_store
+            .agent_tasks(Some(session.id()), None)?;
+        Ok(session
+            .workflow_runs()
+            .iter()
+            .filter(|r| !r.status().is_terminal())
+            .filter(|r| {
+                session
                     .workflows()
                     .iter()
                     .find(|w| w.id() == run.workflow_id())
@@ -37,10 +43,28 @@ impl KernelRuntimeState {
                         t.goal
                             .as_ref()
                             .is_some_and(|g| g.legacy_run_id.as_deref() == Some(run.id()))
+                    .find(|w| w.id() == r.workflow_id())
+                    .and_then(|w| w.alias())
+                    .is_some_and(|a| {
+                        a == "planner-worker-reviewer" || a.starts_with("planner-worker-reviewer-")
                     })
-                {
-                    continue;
-                }
+            })
+            .filter(|r| {
+                !tasks.iter().any(|t| {
+                    t.goal
+                        .as_ref()
+                        .is_some_and(|g| g.legacy_run_id.as_deref() == Some(r.id()))
+                })
+            })
+            .collect())
+    }
+}
+
+impl KernelRuntimeState {
+    /// Offer adoption without changing the run's work.
+    pub(super) fn offer_legacy_goal_adoption(&self) -> Result<(), DaemonError> {
+        for session in self.owned.session_store.list_all_sessions() {
+            for run in self.owned.unadopted_legacy_runs(&session)? {
                 if !self
                     .owned
                     .durable_state_store

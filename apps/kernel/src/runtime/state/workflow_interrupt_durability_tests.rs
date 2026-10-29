@@ -326,6 +326,51 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
     assert_eq!(runs[0].id(), "interrupt-provider-run");
 }
 
+// A12-S06: an upgrade leaves a legacy run without a live turn; until the owner adopts
+// or stops it, the orphan sweep must keep it draining (an ordinary run gets no such cover).
+// Adopting hands that cover to the goal's legacy-run relationship, not drops it.
+#[tokio::test]
+async fn a12_legacy_run_is_supervised_before_and_after_the_owner_adopts_it() {
+    let fixture = |alias: &str| {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        interrupt_fixture_with_alias(
+            crate::test_support::TestWorktree::new("a12-legacy-orphan"),
+            config,
+            true,
+            alias,
+        )
+    };
+    let supervised = |fixture: &InterruptFixture| {
+        let targets = fixture
+            .runtime
+            .owned
+            .supervised_workflow_targets(&fixture.session_id)
+            .unwrap();
+        targets.contains(&(fixture.workflow_run_id.clone(), fixture.node_run_id.clone()))
+    };
+    assert!(!supervised(&fixture("interrupt-durability")));
+    let legacy = fixture("planner-worker-reviewer");
+    assert!(supervised(&legacy));
+    legacy
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::AdoptGoal {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: legacy.session_id.clone(),
+                agent: legacy.target_agent_id.clone(),
+                run: legacy.workflow_run_id.clone(),
+                nodes: vec![legacy.node_run_id.clone()],
+                objective: "finish the legacy run".into(),
+                now: crate::session::unix_epoch_ms(),
+            },
+        )
+        .unwrap();
+    assert!(supervised(&legacy));
+}
+
 // A plain turn only gets a task row: ending after a tool call with no answer is
 // settled Done, never corrected, held to a wait or blocked for the owner.
 #[tokio::test]
@@ -1286,6 +1331,15 @@ fn interrupt_fixture_with_creator(
     config: crate::config::DaemonConfig,
     agent_created: bool,
 ) -> InterruptFixture {
+    interrupt_fixture_with_alias(worktree, config, agent_created, "interrupt-durability")
+}
+
+fn interrupt_fixture_with_alias(
+    worktree: crate::test_support::TestWorktree,
+    config: crate::config::DaemonConfig,
+    agent_created: bool,
+    workflow_alias: &str,
+) -> InterruptFixture {
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -1310,7 +1364,7 @@ fn interrupt_fixture_with_creator(
         .expect("second affected workflow agent should be created");
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("interrupt-durability".to_string()))
+        .create_workflow(session.id(), Some(workflow_alias.to_string()))
         .expect("workflow should be created");
     let node = app
         .sessions_mut()
