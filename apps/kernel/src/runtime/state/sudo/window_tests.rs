@@ -163,6 +163,28 @@ async fn sudo_window_projection_keeps_deadline_and_warning_after_mutation() {
 }
 
 #[tokio::test]
+async fn sudo_window_ends_at_its_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let mut window = running(&f);
+    assert!(f.state.sudo_live(&window));
+    // The monotonic clock does not count suspend on Linux or macOS: after the
+    // host sleeps past the expiry every client shows, the deadline is still
+    // ahead while the wall clock is not.
+    window.expires_at_ms = Some(crate::session::unix_epoch_ms() - 60_000);
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .insert(window.entry_id.clone(), window.clone());
+    assert_eq!(
+        f.state.owned.sudo_end_reason(&window),
+        Some("expired"),
+        "a sudo window must not keep authority past the expiry the owner was shown"
+    );
+}
+
+#[tokio::test]
 async fn sudo_windows_are_projected_only_to_their_owner() {
     let f = fixture_with_options(None, true);
     let window = running(&f);
