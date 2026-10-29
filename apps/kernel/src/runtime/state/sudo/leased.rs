@@ -188,12 +188,11 @@ impl KernelRuntimeState {
                 "this leased turn has no live sudo window on this worker",
             ));
         }
-        // Home may wait up to 300 s for the owner's per-operation scope approval.
         self.forward_meta_runtime_tool(
             context,
             "chariox_kernel_request",
             arguments,
-            std::time::Duration::from_secs(345),
+            super::tool_dispatch::OWNER_DECISION_FORWARD_TIMEOUT,
         )
         .await
         .map(Some)

@@ -540,7 +540,7 @@ impl KernelRuntimeState {
             .unwrap_or(wake);
         Ok(started)
     }
-    fn settle_failed_process_launch(&self, wake: &AgentWake, tail: String) {
+    pub(super) fn settle_failed_process_launch(&self, wake: &AgentWake, tail: String) {
         let state = self.clone();
         let wake = wake.clone();
         tokio::spawn(async move {
