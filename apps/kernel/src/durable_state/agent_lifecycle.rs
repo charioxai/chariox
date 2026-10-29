@@ -530,6 +530,18 @@ fn live_tasks(
         params![room, agent],
     )
 }
+/// A room's tasks (one agent's when given), in ledger order.
+fn room_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: Option<&str>,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND (?2 IS NULL OR agent_id=?2)",
+        params![room, agent],
+    )
+}
 /// An agent's tasks that hold a pending continuation.
 fn continuing_tasks(
     tx: &Transaction<'_>,

@@ -304,7 +304,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if (e.state == "failed" || (already_handled && !handled))
                 || (e.state == "expired"
                     && (!handled
-                        || !tasks(tx)?
+                        || !live_tasks(tx, &room, &agent)?
                             .iter()
                             .any(|task| unresolved_source_outcome(task, &e))))
             {

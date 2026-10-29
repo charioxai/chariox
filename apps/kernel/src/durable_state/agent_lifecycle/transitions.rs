@@ -209,7 +209,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             run,
         } => {
-            for mut task in tasks(tx)?.into_iter().filter(|t| t.room_id == room) {
+            for mut task in room_tasks(tx, &room, None)? {
                 if super::workflow_tasks::settle_unstarted_delegates(
                     tx, &mut task, &owner_id, &run,
                 )? {
