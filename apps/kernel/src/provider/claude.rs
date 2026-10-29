@@ -183,7 +183,6 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
-        ensure_claude_headless_onboarding_state(Some(request))?;
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "preparing Claude headless native bridge files",
@@ -299,19 +298,22 @@ fn plan_claude_launch_unlocked(
     Ok(launch)
 }
 
-pub(crate) fn prepare_vaulted_claude_native_onboarding(
+/// Initializes the selected profile's onboarding state while the launch
+/// environment (including a Project-bound HOME) is still in the request,
+/// before secrets are separated from it and its metadata is persisted.
+pub(crate) fn prepare_claude_onboarding_state(
     request: &LaunchProviderRequest,
 ) -> Result<(), DaemonError> {
-    if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-        && !request.client_interface.is_chariox()
-        && request.provider != CLAUDE_HEADLESS_PROVIDER_ID
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude") {
+        return Ok(());
+    }
+    let headless = request.provider == CLAUDE_HEADLESS_PROVIDER_ID;
+    let vaulted_native = !request.client_interface.is_chariox()
         && request
             .provider_credential_env
             .iter()
-            .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty())
-    {
-        // Initialize the selected profile before secrets are separated from the
-        // planner request and its metadata is persisted.
+            .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty());
+    if headless || vaulted_native {
         ensure_claude_headless_onboarding_state(Some(request))?;
     }
     Ok(())
@@ -1070,7 +1072,7 @@ mod tests {
         let request = request
             .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
             .with_provider_credential_env(credentials);
-        super::prepare_vaulted_claude_native_onboarding(&request)
+        super::prepare_claude_onboarding_state(&request)
             .expect("selected account should initialize");
         let mut request = request;
         let _credentials = std::mem::take(&mut request.provider_credential_env);
