@@ -529,3 +529,38 @@ fn r6_environment_repeated_full_checks_keep_history_within_byte_capacity() {
         .run_check(context, *environment, operation, || Ok(project.clone()))
         .expect("ordinary Check must remain usable after repeated full result publication");
 }
+
+#[cfg(unix)]
+#[test]
+fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    use std::os::unix::fs::PermissionsExt;
+    let root = crate::test_support::TestWorktree::new("r6-prerelease-probe");
+    let executable = root.path().join("rustc");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'rustc 1.93.0-nightly (abc123 2026-10-28)\\n'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("PATH", root.path());
+    let version = inventory::version("rustc", &[]);
+    assert!(
+        version
+            .as_ref()
+            .ok()
+            .and_then(|v| v.as_deref())
+            .is_none_or(|v| inventory::satisfies(v, ">=1.93.0") != Some(true)),
+        "prerelease output cannot establish stable readiness: {version:?}"
+    );
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'rustc 1.93.0 (abc123 2026-10-28)\\n'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        inventory::version("rustc", &[]).unwrap().as_deref(),
+        Some("1.93.0")
+    );
+}
