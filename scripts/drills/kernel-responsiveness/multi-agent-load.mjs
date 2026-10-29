@@ -1,7 +1,7 @@
 // KR-06: a kernel serving ~10 working lanes plus production-shaped client traffic must stay responsive.
 //
 // Load shape (defaults match the lanes executor kernel measured on 2026-10-29, see the flags):
-//   lanes          dev-stub provider runs whose prompts start and cancel (run-state transitions)
+//   lanes          dev-stub provider runs whose prompts start and complete (run-state transitions)
 //   leftover       live sessions nobody ended (the executor carried ~540 such sessions)
 //   subscriptions  outside event parts seeded into the stopped kernel's database, sized like production
 //   churn          session create/attach/shell/detach/end cycles per minute
@@ -171,9 +171,15 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
             return client.send(build(lane.attachment_id))
           }
         }
-        // Each prompt is one dev-stub turn: the agent goes working and back to idle on its own.
-        tasks.push(paced(1000 / o.promptIntervalMs, () =>
-          guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))))))
+        // Each prompt is one turn: the agent goes working, and back to idle when the turn ends.
+        // The fixture never ends a turn itself, so the lane ends it halfway to the next prompt;
+        // otherwise the prompt queue only grows and the drill measures that queue.
+        const f = timed(timings, 'CompletePrompt')
+        tasks.push(paced(1000 / o.promptIntervalMs, async () => {
+          await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))))
+          await delay(o.promptIntervalMs / 2)
+          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))))
+        }))
       }
     }
     let n = 0
@@ -225,6 +231,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     create_session_cycle_p99_ms: { value: p99(load, 'churn_cycle'), limit: 2000 },
     writer_cpu_percent_under_load: { value: load.writer_cpu_percent, limit: 40 },
     rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 },
+    // The kernel reports its durable writer queue and commits in GetDaemonHealth.
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
   }
   out.checks = checks
