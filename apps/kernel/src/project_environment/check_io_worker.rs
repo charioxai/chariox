@@ -70,6 +70,7 @@ pub(super) enum Response {
     },
     Machine(EnvironmentMeasuredFacts),
     Files(EnvironmentRevisionDraft),
+    ManualFiles(Result<EnvironmentRevisionDraft, super::manual_files::ManualFilesFailure>),
     Workspace(super::check_workspace::WorkspacePreflight),
     Binding(super::check_binding::PublicBinding),
     Software(Result<(Option<String>, bool), String>),
@@ -350,8 +351,12 @@ pub fn run_files_measurement_worker(
             Response::Software(measured)
         }
         Request::ManualFiles { current, mut draft } => {
-            super::manual_files::verify_manual_files_until(&current, &mut draft, deadline)?;
-            Response::Files(draft)
+            match super::manual_files::verify_manual_files_until(&current, &mut draft, deadline) {
+                Ok(()) => Response::ManualFiles(Ok(draft)),
+                Err(error) => Response::ManualFiles(Err(
+                    super::manual_files::ManualFilesFailure::from_error(&error),
+                )),
+            }
         }
     };
     let bytes = serde_json::to_vec(&response)

@@ -149,10 +149,11 @@ pub(super) fn manual_files(
         deadline,
         || false,
     )? {
-        Response::Files(measured) => {
+        Response::ManualFiles(Ok(measured)) => {
             *draft = measured;
             Ok(())
         }
+        Response::ManualFiles(Err(failure)) => Err(failure.error()),
         _ => Err(environment_error("Files review worker result invalid")),
     }
 }

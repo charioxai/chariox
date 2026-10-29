@@ -380,3 +380,63 @@ fn verify_files(
     }
     Ok(())
 }
+
+// Worker metadata carries only these safe validation outcomes, never arbitrary error text.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ManualFilesFailure {
+    ByteCapacity,
+    FileCountCapacity,
+    DepthCapacity,
+    ChangedDuringReview,
+    FolderDetached,
+    SymlinkOrNonRegular,
+    FolderUnavailable,
+    FileUnavailable,
+    UnsupportedEncoding,
+    BudgetExceeded,
+    InvalidSelection,
+}
+impl ManualFilesFailure {
+    pub(super) fn from_error(error: &DaemonError) -> Self {
+        let DaemonError::LocalTransport {
+            operation: "Project environment",
+            message,
+        } = error
+        else {
+            return Self::InvalidSelection;
+        };
+        match message.as_str() {
+            "selected Files exceed the 8 GiB review capacity" => Self::ByteCapacity,
+            "selected folder exceeds File count capacity" => Self::FileCountCapacity,
+            "selected folder exceeds depth capacity" => Self::DepthCapacity,
+            "selected File changed during review; retry Save" => Self::ChangedDuringReview,
+            "selected File folder is no longer attached" => Self::FolderDetached,
+            "selected folder contains symlink or non-regular File" => Self::SymlinkOrNonRegular,
+            "selected folder unavailable" | "selected folder entry unavailable" => {
+                Self::FolderUnavailable
+            }
+            "File metadata unavailable"
+            | "selected File read failed"
+            | "selected File type unavailable" => Self::FileUnavailable,
+            "selected File path encoding unsupported" => Self::UnsupportedEncoding,
+            "Check file measurement budget exceeded" => Self::BudgetExceeded,
+            _ => Self::InvalidSelection,
+        }
+    }
+    pub(super) fn error(self) -> DaemonError {
+        environment_error(match self {
+            Self::ByteCapacity => "selected Files exceed the 8 GiB review capacity",
+            Self::FileCountCapacity => "selected folder exceeds File count capacity",
+            Self::DepthCapacity => "selected folder exceeds depth capacity",
+            Self::ChangedDuringReview => "selected File changed during review; retry Save",
+            Self::FolderDetached => "selected File folder is no longer attached",
+            Self::SymlinkOrNonRegular => "selected folder contains symlink or non-regular File",
+            Self::FolderUnavailable => "selected folder unavailable; check the selected path and retry Save",
+            Self::FileUnavailable => "selected File unavailable; check the selected path and permissions, then retry Save",
+            Self::UnsupportedEncoding => "selected File path encoding unsupported",
+            Self::BudgetExceeded => "Check file measurement budget exceeded; select fewer Files and retry Save",
+            Self::InvalidSelection => "selected Files could not be validated; check paths and permissions, then retry Save",
+        })
+    }
+}
