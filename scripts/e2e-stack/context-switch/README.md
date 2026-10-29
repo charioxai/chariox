@@ -67,7 +67,16 @@ does not prove current `/context`, >75%, queue-once, negative controls or outage
 
 Remote TUI shaping uses owned namespaces and external `ns-tools/` slirp4netns.
 Web uses the opaque CONNECT worker; it never terminates TLS or prints headers.
-Web records screen video and screenshots at DPR1/2, default 1440×900. Repeat
+Web defaults to badge diagnostics off. Use `CTXVAL_BADGE_TRACE=1` only for separate
+diagnostic cells: trace serialization and localStorage writes can stall a viewer.
+Turn oracles wait for five seconds of idle, unchanged assistant text and score
+the same fresh completion snapshot retained as evidence. An end marker alone
+can arrive before the final client history patch.
+
+Web records screen video and screenshots at DPR1/2, default 1440×900.
+`claude-pairs.mjs` checks both densities on every Codex/Claude leg, including the
+Codex model round trip. OpenCode-specific legs retain one Web probe to keep
+the provider's three-turn cell budget. Repeat
 with `CTXVAL_VIEWPORT='{"width":1920,"height":1080}'` for the second desktop case;
 inspect every recording for stuck or blank views. The former 150ms gate is measurement
 only under owner C2. Runtime requests used for enrollment/read-only observation do

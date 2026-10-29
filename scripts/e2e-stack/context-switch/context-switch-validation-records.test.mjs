@@ -1,7 +1,7 @@
 // MP-08 / MP-10 / MP-11: stale source answers must never pass a target recall.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { scoreContextValidationRecall } from './context-switch-validation-records.mjs'
+import { ContextValidationTurnCompletion, scoreContextValidationRecall } from './context-switch-validation-records.mjs'
 const expected = { decision: 'retain native session', proposal: 'inspect cancellation' }
 const stale = [
   { role: 'user', text: 'source workload' },
@@ -31,3 +31,18 @@ test('MP-08 MP-10 MP-11 unknown records do not hide correctly recalled values', 
   assert.equal(result.total, 2)
   assert.equal(result.checks.proposal, false)
 })
+
+test('MP-08 / MP-10 / MP-11 a completion marker cannot settle text while late chunks still change it',()=>{
+ const completion=new ContextValidationTurnCompletion();
+ assert.equal(completion.observe({busy:true,answer:'partial',now:0}),false);
+ assert.equal(completion.observe({busy:false,answer:'spliced text END',now:100}),false);
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:1000}),false);
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:5999}),false);
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:6000}),true);
+ assert.equal(completion.sawWorking,true);
+ completion.reset();
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:7000}),false);
+ assert.equal(completion.observe({busy:true,answer:'complete text END',now:12000}),false);
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:13000}),false);
+ assert.equal(completion.observe({busy:false,answer:'complete text END',now:18000}),true);
+});
