@@ -563,9 +563,11 @@ fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
         inventory::version("rustc", &[]).unwrap().as_deref(),
         Some("1.93.0")
     );
-    for (name, output) in [
-        ("go", "go version go1.93.0 linux/amd64"),
-        ("java", "openjdk version \"1.93.0\""),
+    for (name, output, stable) in [
+        ("go", "go version go1.93.0 linux/amd64", "1.93.0"),
+        ("java", "openjdk version \"1.93.0\"", "1.93.0"),
+        ("gcc", "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0", "13.3.0"),
+        ("g++", "g++ (Debian 12.2.0-14) 12.2.0", "12.2.0"),
     ] {
         let executable = root.path().join(name);
         std::fs::write(
@@ -576,7 +578,17 @@ fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             inventory::version(name, &[]).unwrap().as_deref(),
-            Some("1.93.0")
+            Some(stable)
         );
     }
+    let executable = root.path().join("gcc");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf 'gcc (Ubuntu 14.1.0-1ubuntu1) 14.1.0-rc1\\n'\n",
+    )
+    .unwrap();
+    assert!(
+        inventory::version("gcc", &[]).is_err(),
+        "an actual prerelease stays unproven behind a vendor banner"
+    );
 }
