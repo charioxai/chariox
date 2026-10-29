@@ -37,7 +37,11 @@ pub(super) fn approval_text(attachments: &[crate::session::PromptAttachment]) ->
         match note {
             Some(note) => {
                 let shown: String = note.chars().take(MAX_NOTE_CHARS).collect();
-                let cut = if note.chars().count() > MAX_NOTE_CHARS { "…" } else { "" };
+                let cut = if note.chars().count() > MAX_NOTE_CHARS {
+                    "…"
+                } else {
+                    ""
+                };
                 text.push_str(&format!("\n- note {name}: {shown}{cut}"));
             }
             None => text.push_str(&format!("\n- {name} ({})", printable(attachment.mime()))),
@@ -74,7 +78,11 @@ mod tests {
         });
         let consent = popup(&f.state).await;
         starting.abort();
-        assert!(consent.message.contains("also pair a new phone"), "{}", consent.message);
+        assert!(
+            consent.message.contains("also pair a new phone"),
+            "{}",
+            consent.message
+        );
         assert!(consent.message.contains("note.json"), "{}", consent.message);
     }
 }
