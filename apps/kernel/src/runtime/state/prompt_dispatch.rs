@@ -4,6 +4,7 @@
 //! submission work to the provider runtime without exposing owned-state internals to transports.
 
 use super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation;
+use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
 /// Whether the provider confirmed a trigger's steer. `Unconfirmed` firings are
@@ -1029,7 +1030,7 @@ impl KernelRuntimeState {
             let recorded_sequence = owned.record_local_queued_prompt_steer(&prepared)?;
             owned.hold_local_queued_prompt_steer(&prepared, true)?;
             let delivery = match self
-                .enqueue_prompt_dispatch_with_acceptance(&prepared.dispatch)
+                .enqueue_prompt_dispatch_with_receipt(&prepared.dispatch, SteerReceipt::Awaited)
                 .await
             {
                 Ok(true) => TriggerSteerDelivery::Confirmed,

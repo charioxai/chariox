@@ -944,6 +944,82 @@ async fn a_steer_the_provider_refuses_after_the_mailbox_accepted_it_leaves_the_f
 }
 
 #[tokio::test]
+async fn a_steer_whose_acknowledgement_is_lost_is_not_replayed_when_the_turn_ends() {
+    use crate::session::AgentTriggerOutcome;
+    let worktree = crate::test_support::TestWorktree::new("trigger-steer-lost-acknowledgement");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should create");
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "schedule-model",
+    );
+    // The provider receives the steer, then its answer is lost.
+    install_structured_run(
+        &mut app,
+        &session,
+        &agent,
+        run.id(),
+        "dev-stub",
+        "lost-ack-structured",
+    );
+    let prompt_owner = start_running_turn(&app, &session, &agent);
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
+        .runtime_state
+        .create_agent_trigger(
+            every_minute(
+                &session,
+                &agent,
+                crate::session::AgentTriggerBusyPolicy::Steer,
+            ),
+            agent.owner_user_id(),
+        )
+        .await
+        .expect("trigger should create")
+    else {
+        panic!("unexpected trigger response");
+    };
+
+    boxed_schedule_future(|| {
+        router
+            .runtime_state
+            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+    })
+    .await;
+
+    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    assert!(
+        queued.is_empty(),
+        "the provider may hold the steer, so the firing must not stay queued for a second run"
+    );
+    prompt_owner
+        .complete_active_prompt_only(&session, agent.id())
+        .expect("the turn should finish");
+    assert!(
+        prompt_owner
+            .activate_next_queued_prompt_for_dispatch(&session, agent.id(), None)
+            .unwrap()
+            .is_none(),
+        "the unconfirmed firing must not run again as a fresh prompt"
+    );
+    let snapshot = router
+        .runtime_state
+        .session_snapshot(session.id())
+        .await
+        .expect("snapshot should read");
+    assert_eq!(
+        snapshot.agent_triggers()[0].last_outcome(),
+        Some(AgentTriggerOutcome::Steered)
+    );
+}
+
+#[tokio::test]
 async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
     use crate::session::AgentTriggerOutcome;
     let worktree = crate::test_support::TestWorktree::new("trigger-steer-waits-for-provider");

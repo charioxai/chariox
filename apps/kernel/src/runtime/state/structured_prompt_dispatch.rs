@@ -3,6 +3,15 @@ use super::context_handoff::PendingAgentContextHandoff;
 use super::local_prompt_dispatch_runtime::join_hidden_context;
 use super::*;
 
+/// Whether a steering dispatch waits for the provider's receipt. Only a trigger steer does: the queued firing is kept or consumed
+/// on the answer. Other steers settle through their own acknowledgement and never hold the caller (a notification delivery runs
+/// inside the global App event pass).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum SteerReceipt {
+    Ignored,
+    Awaited,
+}
+
 impl KernelRuntimeState {
     pub(super) fn spawn_handoff_brief_dispatch(
         &self,
@@ -50,6 +59,7 @@ impl KernelRuntimeState {
                     &provider_run,
                     Some(handoff),
                     &hidden_system_context,
+                    SteerReceipt::Ignored,
                 )
                 .await
             {
@@ -74,6 +84,7 @@ impl KernelRuntimeState {
         provider_run: &crate::provider::RuntimeProviderRun,
         handoff: Option<PendingAgentContextHandoff>,
         hidden_system_context: &str,
+        receipt_policy: SteerReceipt,
     ) -> Result<bool, DaemonError> {
         let owned = &self.owned;
         let _room_guard = owned
@@ -168,10 +179,10 @@ impl KernelRuntimeState {
             dispatch.steering,
         );
         let receipt = result?;
-        // MP-08/MP-09/MP-10: a queued steer is recoverable until the
+        // MP-08/MP-09/MP-10: a trigger's queued steer is recoverable until the
         // structured provider accepts it, even after mailbox admission. Only a
         // definitive rejection permits replay.
-        if dispatch.steering {
+        if dispatch.steering && receipt_policy == SteerReceipt::Awaited {
             drop(_room_guard);
             match receipt.await {
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Accepted) => {}
