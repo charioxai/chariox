@@ -70,6 +70,10 @@ pub(super) fn collect_overlay(
         })?;
     }
     let ignore_patterns = read_context_ignore_patterns(worktree)?;
+    // The root policy belongs to the snapshot, not to descendant inclusion rules.
+    if worktree.join(".charioxignore").is_file() && paths.insert(".charioxignore".into()) {
+        manifest_budget.consume(".charioxignore".len() + 256)?;
+    }
     let includes: Vec<_> = ignore_patterns
         .iter()
         .filter_map(|rule| rule.strip_prefix('!'))
@@ -86,10 +90,7 @@ pub(super) fn collect_overlay(
         args.extend(includes);
         stream_git_nul_records(worktree, &args, usize::MAX, |path| {
             if !excluded_for_export(&path, vault_enabled)
-                && !crate::workspace_live_sync_ignore::user_rules_exclude_path(
-                    &path,
-                    &ignore_patterns,
-                )
+                && !user_rules_exclude_path(&path, &ignore_patterns)
                 && paths.insert(path.clone())
             {
                 manifest_budget.consume(path.len().saturating_add(256))?;
@@ -97,6 +98,7 @@ pub(super) fn collect_overlay(
             Ok(())
         })?;
     }
+    reject_dirty_head_types(worktree, &paths, &ignore_patterns, vault_enabled)?;
     let mut stored_objects = BTreeSet::new();
     let mut pending = BTreeMap::new();
     let mut overlay_size_bytes = 0_u64;
@@ -104,7 +106,7 @@ pub(super) fn collect_overlay(
     for path in paths {
         validate_relative_path(&path)?;
         if excluded_for_export(&path, vault_enabled)
-            || crate::workspace_live_sync_ignore::user_rules_exclude_path(&path, &ignore_patterns)
+            || user_rules_exclude_path(&path, &ignore_patterns)
         {
             continue;
         }
@@ -136,6 +138,42 @@ pub(super) fn collect_overlay(
         entries.push(entry);
     }
     Ok((entries, overlay_size_bytes, pending))
+}
+
+fn reject_dirty_head_types(
+    worktree: &Path,
+    paths: &BTreeSet<String>,
+    ignore_patterns: &[String],
+    vault_enabled: bool,
+) -> Result<(), DaemonError> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // A staged deletion or type change hides the old type from ls-files.
+    // Inspect HEAD too, before accepting either index or worktree bytes.
+    stream_git_nul_records(
+        worktree,
+        &["ls-tree", "-r", "-z", "HEAD"],
+        usize::MAX,
+        |record| {
+            let (metadata, path) = record
+                .split_once('\t')
+                .ok_or_else(|| context_error("Git tree returned malformed dirty-path metadata"))?;
+            if paths.contains(path)
+                && !excluded_for_export(path, vault_enabled)
+                && !user_rules_exclude_path(path, ignore_patterns)
+                && matches!(
+                    metadata.split_whitespace().next(),
+                    Some("120000" | "160000")
+                )
+            {
+                return Err(context_error(format!(
+                "dirty path `{path}` is a symlink or submodule in HEAD; dirty symlinks and submodules are not supported"
+            )));
+            }
+            Ok(())
+        },
+    )
 }
 
 fn index_file_state(
@@ -357,12 +395,19 @@ pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
 }
 
 fn excluded_for_export(path: &str, vault_enabled: bool) -> bool {
-    context_force_excluded_path(path)
-        || (!vault_enabled
-            && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path))
+    context_force_excluded_path(path) || (!vault_enabled && plain_context_force_excluded_path(path))
+}
+
+pub(super) fn plain_context_force_excluded_path(path: &str) -> bool {
+    path != ".charioxignore"
+        && crate::workspace_live_sync_ignore::workspace_live_sync_force_excluded_path(path)
 }
 
 pub(super) fn context_force_excluded_path(path: &str) -> bool {
+    // A copied Project needs its selection policy for subsequent exports.
+    if path == ".charioxignore" {
+        return false;
+    }
     if path.split('/').any(is_portable_git_admin_component) {
         return true;
     }
@@ -424,10 +469,15 @@ fn is_portable_git_admin_component(component: &str) -> bool {
     })
 }
 
-fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
+pub(super) fn read_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
     // Keep strict validation of the optional expert file at the import/export boundary.
     read_expert_context_ignore_patterns(worktree)?;
     Ok(crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(worktree))
+}
+
+pub(super) fn user_rules_exclude_path(path: &str, patterns: &[String]) -> bool {
+    path != ".charioxignore"
+        && crate::workspace_live_sync_ignore::user_rules_exclude_path(path, patterns)
 }
 
 fn read_expert_context_ignore_patterns(worktree: &Path) -> Result<Vec<String>, DaemonError> {
@@ -521,36 +571,27 @@ fn normalize_ignore_pattern(line: &str) -> Option<String> {
     Some(pattern)
 }
 
-pub(super) fn user_ignore_pattern_matches_any(patterns: &[String], path: &str) -> bool {
-    patterns.iter().any(|pattern| {
-        if pattern.contains('/') {
-            wildcard_match(pattern, path)
-                || path
-                    .strip_prefix(pattern.trim_end_matches("/**"))
-                    .is_some_and(|suffix| suffix.starts_with('/'))
-        } else {
-            path.split('/').any(|part| wildcard_match(pattern, part))
-        }
-    })
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let value = value.chars().collect::<Vec<_>>();
-    let mut matches = vec![false; value.len() + 1];
-    matches[0] = true;
-    for character in pattern.chars() {
-        if character == '*' {
-            for index in 1..=value.len() {
-                matches[index] = matches[index] || matches[index - 1];
+// An excluded directory is traversed only when an explicit inclusion can
+// select something below it. Excluded files never enter the plain snapshot.
+pub(super) fn may_include_descendant(patterns: &[String], path: &str) -> bool {
+    patterns
+        .iter()
+        .filter_map(|rule| rule.strip_prefix('!'))
+        .any(|rule| {
+            if !rule.contains('/') {
+                return true;
             }
-        } else {
-            for index in (1..=value.len()).rev() {
-                matches[index] = matches[index - 1] && value[index - 1] == character;
-            }
-            matches[0] = false;
-        }
-    }
-    matches[value.len()]
+            // A wildcard can complete a directory component. Only whole literal
+            // ancestors can prove that an ignored directory has no selected child.
+            let prefix = match rule.split_once('*') {
+                Some((literal, _)) => literal.rsplit_once('/').map_or("", |(parent, _)| parent),
+                None => rule,
+            };
+            prefix.is_empty()
+                || prefix == path
+                || prefix.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{prefix}/"))
+        })
 }
 
 #[cfg(all(test, unix))]
