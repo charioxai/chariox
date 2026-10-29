@@ -218,6 +218,17 @@ mod tests {
     // rather than only the token factory used by ordinary inventory refresh.
     #[tokio::test]
     async fn registry_metadata_uses_inventory_client_token_instead_of_kernel_token() {
+        registry_metadata_case(true).await;
+    }
+
+    // MP-08 / MP-10 / MP-11: a retained Cloud login must not override
+    // authentication for the active self-hosted relay.
+    #[tokio::test]
+    async fn registry_metadata_preserves_self_hosted_token_with_retained_cloud_profile() {
+        registry_metadata_case(false).await;
+    }
+
+    async fn registry_metadata_case(hosted: bool) {
         use chariox_relay::protocol::{RelayEnvelope, RelayMetadataQuery};
         use futures_util::{SinkExt, StreamExt};
 
@@ -227,7 +238,14 @@ mod tests {
             crate::config::DaemonConfig::new("owner-kernel", "machine-fixture", "test");
         config.cloud_relay = Some(profile(api_url));
         config.relay_url = Some(format!("ws://{}", listener.local_addr().unwrap()));
+        if hosted {
+            config.cloud_relay.as_mut().unwrap().relay_url = config.relay_url.clone().unwrap();
+        } else {
+            config.cloud_relay.as_mut().unwrap().relay_url = "wss://retained-cloud.invalid".into();
+        }
         config.relay_token = Some("synthetic-kernel-registration-token".into());
+        let original_profile = config.cloud_relay.clone();
+        let original_url = config.relay_url.clone();
         let original_token = config.relay_token.clone();
         let relay = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
@@ -241,7 +259,14 @@ mod tests {
             else {
                 panic!("expected registry metadata request")
             };
-            assert_eq!(auth_token, "synthetic-client-token");
+            assert_eq!(
+                auth_token,
+                if hosted {
+                    "synthetic-client-token"
+                } else {
+                    "synthetic-kernel-registration-token"
+                }
+            );
             assert_eq!(query, RelayMetadataQuery::ListLiveMachines);
             let reply = RelayEnvelope::ClientMetadataResponse {
                 request_id,
@@ -257,15 +282,29 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let machines = crate::runtime::remote_machine_registry::live_registry_machines(&config)
-            .await
-            .unwrap();
+        let machines = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::runtime::remote_machine_registry::live_registry_machines(&config),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         assert!(machines.is_empty());
         relay.await.unwrap();
-        let body = server.join().unwrap().unwrap();
-        assert_eq!(body["subjectKind"], "client");
-        assert_eq!(body["subject"], "relay-inventory:owner-kernel");
-        assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
+        let request = server.join().unwrap();
+        if hosted {
+            let body = request.unwrap();
+            assert_eq!(body["subjectKind"], "client");
+            assert_eq!(body["subject"], "relay-inventory:owner-kernel");
+            assert_eq!(body["allowedActions"], json!(["client.metadata.read"]));
+        } else {
+            assert!(
+                request.is_none(),
+                "self-hosted discovery must not contact Cloud"
+            );
+        }
         assert_eq!(config.relay_token, original_token);
+        assert_eq!(config.cloud_relay, original_profile);
+        assert_eq!(config.relay_url, original_url);
     }
 }
