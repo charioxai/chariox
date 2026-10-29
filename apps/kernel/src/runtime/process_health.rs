@@ -135,6 +135,32 @@ mod tests {
         assert_eq!(super::signal_pid(i32::MAX as u32), Some(i32::MAX));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn terminating_a_process_tree_ends_its_descendants_at_once() {
+        use std::io::{BufRead, BufReader};
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "sleep 60 & echo $!; wait"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let descendant: u32 = line.trim().parse().unwrap();
+        let alive = |pid: u32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| !stat.split_once(") ").unwrap().1.starts_with('Z'))
+        };
+        assert!(alive(descendant));
+        let started = std::time::Instant::now();
+        assert!(super::terminate_process_tree(child.id()));
+        let _ = child.wait();
+        assert!(!alive(descendant), "the descendant survived the tree kill");
+        assert!(started.elapsed() < std::time::Duration::from_millis(900));
+    }
+
     #[test]
     fn kernel_process_health_reports_current_pid() {
         let snapshot = KernelProcessHealthSnapshot::current();
