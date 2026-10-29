@@ -27,20 +27,51 @@ impl KernelRuntimeState {
                     .collect::<Vec<_>>()
             })
             .collect();
-        for (session, id) in self
-            .app_control()
-            .event_pump()
-            .notification_batch(candidates, 8)
-        {
+        let pump = self.app_control().event_pump();
+        for (session, id) in pump.notification_batch(candidates, 8) {
+            // A remote delivery outlives the pass that admitted it; the claim
+            // keeps this pass from admitting or reconciling it a second time.
+            let Some(claim) = pump.claim_notification(&session, &id) else {
+                continue;
+            };
             // A saved uncertain send is reconciled before inspecting current runs.
             // Its old turn ending is never evidence that the notification did not land.
-            if self.reconcile_notification_injection(&session, &id).await {
-                continue;
+            match self.saved_remote_injection(&session, &id) {
+                SavedRemoteInjection::None => {}
+                SavedRemoteInjection::Held => continue,
+                SavedRemoteInjection::Query(identity) => {
+                    let runtime = self.clone();
+                    tokio::spawn(async move {
+                        let _claim = claim;
+                        runtime
+                            .reconcile_remote_notification_injection(&session, &id, &identity)
+                            .await;
+                    });
+                    continue;
+                }
             }
             let Ok(Some(injection)) = self.owned.prepare_notification_injection(&session, &id)
             else {
                 continue;
             };
+            let remote = self
+                .owned
+                .agent_store
+                .get_agent(&injection.dispatch.agent_id)
+                .ok()
+                .and_then(|agent| agent.remote_execution().cloned());
+            if let Some(remote) = remote {
+                // The worker's receipt can arrive arbitrarily late: it is
+                // awaited on its own task, never inside the global App event pass.
+                let runtime = self.clone();
+                tokio::spawn(async move {
+                    let _claim = claim;
+                    runtime
+                        .deliver_remote_notification_injection(&session, &injection, &remote)
+                        .await;
+                });
+                continue;
+            }
             let dispatch = &injection.dispatch;
             let _permit = self
                 .provider_runtime_lanes
@@ -55,46 +86,23 @@ impl KernelRuntimeState {
             }
             // The exact active prompt is checked again by the provider seam.
             // A turn that ended while waiting for the lane cannot consume this item.
-            let remote = self
+            let structured = self
                 .owned
-                .agent_store
-                .get_agent(&dispatch.agent_id)
-                .ok()
-                .and_then(|agent| agent.remote_execution().cloned());
-            let structured = remote.is_none()
-                && self
-                    .owned
-                    .provider_store
-                    .get_run(&dispatch.provider_run_id)
-                    .is_ok_and(|run| {
-                        self.owned
-                            .provider_store
-                            .run_uses_structured_prompt_io(&run)
-                    });
+                .provider_store
+                .get_run(&dispatch.provider_run_id)
+                .is_ok_and(|run| {
+                    self.owned
+                        .provider_store
+                        .run_uses_structured_prompt_io(&run)
+                });
             if self
                 .owned
-                .mark_notification_submit(&session, &injection, remote.as_ref())
+                .mark_notification_submit(&session, &injection, None)
                 .is_err()
             {
                 continue;
             }
-            let accepted = if remote.is_some() {
-                let prompt = crate::session::PromptQueueItem::new(
-                    &dispatch.prompt_id,
-                    &dispatch.source_attachment_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt,
-                    crate::session::PromptStatus::Queued,
-                );
-                self.steer_remote_agent_message_for_turn(
-                    &session,
-                    &prompt,
-                    dispatch.target_active_prompt_id.as_deref(),
-                    remote.as_ref(),
-                )
-                .await
-                .map(|run| run.is_some())
-            } else if let Err(error) = self.owned.append_steering_prompt_history(
+            let accepted = if let Err(error) = self.owned.append_steering_prompt_history(
                 &session,
                 &dispatch.provider_run_id,
                 dispatch.target_active_prompt_id.as_deref().unwrap(),
@@ -113,33 +121,89 @@ impl KernelRuntimeState {
                 self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Ignored)
                     .await
             };
-            match accepted {
-                Ok(true) if structured => {
-                    // try_send accepted the command, not the provider prompt. The
-                    // finished-submit reapers settle the exact durable injection.
-                }
-                Ok(accepted) => {
-                    let _ = self
-                        .owned
-                        .settle_notification_injection(&session, &injection, accepted);
-                }
-                Err(_) if structured => {
-                    let _ = self
-                        .owned
-                        .settle_notification_injection(&session, &injection, false);
-                }
-                Err(_) => {
-                    // An error can follow a provider write. Retain the exact admitted
-                    // item rather than discard it or guess an acknowledged delivery.
-                    self.owned.record_notice(
-                        &session,
-                        None,
-                        self.owned
-                            .attachment_store
-                            .list_session_attachment_ids(&session),
-                        "notification_inject_uncertain: held until acknowledgement or expiry",
-                    );
-                }
+            self.finish_notification_injection(&session, &injection, structured, accepted);
+        }
+    }
+
+    async fn deliver_remote_notification_injection(
+        &self,
+        session: &str,
+        injection: &Injection,
+        remote: &crate::agent::RemoteAgentBinding,
+    ) {
+        let dispatch = &injection.dispatch;
+        let _permit = self
+            .provider_runtime_lanes
+            .acquire(&dispatch.provider_run_id)
+            .await;
+        if injection
+            .queued
+            .notification_expired_at(crate::session::unix_epoch_ms())
+        {
+            let _ = self
+                .owned
+                .prepare_notification_injection(session, injection.queued.id());
+            return;
+        }
+        if self
+            .owned
+            .mark_notification_submit(session, injection, Some(remote))
+            .is_err()
+        {
+            return;
+        }
+        let prompt = crate::session::PromptQueueItem::new(
+            &dispatch.prompt_id,
+            &dispatch.source_attachment_id,
+            &dispatch.agent_id,
+            &dispatch.prompt,
+            crate::session::PromptStatus::Queued,
+        );
+        let accepted = self
+            .steer_remote_agent_message_for_turn(
+                session,
+                &prompt,
+                dispatch.target_active_prompt_id.as_deref(),
+                Some(remote),
+            )
+            .await
+            .map(|run| run.is_some());
+        self.finish_notification_injection(session, injection, false, accepted);
+    }
+
+    fn finish_notification_injection(
+        &self,
+        session: &str,
+        injection: &Injection,
+        structured: bool,
+        accepted: Result<bool, DaemonError>,
+    ) {
+        match accepted {
+            Ok(true) if structured => {
+                // try_send accepted the command, not the provider prompt. The
+                // finished-submit reapers settle the exact durable injection.
+            }
+            Ok(accepted) => {
+                let _ = self
+                    .owned
+                    .settle_notification_injection(session, injection, accepted);
+            }
+            Err(_) if structured => {
+                let _ = self
+                    .owned
+                    .settle_notification_injection(session, injection, false);
+            }
+            Err(_) => {
+                // An error can follow a provider write. Retain the exact admitted
+                // item rather than discard it or guess an acknowledged delivery.
+                self.owned.record_notice(
+                    session,
+                    None,
+                    self.owned
+                        .attachment_store
+                        .list_session_attachment_ids(session),
+                    "notification_inject_uncertain: held until acknowledgement or expiry",
+                );
             }
         }
     }
@@ -356,29 +420,38 @@ fn notification_error(message: &str) -> DaemonError {
     }
 }
 
+enum SavedRemoteInjection {
+    /// No remote send was saved: the item is admitted as usual.
+    None,
+    /// A saved send that is settled, expired or no longer owned: ordinary
+    /// selection must not touch it.
+    Held,
+    /// A saved send whose worker receipt decides the outcome.
+    Query(RemoteInjectionIdentity),
+}
+
 impl KernelRuntimeState {
-    // True means this item is held or settled; ordinary selection must not touch it.
-    async fn reconcile_notification_injection(&self, session_id: &str, id: &str) -> bool {
+    fn saved_remote_injection(&self, session_id: &str, id: &str) -> SavedRemoteInjection {
         let Ok(snapshot) = self.owned.session_store.get_session(session_id) else {
-            return true;
+            return SavedRemoteInjection::Held;
         };
         let Some(item) = snapshot
             .workflow_queued_prompts()
             .iter()
             .find(|q| q.id() == id)
         else {
-            return true;
+            return SavedRemoteInjection::Held;
         };
         let Some(value) = item
             .publication_invocation()
             .and_then(|i| i.caller.get("notification_steer"))
             .and_then(|s| s.get("remote_uncertain"))
         else {
-            return false;
+            return SavedRemoteInjection::None;
         };
         if item.notification_expired_at(crate::session::unix_epoch_ms()) {
             let _ = self.owned.prepare_notification_injection(session_id, id);
-            return true;
+            return SavedRemoteInjection::Held;
         }
         if !self
             .owned
@@ -386,11 +459,20 @@ impl KernelRuntimeState {
             .notification_queue_is_owned(&snapshot, item)
             .unwrap_or(false)
         {
-            return true;
+            return SavedRemoteInjection::Held;
         }
-        let Ok(identity) = serde_json::from_value::<RemoteInjectionIdentity>(value.clone()) else {
-            return true;
-        };
+        match serde_json::from_value::<RemoteInjectionIdentity>(value.clone()) {
+            Ok(identity) => SavedRemoteInjection::Query(identity),
+            Err(_) => SavedRemoteInjection::Held,
+        }
+    }
+
+    async fn reconcile_remote_notification_injection(
+        &self,
+        session_id: &str,
+        id: &str,
+        identity: &RemoteInjectionIdentity,
+    ) {
         let result =
             super::remote_prompt_worker_submission_runtime::query_remote_queued_steer_receipt(
                 self,
@@ -409,7 +491,6 @@ impl KernelRuntimeState {
                 .owned
                 .settle_notification_remote_receipt(session_id, id, &receipt);
         }
-        true
     }
 }
 
