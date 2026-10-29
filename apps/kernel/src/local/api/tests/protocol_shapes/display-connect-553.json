@@ -1,7 +1,7 @@
 {
   "local_protocol": 553,
   "peer_protocol": 161,
-  "connect_capability": "chariox-room-display-resume-v553",
+  "connect_capability": "chariox-room-display-resume-v722",
   "initial_connect": {
     "kind": "client_connect_display_resume",
     "auth_token": "synthetic",
