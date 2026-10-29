@@ -83,6 +83,15 @@ impl KernelRuntimeState {
         if bound_to_another_run || ended_run_replaced {
             return Ok(false);
         }
+        if expected_prompt_id
+            .is_some_and(|id| id != active_prompt.id() || active_prompt.is_external())
+        {
+            return Ok(false);
+        }
+        if let Some(termination) = provider_termination.as_ref() {
+            // Settle tools before failure clears activity or promotes a queued turn.
+            owned.record_failed_provider_tools(session_id, provider_run_id, &agent_id, termination);
+        }
         let guarded_prompt_id = active_prompt.id().to_string();
         self.flush_provider_history(provider_run_id).await?;
         // The settled turn always says why it failed. A failure without
@@ -116,7 +125,11 @@ impl KernelRuntimeState {
             message,
             failure: &failure,
             project_failure_output,
-            record_diagnostic: expected_prompt_id.is_some(),
+            // Exit reconciliation may guard the prompt after the provider has
+            // already supplied its definitive diagnostic. Keep that original.
+            record_diagnostic: expected_prompt_id.is_some()
+                && (provider_run.state() != crate::provider::ProviderRunState::Ended
+                    || provider_run.terminal_diagnostic().is_none()),
             termination: provider_termination.as_ref(),
         };
         let mut expected_active_prompt = None;
@@ -144,10 +157,12 @@ impl KernelRuntimeState {
                 )
                 .await?
             {
-                let diagnosed = owned
-                    .provider_store
-                    .record_terminal_diagnostic(provider_run_id, message.to_string())?;
-                owned.provider_run_projection.update(diagnosed);
+                if failed_attempt.record_diagnostic {
+                    let diagnosed = owned
+                        .provider_store
+                        .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+                    owned.provider_run_projection.update(diagnosed);
+                }
                 self.clear_failed_provider_resume_state_from_message(&provider_run, message)?;
                 self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
                     .await;

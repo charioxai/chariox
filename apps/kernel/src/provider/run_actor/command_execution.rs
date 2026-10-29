@@ -370,6 +370,8 @@ pub(super) fn execute_output_poll_command(
             }),
         );
         return Ok(Some(ProviderPromptSignalBatch {
+            process_memory_limit_bytes: None,
+            process_outside_ended: false,
             chunks: poll
                 .chunks
                 .into_iter()
@@ -449,6 +451,8 @@ pub(super) fn execute_output_poll_command(
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
     Ok(Some(ProviderPromptSignalBatch {
+        process_memory_limit_bytes: None,
+        process_outside_ended: false,
         chunks: drain
             .chunks
             .into_iter()

@@ -929,7 +929,7 @@ async fn start_publication_runtime_claimed(
     } else {
         Some(publication_local_url(&host, port))
     };
-    let mut command = Command::new(resolve_chariox_cli_bin()?);
+    let mut command = crate::process_spawn::async_command(resolve_chariox_cli_bin()?);
     command
         .arg("serve")
         .arg("source")
@@ -1925,7 +1925,7 @@ impl KernelRuntimeState {
         session_id: &str,
         publication_id: &str,
     ) {
-        let child = Command::new("sleep")
+        let child = crate::process_spawn::async_command("sleep")
             .arg("30")
             .kill_on_drop(true)
             .spawn()
@@ -2264,7 +2264,7 @@ impl KernelRuntimeState {
         session_id: &str,
         publication_id: &str,
     ) -> (Result<(), DaemonError>, u32) {
-        let child = Command::new("sleep")
+        let child = crate::process_spawn::async_command("sleep")
             .arg("30")
             .kill_on_drop(true)
             .spawn()
@@ -2700,7 +2700,7 @@ mod tests {
         let _cleanup = Cleanup(&config);
         fs::write(&config, "{}").expect("config");
         // The gateway consumes the file after it starts; the kernel waits for that.
-        let mut child = tokio::process::Command::new("sh")
+        let mut child = crate::process_spawn::async_command("sh")
             .arg("-c")
             .arg(format!("sleep 0.3; rm {}; sleep 5", config.display()))
             .stderr(std::process::Stdio::piped())
@@ -2714,7 +2714,7 @@ mod tests {
 
         // A gateway that exits before consuming it failed to start.
         fs::write(&config, "{}").expect("config");
-        let mut child = tokio::process::Command::new("sh")
+        let mut child = crate::process_spawn::async_command("sh")
             .arg("-c")
             .arg("echo no deployment config >&2; exit 1")
             .stderr(std::process::Stdio::piped())
@@ -2737,7 +2737,7 @@ mod tests {
     async fn gateway_exits_when_its_kernel_releases_the_parent_pipe() {
         // Stands in for the gateway: honours the parent-pipe contract by
         // exiting when its stdin closes, and otherwise runs on.
-        let mut command = tokio::process::Command::new("sh");
+        let mut command = crate::process_spawn::async_command("sh");
         command
             .arg("-c")
             .arg("[ \"$CHARIOX_PUBLICATION_EXIT_ON_STDIN_CLOSE\" = 1 ] || exit 3; cat >/dev/null");

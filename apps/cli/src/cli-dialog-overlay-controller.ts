@@ -14,6 +14,7 @@ import type { FooterFlash } from "./footer-flash-controller.js"
 import type { TerminalPairingLinkView } from "./relay-api.js"
 
 type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget, TBox = unknown> = {
+  closeProcesses?: () => void
   closeEnvironment?: () => void
   getOpenState: () => CliDialogOverlayOpenState
   getCurrentFocus: () => TFocus | null
@@ -81,7 +82,9 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
     },
     closeActive() {
       const activeMode = mode()
-      if (activeMode === "environment") {
+      if (activeMode === "processes") {
+        deps.closeProcesses?.()
+      } else if (activeMode === "environment") {
         deps.closeEnvironment?.()
       } else if (activeMode === "session-browser") {
         controller.closeSessionBrowser()

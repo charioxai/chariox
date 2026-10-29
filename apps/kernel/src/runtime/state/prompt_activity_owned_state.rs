@@ -718,7 +718,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: false,
                 completion_recorded: false,
                 settlement_requested: false,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             },
         );
         let active_turn = self
@@ -831,7 +831,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: true,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
         self.schedule_provider_output_check_after(provider_run_id, FAILED_SETTLEMENT_RETRY_DELAY);
     }
@@ -849,7 +849,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
         self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }

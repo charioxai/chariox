@@ -3208,7 +3208,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     impl FixtureProcess {
         fn sleeping(owner: Option<u32>) -> Self {
-            let mut command = std::process::Command::new("sleep");
+            let mut command = crate::process_spawn::command("sleep");
             command.arg("300");
             if let Some(owner) = owner {
                 command.env(crate::provider::PROVIDER_OWNER_PID_ENV, owner.to_string());
@@ -3250,7 +3250,7 @@ mod tests {
     #[tokio::test]
     async fn restart_recovery_ends_only_the_processes_a_dead_kernel_launched() {
         crate::test_support::isolated_env_test!();
-        let mut dead_kernel = std::process::Command::new("true")
+        let mut dead_kernel = crate::process_spawn::command("true")
             .spawn()
             .expect("fixture kernel should start");
         let dead_kernel_pid = dead_kernel.id();

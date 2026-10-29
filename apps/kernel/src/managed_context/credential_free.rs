@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const MAX_FILE: u64 = 16 * 1024 * 1024;
 const MAX_SCAN: u64 = 1024 * 1024 * 1024;
@@ -184,7 +184,7 @@ fn scan_git_status(
     Ok(())
 }
 fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
-    let mut child = Command::new("git")
+    let mut child = crate::process_spawn::command("git")
         .args(args)
         .current_dir(root)
         .env_clear()

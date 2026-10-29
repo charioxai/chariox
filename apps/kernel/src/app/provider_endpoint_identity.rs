@@ -119,7 +119,7 @@ fn listener_identities(address: SocketAddr) -> Option<Vec<ProcessIdentity>> {
 
 #[cfg(target_os = "macos")]
 fn macos_listener_pids(address: SocketAddr) -> Option<Vec<u32>> {
-    let output = std::process::Command::new("/usr/sbin/lsof")
+    let output = crate::process_spawn::command("/usr/sbin/lsof")
         .args([
             "-nP",
             "-a",
@@ -163,7 +163,7 @@ mod tests {
         let mut other_user = launched.clone();
         other_user.uid = other_user.uid.wrapping_add(1);
         assert!(capture(&other_user, &endpoint).is_none());
-        let mut sibling = std::process::Command::new("/bin/sh")
+        let mut sibling = crate::process_spawn::command("/bin/sh")
             .args(["-c", "exec sleep 1"])
             .spawn()
             .unwrap();

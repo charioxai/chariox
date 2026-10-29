@@ -48,6 +48,8 @@ impl Terminal {
             if let Some(sweep) = &self.session_sweep {
                 sweep.stop();
             }
+            let limit = pty.memory_limit_bytes(&run_id);
+            let outside_end = crate::runtime::process_resources::outside_ended_for_key(&run_id);
             let _ = pty.remove_process(&run_id);
             self.record_program_end(ProgramEnd {
                 output_offset: self.log.end_offset(),
@@ -56,10 +58,16 @@ impl Terminal {
                 exit_code,
                 signal: signal.clone(),
             });
-            pumped
-                .fired
-                .extend(self.watches.on_shell_exit(exit_code, signal.clone()));
-            self.end(RoomTerminalOutcome::ProgramExited { exit_code, signal });
+            pumped.fired.extend(match limit {
+                Some(limit_bytes) => self.watches.on_memory_limit(limit_bytes),
+                None if outside_end => self.watches.on_outside_end(),
+                None => self.watches.on_shell_exit(exit_code, signal.clone()),
+            });
+            self.end(match limit {
+                Some(limit_bytes) => RoomTerminalOutcome::MemoryLimit { limit_bytes },
+                None if outside_end => RoomTerminalOutcome::OutsideEnd,
+                None => RoomTerminalOutcome::ProgramExited { exit_code, signal },
+            });
             pumped.output_changed = true;
             return pumped;
         }

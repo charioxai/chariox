@@ -10,6 +10,8 @@ const REDACTED_DIAGNOSTIC_VALUE: &str = "[redacted]";
 #[serde(rename_all = "snake_case")]
 pub enum ProviderRunTerminationCategory {
     ProcessExit,
+    MemoryLimit,
+    OutsideEnd,
     Signal,
     ExplicitProviderError,
     RuntimeFailure,
@@ -28,6 +30,22 @@ pub struct ProviderRunTermination {
 }
 
 impl ProviderRunTermination {
+    pub fn outside_end(timestamp_ms: u64) -> Self {
+        Self::ended_by_kernel(
+            ProviderRunTerminationCategory::OutsideEnd,
+            "provider process tree stopped by a session controller".into(),
+            timestamp_ms,
+        )
+    }
+
+    pub fn memory_limit(limit_bytes: u64, timestamp_ms: u64) -> Self {
+        Self::ended_by_kernel(
+            ProviderRunTerminationCategory::MemoryLimit,
+            format!("provider process tree exceeded its memory limit of {limit_bytes} bytes"),
+            timestamp_ms,
+        )
+    }
+
     pub fn process_exit(exit_code: u32, timestamp_ms: u64) -> Self {
         Self::crashed(
             ProviderRunTerminationCategory::ProcessExit,
@@ -92,6 +110,23 @@ impl ProviderRunTermination {
             timestamp_ms,
             TurnOutcome::new(TurnOutcomeKind::Network, true, reason),
         )
+    }
+
+    /// The kernel itself ended the tree (resource limit or a controller stop):
+    /// the turn fails with that exact reason, and sending it again unchanged
+    /// would end the same way.
+    fn ended_by_kernel(
+        category: ProviderRunTerminationCategory,
+        reason: String,
+        timestamp_ms: u64,
+    ) -> Self {
+        let failure = TurnOutcome::new(TurnOutcomeKind::Other, false, &reason);
+        Self {
+            category,
+            reason,
+            timestamp_ms,
+            failure: Some(failure),
+        }
     }
 
     fn crashed(
@@ -172,7 +207,8 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
         |output: &mut String, token: &str| push_diagnostic_token(output, token, keep);
     // The shared secret shapes first, over the whole text: a PEM block spans
     // lines, so no single token below shows it.
-    let reason = crate::secret_redaction::redact_secrets_as(reason, REDACTED_DIAGNOSTIC_VALUE);
+    let reason = strip_terminal_sequences(reason);
+    let reason = crate::secret_redaction::redact_secrets_as(&reason, REDACTED_DIAGNOSTIC_VALUE);
     let normalized = reason
         .chars()
         .map(|character| {
@@ -249,6 +285,52 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
         .chars()
         .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
         .collect()
+}
+
+fn strip_terminal_sequences(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        let sequence = match character {
+            '\u{1b}' => chars.next(),
+            '\u{9b}' => Some('['),
+            '\u{9d}' => Some(']'),
+            '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => Some('P'),
+            _ => {
+                output.push(character);
+                continue;
+            }
+        };
+        match sequence {
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(next) = chars.next() {
+                    if matches!(next, '\u{7}' | '\u{9c}') {
+                        break;
+                    }
+                    if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(' '..='/') => {
+                for next in chars.by_ref() {
+                    if ('0'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output
 }
 
 pub(crate) fn provider_launch_failure_diagnostic(
@@ -438,6 +520,18 @@ fn push_diagnostic_token(output: &mut String, token: &str, keep: fn(char) -> boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostics_strip_terminal_sequences_before_redaction() {
+        let input = "\u{1b}[2mstartup\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}]8;;https://example.com\u{1b}\\detail\u{1b}]8;;\u{7} api_\u{1b}[32mkey=secret";
+        assert_eq!(
+            sanitize_provider_diagnostic(input),
+            "startup ERROR detail api_key[redacted]"
+        );
+        assert_eq!(
+            redact_provider_diagnostic(input),
+            "startup ERROR detail api_key=[redacted]"
+        );
+    }
     use super::*;
 
     #[test]

@@ -386,6 +386,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             )
             .unwrap();
         let attachment_projection = crate::runtime::projection::SessionSnapshotProjection {
+            processes: Vec::new(),
             metadata: crate::runtime::projection::ProjectionMetadata::new(
                 crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
                 0,

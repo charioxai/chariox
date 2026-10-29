@@ -592,7 +592,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     assignDialogOverlayBox, closeActiveDialogOverlay, closeHotkeys, closeSessionBrowserDialog,
     closeTerminalPairingDialog, copyPromptSelection, dialogOverlayOpen, handleHotkeysToggleShortcut,
     handleManagedMachineDialogKey, handlePromptSelectionSurfaceMouseUp, handleSessionBrowserKey,
-    openProjectEnvironment, handleProjectEnvironmentKey,
+    openProjectEnvironment, handleProjectEnvironmentKey, openSessionProcesses, handleSessionProcessesKey, confirmProcessStop,
     openHotkeys, openManagedMachineDialog, openSessionBrowserDialog,
     openTerminalPairingDialog, renderHotkeysOverlay,
   } = createCliOverlayInteractionComposition({
@@ -600,7 +600,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     formatError,
     debugLogsEnabled: DEBUG_LOGS_ENABLED,
     loadSessions: loadWaitingRoomSessionHistory,
-    isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
+    sessionState, isAttached, availableSessions, waitingRoomProjects, sessionBrowserIndex, setSessionBrowserIndex,
     currentFocusedRenderable, promptInputRefController, describeRenderableDebug,
     scheduleTimer: startTimeout,
     hotkeysOpen, setHotkeysOpen, terminalPairingOpen, setTerminalPairingOpen,
@@ -1125,7 +1125,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     themeRegistryState, reconcileWaitingRoom, setWaitingRoomState, applyWaitingRoomSessionLifecycleAction,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     activateWaitingRoom, reimageManagedEnvironment, startSessionFromWaitingRoomDefaults, handleSessionBrowserKey,
-    openProjectEnvironment, handleProjectEnvironmentKey,
+    openProjectEnvironment, handleProjectEnvironmentKey, openSessionProcesses, handleSessionProcessesKey, confirmProcessStop,
     handleManagedMachineDialogKey, openManagedMachineDialog,
     toggleWorkspaceScreen: workflowActions.toggleWorkspaceScreen,
     toggleTranscriptDetails: () => toggleFocusedTranscriptDetails({

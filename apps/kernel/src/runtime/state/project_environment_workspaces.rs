@@ -58,7 +58,7 @@ mod tests {
         std::fs::create_dir_all(&mounted).unwrap();
         std::fs::create_dir_all(&supporting).unwrap();
         for root in [&mounted, &supporting] {
-            assert!(std::process::Command::new("git")
+            assert!(crate::process_spawn::command("git")
                 .args(["init", "--quiet"])
                 .arg(root)
                 .status()

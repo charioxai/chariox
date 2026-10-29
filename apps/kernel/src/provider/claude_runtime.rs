@@ -82,7 +82,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &program,
         &args,
@@ -117,6 +117,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                     .map(|(identity, _)| identity),
             )),
             child,
+            resources: Some(resources),
             stdin,
             receiver,
             output_notifier,
@@ -259,6 +260,29 @@ pub(crate) fn drain_claude_events(
     }
     apply_claude_usage_capture(run, state, &mut batch);
 
+    if let Some(limit) = state
+        .resources
+        .as_ref()
+        .and_then(|domain| domain.memory_limit_bytes())
+    {
+        batch.process_memory_limit_bytes = Some(limit);
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::memory_limit(limit, crate::session::unix_epoch_ms())
+                .reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
+    if crate::runtime::process_resources::outside_ended_for_key(run.id()) && !state.exit_reported {
+        batch.process_outside_ended = true;
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::outside_end(crate::session::unix_epoch_ms()).reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
             Ok(Some(status)) => {
@@ -500,7 +524,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &state.program,
         &args,
@@ -519,6 +543,7 @@ fn restart_claude_runtime(
             .ok()
             .map(|(identity, _)| identity);
     state.child = child;
+    state.resources = Some(resources);
     state.stdin = stdin;
     state.receiver = receiver;
     state.args = base_args;
@@ -611,6 +636,7 @@ fn write_claude_hidden_context(
 #[cfg(test)]
 mod tests {
     mod model_observation;
+    mod process_resources;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
@@ -639,7 +665,7 @@ mod tests {
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
-        let mut child = std::process::Command::new("/bin/sh")
+        let mut child = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("cat >/dev/null")
             .stdin(std::process::Stdio::piped())
@@ -668,6 +694,7 @@ mod tests {
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
+                resources: None,
                 stdin,
                 receiver,
                 output_notifier: Default::default(),
@@ -1199,16 +1226,30 @@ done
 
     #[test]
     fn runtime_mcp_config_cleans_up_when_child_spawn_fails() {
-        let token = format!(
-            "runtime-bearer-spawn-failure-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        );
         let missing_program = std::env::temp_dir().join(format!(
             "chariox-missing-claude-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        assert_failed_runtime_cleans_up_mcp_config(&missing_program);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_mcp_config_cleans_up_when_child_is_not_executable() {
+        let worktree = crate::test_support::TestWorktree::new("nonexecutable-claude");
+        let program = worktree.path().join("claude");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_failed_runtime_cleans_up_mcp_config(&program);
+    }
+
+    fn assert_failed_runtime_cleans_up_mcp_config(missing_program: &std::path::Path) {
+        let token = format!(
+            "runtime-bearer-spawn-failure-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
         let request =
             LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
@@ -1234,10 +1275,11 @@ done
             },
         );
 
-        assert!(
-            initialize_claude_runtime(&run).is_err(),
-            "missing Claude executable should fail"
-        );
+        let result = initialize_claude_runtime(&run);
+        assert!(result.is_err(), "unavailable Claude executable should fail");
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("reinstall Claude Code and retry"));
+        assert_eq!(message.lines().count(), 1);
 
         let leaked_config = std::fs::read_dir(std::env::temp_dir())
             .expect("kernel temp directory should be readable")

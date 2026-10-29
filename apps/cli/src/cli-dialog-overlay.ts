@@ -23,7 +23,7 @@ import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
-export type CliDialogOverlayMode = "closed" | "environment" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
+export type CliDialogOverlayMode = "closed" | "processes" | "environment" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
 
 type CliDialogOverlayOptions = {
   overlayBox: BoxRenderable | undefined
@@ -37,6 +37,8 @@ type CliDialogOverlayOptions = {
   terminalPairing: TerminalPairingLinkView | null
   terminalPairingQrLines: string[]
   hotkeySections: HotkeySection[]
+  processConfirmation?: boolean
+  processLines?: string[]
   environmentLines?: string[]
   managedMachineRows?: WaitingRoomRow[]
 }
@@ -67,7 +69,12 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   })
   scrim.onMouseUp = options.onDismiss
 
-  if (options.mode === "environment") {
+  if (options.mode === "processes") {
+    const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
+    if (!options.processConfirmation) panel.add(dialogHeader(renderer, "Processes", "↑/↓ scroll • Esc close"))
+    panel.add(new TextRenderable(renderer, { content: (options.processLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
+    scrim.add(panel)
+  } else if (options.mode === "environment") {
     const panel = dialogPanel(renderer, projectEnvironmentPanelWidth(dimensions.width), dimensions.width)
     panel.add(dialogHeader(renderer, "Environment · Read-only", "↑/↓ scroll • Esc close"))
     panel.add(new TextRenderable(renderer, { content: (options.environmentLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))

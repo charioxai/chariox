@@ -183,12 +183,14 @@ impl KernelRuntimeState {
                         agent_id: "provider run has no agent".to_string(),
                     }
                 })?;
-                let termination = termination_for_process_exit(
-                    process_exit
-                        .as_ref()
-                        .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-                    crate::session::unix_epoch_ms(),
-                );
+                let termination = process_exit
+                    .as_ref()
+                    .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+                    .unwrap_or_else(|| {
+                        crate::provider::ProviderRunTermination::unknown_process_exit(
+                            crate::session::unix_epoch_ms(),
+                        )
+                    });
                 self.settle_unexpected_provider_run_exit_with_diagnostic(
                     session_id,
                     provider_run_id,
@@ -224,12 +226,14 @@ impl KernelRuntimeState {
                 .ok_or_else(|| DaemonError::AgentNotFound {
                     agent_id: "provider run has no agent".to_string(),
                 })?;
-        let termination = termination_for_process_exit(
-            process_exit
-                .as_ref()
-                .map(|exit| (exit.exit_code, exit.signal.as_deref())),
-            crate::session::unix_epoch_ms(),
-        );
+        let termination = process_exit
+            .as_ref()
+            .map(|exit| exit.termination_at(crate::session::unix_epoch_ms()))
+            .unwrap_or_else(|| {
+                crate::provider::ProviderRunTermination::unknown_process_exit(
+                    crate::session::unix_epoch_ms(),
+                )
+            });
         let session_outcome = self
             .settle_unexpected_provider_run_exit_with_diagnostic(
                 session_id,
@@ -373,14 +377,25 @@ impl KernelRuntimeState {
             ),
         }
         };
-        self.fail_owned_provider_prompt_with_termination(
-            session_id,
-            provider_run_id,
-            &message,
-            true,
-            Some(termination.clone()),
-        )
-        .await?;
+        // Claim this prompt before retirement awaits the app lock. A second
+        // liveness observer must not publish another failure for the same turn.
+        let settled = self
+            .fail_owned_provider_prompt_with_termination_if_matches(
+                session_id,
+                provider_run_id,
+                &message,
+                true,
+                (!active_prompt.is_external()).then_some(active_prompt.id()),
+                Some(termination.clone()),
+            )
+            .await?;
+        if !settled {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                cancelled_prompt: false,
+                started_next_prompt: false,
+            });
+        }
         let next_active_prompt = self
             .owned
             .prompt_state_owner
@@ -398,6 +413,7 @@ impl KernelRuntimeState {
     }
 }
 
+#[cfg(test)]
 fn termination_for_process_exit(
     process_exit: Option<(Option<u32>, Option<&str>)>,
     occurred_at_ms: u64,

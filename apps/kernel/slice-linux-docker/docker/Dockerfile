@@ -179,6 +179,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/check-process-sampler.mjs /usr/local/lib/chariox/check-process-sampler.mjs
+RUN node /usr/local/lib/chariox/check-process-sampler.mjs
+
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
 # before the provider starts. Slice launches select the supported Bubblewrap

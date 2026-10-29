@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -293,7 +293,7 @@ fn run_adapter_request_once(
     request: &ConnectorAdapterRequest,
 ) -> Result<ConnectorAdapterResponse, DaemonError> {
     let command = adapter.resolved_command()?;
-    let mut process = Command::new(&command);
+    let mut process = crate::process_spawn::command(&command);
     for name in crate::provider::managed_provider_control_env_remove() {
         process.env_remove(name);
     }

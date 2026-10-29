@@ -19,6 +19,9 @@ type FooterTone = "info" | "error"
 
 export type ProviderCommandHandlerDeps = {
   currentProviderId: () => string
+  openSessionProcesses?: () => void
+  confirmProcessStop?: (agent: string) => Promise<boolean>
+  stopSessionProcesses?: (target: {kind: "agent"; agent_id: string} | {kind: "process"; process_id: string}) => Promise<void>
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   showProviderLoginLink?: (url: string, options?: ProviderLoginLinkOptions) => Promise<boolean | void>
@@ -149,6 +152,20 @@ export async function handleProviderSlashCommand(
   }
   if (action === "reauth") {
     await reauthProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
+    return
+  }
+  if (action === "session-processes") {
+    if (deps.openSessionProcesses) deps.openSessionProcesses()
+    else deps.flashFooter("Process view is unavailable.", "error")
+    return
+  }
+  if (action === "processes" && parts[1] === "list") { deps.openSessionProcesses?.(); return }
+  if (action === "processes" && parts[1] === "kill") {
+    const [, , kind, id] = parts
+    if (!id || !["agent", "process"].includes(kind ?? "") || parts.length !== 4 || !deps.stopSessionProcesses) { deps.flashFooter("usage: /provider processes kill <agent|process> <id>", "error"); return }
+    if (kind === "agent" && !await deps.confirmProcessStop?.(id)) return
+    try { await deps.stopSessionProcesses(kind === "agent" ? {kind: "agent", agent_id: id} : {kind: "process", process_id: id}); deps.flashFooter("Processes stopped.", "info") }
+    catch (error) { deps.flashFooter(error instanceof Error ? error.message : String(error), "error") }
     return
   }
   if (action === "processes") {

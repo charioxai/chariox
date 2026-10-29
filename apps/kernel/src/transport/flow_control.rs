@@ -10,7 +10,7 @@ pub(crate) fn note_prompt_started(app: &mut DaemonApp, provider_run_id: &str) {
             saw_response_content: false,
             completion_recorded: false,
             settlement_requested: false,
-            active_tool_ids: std::collections::BTreeSet::new(),
+            active_tools: Default::default(),
         },
     );
     let active_turn = app
@@ -69,7 +69,7 @@ pub(crate) fn note_prompt_settlement_requested(app: &mut DaemonApp, provider_run
             saw_response_content: true,
             completion_recorded: false,
             settlement_requested: true,
-            active_tool_ids: std::collections::BTreeSet::new(),
+            active_tools: Default::default(),
         });
 }
 

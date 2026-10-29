@@ -2926,7 +2926,6 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::process::Command;
     use tokio::sync::Mutex;
 
     use crate::app::RemoteLeaseRuntime;
@@ -6114,7 +6113,7 @@ mod tests {
     }
 
     fn git(path: &std::path::Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(path)
             .output()

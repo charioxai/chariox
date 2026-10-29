@@ -207,6 +207,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  openSessionProcesses?: () => void
+  confirmProcessStop?: (agent: string) => Promise<boolean>
   userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
@@ -620,6 +622,14 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       operations.set(key, operation)
       return copyProviderAccountFromKernel(source, offer, operation).then(receipt => { operations.delete(key); return receipt })
     },
+    ...(deps.confirmProcessStop ? { confirmProcessStop: deps.confirmProcessStop } : {}),
+    stopSessionProcesses: async target => {
+      if (!isAttached()) throw new Error("Attach to a session to stop its processes.")
+      const id = target.kind === "agent" ? sessionState().agents.find((agent: {id: string; alias?: string}) => agent.id === target.agent_id || agent.alias === target.agent_id)?.id : null
+      const response = await client.send({StopSessionProcesses: {session_id: sessionState().id, target: target.kind === "agent" ? {kind: "agent", agent_id: id ?? target.agent_id} : target}})
+      if (!(response as Record<string, unknown>).SessionProcessesStopped) throw new Error("The kernel did not confirm the stop; refresh Health.")
+    },
+    openSessionProcesses: () => { if (isAttached()) deps.openSessionProcesses?.(); else flashFooter("Attach to a session to view its processes.", "error") },
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),

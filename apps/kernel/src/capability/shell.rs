@@ -82,7 +82,7 @@ impl ShellCommandService {
         request: RunShellCommandRequest,
     ) -> Result<RunShellCommandResult, DaemonError> {
         let working_directory = resolve_working_directory(&request)?;
-        let mut command = Command::new(&request.command);
+        let mut command = crate::process_spawn::command(&request.command);
         command.args(&request.args);
         command.current_dir(&working_directory);
         for name in crate::provider::managed_provider_control_env_remove() {
@@ -334,7 +334,7 @@ mod tests {
     fn timed_out_descendants_and_output_readers_settle() {
         const PROBE: &str = "CHARIOX_SHELL_LIFETIME_TEST";
         if std::env::var_os(PROBE).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            let output = crate::process_spawn::command(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
                     "capability::shell::tests::timed_out_descendants_and_output_readers_settle",

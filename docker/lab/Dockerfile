@@ -39,6 +39,9 @@ RUN apt-get update \
     zsh \
   && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/check-process-sampler.mjs /usr/local/lib/chariox/check-process-sampler.mjs
+RUN node /usr/local/lib/chariox/check-process-sampler.mjs
+
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 RUN curl -fsSL https://bun.sh/install | bash \
   && cp /root/.bun/bin/bun /usr/local/bin/bun \

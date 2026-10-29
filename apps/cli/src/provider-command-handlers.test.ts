@@ -823,3 +823,9 @@ test("a login copy never selects its profile after the same kernel connection is
   } satisfies ProviderCommandHandlerDeps, { accountCopyBinding: () => connection })
   await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts copy a work", value: "accounts copy a work" })
 })
+
+test("session process command opens the live read-only view", async () => {
+  let opened = false
+  await handleProviderSlashCommand({ currentProviderId: () => "codex", flashFooter: () => {}, appendNotice: () => {}, openSessionProcesses: () => { opened = true } }, { kind: "provider", raw: "/processes", value: "session-processes" })
+  assert.equal(opened, true)
+})

@@ -11,10 +11,11 @@ use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
 use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession};
 
-pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 3;
+pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
+    pub processes: Vec<crate::runtime::process_resources::SessionProcess>,
     pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
@@ -175,6 +176,11 @@ impl SessionSnapshotProjection {
         app.session_state_projection_store()
             .project_external_observed_activity(session.id(), &mut agent_activity);
         Ok(Self {
+            processes: crate::runtime::process_resources::for_session(
+                session_id,
+                app.providers(),
+                &app.room_terminals(),
+            ),
             room_workflows: super::RoomWorkflowInventory::project(
                 &session,
                 unread_for_user_id.unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),

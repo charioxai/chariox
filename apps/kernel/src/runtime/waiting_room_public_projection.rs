@@ -623,7 +623,7 @@ fn compute_waiting_room_launch_target(
     cwd_string: &str,
     now_ms: u64,
 ) -> Option<WaitingRoomLaunchTarget> {
-    let worktree = std::process::Command::new("git")
+    let worktree = crate::process_spawn::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
         .output()
@@ -632,7 +632,7 @@ fn compute_waiting_room_launch_target(
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| cwd_string.to_string());
-    let workspace = std::process::Command::new("git")
+    let workspace = crate::process_spawn::command("git")
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(cwd)
         .output()

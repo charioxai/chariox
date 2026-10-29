@@ -400,4 +400,5 @@ pub use workspace::*;
 /// Allocated 880 adds owner-scoped listing and replay of the webhooks an integration received
 /// (`ListEventConnectionEvents`, `ReplayEventConnectionEvent`); the predecessor list keeps only the
 /// current release (636) and the one before it (629).
+/// MP-08 / MP-09 / MP-10 / MP-11: 800 adds process limits, Health observations and owned process controls.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 910;

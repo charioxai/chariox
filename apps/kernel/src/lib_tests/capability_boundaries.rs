@@ -43,7 +43,7 @@ fn directory_tree_file_and_git_capabilities_run_through_capability_boundary() {
     std::fs::create_dir_all(worktree_root.join("src")).expect("worktree dir should exist");
     std::fs::write(worktree_root.join("README.md"), "hello").expect("file should exist");
     std::fs::write(worktree_root.join("src/lib.rs"), "before").expect("file should exist");
-    std::process::Command::new("git")
+    crate::process_spawn::command("git")
         .args(["init", "-b", "main"])
         .current_dir(&worktree_root)
         .output()

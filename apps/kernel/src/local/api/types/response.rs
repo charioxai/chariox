@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },

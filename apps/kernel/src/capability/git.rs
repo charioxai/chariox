@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +78,7 @@ fn run_git(
     working_directory: &PathBuf,
     args: &[&str],
 ) -> Result<String, DaemonError> {
-    let output = Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(working_directory)
         .output()
@@ -103,7 +102,6 @@ fn run_git(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::process::Command;
 
     use super::{GitCapabilityService, InspectGitRequest};
 
@@ -112,7 +110,7 @@ mod tests {
         let root = std::env::temp_dir().join("chariox-git-capability-test");
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("root should exist");
-        Command::new("git")
+        crate::process_spawn::command("git")
             .args(["init", "-b", "main"])
             .current_dir(&root)
             .output()

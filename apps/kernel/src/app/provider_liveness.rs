@@ -62,6 +62,8 @@ struct ProviderRunLivenessProcesses;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderProcessExit {
+    pub(crate) memory_limit_bytes: Option<u64>,
+    pub(crate) outside_ended: bool,
     pub(crate) exit_code: Option<u32>,
     pub(crate) signal: Option<String>,
     pub(crate) terminal_diagnostic: Option<String>,
@@ -69,6 +71,12 @@ pub(crate) struct ProviderProcessExit {
 
 impl ProviderProcessExit {
     pub(crate) fn termination_at(&self, at_ms: u64) -> crate::provider::ProviderRunTermination {
+        if let Some(limit) = self.memory_limit_bytes {
+            return crate::provider::ProviderRunTermination::memory_limit(limit, at_ms);
+        }
+        if self.outside_ended {
+            return crate::provider::ProviderRunTermination::outside_end(at_ms);
+        }
         match (self.exit_code, self.signal.as_deref()) {
             (_, Some(signal)) => crate::provider::ProviderRunTermination::signal(signal, at_ms),
             (Some(code), None) => {
@@ -99,6 +107,10 @@ impl ProviderRunLivenessProcesses {
                 // observes exit. The PTY's bounded tail survives that drain.
                 let retained_tail = app.pty.exited_output_diagnostic(provider_run_id);
                 let mut exit = ProviderProcessExit {
+                    memory_limit_bytes: app.pty.memory_limit_bytes(provider_run_id),
+                    outside_ended: crate::runtime::process_resources::outside_ended_for_key(
+                        provider_run_id,
+                    ),
                     exit_code,
                     signal,
                     terminal_diagnostic: (!terminal_diagnostic.is_empty())
@@ -144,6 +156,8 @@ impl ProviderRunLivenessProcesses {
                 Ok(Some(exit))
             }
             Err(DaemonError::PtyProcessNotFound { .. }) => Ok(Some(ProviderProcessExit {
+                memory_limit_bytes: None,
+                outside_ended: false,
                 exit_code: None,
                 signal: None,
                 terminal_diagnostic: None,
@@ -333,6 +347,12 @@ impl<'a> ProviderRunLivenessRuntime<'a> {
                 termination.reason
             )
         };
+        super::provider_output_fanout::ProviderOutputFanout::new(self.app).fail_pending_tools(
+            &self.app.prompt_activity_store(),
+            &outcome.session_id,
+            &outcome.provider_run_id,
+            &termination,
+        );
         let session_outcome =
             ProviderRunLivenessSessionEffects::apply_provider_exit(self.app, &outcome)?;
         if !session_outcome.had_active_prompt || session_outcome.cancelled_prompt {

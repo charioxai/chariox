@@ -657,7 +657,7 @@ async fn owned_end_session_clears_stale_prompt_runtime_state_for_already_ended_s
                 saw_response_content: true,
                 completion_recorded: true,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             },
         );
         app.active_turn_store().start(
@@ -1044,7 +1044,7 @@ async fn owned_destroy_agent_clears_stale_prompt_runtime_state_for_ended_provide
             saw_response_content: true,
             completion_recorded: true,
             settlement_requested: true,
-            active_tool_ids: std::collections::BTreeSet::new(),
+            active_tools: Default::default(),
         },
     );
     app.active_turn_store().start(

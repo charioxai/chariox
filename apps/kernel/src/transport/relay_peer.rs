@@ -148,6 +148,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Allocated 240 carries the local 638 `AgentMove` peer messages.
 /// Allocated 241 carries the composed Move resource receipts and probe messages of local 639.
 /// Allocated 430 pairs the embedded local response union with local 880 (integration received events).
+/// MP-08 / MP-09 / MP-10 / MP-11: owned process observations and outcomes.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

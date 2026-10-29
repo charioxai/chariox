@@ -165,7 +165,7 @@ fn shutdown_cleanup_preserves_sessions_and_clears_runtime_state() {
             saw_response_content: false,
             completion_recorded: false,
             settlement_requested: false,
-            active_tool_ids: std::collections::BTreeSet::new(),
+            active_tools: Default::default(),
         },
     );
     app.active_turn_store()

@@ -541,8 +541,25 @@ idle()
 async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
     for rotate in [false, true] {
         let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+        // The PTY launcher returns after starting its resource wrapper. Capture
+        // the requester's Bash image after exec, before granting the turn.
+        let launched = root(&f);
+        let bash = std::fs::canonicalize("/bin/bash").unwrap();
+        let identity = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok((current, _)) = inspect(launched.pid) {
+                    assert_eq!(current.start, launched.start);
+                    assert_eq!(current.uid, launched.uid);
+                    if Path::new(&current.executable) == bash {
+                        break current;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("fixture Bash should finish the launcher exec");
         let turn = running(&f);
-        let identity = root(&f);
         assert_eq!(f.state.sudo_for_peer(&identity).unwrap(), turn);
         if rotate {
             // The verifier uses the fixture's product-created encrypted Vault.

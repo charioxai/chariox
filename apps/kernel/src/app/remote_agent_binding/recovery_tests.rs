@@ -340,7 +340,7 @@ async fn archive_remote_agent_ends_projection_only_runs_before_unarchive() {
                 saw_response_content: false,
                 completion_recorded: false,
                 settlement_requested: false,
-                active_tool_ids: Default::default(),
+                active_tools: Default::default(),
             },
         );
         (session_id, run, projection, activity)

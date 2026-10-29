@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
@@ -1040,7 +1039,7 @@ pub(crate) fn workspace_live_sync_identity_conflict(
 }
 
 pub(crate) fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(worktree)
         .args(args)

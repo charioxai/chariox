@@ -1891,3 +1891,38 @@ async fn agent_archive_stops_only_owned_terminals_and_keeps_their_history() {
     );
     service.end_session("room-1");
 }
+
+#[test]
+fn memory_limit_wakes_all_watch_kinds_with_the_limit() {
+    let plain = super::plain_text::PlainText::new();
+    let mut watches = super::events::WatchSet::default();
+    for (number, watch) in [
+        RoomTerminalWatch::Finished,
+        RoomTerminalWatch::OutputContains {
+            text: "never".into(),
+        },
+        RoomTerminalWatch::WaitingForInput,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        watches.arm(
+            WatchOwner {
+                wake_id: format!("memory-{number}"),
+                agent_id: "agent".into(),
+            },
+            watch,
+            OutputMatcher::new(&plain),
+            false,
+            FinishBinding::default(),
+        );
+    }
+    let fired = watches.on_memory_limit(32 * 1024 * 1024);
+    assert_eq!(fired.len(), 3);
+    assert!(fired.iter().all(|(_, kind)| matches!(
+        kind,
+        RoomTerminalEventKind::MemoryLimit {
+            limit_bytes: 33554432
+        }
+    )));
+}

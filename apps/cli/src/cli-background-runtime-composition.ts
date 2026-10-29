@@ -577,6 +577,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
     refreshAssistantMessageHistory,
+    applySessionProcesses: (sessionId, processes) => {
+      const session = deps.sessionState()
+      if (deps.isAttached() && session.id === sessionId) deps.applySessionState({ ...session, processes })
+    },
     applyKernelSessionSnapshot: applyKernelSessionSnapshotWithWorkflowRefresh,
     applyAgentActivityChanged,
     applyProviderRunChanged,

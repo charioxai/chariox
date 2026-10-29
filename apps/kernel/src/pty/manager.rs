@@ -238,6 +238,7 @@ impl PtyProcessState {
 }
 
 struct PtyProcess {
+    resources: crate::runtime::process_resources::ProcessDomain,
     discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -392,6 +393,7 @@ impl PtyManager {
         let process_key = run.pty_target().unwrap_or(run.id()).to_string();
         if let Some(process) = self.processes.get_mut(&process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(run.id());
             self.process_aliases
                 .insert(run.id().to_string(), process_key.clone());
             self.output_signal
@@ -524,6 +526,7 @@ impl PtyManager {
         }
         if let Some(process) = self.processes.get_mut(&request.process_key) {
             process.reference_count += 1;
+            process.resources.bind_key(&request.provider_run_id);
             self.process_aliases
                 .insert(request.provider_run_id.clone(), request.process_key.clone());
             self.output_signal
@@ -552,8 +555,18 @@ impl PtyManager {
                 message: error.to_string(),
             })?;
 
-        let mut command = CommandBuilder::new(request.program);
-        for arg in request.args {
+        let prepared =
+            crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
+                DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                }
+            })?;
+        #[cfg(unix)]
+        let inner_program = request.program.clone();
+        let (program, args) = prepared.command(request.program, request.args);
+        let mut command = CommandBuilder::new(program);
+        for arg in args {
             command.arg(arg);
         }
         for (name, _) in std::env::vars() {
@@ -579,6 +592,17 @@ impl PtyManager {
             command.cwd(working_directory);
         }
 
+        #[cfg(unix)]
+        crate::runtime::process_resources::validate_executable(
+            &inner_program,
+            command.get_cwd().map(std::path::Path::new),
+            command.get_env("PATH"),
+        )
+        .map_err(|error| DaemonError::PtySpawn {
+            provider_run_id: request.provider_run_id.clone(),
+            message: error.to_string(),
+        })?;
+
         // portable-pty calls setsid before exec on Unix, including sandbox
         // wrappers. Keep its controlling-terminal and isolation setup intact.
         let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
@@ -588,6 +612,23 @@ impl PtyManager {
             }
         })?;
 
+        let resources = match child
+            .process_id()
+            .ok_or_else(|| std::io::Error::other("PTY child PID unavailable"))
+            .and_then(|pid| prepared.start(pid))
+        {
+            Ok(resources) => resources,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DaemonError::PtySpawn {
+                    provider_run_id: request.provider_run_id.clone(),
+                    message: error.to_string(),
+                });
+            }
+        };
+
+        resources.bind_key(&request.provider_run_id);
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -699,6 +740,7 @@ impl PtyManager {
             PtyProcess {
                 discovery_config: None,
                 child,
+                resources,
                 master: pair.master,
                 process_group,
                 input_writer,
@@ -1002,6 +1044,11 @@ impl PtyManager {
         self.resolve_process_key(provider_run_id)
     }
 
+    pub(crate) fn memory_limit_bytes(&self, provider_run_id: &str) -> Option<u64> {
+        let key = self.process_aliases.get(provider_run_id)?;
+        self.processes.get(key)?.resources.memory_limit_bytes()
+    }
+
     pub fn process_id(&self, provider_run_id: &str) -> Result<Option<u32>, DaemonError> {
         let process_key = self.resolve_process_key(provider_run_id)?;
         let process =
@@ -1121,6 +1168,9 @@ impl PtyManager {
         };
         self.output_signal
             .unregister_alias(&process_key, provider_run_id);
+        if let Some(process) = self.processes.get(&process_key) {
+            process.resources.unbind_key(provider_run_id);
+        }
 
         self.remove_process_by_key(&process_key, Some(provider_run_id))
     }
@@ -1923,7 +1973,7 @@ mod tests {
     #[test]
     fn mp08_mp10_removal_after_reaping_does_not_signal_a_reused_group() {
         use std::os::unix::process::CommandExt;
-        let mut probe = std::process::Command::new("/bin/sh");
+        let mut probe = crate::process_spawn::command("/bin/sh");
         probe.args(["-c", "sleep 30"]);
         unsafe {
             probe.pre_exec(|| {
@@ -2280,6 +2330,29 @@ mod tests {
 
         assert_eq!(manager.processes.len(), 1);
         assert_eq!(manager.process_aliases.len(), 2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let first_rows = loop {
+            let rows = crate::runtime::process_resources::samples_for_key(first_run.id());
+            if !rows.is_empty() || std::time::Instant::now() >= deadline {
+                break rows;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert!(
+            !first_rows.is_empty(),
+            "the shared PTY must have process rows"
+        );
+        assert_eq!(
+            crate::runtime::process_resources::samples_for_key(second_run.id())
+                .into_iter()
+                .map(|row| (row.pid, row.process_id))
+                .collect::<Vec<_>>(),
+            first_rows
+                .iter()
+                .map(|row| (row.pid, row.process_id.clone()))
+                .collect::<Vec<_>>(),
+            "every live PTY alias must resolve the retained resource domain"
+        );
 
         manager
             .write_input(first_run.id(), b"shared pty\n")
@@ -2301,6 +2374,21 @@ mod tests {
         assert!(!manager.has_process(first_run.id()));
         assert!(manager.has_process(second_run.id()));
         assert_eq!(manager.processes.len(), 1);
+        assert!(crate::runtime::process_resources::samples_for_key(first_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(first_run.id(), None).is_err());
+        let surviving = crate::runtime::process_resources::samples_for_key(second_run.id());
+        assert!(
+            !surviving.is_empty(),
+            "the surviving alias keeps its observations"
+        );
+        let stopped = crate::runtime::process_resources::stop_for_key(second_run.id(), None)
+            .expect("the surviving PTY alias can stop its owned tree");
+        assert!(surviving
+            .iter()
+            .all(|row| stopped.contains(&row.process_id)));
+        assert!(crate::runtime::process_resources::outside_ended_for_key(
+            second_run.id()
+        ));
 
         manager
             .remove_process(second_run.id())
@@ -2308,6 +2396,8 @@ mod tests {
         assert!(!manager.has_process(second_run.id()));
         assert!(manager.processes.is_empty());
         assert!(manager.process_aliases.is_empty());
+        assert!(crate::runtime::process_resources::samples_for_key(second_run.id()).is_empty());
+        assert!(crate::runtime::process_resources::stop_for_key(second_run.id(), None).is_err());
     }
 
     fn wait_for_output(
@@ -2350,5 +2440,58 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn memory_limit_ends_only_the_overweight_pty_tree() {
+        let _environment = crate::env_lock::lock();
+        let previous = std::env::var_os("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "32");
+        let mut pty = PtyManager::new();
+        for (run, program, args) in [
+            (
+                "memory-regression",
+                "python3",
+                vec![
+                    "-c",
+                    "import time; x=bytearray(64*1024*1024); time.sleep(30)",
+                ],
+            ),
+            ("memory-sibling", "/bin/sleep", vec!["30"]),
+        ] {
+            pty.spawn(PtySpawnRequest {
+                process_key: run.into(),
+                provider_run_id: run.into(),
+                program: program.into(),
+                args: args.into_iter().map(str::to_string).collect(),
+                env: Default::default(),
+                env_remove: vec![],
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+            })
+            .unwrap();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut state = PtyProcessState::Running;
+        while std::time::Instant::now() < deadline {
+            state = pty.poll_process_state("memory-regression").unwrap();
+            if state.is_exited() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        let sibling = pty.poll_process_state("memory-sibling").unwrap();
+        pty.remove_process("memory-regression").unwrap();
+        pty.remove_process("memory-sibling").unwrap();
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", value),
+            None => std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB"),
+        }
+        assert!(
+            state.is_exited(),
+            "the memory limit did not stop its PTY tree"
+        );
+        assert_eq!(sibling, PtyProcessState::Running);
     }
 }

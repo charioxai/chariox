@@ -306,6 +306,7 @@ public_events! {
     TerminalOutput => "terminal_output",
     RuntimeNotices => "runtime_notices",
     AssistantMessageCompleted => "assistant_message_completed",
+    SessionProcessesChanged => "session_processes_changed",
     SessionSnapshot => "session_snapshot",
     AgentTaskUpdated => "agent_task_updated",
     AgentActivityChanged => "agent_activity_changed",

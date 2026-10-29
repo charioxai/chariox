@@ -1089,7 +1089,7 @@ fn run_command_with_timeout(
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
-    let mut command = Command::new(program);
+    let mut command = crate::process_spawn::command(program);
     command.args(arguments);
     context.configure_command(&mut command);
     command

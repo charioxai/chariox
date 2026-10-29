@@ -192,7 +192,7 @@ pub(crate) fn workspace_live_sync_protected_roots(
 }
 
 fn resolve_git_root(path: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(path)
         .arg("rev-parse")
@@ -220,7 +220,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn provider_child_does_not_inherit_kernel_bootstrap_receipts() {
-        let mut child = std::process::Command::new("/bin/sh");
+        let mut child = crate::process_spawn::command("/bin/sh");
         child
             .env_clear()
             .env(
@@ -246,7 +246,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn ordinary_provider_child_retains_xdg_runtime_directory() {
-        let mut child = std::process::Command::new("/bin/sh");
+        let mut child = crate::process_spawn::command("/bin/sh");
         child
             .env_clear()
             .env("XDG_RUNTIME_DIR", "/ordinary-provider-runtime");
@@ -511,7 +511,7 @@ mod tests {
     }
 
     fn run_git_init(path: &Path) {
-        let status = std::process::Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(path)
             .arg("init")

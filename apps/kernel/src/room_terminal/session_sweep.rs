@@ -65,7 +65,7 @@ fn ps_session_members(session_leader: i32) -> Vec<i32> {
     if session_leader <= 1 {
         return Vec::new();
     }
-    let Ok(output) = std::process::Command::new("ps")
+    let Ok(output) = crate::process_spawn::command("ps")
         .args(["-A", "-o", "pid=,stat="])
         .output()
     else {
@@ -133,7 +133,7 @@ mod tests {
             std::env::temp_dir().join(format!("terminal-detached-job-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let file = root.join("job.pid");
-        let mut command = std::process::Command::new("/bin/bash");
+        let mut command = crate::process_spawn::command("/bin/bash");
         command
             .args([
                 "--noprofile",
@@ -162,7 +162,7 @@ mod tests {
             .unwrap();
         assert!(pid > 1 && leader > 1);
         let alive = || {
-            std::process::Command::new("ps")
+            crate::process_spawn::command("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
                 .output()
                 .is_ok_and(|output| {

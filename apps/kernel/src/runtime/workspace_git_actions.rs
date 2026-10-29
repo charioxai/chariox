@@ -249,7 +249,7 @@ fn run_gh_output(
     args: &[String],
     operation: &'static str,
 ) -> Result<String, DaemonError> {
-    let output = std::process::Command::new("gh")
+    let output = crate::process_spawn::command("gh")
         .args(args)
         .current_dir(worktree_path)
         .output()

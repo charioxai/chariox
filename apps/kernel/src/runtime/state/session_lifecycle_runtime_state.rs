@@ -2338,7 +2338,7 @@ mod tests {
     }
 
     fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()
@@ -2353,7 +2353,7 @@ mod tests {
     }
 
     fn run_git(cwd: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()

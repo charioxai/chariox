@@ -42,3 +42,13 @@ test("dictation603 keeps its allocated protocol floors", () => {
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: the process-control drill names the combined pair.
+test("process-control snapshot covers the generated protocol pair", () => {
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
+  const snapshot = JSON.parse(readFileSync(new URL("apps/kernel/src/local/api/tests/protocol_shapes/session-processes-800.json", repositoryRoot), "utf8"))
+  assert.equal(snapshot.protocol_version, pair.local)
+  assert.equal(snapshot.relay_peer_protocol_version, pair.relayPeer)
+  assert.ok(snapshot.shapes.some(shape => shape.StopSessionProcesses))
+  assert.ok(snapshot.shapes.some(shape => shape.SessionProcessesStopped))
+})

@@ -96,6 +96,45 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
 
+    pub(super) fn record_failed_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        termination: &crate::provider::ProviderRunTermination,
+    ) {
+        let metadata = self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
+        let outputs = self
+            .prompt_activity
+            .take_failed_provider_tools(provider_run_id, &termination.reason)
+            .into_iter()
+            .map(|chunk| {
+                let entry = SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    Some(agent_id),
+                    chunk.kind.clone(),
+                    chunk.merge_key.clone(),
+                    String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                )
+                .with_prompt_origin(metadata.prompt_origin)
+                .with_source_attachment_id(metadata.source_attachment_id.clone());
+                (
+                    TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.into(),
+                        agent_id: Some(agent_id.into()),
+                        kind: chunk.kind,
+                        merge_key: chunk.merge_key,
+                        sequence: None,
+                        bytes: chunk.bytes,
+                    },
+                    Some(entry),
+                )
+            })
+            .collect();
+        self.append_history_and_fan_out(session_id, None, outputs);
+    }
+
     pub(super) fn record_provider_failure_output(
         &self,
         session_id: &str,

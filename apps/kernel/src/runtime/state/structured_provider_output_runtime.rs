@@ -628,16 +628,39 @@ impl KernelRuntimeState {
         // stderr text may still fail the prompt, but never becomes durable
         // provider termination evidence.
         let provider_termination = poll_result
-            .explicit_provider_error
-            .then_some(native_error.as_deref())
-            .flatten()
-            .map(|message| {
-                crate::provider::ProviderRunTermination::explicit_provider_error(
-                    &adapter_key,
-                    message,
+            .process_memory_limit_bytes
+            .map(|limit| {
+                crate::provider::ProviderRunTermination::memory_limit(
+                    limit,
                     crate::session::unix_epoch_ms(),
                 )
+            })
+            .or_else(|| {
+                poll_result.process_outside_ended.then(|| {
+                    crate::provider::ProviderRunTermination::outside_end(
+                        crate::session::unix_epoch_ms(),
+                    )
+                })
+            })
+            .or_else(|| {
+                poll_result
+                    .explicit_provider_error
+                    .then_some(native_error.as_deref())
+                    .flatten()
+                    .map(|message| {
+                        crate::provider::ProviderRunTermination::explicit_provider_error(
+                            &adapter_key,
+                            message,
+                            crate::session::unix_epoch_ms(),
+                        )
+                    })
             });
+        // A kernel-ended tree (memory limit, controller stop) names its own
+        // outcome; otherwise the harness's error is classified.
+        let failure = provider_termination
+            .as_ref()
+            .and_then(|termination| termination.failure.clone())
+            .or(failure);
         // Every client renders this one entry: the cause, the harness's own
         // words and what to do next.
         let failure_notice = failure.as_ref().map(crate::provider::TurnOutcome::notice);
