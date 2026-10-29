@@ -182,7 +182,7 @@ drill: try {
     res.end(process.env.MD_PROTECTED==='1'||frame?page.replace('</body>',(process.env.MD_PROTECTED==='1'?overlay+button:'')+frame+'</body>'):page);return;
    }
    if(name==='/mirror-validator.mjs'&&mirrorValidator){res.setHeader('Content-Type','text/javascript');res.end(mirrorValidator);return;}
-   if(name==='/relay-frame-transport.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayFraming);return;}
+   if((name==='/relay-frame-transport.mjs'||name==='/relay-frame-transport.js')){res.setHeader('Content-Type','text/javascript');res.end(relayFraming);return;}
    if(name==='/browser-relay-crypto.mjs'){res.setHeader('Content-Type','text/javascript');res.end(relayCrypto);return;}
    if(name==='/relay-bootstrap'){const bootstrap=JSON.parse(await readFile(path.join(root,'home','relay-bootstrap.private.json'),'utf8'));if(shaped)bootstrap.relay_url=shaped.url;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(bootstrap));return;}
    const assets={'/harness.html':'harness.html','/presenter.mjs':'presenter.mjs','/stripe-presenter.mjs':'stripe-presenter.mjs','/decoder-worker.mjs':'decoder-worker.mjs','/scroll-prediction.mjs':'scroll-prediction.mjs','/motion-samples.mjs':'motion-samples.mjs','/region-binding.mjs':'region-binding.mjs','/video-sink.mjs':'video-sink.mjs','/presentation-queue.mjs':'presentation-queue.mjs'};
@@ -238,11 +238,11 @@ drill: try {
      connection=await api.connectRelaySocket(bootstrap.relay_url,!legacyRelay);socket=connection.socket;
      const connected=new Promise((resolve,reject)=>{socket.onmessage=event=>{try{const received=connection.receive(event.data);if(received===null)return;const m=typeof received==='string'?JSON.parse(received):received;m.kind==='client_connected'?resolve(m):reject(Error('MD-DISPLAY relay target not ready'))}catch(error){reject(error)}};socket.onclose=()=>reject(Error('MD-DISPLAY relay closed before ready'))});
      socket.send(JSON.stringify({kind:'client_connect',auth_token:bootstrap.client_token,target:{daemon_id:bootstrap.daemon_id}}));
-     const admitted=await connected;daemonKey=admitted.daemon_public_key;relayProtocolVersion=socket.protocol==='chariox-relay-binary-v97'?97:0;break;
+     const admitted=await connected;daemonKey=admitted.daemon_public_key;relayProtocolVersion=socket.protocol==='chariox-relay-binary-v98'?98:0;break;
     }catch{socket?.close();await new Promise(resolve=>setTimeout(resolve,100));}
    }
   if(!daemonKey)throw Error('MD-DISPLAY relay did not admit kernel target');
-  if(requireBinary&&relayProtocolVersion<97)throw Error('MP-08/MP-10: binary relay97 was not negotiated');
+  if(requireBinary&&relayProtocolVersion<98)throw Error('MP-08/MP-10: binary relay98 was not negotiated');
   window.mdRelayProtocolVersion=relayProtocolVersion;window.mdBinaryRelayFrames=0;
   let id=0;const pending=new Map(),listeners=new Set();window.mdWireBytes=0;window.mdFrames=[];window.mdPresentations=[];window.mdTimings=[];
   const stamp=()=>performance.timeOrigin+performance.now();

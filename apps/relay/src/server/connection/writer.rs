@@ -19,6 +19,15 @@ enum Lane {
 /// streams, so a small band frame is never queued behind another stream's bulk.
 fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> (Lane, Option<String>) {
     if let Message::Binary(bytes) = message {
+        if matches!(
+            crate::binary_response::decode(bytes),
+            Ok((
+                crate::binary_response::ResponseHeader::ClientResponse { .. },
+                _
+            ))
+        ) {
+            return (Lane::Reply, None);
+        }
         return match crate::binary_event::decode(bytes) {
             Ok((header, _))
                 if header.kind == "client_event" && display_route(&header.subscription_id) =>
@@ -184,11 +193,27 @@ async fn upgrade<S: Sink<Message> + Unpin>(writer: &mut S) {
     .await;
 }
 fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
+    if binary_events {
+        if let Message::Text(text) = &message {
+            if text.starts_with("{\"kind\":\"client_response\"") {
+                if let Ok(envelope) = serde_json::from_str::<crate::protocol::RelayEnvelope>(text) {
+                    if let Ok(Some(bytes)) = crate::binary_response::from_envelope(&envelope) {
+                        return Some(Message::Binary(bytes.into()));
+                    }
+                }
+            }
+        }
+    }
+
     // Negotiated events keep their ciphertext opaque at every size. The bounded
     // transfer chunks them below; only non-binary clients need the JSON envelope.
     if let Message::Binary(bytes) = &message {
         if !binary_events {
-            let envelope = crate::binary_event::legacy_client_envelope(bytes).ok()?;
+            let envelope = if bytes.starts_with(b"CXR2") {
+                crate::binary_response::into_envelope(bytes).ok()?
+            } else {
+                crate::binary_event::legacy_client_envelope(bytes).ok()?
+            };
             return serde_json::to_string(&envelope)
                 .ok()
                 .map(|s| Message::Text(s.into()));
@@ -1213,10 +1238,6 @@ mod tests {
 
     #[tokio::test]
     async fn mp08_mp09_mp10_mp11_large_binary_wire_chunks_preserve_ciphertext() {
-        let (socket, mut client) = sockets().await;
-        let (tx, rx) = mpsc::channel(8);
-        let (at, ar) = mpsc::channel(64);
-        let (_ct, cr) = mpsc::channel(8);
         let header = crate::binary_event::EventHeader {
             kind: "client_event".into(),
             subscription_id: "display".into(),
@@ -1224,52 +1245,96 @@ mod tests {
             sender_public_key: "opaque".into(),
             nonce: "abcdefghijklmnop".into(),
         };
-        let original = crate::binary_event::encode(&header, &[0xfe; 100 * 1024]).unwrap();
-        tx.send(Message::Binary(original.clone().into()))
-            .await
-            .unwrap();
-        drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
-        let mut receiver = crate::frame_transport::FrameReceiver::default();
-        let mut bytes = 0;
-        let mut chunks = 0;
-        loop {
-            let message = tokio::time::timeout(Duration::from_secs(2), client.next())
+        let event = crate::binary_event::encode(&header, &[0xfe; 100 * 1024]).unwrap();
+        let response = crate::binary_response::encode(
+            &crate::binary_response::ResponseHeader::ClientResponse {
+                request_id: "mirror".into(),
+                sender_public_key: "opaque".into(),
+                nonce: "abcdefghijklmnop".into(),
+            },
+            &[0xfe; 100 * 1024],
+        )
+        .unwrap();
+        // Both opaque kinds use the same bounded, receipt-driven wire path.
+        for original in [event, response] {
+            let (socket, mut client) = sockets().await;
+            let (tx, rx) = mpsc::channel(8);
+            let (at, ar) = mpsc::channel(64);
+            let (_ct, cr) = mpsc::channel(8);
+            tx.send(Message::Binary(original.clone().into()))
                 .await
-                .unwrap()
-                .unwrap()
                 .unwrap();
-            let Message::Binary(wire) = message else {
-                panic!("opaque ciphertext must not become a JSON envelope");
-            };
-            assert!(wire.len() <= CHUNK_BYTES);
-            bytes += wire.len();
-            chunks += 1;
-            let (complete, ack) = receiver.receive_binary(&wire).unwrap();
-            let TransportFrame::TransportAck {
-                transfer_id,
-                offset,
-            } = serde_json::from_str(&ack.unwrap()).unwrap()
-            else {
-                panic!("receipt");
-            };
-            at.send((transfer_id, offset)).await.unwrap();
-            if let Some(complete) = complete {
-                assert_eq!(complete, original);
-                break;
+            drop(tx);
+            let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
+            let mut receiver = crate::frame_transport::FrameReceiver::default();
+            let mut bytes = 0;
+            let mut chunks = 0;
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(2), client.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let Message::Binary(wire) = message else {
+                    panic!("opaque ciphertext must not become a JSON envelope");
+                };
+                assert!(wire.len() <= CHUNK_BYTES);
+                bytes += wire.len();
+                chunks += 1;
+                let (complete, ack) = receiver.receive_binary(&wire).unwrap();
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&ack.unwrap()).unwrap()
+                else {
+                    panic!("receipt");
+                };
+                at.send((transfer_id, offset)).await.unwrap();
+                if let Some(complete) = complete {
+                    assert_eq!(complete, original);
+                    break;
+                }
             }
+            assert!(chunks > 1);
+            assert_eq!(
+                bytes,
+                original.len() + chunks * crate::frame_transport::BINARY_CHUNK_HEADER_BYTES
+            );
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), task)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "drained"
+            );
         }
-        assert!(chunks > 1);
-        assert_eq!(
-            bytes,
-            original.len() + chunks * crate::frame_transport::BINARY_CHUNK_HEADER_BYTES
+    }
+}
+
+#[cfg(test)]
+mod binary_reply_regression {
+    use super::*;
+    #[test]
+    fn mp08_mp09_mp10_mp11_successful_large_replies_keep_raw_ciphertext() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let text = serde_json::to_string(&crate::protocol::RelayEnvelope::ClientResponse {
+            request_id: "mirror-request".into(),
+            encrypted_response: Some(crate::protocol::EncryptedRelayPayload {
+                sender_public_key: "opaque-key".into(),
+                nonce: "abcdefghijklmnop".into(),
+                ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
+            }),
+            error: None,
+        })
+        .unwrap();
+        let binary = receiver_message(Message::Text(text.into()), true).unwrap();
+        assert!(
+            matches!(binary, Message::Binary(_)),
+            "negotiated successful replies must not base64 ciphertext"
         );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(2), task)
-                .await
-                .unwrap()
-                .unwrap(),
-            "drained"
+        assert!(
+            matches!(lane(&binary, &|_| true), (Lane::Reply, None)),
+            "response correlation keeps the reply lane"
         );
     }
 }

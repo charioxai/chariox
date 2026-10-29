@@ -158,7 +158,7 @@ test('MP-08/MP-10 binary negotiation failure propagates without silently changin
   globalThis.WebSocket = Socket as unknown as typeof WebSocket;
   try {
     await assert.rejects(browser.connectRelaySocket('wss://example/relay'),/relay handshake failed/);
-    assert.deepEqual(offers, [['wss://example/relay?chariox_transport=chunks-v2',['chariox-relay-binary-v97']]]);
+    assert.deepEqual(offers, [['wss://example/relay?chariox_transport=chunks-v2',['chariox-relay-binary-v98']]]);
   } finally { globalThis.WebSocket=original }
 });
 
@@ -167,7 +167,7 @@ test('MP-08/MP-09/MP-10/MP-11 negotiated browser connections reassemble and ackn
  const originalSocket=globalThis.WebSocket,receipts:string[]=[];
  class Socket {
   onopen?:()=>void;onerror?:()=>void;binaryType='';
-  constructor(url:string,protocols?:string[]){assert.equal(url,'wss://example/relay?chariox_transport=chunks-v2');assert.deepEqual(protocols,['chariox-relay-binary-v97']);queueMicrotask(()=>this.onopen?.())}
+  constructor(url:string,protocols?:string[]){assert.equal(url,'wss://example/relay?chariox_transport=chunks-v2');assert.deepEqual(protocols,['chariox-relay-binary-v98']);queueMicrotask(()=>this.onopen?.())}
   close(){} send(frame:string){receipts.push(frame)}
  }
  globalThis.WebSocket=Socket as unknown as typeof WebSocket;
@@ -182,7 +182,33 @@ test('MP-08/MP-09/MP-10/MP-11 negotiated browser connections reassemble and ackn
    complete=connection.receive(wire.buffer);
    if(offset+part.length<event.length)assert.equal(complete,null);
   }
-  assert(complete&&typeof complete==='object');assert.deepEqual(complete.encrypted_event.ciphertext,payload);
+  assert(complete&&typeof complete==='object'&&complete.kind==='client_event');assert.deepEqual(complete.encrypted_event.ciphertext,payload);
   assert.equal(JSON.parse(receipts.at(-1)!).offset,event.length);
  }finally{globalThis.WebSocket=originalSocket}
 });
+
+test('MP08 MP09 MP10 MP11 connection reassembles raw RPC response and decrypts its correlated payload',async()=>{
+ const original=globalThis.WebSocket,acks:string[]=[];
+ class FakeSocket {
+  binaryType='';onopen:(()=>void)|null=null;onerror:(()=>void)|null=null;
+  constructor(url:string,protocols?:string[]){assert.equal(url,'wss://example/relay?chariox_transport=chunks-v2');assert.deepEqual(protocols,['chariox-relay-binary-v98']);queueMicrotask(()=>this.onopen?.())}
+  send(text:string){acks.push(text)}close(){}
+ }
+ globalThis.WebSocket=FakeSocket as unknown as typeof WebSocket;
+ try{
+  const client=await browser.createRelayKeypair(),daemon=await browser.createRelayKeypair(),plain=JSON.stringify({KernelBrowser:{result:{packet:'public-'.repeat(20000)}}});
+  const encrypted=(await browser.encryptRelayPayload(client.publicKeyBase64,plain,daemon)).payload;
+  const header=Buffer.from(JSON.stringify({kind:'client_response',request_id:'mirror-request',sender_public_key:encrypted.sender_public_key,nonce:encrypted.nonce})),wire=Buffer.concat([Buffer.from('CXR2'),Buffer.alloc(4),header,Buffer.from(encrypted.ciphertext,'base64')]);wire.writeUInt32BE(header.length,4);
+  const connection=await browser.connectRelaySocket('wss://example/relay');let received:ReturnType<typeof connection.receive>=null;
+  for(let offset=0;offset<wire.length;offset+=16368){const part=wire.subarray(offset,offset+16368),chunk=Buffer.concat([Buffer.from('CXB1'),Buffer.alloc(12),part]);chunk.writeUInt32BE(1,4);chunk.writeUInt32BE(offset,8);chunk.writeUInt32BE(wire.length,12);received=connection.receive(Uint8Array.from(chunk).buffer);}
+  assert(received&&typeof received!=='string'&&received.kind==='client_response');assert.equal(received.request_id,'mirror-request');assert.equal(await browser.decryptRelayPayload(client.privateKey,received.encrypted_response,daemon.publicKeyBase64),plain);assert.equal(JSON.parse(acks.at(-1)!).offset,wire.length);
+ }finally{globalThis.WebSocket=original}
+});
+
+ test('MP08 MP09 MP10 MP11 CXR2 protocol722 snapshot and strict routing header', async()=>{
+ const metadata=Buffer.from(JSON.stringify({kind:'client_response',request_id:'request',sender_public_key:'opaque-key',nonce:'abcdefghijklmnop'}));
+ const wire=Buffer.concat([Buffer.from('CXR2'),Buffer.alloc(4),metadata,Buffer.alloc(16,0xfe)]);wire.writeUInt32BE(metadata.length,4);
+ const {createHash}=await import('node:crypto');assert.equal(createHash('sha256').update(wire).digest('hex'),'1e9f9c294223a05c70682865f1740e9812b62316ca82c048a7fd9be2c92f4889');
+ assert.equal(browser.decodeBinaryRelayResponse(wire).request_id,'request');
+ for(const broken of [wire.subarray(0,wire.length-1),Buffer.from(wire)]) { if(broken.length===wire.length)broken[3]=49;assert.throws(()=>browser.decodeBinaryRelayResponse(broken)); }
+ });

@@ -143,7 +143,7 @@ pub(crate) async fn handle_connection(
                 || request
                     .headers()
                     .get(crate::binary_event::VERSION_HEADER)
-                    .is_some_and(|version| version == "97");
+                    .is_some_and(|version| version == "98");
             if initial_resume_negotiated {
                 response.headers_mut().insert(
                     "sec-websocket-protocol",
@@ -160,7 +160,7 @@ pub(crate) async fn handle_connection(
             if binary_events {
                 response
                     .headers_mut()
-                    .insert(crate::binary_event::VERSION_HEADER, "97".parse().unwrap());
+                    .insert(crate::binary_event::VERSION_HEADER, "98".parse().unwrap());
             }
             Ok(response)
         },
@@ -312,6 +312,21 @@ pub(crate) async fn handle_connection(
             let message = message.map_err(|error| std::io::Error::other(error.to_string()))?;
             crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
+            // Binary replies enter exactly the same authenticated pending-route ledger as JSON replies.
+            let message = match message {
+                Message::Binary(bytes) if bytes.starts_with(b"CXR2") => {
+                    if !binary_events || registered_daemon_key.is_none() {
+                        send_close(&outgoing_tx,"binary responses require a negotiated daemon connection".into());
+                        break;
+                    }
+                    let envelope = crate::binary_response::into_envelope(&bytes)?;
+                    if !matches!(envelope, RelayEnvelope::DaemonResponse { .. }) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid daemon response route"));
+                    }
+                    Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())
+                }
+                other => other,
+            };
             match message {
                 Message::Text(text) => {
                     if chunks && serde_json::from_str::<serde_json::Value>(&text).ok()
