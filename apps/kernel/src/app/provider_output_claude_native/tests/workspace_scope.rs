@@ -266,6 +266,66 @@ fn invalid_startup_trust_selection_has_an_actionable_failure() {
 #[test]
 fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
     crate::test_support::isolated_env_test!();
+    let failures = startup_trust_failures("one drain", &|frame, _| vec![frame.to_string()]);
+    assert!(
+        failures.is_empty(),
+        "terminal line boundaries changed the selected workspace: {failures:?}"
+    );
+}
+
+/// The runtime passes whatever bytes are available per drain, so one frame
+/// may be cut right before, inside or after the path's terminating CRLF, with
+/// control-only drains in between. A drain edge is not a terminal boundary.
+#[test]
+fn startup_trust_survives_pty_drain_boundaries_around_the_path() {
+    crate::test_support::isolated_env_test!();
+    // `skip` is the frame text the extra drains replace.
+    let cut = |frame: &str, path: &str, offset: isize, middle: &[&str], skip: usize| {
+        let end = frame.find(path).expect("frame shows the path") + path.len();
+        let at = end.checked_add_signed(offset).expect("cut inside frame");
+        let mut drains = vec![frame[..at].to_string()];
+        drains.extend(middle.iter().map(|chunk| chunk.to_string()));
+        drains.push(frame[at + skip..].to_string());
+        drains
+    };
+    let mut failures = Vec::new();
+    for (name, offset, middle, skip) in [
+        ("before CRLF", 0, &[][..], 0),
+        ("between CR and LF", 1, &[][..], 0),
+        ("after CRLF", 2, &[][..], 0),
+        ("control-only CRLF", 0, &["\r\n"][..], 2),
+        ("control-only CR then LF", 0, &["\r", "\n"][..], 2),
+        ("control-only cursor move", 0, &["\x1b[1B"][..], 0),
+    ] {
+        failures.extend(startup_trust_failures(name, &|frame, path| {
+            cut(frame, path, offset, middle, skip)
+        }));
+    }
+    // A literal trailing space arrives as its own drain before the line break.
+    failures.extend(startup_trust_failures(
+        "space then CRLF",
+        &|frame, path| match path.strip_suffix(' ') {
+            Some(_) => {
+                let end = frame.find(path).unwrap() + path.len();
+                vec![
+                    frame[..end - 1].to_string(),
+                    " ".to_string(),
+                    frame[end..].to_string(),
+                ]
+            }
+            None => vec![frame.to_string()],
+        },
+    ));
+    assert!(
+        failures.is_empty(),
+        "a PTY drain boundary changed the selected workspace: {failures:?}"
+    );
+}
+
+fn startup_trust_failures(
+    label: &str,
+    drains_of: &dyn Fn(&str, &str) -> Vec<String>,
+) -> Vec<String> {
     let root = crate::test_support::TestWorktree::new("trust-scope-crlf");
     let home = root.path().join("home");
     let plain = root.path().join("selected");
@@ -337,21 +397,26 @@ fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
         app.providers_mut().insert_run_for_test(run.clone());
         app.pty.spawn_for_run(&run).unwrap();
         let bridge = StartupTrustBridge::default();
-        ProviderOutputClaudeNativeBridge::new(&mut app)
-            .process_terminal_output(
-                session.id(),
-                run.id(),
-                &run,
-                Some(std::sync::Arc::new(bridge.clone())),
-                &crlf(displayed, blank, false),
-            )
-            .unwrap();
+        let feed = |app: &mut DaemonApp, frame: &str| {
+            for drain in drains_of(frame, &displayed.display().to_string()) {
+                ProviderOutputClaudeNativeBridge::new(app)
+                    .process_terminal_output(
+                        session.id(),
+                        run.id(),
+                        &run,
+                        Some(std::sync::Arc::new(bridge.clone())),
+                        &drain,
+                    )
+                    .unwrap();
+            }
+        };
+        feed(&mut app, &crlf(displayed, blank, false));
         let interaction = bridge.wait_for_interaction();
         let reusable = interaction
             .id()
             .starts_with("claude-selected-workspace-trust-");
         if reusable != expected {
-            failures.push(format!("{name}: reusable={reusable}"));
+            failures.push(format!("{label}/{name}: reusable={reusable}"));
         }
         if reusable {
             bridge.resolve("allow_once", "allow");
@@ -368,15 +433,7 @@ fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             // The repaint after the arrow key must still prove the same folder.
-            ProviderOutputClaudeNativeBridge::new(&mut app)
-                .process_terminal_output(
-                    session.id(),
-                    run.id(),
-                    &run,
-                    Some(std::sync::Arc::new(bridge.clone())),
-                    &crlf(displayed, blank, true),
-                )
-                .unwrap();
+            feed(&mut app, &crlf(displayed, blank, true));
             let mut approved = Err("selection was not confirmed".to_string());
             for _ in 0..500 {
                 match pump(&mut app) {
@@ -392,15 +449,12 @@ fn startup_trust_survives_terminal_line_boundaries_around_the_path() {
                 }
             }
             if let Err(error) = approved {
-                failures.push(format!("{name}: revalidation failed: {error}"));
+                failures.push(format!("{label}/{name}: revalidation failed: {error}"));
             }
         } else {
             bridge.resolve("deny", "deny");
         }
         app.shutdown_cleanup().unwrap();
     }
-    assert!(
-        failures.is_empty(),
-        "terminal line boundaries changed the selected workspace: {failures:?}"
-    );
+    failures
 }

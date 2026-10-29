@@ -605,23 +605,30 @@ pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
     mode_visible && (complete_acceptance || clipped_choice)
 }
 
+/// Appends one PTY drain to the recent frame. Drains are cut anywhere, so the
+/// stream is joined exactly as received: an edge between drains is never a
+/// separator, and a line boundary split across drains stays one boundary.
 pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {
     // Keep line boundaries: the selected-folder proof reads the displayed path.
     let normalized = claude_rendered_terminal_text(rendered);
-    if normalized.trim().is_empty() {
-        return claude_permission_recent_file(context_file)
-            .and_then(|path| fs::read_to_string(path).ok())
-            .unwrap_or_default();
-    }
     let Some(path) = claude_permission_recent_file(context_file) else {
         return normalized;
     };
     let mut recent = fs::read_to_string(&path).unwrap_or_default();
-    if recent.trim_end().ends_with(normalized.trim()) {
+    if normalized.is_empty() {
         return recent;
     }
-    recent.push(' ');
-    recent.push_str(&normalized);
+    let continued = if recent.ends_with('\n') {
+        normalized.strip_prefix('\n').unwrap_or(&normalized)
+    } else {
+        &normalized
+    };
+    if continued.is_empty()
+        || (!continued.trim().is_empty() && recent.trim_end().ends_with(continued.trim()))
+    {
+        return recent;
+    }
+    recent.push_str(continued);
     if recent.chars().count() > 4000 {
         recent = recent
             .chars()

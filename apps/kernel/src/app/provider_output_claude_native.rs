@@ -1233,8 +1233,11 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             }
             self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         }
+        // One append per drain: a second append of the same drain would repeat
+        // its literal spaces.
+        let mut recent = None;
         if provider_run.provider() == "claude-headless" {
-            let recent = update_claude_permission_recent(context_file, rendered);
+            let recent = recent.insert(update_claude_permission_recent(context_file, rendered));
             if claude_headless_bypass_selection_pending(context_file) {
                 append_claude_headless_debug(
                     context_file,
@@ -1285,7 +1288,8 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         // MP-08 / MP-10 / MP-11: the tool/action can arrive in a PTY chunk
         // before the choices. Retain that context for the user's decision.
-        let recent = update_claude_permission_recent(context_file, rendered);
+        let recent =
+            recent.unwrap_or_else(|| update_claude_permission_recent(context_file, rendered));
         if !visible && !claude_rendered_permission_visible(&recent) {
             clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
