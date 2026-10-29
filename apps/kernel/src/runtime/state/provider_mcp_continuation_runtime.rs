@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         token: &str,
     ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
-            .runtime_tool_specs_for_auth_token(token)
+            .runtime_tool_specs_for_current_grants(token)
             .into_iter()
             .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
             .map(|tool| (tool.name, tool.description, tool.input_schema))

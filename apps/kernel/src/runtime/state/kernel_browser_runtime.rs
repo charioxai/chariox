@@ -766,7 +766,6 @@ impl KernelRuntimeState {
         &self,
         runs: &[crate::provider::RuntimeProviderRun],
     ) -> Vec<RuntimeToolSpec> {
-        self.refresh_user_domain_grants();
         let [run] = runs else {
             return Vec::new();
         };

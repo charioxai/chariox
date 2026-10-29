@@ -93,7 +93,19 @@ impl KernelRuntimeState {
             .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
     }
 
+    #[cfg(test)]
     pub(crate) fn runtime_tool_specs_for_auth_token(
+        &self,
+        auth_token: &str,
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        self.refresh_user_domain_grants();
+        self.runtime_tool_specs_for_current_grants(auth_token)
+    }
+
+    /// Lists tools against the grants as the last reconciliation left them.
+    /// Catalog change detection walks every running provider, so it must not
+    /// reconcile every grant holder once per provider; the transport pump does.
+    pub(crate) fn runtime_tool_specs_for_current_grants(
         &self,
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
@@ -115,6 +127,7 @@ impl KernelRuntimeState {
         &self,
         auth_token: String,
     ) -> Result<Vec<crate::transport::runtime_tools::RuntimeToolSpec>, DaemonError> {
+        self.refresh_user_domain_grants();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         let needs_apps = self.has_app_grants_for_auth_token(&auth_token);
         #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
