@@ -8,6 +8,35 @@ use serde_json::json;
 use std::time::Duration;
 use tokio::{net::UnixStream, time::Instant};
 
+#[test]
+fn configured_guest_memory_leaves_native_runtime_headroom() {
+    use chariox_app_wasm_worker::limits::Limits;
+    let mut limits = Limits {
+        memory_bytes: 128 << 20,
+        ..Limits::default()
+    };
+    limits.validate().unwrap();
+    for bytes in [(128 << 20) + 1, 512 << 20, 1_usize << 32] {
+        limits.memory_bytes = bytes;
+        assert!(limits.validate().is_err(), "admitted {bytes} guest bytes");
+    }
+}
+
+#[test]
+fn incremental_guest_memory_growth_reuses_reserved_headroom() {
+    let engine = chariox_app_wasm_worker::engine::engine().unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let memory = wasmtime::Memory::new(&mut store, wasmtime::MemoryType::new(1, None)).unwrap();
+    memory.grow(&mut store, 1).unwrap();
+    memory.write(&mut store, 0, b"preserved").unwrap();
+    let pointer = memory.data_ptr(&store);
+    for _ in 0..32 {
+        memory.grow(&mut store, 1).unwrap();
+        assert_eq!(memory.data_ptr(&store), pointer, "copied on a small grow");
+    }
+    assert_eq!(&memory.data(&store)[..9], b"preserved");
+}
+
 #[tokio::test]
 async fn cancelled_queued_requests_never_reach_the_broker() {
     use std::os::fd::AsRawFd;

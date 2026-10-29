@@ -470,6 +470,7 @@ dependencies = [
  "bytes",
  "chariox-app-package",
  "chariox-app-runtime",
+ "chariox-app-wasm-worker",
  "chariox-app-wit",
  "ed25519-dalek",
  "futures",

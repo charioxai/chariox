@@ -52,6 +52,7 @@ impl Guest for App {
             "upload",
             "early_response",
             "grace",
+            "huge",
         ] {
             registry::tool(name);
         }
@@ -206,6 +207,7 @@ async fn run(name: String, input: String) -> Result<String, AppError> {
             }
         },
         "trap" => core::arch::wasm32::unreachable(),
+        "huge" => Ok(format!("\"{}\"", "x".repeat(2 << 20))),
         "spin" => loop {
             std::hint::spin_loop();
         },

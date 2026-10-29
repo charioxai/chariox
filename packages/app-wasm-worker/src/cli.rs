@@ -139,12 +139,20 @@ fn run() -> wasmtime::Result<()> {
             launch.limits.validate()?;
             launch.manifest.validate(&chariox_app_package::Limits::default())?;
             wasmtime::ensure!(launch.manifest.world==chariox_app_wit::APP_WORLD,"backend requires the App world");
+            let bytes=bounded_read(&launch.component,chariox_app_wit::MAX_COMPONENT_BYTES)?;
+            // Union: R4's installation directories are opened with the other
+            // native inputs, before R5 removes filesystem authority.
+            let directories=launch.installation_root.as_ref().map(|root| crate::wasi::InstallationDirectories::open(Path::new(root))).transpose()?;
+            // All native inputs are read before filesystem authority is removed.
+            // Neither compilation, registration nor the ready reply can precede
+            // containment. R4 uses this same entry for its verified AOT bytes.
+            crate::containment::enter().map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
             ready(&launch.generation, &launch.installation_id, &launch.release_digest)?;
             let engine=WorkerEngine::new()?;
-            let component=engine.compile(&bounded_read(&launch.component,chariox_app_wit::MAX_COMPONENT_BYTES)?,&launch.manifest.world)?;
+            let component=engine.compile(&bytes,&launch.manifest.world)?;
             let mut worker=AppWorker::new(engine,component,launch.limits,RetryPolicy::from_manifest(&launch.manifest))?;
-            if let Some(root)=&launch.installation_root {
-                worker=worker.with_directories(crate::wasi::InstallationDirectories::open(Path::new(root))?);
+            if let Some(directories)=directories {
+                worker=worker.with_directories(directories);
             }
             let stream=inherited_stream(3)?;
             stream.set_nonblocking(true)?;
