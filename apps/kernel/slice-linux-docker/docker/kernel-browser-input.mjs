@@ -131,17 +131,20 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         if (typeof input.text !== "string" || input.text.length > 16384) throw new Error("MD-2: input text exceeds limit");
         if (inputToken && input.text) {
           await admitInput();
-          const endDispatch = onDispatch?.();
+          const reply = await connection.send("Runtime.evaluate", {
+            expression: `globalThis.__charioxViewInput.armText(${JSON.stringify(input.text)},${JSON.stringify(inputToken)})`,
+            returnByValue: true,
+          }, sessionId);
+          if (reply.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
           try {
-            // insertText has no timestamp field. Use the same synchronous native
-            // edit as Room fills so only this exact input event inherits the caller.
-            const reply = await connection.send("Runtime.evaluate", {
-              expression: `globalThis.__charioxViewInput.edit(document.activeElement,${JSON.stringify(input.text)},${JSON.stringify(inputToken)})`,
-              returnByValue: true,
+            // Chromium owns beforeinput, cancellation and the no-op on a
+            // noneditable target. Attribution must not replace native editing.
+            await sendInput("Input.insertText", { text: input.text });
+          } finally {
+            await connection.send("Runtime.evaluate", {
+              expression: `globalThis.__charioxViewInput.clearText(${JSON.stringify(inputToken)})`, returnByValue: true,
             }, sessionId);
-            if (reply.exceptionDetails) throw new BrowserActionError("browser_action_failed", "App text edit failed");
-            assertNotCancelled(signal);
-          } finally { endDispatch?.(); }
+          }
         } else await sendInput("Input.insertText", { text: input.text });
       } else if (input.kind === "key") {
         const printable = typeof input.key === "string" && /^[^\p{C}]$/u.test(input.key);

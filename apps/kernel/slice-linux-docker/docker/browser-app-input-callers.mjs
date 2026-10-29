@@ -7,12 +7,29 @@ export function createInputCallers() {
   const callers = new WeakMap();
   const edits = new WeakMap();
   let source;
+  let textEdit;
+  const clearText = () => { if (textEdit) clearTimeout(textEdit.timer); textEdit = undefined; };
+  globalThis.addEventListener('beforeinput', event => {
+    if (!event.isTrusted) return;
+    const edit = textEdit;
+    clearText();
+    if (!edit || edit.element !== event.target || event.inputType !== 'insertText' || event.data !== edit.text) return;
+    callers.set(event, edit.token);
+    // Native insertion and a synchronous editor transform both emit input in
+    // this task. A cancelled edit leaves no caller for a later input event.
+    textEdit = { ...edit, before: event, timer: setTimeout(clearText, 0) };
+  }, true);
   globalThis.addEventListener('input', event => {
+    const edit = textEdit;
+    if (event.isTrusted) clearText();
     const key = source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target ? source : null;
-    const token = edits.get(event.target) ?? (key && callers.get(key));
+    const token = edits.get(event.target) ?? (edit?.before && edit.element === event.target ? edit.token : key && callers.get(key));
     if (event.isTrusted && entries.get(token)?.timestamp != null) callers.set(event, token);
     if (key) source = undefined;
   }, true);
+  for (const type of ['compositionstart', 'paste', 'cut', 'drop', 'focusin']) {
+    globalThis.addEventListener(type, event => { if (event.isTrusted) clearText(); }, true);
+  }
   globalThis.addEventListener('submit', event => {
     const origin = source;
     source = undefined;
@@ -30,6 +47,7 @@ export function createInputCallers() {
   for (const type of ['pointerdown','pointerup','pointermove','mousedown','mouseup','mousemove','click','dblclick','keydown','keypress','keyup','wheel']) {
     globalThis.addEventListener(type, event => {
       if (!event.isTrusted) return;
+      clearText();
       // The native default action follows propagation. Keep its exact source
       // until its generated input/submit or the next physical event, including
       // an unclaimed human event. There is no wall-clock attribution window.
@@ -54,6 +72,14 @@ export function createInputCallers() {
   }
   return Object.freeze({
     begin(token, timestamp) { entries.set(token, { timestamp, handlers: new Set() }); },
+    armText(text, token) {
+      if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
+      clearText();
+      // Input.insertText has no timestamp. Consume only its matching native
+      // beforeinput; any intervening physical input retires this claim.
+      textEdit = { element: document.activeElement, text, token, timer: setTimeout(clearText, 30_000) };
+    },
+    clearText(token) { if (textEdit?.token === token) clearText(); },
     token(event) {
       const token = event && callers.get(event);
       if (entries.get(token)?.timestamp != null) return token;
@@ -95,6 +121,7 @@ export function createInputCallers() {
       // Dispatch has acknowledged every event. No later event gets this caller;
       // the handlers already holding it retain it until their promises settle.
       entry.timestamp = null;
+      if (textEdit?.token === token) clearText();
       if (source && callers.get(source) === token) source = undefined;
       await Promise.allSettled([...entry.handlers]);
       entries.delete(token);
