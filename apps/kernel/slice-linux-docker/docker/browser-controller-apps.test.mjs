@@ -827,6 +827,154 @@ test('opening an unchanged App focuses its existing document without navigating'
  assert.equal([...tabs.apps.values()][0].ready,true);
 });
 
+test("MP-08/MP-10 A3: background open is unprojected and human adoption keeps its document", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const params = { origin_label: "background", installation_id: "todo", assets: [asset("index.html", "state")] };
+  const first = await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  assert.equal(app.background, true);
+  assert.equal(connection.sent.some(item => item.method === "Target.activateTarget"), false);
+  assert.equal(connection.sent.some(item => item.method === "Browser.setWindowBounds"), false);
+  connection.sent.length = 0;
+  assert.deepEqual(await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } }), first);
+  assert.equal(app.background, true);
+  assert.deepEqual(await tabs.open(params), first);
+  assert.equal(app.background, false);
+  assert.equal(connection.created, 1);
+  assert.equal(connection.sent.filter(item => item.method === "Page.navigate").length, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.activateTarget"));
+  // A catalog read after adoption cannot hide the person's Tab again.
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  assert.equal(app.background, false);
+});
+
+test("MP-09/MP-10 A3: default idle is ten minutes and admitted work survives idle cleanup", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
+  const params = { origin_label: "idle", installation_id: "todo", projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] };
+  await tabs.open(params);
+  const app = [...tabs.apps.values()][0];
+  now = 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = Promise.resolve();
+  now = 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.agentRunning = null;
+  now += 599999;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.add("backend-call");
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  app.pending.clear();
+  now += 600001;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+  assert.ok(connection.sent.some(item => item.method === "Target.closeTarget"));
+  const reopened = await tabs.open(params);
+  assert.equal(reopened.target_id, "t2");
+});
+
+test("MP-09/MP-10 A3: a live Room viewer retains adopted Tabs, detached viewers do not", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 30, now: () => now });
+  await tabs.open({ origin_label: "viewer", installation_id: "todo", assets: [asset("index.html", "state")] });
+  browser.roomDisplay = { displays: new Map([["viewer", { expires: Date.now() + 60000, suspended: false }]]) };
+  now = 31;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  browser.roomDisplay.displays.clear();
+  now += 29;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  now += 2;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});
+
+test("background startup calls stay human before and after adoption", async () => {
+  const { browser, connection } = fakeBrowser();
+  let now = 0;
+  const tabs = new AppTabs(browser, { now: () => now });
+  const params = { origin_label: "startup", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const app = [...tabs.apps.values()][0];
+  await bindingCall(tabs, connection, { id:'startup', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+  now = 100;
+  tabs.noteActivity(app.targetId);
+  assert.equal(app.lastActivity, 100);
+  await tabs.open(params);
+  await bindingCall(tabs, connection, { id:'adopted', method:'load' });
+  assert.deepEqual(await takeActors(tabs), [null]);
+});
+
+test("MP-09/MP-10 A3: a concurrent open waits for retirement and failed closes retry", async () => {
+  const { browser } = fakeBrowser();
+  let now = 0, release;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  const params = { origin_label: "retiring", installation_id: "todo", assets: [asset("index.html", "state")] };
+  await tabs.open({ ...params, projection: { kind: "agent", agent: "agent-1" } });
+  const originalClose = browser.closePageTarget;
+  browser.closePageTarget = () => new Promise(resolve => { release = resolve; });
+  now = 2;
+  const retiring = tabs.retireIdle();
+  await new Promise(resolve => setImmediate(resolve));
+  const refused = await tabs.agent({ target_id: "t1", agent: "agent-1", call: "state" });
+  assert.equal(refused.code, "view_retired");
+  const adopting = tabs.open(params);
+  release();
+  await retiring;
+  assert.equal((await adopting).target_id, "t2");
+  let rejectClose;
+  browser.closePageTarget = () => new Promise((_, reject) => { rejectClose = reject; });
+  now = 4;
+  const failedRetirement = tabs.retireIdle();
+  await new Promise(resolve => setImmediate(resolve));
+  const racingOpen = tabs.open(params);
+  const acceptedOpen = assert.doesNotReject(racingOpen);
+  rejectClose(new Error('CDP close unavailable'));
+  await failedRetirement;
+  await acceptedOpen;
+  assert.equal((await racingOpen).target_id, "t2", "failed retirement leaves the live Tab available");
+  browser.closePageTarget = async () => { throw new Error('CDP close unavailable'); };
+  now = 6;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 1);
+  browser.closePageTarget = originalClose;
+  await tabs.retireIdle();
+  assert.equal(tabs.apps.size, 0);
+});
+
+test("MP-09/MP-11 A3: a failed idle close cannot starve another App's admitted backend call", async t => {
+  const { browser, connection } = fakeBrowser();
+  const warnings = t.mock.method(console, "error", () => {});
+  let now = 0;
+  const tabs = new AppTabs(browser, { idleMs: 1, now: () => now });
+  for (const name of ["idle", "working"]) {
+    await tabs.open({ origin_label: name, installation_id: name,
+      projection: { kind: "agent", agent: "agent-1" }, assets: [asset("index.html", "state")] });
+  }
+  await navigated(connection, "doc1");
+  await navigated(connection, "doc2", "s-t2");
+  browser.closePageTarget = async () => { throw new Error("CDP close unavailable"); };
+  now = 2;
+  await connection.emit({ method: "Runtime.bindingCalled", sessionId: "s-t2",
+    params: { name: "__charioxAppCall", payload: JSON.stringify({ id: "admitted", method: "usage" }) } });
+  const batch = await tabs.takeCalls();
+  assert.equal(batch.calls[0].call_id, "admitted");
+  assert.equal(batch.calls[0].target_id, "t2");
+  assert.equal(warnings.mock.callCount(), 1);
+  await tabs.retireIdle();
+  assert.equal(warnings.mock.callCount(), 1, "a repeated close failure does not flood diagnostics");
+});
+
 test('a token that retires while document lookup waits cannot admit a backend call', async () => {
   const {tabs,connection} = await opened();
   const send = connection.send.bind(connection);

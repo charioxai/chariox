@@ -77,7 +77,9 @@ async fn check_leased_app_view_tools() {
             .await
             .unwrap();
         assert!(result.ok, "{:?}", result.payload);
-        assert_eq!(result.payload["views"][0]["view"], "home-only-view");
+        assert_eq!(result.payload["views"][0]["view"], "installed");
+        assert_eq!(result.payload["views"][0]["app"], "installed");
+        assert_eq!(result.payload["views"][0]["generation"], 3);
         let result = worker
             .runtime_state
             .dispatch_authenticated_runtime_tool_call(

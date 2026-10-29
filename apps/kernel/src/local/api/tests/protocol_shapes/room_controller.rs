@@ -1197,3 +1197,26 @@ fn app_view_agent_protocol_645_peer_244_is_versioned_and_hashed() {
         "ecb41a73c645f63c0947091cdba7d8fd8cd2f8e0bd50541b4d6ea81295e923e8"
     );
 }
+
+// MP-08/MP-09/MP-10/MP-11: A3 adds typed unprojected Room opens.
+#[test]
+fn app_view_unprojected_protocol_648_peer_246_is_versioned_and_hashed() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 648);
+        assert!(RELAY_PEER_PROTOCOL_VERSION >= 246);
+    };
+    let wire = serde_json::json!({"kind":"app_view","request":{
+        "op":"open","origin_label":"a","installation_id":"todo",
+        "projection":{"kind":"agent","agent":"agent-7"},"entry":"index.html","assets":[]
+    }});
+    let command: RoomBrowserControllerCommand = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
+        "6986b76165661f59f13d6cd3bd239e5645707fe71e5e4fce83fd9738b55a5b79"
+    );
+    let mut forged = wire;
+    forged["request"]["projection"] = serde_json::json!({"kind":"agent"});
+    assert!(serde_json::from_value::<RoomBrowserControllerCommand>(forged).is_err());
+}

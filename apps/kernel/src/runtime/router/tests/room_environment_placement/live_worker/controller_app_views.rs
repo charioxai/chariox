@@ -26,6 +26,7 @@ async fn remote_app_view_action() {
             "css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800
         }}})).await.unwrap();
         let opened = fixture.home.runtime_state.room_browser_controller_command(room, Command::AppView { request: BrowserAppViewRequest::Open {
+            projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
             origin_label: "remote-action".into(), installation_id: "installed".into(), instance_id: None, entry: "index.html".into(),
             assets: vec![BrowserAppViewAsset { path: "index.html".into(), content_type: "text/html".into(), body_base64: "PG1haW4+PC9tYWluPg==".into() }], page: None,
         }}).await.unwrap();

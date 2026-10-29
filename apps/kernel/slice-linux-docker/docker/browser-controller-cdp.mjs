@@ -218,14 +218,15 @@ export class BrowserCdpClient {
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
       const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
         || this.layoutMetrics(target.targetId, viewport);
+      const projectedPages = pages.filter(target => !appTargets.get(target.targetId)?.background);
       // Window mode changes the available content area. Measure only after
       // Chromium has applied it, and retire page metrics when that mode changes.
       if (typeof browserBarVisible === "boolean") {
         const before = JSON.stringify([...this.browserBarApplied]);
-        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
+        await applyBrowserBar(connection, projectedPages, appTargets, browserBarVisible, this.browserBarApplied);
         if (before !== JSON.stringify([...this.browserBarApplied])) this.viewportByTarget.clear();
       }
-      const inspected = (await Promise.all(pages.map(async (target) => {
+      const inspected = (await Promise.all(projectedPages.map(async (target) => {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
