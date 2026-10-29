@@ -133,10 +133,75 @@ impl DurableKernelStateStore {
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.tasks")?;
-        let mut q=db.prepare("SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        self.read_tasks(
+            "agent.lifecycle.tasks",
+            "(?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2)",
+            params![room, agent],
+        )
+    }
+    /// The agent's task for one turn. Tasks are kept after they finish, so the reads made on
+    /// every turn take it by index instead of decoding the agent's whole history.
+    pub(crate) fn agent_turn_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks(
+                "agent.lifecycle.turn_task",
+                "room_id=?1 AND agent_id=?2 AND prompt_id=?3",
+                params![room, agent, prompt],
+            )?
+            .pop())
+    }
+    /// The agent's first task running `prompt` or holding it as its pending continuation.
+    pub(crate) fn agent_turn_or_continuation_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks(
+                "agent.lifecycle.turn_task",
+                "rowid IN (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND prompt_id=?3 \
+                 UNION SELECT rowid FROM agent_tasks WHERE pending_prompt_id=?3 AND room_id=?1 AND agent_id=?2)",
+                params![room, agent, prompt],
+            )?
+            .into_iter()
+            .next())
+    }
+    /// Whether the agent has an unfinished task other than `task`; an unreadable one counts.
+    pub(crate) fn agent_has_other_unfinished_task(
+        &self,
+        room: &str,
+        agent: &str,
+        task: &str,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.unfinished")?;
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
+             AND (state IS NULL OR state NOT IN ('done','cancelled')))",
+            params![room, agent, task],
+            |r| r.get(0),
+        )
+        .map_err(sql)
+    }
+    fn read_tasks(
+        &self,
+        operation: &'static str,
+        filter: &str,
+        values: impl rusqlite::Params,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        let db = self.lock_connection(operation)?;
+        let mut q = db
+            .prepare(&format!(
+                "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+            ))
+            .map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| {
+            .query_map(values, |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -423,7 +488,7 @@ fn for_turn(
 #[cfg(test)]
 thread_local! {
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
-    static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 fn decode_task(
     id: &str,

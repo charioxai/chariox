@@ -1440,6 +1440,8 @@ mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+#[cfg(test)]
+mod agent_turn_task_tests;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;

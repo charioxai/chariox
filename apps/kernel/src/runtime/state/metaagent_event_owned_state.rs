@@ -145,14 +145,14 @@ impl KernelRuntimeState {
         completion: &crate::session::PromptCompletion,
     ) -> Result<(), DaemonError> {
         if self.owned.config_projection.snapshot().room_agent_tools {
-            let tasks = self
+            if self
                 .owned
                 .durable_state_store
-                .agent_tasks(Some(session_id), Some(completed_agent_id))?;
-            if tasks.iter().any(|t| {
-                t.prompt_id == completion.completed.id()
-                    && t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
-            }) {
+                .agent_turn_task(session_id, completed_agent_id, completion.completed.id())?
+                .is_some_and(|t| {
+                    t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
+                })
+            {
                 return Ok(());
             }
         }
