@@ -20,6 +20,15 @@ export function mergeEnvironmentDraft(base: EnvironmentRevisionDraft, draft: Env
     for (const field of ["title", "scope", "spec", "required", "depends_on", "platform_variants"] as const) {
       if (JSON.stringify(old[field]) !== JSON.stringify(ours[field])) patch[field] = ours[field]
     }
+    if (patch.spec && old.spec.kind === ours.spec.kind && old.spec.kind === r.spec.kind) {
+      const before = old.spec as unknown as Record<string, unknown>
+      const after = ours.spec as unknown as Record<string, unknown>
+      const spec = { ...r.spec } as Record<string, unknown>
+      for (const field of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (JSON.stringify(before[field]) !== JSON.stringify(after[field])) spec[field] = after[field]
+      }
+      patch.spec = spec
+    }
     return { ...r, ...patch }
   }
   const merged = all(latest).flatMap(r => { const result = merge(r); return result ? [result] : [] })

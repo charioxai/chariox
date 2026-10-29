@@ -30,7 +30,9 @@ impl KernelRuntimeState {
         let mut draft = request.draft;
         let diff = tokio::task::spawn_blocking(move || {
             let _lock = _lock;
-            let current = store.snapshot_locked(&project)?;
+            let mut current = store.snapshot_locked(&project)?;
+            let attached = store.snapshot_live_bindings_locked(&project)?;
+            review_new_proposal_folders(&mut current, &mut draft, &[], &attached.folders)?;
             // Validate before any path read; Preview measures the same selections as Save.
             environment_revision_diff(&current, &draft)?;
             verify_manual_files(&current, &mut draft)?;
@@ -42,7 +44,7 @@ impl KernelRuntimeState {
     }
     pub(crate) async fn save_project_environment_revision(
         &self,
-        request: crate::local::SaveProjectEnvironmentRevisionRequest,
+        mut request: crate::local::SaveProjectEnvironmentRevisionRequest,
         user: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let project = self.owned.session_store.get_project(&request.project_id)?;
@@ -69,7 +71,14 @@ impl KernelRuntimeState {
         let response_store = store.clone();
         let (mut environment, diff) = tokio::task::spawn_blocking(move || {
             let _lock = _lock;
-            let current = store.snapshot_locked(&project)?;
+            let mut current = store.snapshot_locked(&project)?;
+            let attached = store.snapshot_live_bindings_locked(&project)?;
+            review_new_proposal_folders(
+                &mut current,
+                &mut request.draft,
+                &request.accepted_proposal_ids,
+                &attached.folders,
+            )?;
             store.save_revision_locked(&current, &request, &user)
         })
         .await

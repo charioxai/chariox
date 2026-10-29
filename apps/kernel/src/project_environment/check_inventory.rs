@@ -157,11 +157,19 @@ pub(super) fn version_until(
     }
     let stdout = Zeroizing::new(output.stdout);
     let stderr = Zeroizing::new(output.stderr);
-    // Project only a numeric version token; arbitrary program text is never retained.
+    // Project only stable numeric versions; prerelease suffixes cannot prove a stable bound.
     for bytes in [&*stdout, &*stderr] {
         let text = Zeroizing::new(String::from_utf8_lossy(bytes).into_owned());
         for word in text.split_whitespace() {
-            let word = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.');
+            let word = word
+                .trim_matches(['(', ')', ',', ';'])
+                .trim_start_matches('v');
+            if word.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                && word.contains('.')
+                && word.contains(['-', '+'])
+            {
+                return Err("version_unavailable");
+            }
             if word.contains('.')
                 && word.len() <= 40
                 && word.bytes().all(|c| c.is_ascii_digit() || c == b'.')
