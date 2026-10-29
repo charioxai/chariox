@@ -647,7 +647,11 @@ fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
             .as_ref()
             .ok()
             .and_then(|v| v.as_deref())
-            .is_none_or(|v| inventory::satisfies(v, ">=1.93.0") != Some(true)),
+            .is_none_or(|v| inventory::satisfies(
+                v,
+                ">=1.93.0",
+                inventory::VersionSemantics::Numeric
+            ) != Some(true)),
         "prerelease output cannot establish stable readiness: {version:?}"
     );
     std::fs::write(
