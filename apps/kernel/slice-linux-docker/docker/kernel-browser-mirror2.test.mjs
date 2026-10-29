@@ -622,6 +622,14 @@ test('MP-11 retained sheet advertisements are bounded before issuing a credit', 
  assert.equal((await mirror.next(stream,{known_sheets:['a'.repeat(24)]},'scope')).sequence,1);
 });
 
+test('MP-08/MP-09/MP-10/MP-11 a reset credit lists the retained sheets and later credits keep that list until they change it', async () => {
+ const mirror=new Mirror2({host:{}}),stream={chain:Promise.resolve(),issued:0},a='a'.repeat(24),b='b'.repeat(24);mirror.packet=async()=>({sequence:1});
+ await mirror.next(stream,{after_sequence:0,known_sheets:[a]},'scope');assert.deepEqual(stream.knownSheets,[a]);
+ await mirror.next(stream,{after_sequence:1},'scope');assert.deepEqual(stream.knownSheets,[a],'an unchanged list is not repeated on every credit');
+ await mirror.next(stream,{after_sequence:1,known_sheets:[a,b]},'scope');assert.deepEqual(stream.knownSheets,[a,b]);
+ await mirror.next(stream,{after_sequence:0},'scope');assert.deepEqual(stream.knownSheets,[],'a reset without a list means the viewer retains nothing');
+});
+
 test('MP-10 independent sheet bodies overlap in batches of at most four and retain cascade order', async () => {
  const mirror=new Mirror2({host:{}});let active=0,peak=0;
  mirror.crossOriginSheet=async(_world,url)=>{peak=Math.max(peak,++active);await new Promise(resolve=>setTimeout(resolve,2));active--;return url;};
