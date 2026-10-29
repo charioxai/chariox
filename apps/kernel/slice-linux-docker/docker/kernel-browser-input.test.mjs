@@ -399,3 +399,25 @@ test('MP-08/MP-11: an empty claimed text insertion leaves the focused value alon
   assert.equal(sent.filter(item => item.method === 'Input.insertText').length,1);
   assert.equal(sent.some(item => item.method === 'Runtime.evaluate' && item.params.expression?.includes('__charioxViewInput.edit')),false);
 });
+
+test('claimed text keeps native insertion and clears its claim after acknowledgement or failure', async () => {
+  for (const fails of [false,true]) {
+    const {browser,sent} = fixture();
+    const {connection} = await browser.resolvePageTarget();
+    const send = connection.send;
+    connection.send = async (method,params,...args) => {
+      const reply = await send(method,params,...args);
+      if (fails && method === 'Input.insertText') throw new Error('uncertain native dispatch');
+      return reply;
+    };
+    let dispatched = 0;
+    const running = inputHostTab(browser,tab,{kind:'text',text:'Edit'},{inputToken:'caller',onDispatch:()=>{dispatched++;}});
+    if (fails) await assert.rejects(running,/uncertain native dispatch/); else await running;
+    assert.equal(dispatched,1);
+    const editCalls = sent.filter(({method,params})=>method==='Input.insertText' || params.expression?.includes('__charioxViewInput'));
+    assert.deepEqual(editCalls.map(({method})=>method),['Runtime.evaluate','Input.insertText','Runtime.evaluate']);
+    assert.match(editCalls[0].params.expression,/\.armText\("Edit","caller"\)/);
+    assert.deepEqual(editCalls[1].params,{text:'Edit'});
+    assert.match(editCalls[2].params.expression,/\.clearText\("caller"\)/);
+  }
+});
