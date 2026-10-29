@@ -411,7 +411,7 @@ async fn daemon_responses_must_match_pending_request_owner() {
             nonce: "abcdefghijklmnop".to_string(),
             ciphertext: {
                 use base64::Engine;
-                base64::engine::general_purpose::STANDARD.encode(vec![0xfe; 100 * 1024])
+                base64::engine::general_purpose::STANDARD.encode(vec![0xfe; 4096])
             },
         };
         daemon_b
