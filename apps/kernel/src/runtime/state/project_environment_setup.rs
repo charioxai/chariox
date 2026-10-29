@@ -92,6 +92,8 @@ fn validate_local_worker_target(
 mod project_environment_setup_ack;
 #[path = "project_environment_setup_dispatch.rs"]
 mod project_environment_setup_dispatch;
+#[path = "project_environment_setup_failure.rs"]
+mod project_environment_setup_failure;
 #[path = "project_environment_setup_policy.rs"]
 mod project_environment_setup_policy;
 #[path = "project_environment_setup_scratch.rs"]
@@ -786,12 +788,9 @@ impl KernelRuntimeState {
         .await
         {
             Ok(result) => result,
-            Err(_) => {
-                store.mark_failed(
-                    &execution.operation_id,
-                    attempt,
-                    "worker_provider_context_unavailable",
-                    "the prepared worker provider context is unavailable",
+            Err(error) => {
+                project_environment_setup_failure::record_provider_readiness_failure(
+                    store, &execution, attempt, &error,
                 );
                 return;
             }

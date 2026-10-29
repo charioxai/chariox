@@ -270,3 +270,74 @@ fn envp01_identity_serialization_never_blocks_adjustment_admission() {
     );
     assert_eq!(first.lineage, second.lineage);
 }
+
+// MP-08 / MP-10 / MP-11: REVIEW_954 P2 detached saved Files survive unrelated Preview/Save.
+#[test]
+fn review954_detached_unchanged_files_remain_reviewable() {
+    let root = crate::test_support::TestWorktree::new("review954-detached-files");
+    let mut project = RuntimeProject::new(
+        "files",
+        "owner",
+        root.path().to_str().unwrap(),
+        "Files",
+        RuntimeProjectKind::Named,
+    );
+    let store = ProjectEnvironmentStore::new(root.path());
+    std::fs::write(root.path().join("public.md"), "public instructions").unwrap();
+    let current = store.snapshot(&project).unwrap();
+    let mut draft = environment_draft(&current);
+    let folder_id = draft.folders[0].folder_id.clone();
+    draft.folders[0].requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"file","title":"Public file","scope":{"kind":"folder","folder_id":folder_id},"origins":[],"spec":{"kind":"files","folder_id":folder_id,"entries":[{"relative_path":"public.md","kind":"file","content_digest":null,"folder_id":folder_id,"user_selected":true,"git_ignored":null,"byte_count":null,"credential_filter_verdict":"not_checked","transfer_inclusion":"include","reason":null,"secret_looking":false}]},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
+    draft.project_requirements.push(serde_json::from_value(serde_json::json!({"requirement_id":"node","title":"Node","scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":null,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap());
+    verify_manual_files(&current, &mut draft).unwrap();
+    let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+        project_id: project.id().into(),
+        expected_revision: current.revision,
+        expected_content_digest: current.content_digest.clone(),
+        draft,
+        accepted_proposal_ids: vec![],
+        excluded_proposal_ids: vec![],
+    };
+    store
+        .save_revision_locked(&current, &request, "owner")
+        .unwrap();
+    project.replace_workspace_ids(vec![root.path().join("another").to_string_lossy().into()]);
+    let detached = store.snapshot(&project).unwrap();
+    assert!(detached.folders[0].local_workspace_binding.is_empty());
+    let mut draft = environment_draft(&detached);
+    draft.project_requirements[0].title = "Reviewed Node".into();
+    environment_revision_diff(&detached, &draft).unwrap();
+    verify_manual_files(&detached, &mut draft)
+        .expect("unchanged detached Files need no filesystem reads for Preview");
+    let request = crate::local::SaveProjectEnvironmentRevisionRequest {
+        project_id: project.id().into(),
+        expected_revision: detached.revision,
+        expected_content_digest: detached.content_digest.clone(),
+        draft,
+        accepted_proposal_ids: vec![],
+        excluded_proposal_ids: vec![],
+    };
+    store
+        .save_revision_locked(&detached, &request, "owner")
+        .expect("unrelated Save preserves detached Files");
+    let mut changed = request.draft.clone();
+    if let RequirementSpec::Files { entries, .. } = &mut changed.folders[0].requirements[0].spec {
+        entries[0].relative_path = "new.md".into();
+    }
+    assert!(
+        verify_manual_files(&detached, &mut changed).is_err(),
+        "changed selection still needs a live folder"
+    );
+}
+
+#[path = "review0212_excluded_tests.rs"]
+mod review0212_excluded;
+#[path = "review0212_metadata_tests.rs"]
+mod review0212_metadata;
+#[path = "review0212_platform_tests.rs"]
+mod review0212_platform;
+
+#[path = "review0821_metadata_tests.rs"]
+mod review0821_metadata;
+#[path = "review0821_platform_tests.rs"]
+mod review0821_platform;

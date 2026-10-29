@@ -96,3 +96,6 @@ export * from "./notes.js"
 export * from "./user-domain-refusal.js"
 
 export * from "./project-environment-edit.js"
+
+// MP-08 / MP-10 / MP-11: P03 revision review.
+export * from "./project-environment-diff.js"
