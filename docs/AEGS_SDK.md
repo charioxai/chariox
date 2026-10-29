@@ -234,7 +234,10 @@ process died) counts against the same budget; when the last one's lease ends the
   `GET /app/hook/deliveries` and `POST /app/hook/deliveries/{id}/attempts`.
 - `POST /v1/events/query` and `POST /v1/events/replay` (management protocol, owner
   scoped) expose the stored events; the kernel serves them as
-  `/notifications connection events|replay <connection-id>`.
+  `/notifications connection events|replay <connection-id>`. A legacy subscription that
+  has no connection row belongs to the principal that reconciled it, so that principal
+  lists and replays its failed events; connection-owned events stay with the connection's
+  owner.
 
 The OSS repository intentionally contains no production AEDS and no
 Chariox-maintained production provider implementation. Those components live in

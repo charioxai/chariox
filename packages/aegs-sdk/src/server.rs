@@ -3358,6 +3358,40 @@ mod mp11_delivery_http_tests {
     }
 
     #[tokio::test]
+    async fn failed_event_of_a_legacy_subscription_is_listed_and_replayed_by_its_owner_only() {
+        let publisher = PublisherFixture::new();
+        publisher.refusals.store(usize::MAX, Ordering::SeqCst);
+        let (server, store) = server_without_connection_rows(&publisher);
+        post_signed_webhook_at(server.clone(), "/webhooks/github", Some("legacy-1")).await;
+        let mut at = now_ms();
+        for _ in 0..20 {
+            at += 11 * 60_000;
+            server.deliver_due_inbox(at).await.unwrap();
+        }
+        assert_eq!(
+            store.inbox_event("legacy-1").unwrap().unwrap().status,
+            crate::InboxStatus::Failed
+        );
+        publisher.refusals.store(0, Ordering::SeqCst);
+
+        let listed = owner_events(&server, "kernel").await;
+        assert_eq!(listed["events"][0]["delivery_id"], "legacy-1");
+        assert_eq!(listed["events"][0]["status"], "failed");
+        assert!(owner_events(&server, "stranger").await["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let (status, _) = replay_as(&server, "stranger", "legacy-1").await;
+        assert_eq!(status, 404);
+        assert_eq!(publisher.accepted.load(Ordering::SeqCst), 0);
+
+        let (status, replayed) = replay_as(&server, "kernel", "legacy-1").await;
+        assert_eq!(status, 200, "{replayed}");
+        assert_eq!(replayed["event"]["status"], "published");
+        assert_eq!(accepted_interests(&publisher), vec!["interest"]);
+    }
+
+    #[tokio::test]
     async fn legacy_subscription_without_a_connection_is_published_once_and_never_retried() {
         let publisher = PublisherFixture::new();
         let (server, store) = server_without_connection_rows(&publisher);

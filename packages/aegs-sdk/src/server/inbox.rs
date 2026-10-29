@@ -81,8 +81,8 @@ impl AegsServer {
             if let Some(owner_id) = owner_id {
                 let owned = self
                     .store
-                    .connection(&subscription.connection_id)?
-                    .is_some_and(|connection| connection.owner_id == owner_id);
+                    .interest_owner(&subscription.connection_id, &subscription.binding_id)?
+                    .is_some_and(|owner| owner == owner_id);
                 if !owned {
                     continue;
                 }

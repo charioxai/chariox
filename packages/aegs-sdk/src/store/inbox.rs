@@ -452,6 +452,25 @@ impl AegsStore {
         Ok(Requeue::Queued)
     }
 
+    /// Who owns an interest: its connection's owner, or for a legacy subscription without a
+    /// connection row the principal that reconciled it. `None` when the binding is unknown.
+    pub fn interest_owner(
+        &self,
+        connection_id: &str,
+        binding_id: &str,
+    ) -> Result<Option<String>, String> {
+        self.lock()?
+            .query_row(
+                "SELECT COALESCE(c.owner_id, s.owner_id) FROM subscriptions s
+                 LEFT JOIN connections c ON c.connection_id = ?1
+                 WHERE s.binding_id = ?2",
+                params![connection_id, binding_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
     pub fn inbox_event(&self, delivery_id: &str) -> Result<Option<InboxEntry>, String> {
         inbox_entry(&*self.lock()?, delivery_id)
     }
@@ -592,11 +611,13 @@ fn retry_delay_ms(attempts: u32) -> u64 {
 /// An event belongs to the owner of the connection that received it: the connection named by
 /// the webhook URL, or else the connections whose live trigger subscriptions watch the event's
 /// scope (`?1` is the owner id). Subscriptions are reconciled under the kernel's id, so their
-/// own `owner_id` says nothing about who owns the event. A revoked connection, an inactive subscription or one from an
+/// own `owner_id` says nothing about who owns the event, except for a legacy subscription
+/// that has no connection row at all: the principal that reconciled it owns that interest, as
+/// `insert_deliveries` records. A revoked connection, an inactive subscription or one from an
 /// older authorization generation grants nothing.
 const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
      THEN route_connection_id IN (SELECT connection_id FROM connections WHERE owner_id = ?1)
-     ELSE connection_scope IN
+     ELSE (connection_scope IN
          (SELECT s.connection_scope FROM subscriptions s
           JOIN connections c ON c.connection_id = s.connection_id
           JOIN connection_generations g ON g.connection_id = c.connection_id
@@ -604,6 +625,10 @@ const OWNED_BY: &str = "(CASE WHEN route_connection_id IS NOT NULL
           WHERE c.owner_id = ?1 AND c.status = 'ready' AND s.active = 1
             AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
             AND a.generation = g.generation)
+         OR connection_scope IN
+         (SELECT s.connection_scope FROM subscriptions s
+          WHERE s.owner_id = ?1 AND s.active = 1
+            AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = s.connection_id)))
      END)";
 
 const INBOX_COLUMNS: &str =
@@ -892,6 +917,62 @@ mod tests {
             .claim_all_inbox_deliveries("d1", None, now + RETENTION_MS)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn legacy_event_is_owned_by_the_reconciling_principal_without_exposing_connection_owned_events()
+    {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("c-b", "owner-b", "github", &serde_json::Value::Null, 1)
+            .unwrap();
+        let connection_owned = SubscriptionClaim {
+            connection_scope: "other".into(),
+            ..claim("c-b")
+        };
+        store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[claim("legacy"), connection_owned],
+            )
+            .unwrap();
+        assert_eq!(
+            store.interest_owner("legacy", "binding-legacy").unwrap(),
+            Some("kernel-a".into())
+        );
+        assert_eq!(
+            store.interest_owner("c-b", "binding-c-b").unwrap(),
+            Some("owner-b".into())
+        );
+        let mut other_scope = event();
+        other_scope.connection_scope = "other".into();
+        store
+            .record_inbox_event("legacy-1", None, &event(), 1)
+            .unwrap();
+        store
+            .record_inbox_event("owned-1", None, &other_scope, 2)
+            .unwrap();
+        let ids = |owner| {
+            store
+                .inbox_events_for_owner(owner, 10)
+                .unwrap()
+                .into_iter()
+                .map(|entry| entry.delivery_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("kernel-a"), vec!["legacy-1"]);
+        assert_eq!(ids("owner-b"), vec!["owned-1"]);
+        assert!(ids("stranger").is_empty());
+        assert!(store
+            .inbox_event_for_owner("kernel-a", "owned-1")
+            .unwrap()
+            .is_none());
+        // An interest that was deactivated grants nothing.
+        store
+            .reconcile("kernel-a", "dev.chariox.github", &[])
+            .unwrap();
+        assert!(ids("kernel-a").is_empty());
     }
 
     #[test]
