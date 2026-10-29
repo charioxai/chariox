@@ -491,7 +491,7 @@ fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_v
     written_before["agent_prompt_schedules"] = serde_json::json!([legacy.clone()]);
 
     let migrated: crate::session::RuntimeSession =
-        serde_json::from_value(written_before).expect("a pre-576 session should read");
+        serde_json::from_value(written_before).expect("a pre-900 session should read");
     let [trigger] = migrated.agent_triggers() else {
         panic!("the /wait-every schedule should become one trigger");
     };
@@ -532,11 +532,11 @@ async fn a_migrated_wait_schedule_whose_agent_is_gone_is_removed_with_a_notice()
         .create_session(worktree.session_request())
         .expect("session should create");
     let session_store = app.session_state_store();
-    // Before 576 a /wait-every outlived its destroyed agent.
+    // Before 900 a /wait-every outlived its destroyed agent.
     let mut stored =
         serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap();
     stored["agent_prompt_schedules"] = serde_json::json!([{
-        "id": "wait-orphan", "agent_id": "agent-destroyed-before-576", "kind": "recurring",
+        "id": "wait-orphan", "agent_id": "agent-destroyed-before-900", "kind": "recurring",
         "interval_seconds": 60, "prompt": "Check.", "created_at_ms": 1_000, "next_run_at_ms": 61_000,
     }]);
     session_store.restore_session(serde_json::from_value(stored).unwrap());

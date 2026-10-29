@@ -329,7 +329,7 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
     );
 }
 
-/// Protocol 576: agent triggers; `/wait` schedules are schedule triggers and
+/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
 /// older clients keep reading them as `agent_prompt_schedules`.
 #[test]
 fn local_daemon_protocol_agent_trigger_shape_is_versioned() {

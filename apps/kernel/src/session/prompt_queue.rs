@@ -163,7 +163,7 @@ static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
-    /// Read from `agent_prompt_schedule_id` in state written before protocol 576.
+    /// Read from `agent_prompt_schedule_id` in state written before protocol 900.
     #[serde(
         default,
         alias = "agent_prompt_schedule_id",

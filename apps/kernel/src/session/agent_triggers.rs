@@ -1,6 +1,6 @@
 //! Agent triggers fire prompts into an agent's own conversation.
 //! `/wait-in` and `/wait-every` are schedule triggers. Sessions written before
-//! protocol 576 stored them as `agent_prompt_schedules`; they are migrated when
+//! protocol 900 stored them as `agent_prompt_schedules`; they are migrated when
 //! read, and the same legacy shape is still written for older clients.
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -287,7 +287,7 @@ impl AgentTrigger {
         }
     }
 
-    /// The protocol < 576 view of an enabled schedule trigger.
+    /// The protocol < 900 view of an enabled schedule trigger.
     pub fn legacy_schedule(&self) -> Option<AgentPromptSchedule> {
         if !self.enabled {
             return None;
@@ -315,7 +315,7 @@ impl AgentTrigger {
     }
 }
 
-/// The `/wait-in` and `/wait-every` kinds of protocol < 576 clients.
+/// The `/wait-in` and `/wait-every` kinds of protocol < 900 clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPromptScheduleKind {
@@ -323,7 +323,7 @@ pub enum AgentPromptScheduleKind {
     Recurring,
 }
 
-/// The protocol < 576 schedule shape: read to migrate, written for older clients.
+/// The protocol < 900 schedule shape: read to migrate, written for older clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentPromptSchedule {
     id: String,
