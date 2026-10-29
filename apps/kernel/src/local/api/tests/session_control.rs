@@ -2518,26 +2518,34 @@ fn r6_envp03_edit_detected_requirement_in_newly_attached_folder() {
             environment_draft_for_test(&reopened),
             environment_draft_for_test(&next)
         );
-        let root = harness.with_app(|app| app.config().private_runtime_state_root());
-        let history: serde_json::Value = serde_json::from_slice(
+        // Bounded history keeps the latest revision in the index and each earlier
+        // snapshot in its own immutable archive.
+        let history_dir = harness.with_app(|app| {
+            app.config()
+                .private_runtime_state_root()
+                .join("project-environments")
+        });
+        let index_path = history_dir
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with("revisions.json"))
+            .unwrap();
+        let name = index_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_suffix(".revisions.json")
+            .unwrap();
+        let archived: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
-                root.join("project-environments")
-                    .read_dir()
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path())
-                    .find(|path| path.to_string_lossy().ends_with("revisions.json"))
-                    .unwrap(),
+                index_path.with_file_name(format!("{name}.revision-{}.json", saved.revision)),
             )
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            history["revisions"][1]["content_digest"],
-            saved.content_digest
-        );
-        assert_eq!(
-            history["revisions"][1]["folders"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(archived["content_digest"], saved.content_digest);
+        assert_eq!(archived["folders"].as_array().unwrap().len(), 1);
     }
 }
