@@ -1417,6 +1417,12 @@ impl DurableKernelStateStore {
         self.writer.health_snapshot()
     }
 
+    /// Requests the writer has taken since the kernel started.
+    #[cfg(test)]
+    pub(crate) fn writer_requests_received(&self) -> u64 {
+        self.writer.health.received.load(Ordering::Acquire)
+    }
+
     fn lock_connection(
         &self,
         operation: &'static str,

@@ -1433,6 +1433,8 @@ mod agent_process_watch;
 #[cfg(test)]
 mod agent_reply_tests;
 mod agent_task_cancellation;
+#[cfg(test)]
+mod agent_task_cancellation_sweep_tests;
 mod agent_task_failure;
 mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;

@@ -189,6 +189,20 @@ impl DurableKernelStateStore {
         })
         .collect()
     }
+    /// Whether the task's terminal outcome is recorded. It is published only once the task's
+    /// resources are settled, so a cancelled task that has it needs no further cancellation.
+    pub(crate) fn agent_task_terminal_recorded(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.terminal_recorded")?;
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3)",
+            params![task.room_id, task.task_id, format!("task-terminal-{}", task.task_id)],
+            |r| r.get(0),
+        )
+        .map_err(sql)
+    }
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)

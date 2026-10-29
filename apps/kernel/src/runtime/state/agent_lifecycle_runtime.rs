@@ -932,7 +932,12 @@ impl KernelRuntimeState {
                 }
                 continue;
             }
-            if task.state == ExecutionState::Cancelled {
+            if task.state == ExecutionState::Cancelled
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_task_terminal_recorded(&task)?
+            {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
                 }
