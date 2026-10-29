@@ -371,3 +371,46 @@ async fn sudo_request_with_an_empty_session_id_is_rejected_without_an_owner_prom
     assert!(error.contains("empty session_id"), "{error}");
     assert!(f.state.passkey_prompts_for("local").is_empty());
 }
+
+// MP-08 / MP-10 / MP-11: "/sudo or an existing grant means zero prompts". A
+// live window answers a harmless kernel request without a second passkey.
+#[tokio::test]
+async fn sudo_window_answers_a_read_only_kernel_request_without_another_passkey() {
+    let f = fixture_with_options(None, true);
+    let state = f.state.clone();
+    let request = f.request.clone();
+    let starting = tokio::spawn(async move {
+        state
+            .submit_sudo_prompt(request, "local", "sudo-terminal")
+            .await
+    });
+    let consent = popup(&f.state).await;
+    f.state
+        .answer_terminal_runtime_interaction(
+            &consent.session_id,
+            &consent.interaction_id,
+            "approve",
+            None,
+            Some("local"),
+            Some(&ApprovalPasskey::new(PASSKEY)),
+            None,
+            Some(KernelConnectionClass::Terminal),
+        )
+        .await
+        .unwrap();
+    starting.await.unwrap().unwrap();
+    let reply = tokio::time::timeout(
+        Duration::from_secs(2),
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request":{"GetDaemonHealth":null}}),
+        ),
+    )
+    .await;
+    assert!(
+        f.state.passkey_prompts_for("local").is_empty(),
+        "a live sudo window asked the owner for another passkey"
+    );
+    assert!(reply.is_ok(), "the request waited for an owner approval");
+}
