@@ -40,7 +40,7 @@ fn envp05a_public_alias_rejects_protected_and_credential_sources() {
         "CODEX_HOME",
         "ENV",
         "GITHUB_TOKEN",
-        "INHERITED_PASSWORD",
+        "ANTHROPIC_API_KEY",
     ] {
         std::env::set_var(source, opaque);
         std::fs::write(

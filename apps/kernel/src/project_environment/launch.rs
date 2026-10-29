@@ -67,7 +67,6 @@ pub(crate) fn project_public_setup_environment(
                 .is_some_and(|locator| *locator == &entry.locator)
                 && entry.classification == ProjectEnvironmentClassification::NonSecret
                 && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
-                && !crate::secret::secret_like_env_name(&entry.name)
         },
     )?;
     // MP-08 / MP-10 / MP-11: a missing required public input is preparation,

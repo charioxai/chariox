@@ -240,11 +240,16 @@ impl ProjectEnvironmentManifest {
 
 // MP-08 / MP-10: Host/provider process controls are recreated by the target, never exported.
 pub fn project_environment_protected_name(name: &str) -> bool {
-    name.starts_with("CHARIOX_")
+    ["codex", "claude", "opencode"]
+        .iter()
+        .any(|provider| crate::account_profile::provider_auth_env_vars(provider).contains(&name))
+        || name.starts_with("CHARIOX_")
         || name.starts_with("DYLD_")
         || matches!(
             name,
-            "HOME"
+            "GITHUB_TOKEN"
+                | "GH_TOKEN"
+                | "HOME"
                 | "PATH"
                 | "USER"
                 | "LOGNAME"
@@ -268,7 +273,7 @@ pub fn project_environment_protected_name(name: &str) -> bool {
         )
 }
 
-// MP-08 / MP-10 / MP-11: a public alias cannot declassify its actual source.
+// MP-08 / MP-10 / MP-11: public bindings cannot override kernel/provider process controls.
 pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocator) -> Option<&str> {
     match locator {
         ProjectEnvironmentLocator::WorkspaceEnvironment { name } => Some(name),
@@ -279,7 +284,5 @@ pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocato
 pub(crate) fn project_environment_public_source_protected(
     locator: &ProjectEnvironmentLocator,
 ) -> bool {
-    project_environment_source_name(locator).is_some_and(|name| {
-        project_environment_protected_name(name) || crate::secret::secret_like_env_name(name)
-    })
+    project_environment_source_name(locator).is_some_and(project_environment_protected_name)
 }

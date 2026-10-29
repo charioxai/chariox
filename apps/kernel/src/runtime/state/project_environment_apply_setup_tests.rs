@@ -549,9 +549,9 @@ async fn setup_retry_regression(scenario: SetupScenario) {
     // after valid Save; current Save rejection is covered separately. Keep
     // testing the runner defense before ambient-source reads or commands.
     if matches!(scenario, SetupScenario::ProtectedAlias) {
-        std::env::set_var("INHERITED_PASSWORD", "synthetic-opaque-input");
+        std::env::set_var("ANTHROPIC_API_KEY", "synthetic-opaque-input");
         let locator = ProjectEnvironmentLocator::WorkspaceEnvironment {
-            name: "INHERITED_PASSWORD".into(),
+            name: "ANTHROPIC_API_KEY".into(),
         };
         let RequirementSpec::Variables {
             locator: source, ..
