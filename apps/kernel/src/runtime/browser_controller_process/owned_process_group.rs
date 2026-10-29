@@ -22,6 +22,8 @@ pub(super) struct OwnedProcessGroup {
 }
 
 impl OwnedProcessGroup {
+    /// `root` must be a child that is still unreaped, so its PID cannot belong
+    /// to anyone else yet; its start identity is the group's anchor.
     pub(super) fn new(root: u32) -> Self {
         let mut group = Self {
             root,
@@ -30,22 +32,35 @@ impl OwnedProcessGroup {
             #[cfg(target_os = "linux")]
             seen: BTreeSet::new(),
         };
-        group.refresh();
+        if let Some(processes) = group.scan() {
+            if let Some(leader) = processes.get(&root).filter(|process| process.group == root) {
+                group
+                    .known
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(root, leader.started.clone());
+            }
+            group.remember(&processes);
+        }
         group
     }
 
-    pub(super) fn refresh(&mut self) {
+    fn scan(&mut self) -> Option<BTreeMap<u32, Process>> {
         #[cfg(target_os = "linux")]
-        let known = self
-            .known
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        #[cfg(target_os = "linux")]
-        let processes = linux_refresh(self.root, &known, &mut self.seen);
+        {
+            let known = self
+                .known
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            linux_refresh(self.root, &known, &mut self.seen)
+        }
         #[cfg(not(target_os = "linux"))]
-        let processes = snapshot(self.root);
-        if let Some(processes) = processes {
+        snapshot(self.root)
+    }
+
+    pub(super) fn refresh(&mut self) {
+        if let Some(processes) = self.scan() {
             self.remember(&processes);
         }
     }
@@ -74,9 +89,7 @@ impl OwnedProcessGroup {
                 return false;
             }
             let known = self.known.lock().unwrap_or_else(|error| error.into_inner());
-            if (pid == self.root && !known.contains_key(&pid))
-                || known.get(&pid) == Some(&process.started)
-            {
+            if known.get(&pid) == Some(&process.started) {
                 return true;
             }
             pid = process.parent;
@@ -152,18 +165,49 @@ impl OwnedProcessGroup {
         let Some(processes) = snapshot(self.root) else {
             return;
         };
-        let members: Vec<_> = processes
-            .iter()
-            .filter(|(_, process)| process.group == self.root)
-            .collect();
-        // Reject a missing group or any member not proven to descend from our child.
-        if members.is_empty() || members.iter().any(|(pid, _)| !self.owns(**pid, &processes)) {
+        let (owned, unproven) = self.members(&processes);
+        if owned.is_empty() && unproven == 0 {
             return;
         }
         #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.root as i32), libc::SIGKILL);
+        if unproven == 0 {
+            unsafe {
+                libc::kill(-(self.root as i32), libc::SIGKILL);
+            }
+        } else {
+            // A member we cannot prove is ours may be a foreign process in a
+            // reused group, so no group signal; end every proven member
+            // by itself instead of leaking the whole tree.
+            crate::logging::warn_with_fields(
+                "browser_controller.group_kill",
+                "browser process group holds members not proven ours; ending only the proven ones",
+                serde_json::json!({ "proven": owned.len(), "unproven": unproven }),
+            );
+            for pid in owned.into_iter().rev() {
+                if let Ok(pid) = i32::try_from(pid) {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+            }
         }
+    }
+
+    /// The group members proven to descend from our child, and how many are not.
+    fn members(&self, processes: &BTreeMap<u32, Process>) -> (Vec<u32>, usize) {
+        let mut owned = Vec::new();
+        let mut unproven = 0;
+        for (&pid, process) in processes {
+            if process.group != self.root {
+                continue;
+            }
+            if self.owns(pid, processes) {
+                owned.push(pid);
+            } else {
+                unproven += 1;
+            }
+        }
+        (owned, unproven)
     }
 }
 
@@ -345,6 +389,11 @@ mod tests {
                 },
             ),
         ]);
+        group
+            .known
+            .lock()
+            .unwrap()
+            .insert(42, "root".to_string());
         group.remember(&processes);
         assert!(group.owns(43, &processes));
         assert!(!group.owns(44, &processes));
@@ -356,6 +405,52 @@ mod tests {
         group.root = 1;
         group.remember(&processes);
         assert!(!group.owns(1, &processes));
+    }
+    #[test]
+    fn an_unrecorded_root_pid_is_not_owned() {
+        // After the controller is reaped its PID can belong to a foreign group
+        // leader; only a start identity recorded while it was our child counts.
+        let group = OwnedProcessGroup {
+            root: 42,
+            known: Arc::new(Mutex::new(BTreeMap::new())),
+            tracker: None,
+            #[cfg(target_os = "linux")]
+            seen: BTreeSet::new(),
+        };
+        let processes = BTreeMap::from([(
+            42,
+            Process {
+                parent: 7,
+                group: 42,
+                started: "foreign".into(),
+            },
+        )]);
+        assert!(!group.owns(42, &processes));
+        assert_eq!(group.members(&processes), (Vec::new(), 1));
+    }
+    #[test]
+    fn an_unproven_member_does_not_hide_the_proven_ones() {
+        let group = OwnedProcessGroup {
+            root: 42,
+            known: Arc::new(Mutex::new(BTreeMap::from([
+                (42, "root".to_string()),
+                (43, "child".to_string()),
+            ]))),
+            tracker: None,
+            #[cfg(target_os = "linux")]
+            seen: BTreeSet::new(),
+        };
+        let member = |parent, started: &str| Process {
+            parent,
+            group: 42,
+            started: started.into(),
+        };
+        let processes = BTreeMap::from([
+            (42, member(2, "root")),
+            (43, member(42, "child")),
+            (44, member(1, "reparented-before-seen")),
+        ]);
+        assert_eq!(group.members(&processes), (vec![42, 43], 1));
     }
     #[test]
     #[cfg(target_os = "linux")]
