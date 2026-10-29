@@ -114,5 +114,6 @@ mod screenshot;
 mod ssh_machine;
 mod waiting_room_workspace;
 
+mod provider_tool_images;
 mod room_pin;
 mod usage_snapshot;

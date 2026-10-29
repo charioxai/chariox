@@ -2,7 +2,8 @@
 
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
-current release and the previous release (636 and 629 today). Older kernels are
+current release and the previous release (636 and 629), plus the new target
+910 while it is being prepared. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
@@ -5188,6 +5189,22 @@ last-used ordering. Legacy session records default to unpinned.
 Clients use these requests only with protocol 588 or newer. Protocol 567 clients
 continue to work; web clients attached to a 567 kernel keep Room stars in their
 own browser storage. This feature does not raise the general client minimum.
+
+### MP-08 / MP-09 / MP-10 / MP-11 — tool result images (910 / peer 239)
+
+The `ProviderTool` payload gains two optional fields. `images` is a list of
+`data:image/{png,jpeg,gif,webp};base64,…` URLs from a tool result (up to 4 per
+call, 512 KB of base64 each). `images_omitted` counts the images of that result
+left out because they were too large, or because the kernel's image budget
+(2.5 MB per record) was used up; clients say "Image omitted (too large)".
+The terminal and history caps (16 KB per record, 12 KB per string) never cut a
+data URL: the `images` list is bounded by whole images, and the size of images
+does not count toward the live-payload cap that turns a record into a
+suppressed running record. Codex `webSearch` and `imageView` items are tool
+calls (`web_search`, `view_image`); their status is `running` on the started
+notification and `completed` on the completed one. Clients draw `images` when
+present and need no minimum version: a kernel below 910 never sends the fields.
+Snapshot: `provider-tool-images-910.json`; drill: `scripts/drills/tool-result-images.mjs`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 — reversible agent archive (636 / peer 239)
 

@@ -448,6 +448,34 @@ mod tests {
     }
 
     #[test]
+    fn result_images_match_the_protocol_snapshot() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../local/api/tests/protocol_shapes/provider-tool-images-910.json"
+        ))
+        .unwrap();
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut call = invocation("toolu_chart", "Read");
+        call["message"]["content"][0]["input"] = json!({"file_path": "/work/chart.png"});
+        transcript.observe(&call);
+        let png = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}});
+        let output = transcript.observe(&result(
+            "toolu_chart",
+            json!([{"type":"text","text":"chart.png"}, png]),
+        ));
+        assert_eq!(output[0], fixture["tool_with_image"]);
+
+        let mut call = invocation("toolu_huge", "Read");
+        call["message"]["content"][0]["input"] = json!({"file_path": "/work/huge.png"});
+        transcript.observe(&call);
+        let huge = json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"A".repeat(IMAGE_BASE64_BYTES + 1)}});
+        let output = transcript.observe(&result(
+            "toolu_huge",
+            json!([{"type":"text","text":"huge.png"}, huge]),
+        ));
+        assert_eq!(output[0], fixture["tool_with_omitted_image"]);
+    }
+
+    #[test]
     fn concurrent_tool_results_keep_their_own_input_and_ignore_duplicate_results() {
         let mut transcript = ClaudeToolTranscript::default();
         transcript.observe(&invocation("first", "slice_browser_find"));
