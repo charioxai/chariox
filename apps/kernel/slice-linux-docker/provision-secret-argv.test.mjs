@@ -70,7 +70,11 @@ start_slice_kernel
 const probe = readFileSync(new URL("../../../deploy/managed-kernel/probe-provider-launch-ab.sh", import.meta.url), "utf8")
 const probeStart = probe.indexOf("run_client_probe() {")
 assert.ok(probeStart >= 0)
-const probeHelper = probe.slice(probeStart, probe.indexOf("\n}\n", probeStart) + 3)
+// The production probe runs as root; CI only needs a private directory owned by its test user.
+const probeHelper = probe.slice(probeStart, probe.indexOf("\n}\n", probeStart) + 3).replace(
+  'install -d -o root -g root -m 0700 "$client_home"',
+  'install -d -m 0700 "$client_home"',
+)
 
 test("managed client probe transfers local auth privately and preserves its clean environment", () => {
   const scratch = mkdtempSync(join(tmpdir(), "chariox-probe-argv-"))
