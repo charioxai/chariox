@@ -138,6 +138,7 @@ async fn envp05a_setup_admission_rechecks_project_owner_and_folder_bindings() {
 #[derive(Clone, Copy)]
 enum SetupScenario {
     SlowPlan,
+    CancelDuringPlan,
     Retry,
     LockedSecret,
     MissingPublic,
@@ -162,6 +163,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             | SetupScenario::RevisionChanged
             | SetupScenario::AuthorityChanged
             | SetupScenario::SlowPlan
+            | SetupScenario::CancelDuringPlan
     );
     let preparation_failure = matches!(scenario, SetupScenario::MissingPublic);
     let changed_public = matches!(scenario, SetupScenario::ChangedPublic);
@@ -479,7 +481,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         .restore_projects(vec![project.clone()]);
     if matches!(
         scenario,
-        SetupScenario::RevisionChanged | SetupScenario::SlowPlan
+        SetupScenario::RevisionChanged | SetupScenario::SlowPlan | SetupScenario::CancelDuringPlan
     ) {
         let RequirementSpec::SetupChecks { commands, .. } = &mut requirement.spec else {
             panic!("Setup fixture")
@@ -490,7 +492,10 @@ async fn setup_retry_regression(scenario: SetupScenario) {
         ];
         env.project_requirements = vec![requirement.clone()];
     }
-    let _slow_plan_server = if matches!(scenario, SetupScenario::SlowPlan) {
+    let _slow_plan_server = if matches!(
+        scenario,
+        SetupScenario::SlowPlan | SetupScenario::CancelDuringPlan
+    ) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/", listener.local_addr().unwrap());
@@ -516,12 +521,14 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             c.timeout_ms = 15000;
         }
         env.project_requirements[0] = requirement.clone();
+        let marker = workspace.join("plan-probe-started");
         Some(std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
             let _ = stream.read(&mut [0; 4096]);
+            std::fs::write(marker, "entered").unwrap();
             std::thread::sleep(Duration::from_secs(4));
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -647,7 +654,7 @@ async fn setup_retry_regression(scenario: SetupScenario) {
     }
     if matches!(
         scenario,
-        SetupScenario::RevisionChanged | SetupScenario::SlowPlan
+        SetupScenario::RevisionChanged | SetupScenario::SlowPlan | SetupScenario::CancelDuringPlan
     ) {
         let run_state = state.clone();
         let run_config = config.clone();
@@ -670,25 +677,69 @@ async fn setup_retry_regression(scenario: SetupScenario) {
             assert!(Instant::now() < deadline, "paused command start timeout");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        if matches!(scenario, SetupScenario::SlowPlan) {
-            let LocalDaemonResponse::ProjectEnvironmentPlan { .. } = state
-                .plan_project_environment(
-                    crate::local::PlanProjectEnvironmentRequest {
-                        project_id: project.id().into(),
-                        expected_revision: env.revision,
-                        revision_digest: env.content_digest.clone(),
-                        target: current_check_target(&config),
-                        selected_items: vec!["slow-service".into()],
-                    },
-                    "owner",
-                )
-                .await
-                .unwrap()
-            else {
-                panic!("Plan expected")
+        if matches!(
+            scenario,
+            SetupScenario::SlowPlan | SetupScenario::CancelDuringPlan
+        ) {
+            let planning_state = state.clone();
+            let request = crate::local::PlanProjectEnvironmentRequest {
+                project_id: project.id().into(),
+                expected_revision: env.revision,
+                revision_digest: env.content_digest.clone(),
+                target: current_check_target(&config),
+                selected_items: vec!["slow-service".into()],
             };
+            let planning = tokio::spawn(async move {
+                planning_state
+                    .plan_project_environment(request, "owner")
+                    .await
+            });
+            let mut cancellation = None;
+            if matches!(scenario, SetupScenario::CancelDuringPlan) {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !workspace.join("plan-probe-started").exists() {
+                    assert!(Instant::now() < deadline, "Plan probe must start");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let began = Instant::now();
+                let result = state
+                    .cancel_environment_operation(
+                        crate::local::EnvironmentOperationRequest {
+                            project_id: project.id().into(),
+                            operation_id: operation.operation_id.clone(),
+                        },
+                        "owner",
+                    )
+                    .await;
+                cancellation = Some((result, began.elapsed()));
+            }
+            let planned = planning.await.unwrap();
+            assert!(
+                matches!(
+                    planned,
+                    Ok(LocalDaemonResponse::ProjectEnvironmentPlan { .. })
+                ),
+                "Plan must settle: {planned:?}"
+            );
             std::fs::write(workspace.join("release-first"), "release").unwrap();
             let result = running.await.unwrap();
+            if let Some((cancelled, elapsed)) = cancellation {
+                assert!(cancelled.is_ok(), "Cancel must record cancellation during the concurrent Plan probe: {cancelled:?}");
+                assert!(
+                    elapsed < Duration::from_secs(3),
+                    "Plan held the Project lock for {elapsed:?}"
+                );
+                assert!(store.load_applies(project.id()).unwrap().attempts[0]
+                    .operation
+                    .cancellation
+                    .is_some());
+                assert!(
+                    result.is_err(),
+                    "cancelled Setup cannot admit another command"
+                );
+                assert!(!workspace.join("second-command-marker").exists());
+                return;
+            }
             assert!(
                 result.is_ok(),
                 "unchanged Setup must survive concurrent slow Plan"
@@ -904,4 +955,10 @@ async fn setup_retry_regression(scenario: SetupScenario) {
 #[tokio::test]
 async fn review0034_unchanged_setup_survives_concurrent_slow_plan() {
     setup_retry_regression(SetupScenario::SlowPlan).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn r6_environment_cancel_remains_available_during_concurrent_plan_probe() {
+    setup_retry_regression(SetupScenario::CancelDuringPlan).await;
 }
