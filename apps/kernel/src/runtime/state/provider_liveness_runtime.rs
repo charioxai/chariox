@@ -362,14 +362,25 @@ impl KernelRuntimeState {
             ),
         }
         };
-        self.fail_owned_provider_prompt_with_termination(
-            session_id,
-            provider_run_id,
-            &message,
-            true,
-            Some(termination.clone()),
-        )
-        .await?;
+        // Claim this prompt before retirement awaits the app lock. A second
+        // liveness observer must not publish another failure for the same turn.
+        let settled = self
+            .fail_owned_provider_prompt_with_termination_if_matches(
+                session_id,
+                provider_run_id,
+                &message,
+                true,
+                (!active_prompt.is_external()).then_some(active_prompt.id()),
+                Some(termination.clone()),
+            )
+            .await?;
+        if !settled {
+            return Ok(crate::app::ProviderRunExitSessionSummary {
+                had_active_prompt: false,
+                cancelled_prompt: false,
+                started_next_prompt: false,
+            });
+        }
         let next_active_prompt = self
             .owned
             .prompt_state_owner
