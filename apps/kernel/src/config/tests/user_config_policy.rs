@@ -114,13 +114,13 @@ fn user_config_defaults_to_versioned_slice_image() {
 }
 
 #[test]
-fn mp01_mp08_local_slice_security_relaxation_requires_opt_in() {
+fn mp01_mp08_local_slice_sandbox_compatibility_is_unset_by_default() {
     assert_eq!(
         CharioxUserConfig::default()
             .slices
             .linux
             .allow_provider_sandbox_compatibility,
-        Some(false)
+        None
     );
     let mut config = DaemonConfig::for_tests();
     for selected in [None, Some(false), Some(true)] {
@@ -132,14 +132,14 @@ fn mp01_mp08_local_slice_security_relaxation_requires_opt_in() {
         assert_eq!(
             crate::slice::LocalDockerSliceOptions::from_config(&config)
                 .allow_provider_sandbox_compatibility,
-            selected == Some(true)
+            selected != Some(false)
         );
     }
     let entry = DaemonConfig::user_config_schema()
         .into_iter()
         .find(|entry| entry.path == "slices.linux.allow_provider_sandbox_compatibility")
         .unwrap();
-    assert!(entry.description.contains("Explicit opt-in"));
+    assert!(entry.description.contains("On by default"));
 }
 
 #[test]
@@ -161,6 +161,18 @@ fn local_slice_provider_sandbox_compatibility_is_on_unless_the_user_opts_out() {
     assert!(
         !crate::slice::LocalDockerSliceOptions::from_config(&config)
             .allow_provider_sandbox_compatibility
+    );
+}
+
+#[test]
+fn an_unset_provider_sandbox_compatibility_stays_unset_through_a_config_round_trip() {
+    let parsed = toml::from_str::<CharioxUserConfig>("version = 1").unwrap();
+    assert_eq!(parsed.slices.linux.allow_provider_sandbox_compatibility, None);
+    let written = toml::to_string(&CharioxUserConfig::default()).unwrap();
+    let reloaded = toml::from_str::<CharioxUserConfig>(&written).unwrap();
+    assert_eq!(
+        reloaded.slices.linux.allow_provider_sandbox_compatibility,
+        None
     );
 }
 
