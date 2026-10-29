@@ -38,6 +38,14 @@ pub(super) fn execute_submit_command(
         "provider prompt dispatch started",
         serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
     );
+    // The provider took the prompt but its answer never arrived.
+    if run.adapter_key() == "dev-stub" && run.provider() == "lost-ack-structured" {
+        thread::sleep(Duration::from_millis(100));
+        return Err(DaemonError::LocalTransport {
+            operation: "submit prompt",
+            message: "provider acknowledgement lost".into(),
+        });
+    }
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
         // A provider that took the write but lost its acknowledgement.
         #[cfg(test)]

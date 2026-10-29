@@ -542,7 +542,14 @@ async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack()
             .provider_store
             .write()
             .insert_run_for_test(run);
+        // The slow stub acknowledges after 750 ms; the global App event pass runs
+        // this delivery, so it must return at mailbox acceptance.
+        let started = std::time::Instant::now();
         runtime.deliver_pending_notification_injections().await;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "a notification delivery waited for the provider's acknowledgement"
+        );
         let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
         assert_eq!(
             snapshot
@@ -551,14 +558,7 @@ async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack()
                 .find(|q| q.id() == id)
                 .unwrap()
                 .status(),
-            // The steer call waits for the provider's receipt: an acceptance is
-            // settled by the reaper, a definitive rejection already returned the
-            // item to the queue.
-            if accepted {
-                WorkflowQueuedPromptStatus::Running
-            } else {
-                WorkflowQueuedPromptStatus::Queued
-            },
+            WorkflowQueuedPromptStatus::Running,
             "mailbox accepted, provider has not acknowledged"
         );
         let finished = tokio::time::timeout(Duration::from_secs(5), async {

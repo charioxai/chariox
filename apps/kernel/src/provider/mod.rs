@@ -297,7 +297,8 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
             && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
-        || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (run.adapter_key() == "dev-stub"
+            && matches!(run.provider(), "slow-structured" | "lost-ack-structured"))
 }
 
 pub(crate) fn provider_run_requires_authoritative_turn_completion(
