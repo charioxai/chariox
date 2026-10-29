@@ -359,6 +359,18 @@ mod tests {
             .provider_account_profile_registry()
             .create_managed("alice", "opencode", "Room App prompt fixture")
             .unwrap();
+        app.provider_account_profile_registry()
+            .update_observation(
+                "alice",
+                "opencode",
+                &profile.profile_id,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(
                 root.session_request()
