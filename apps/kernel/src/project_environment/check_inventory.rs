@@ -170,8 +170,8 @@ pub(super) fn version_until(
         let text = Zeroizing::new(String::from_utf8_lossy(bytes).into_owned());
         for word in text.split_whitespace() {
             let word = word
-                .trim_matches(['(', ')', ',', ';'])
-                .trim_start_matches('v');
+                .trim_start_matches(|c: char| !c.is_ascii_digit() && c != '.')
+                .trim_end_matches(['"', '\'', '(', ')', '[', ']', ',', ';']);
             if word.as_bytes().first().is_some_and(u8::is_ascii_digit)
                 && word.contains('.')
                 && word.contains(['-', '+'])

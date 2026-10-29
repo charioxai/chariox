@@ -650,4 +650,20 @@ fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
         inventory::version("rustc", &[]).unwrap().as_deref(),
         Some("1.93.0")
     );
+    for (name, output) in [
+        ("go", "go version go1.93.0 linux/amd64"),
+        ("java", "openjdk version \"1.93.0\""),
+    ] {
+        let executable = root.path().join(name);
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\nprintf '%s\\n' '{output}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            inventory::version(name, &[]).unwrap().as_deref(),
+            Some("1.93.0")
+        );
+    }
 }
