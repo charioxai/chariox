@@ -1858,7 +1858,10 @@ fn public_setup_status_transport_recovery_and_missing_dispatch_replay_preserve_o
         .name("project-environment-setup-transport-recovery".to_string())
         .stack_size(8 * 1024 * 1024)
         .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
+            // Home, worker and relay must keep progressing independently while
+            // setup performs synchronous preparation between blocking tasks.
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
                 .enable_all()
                 .build()
                 .expect("transport-recovery test runtime should build")

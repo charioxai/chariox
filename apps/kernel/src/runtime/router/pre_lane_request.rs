@@ -189,6 +189,12 @@ impl CommandRouter {
                     .await
                     .map(Some)
             })),
+            LocalDaemonRequest::DetectProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .detect_project_environment(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
             request if request.unsupported_environment_capability().is_some() => {
                 Some(Box::pin(async move {
                     Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
