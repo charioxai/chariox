@@ -155,7 +155,7 @@ impl Process {
     }
     fn stop_with_termination(
         &mut self,
-        terminate: impl FnOnce(&mut Child) -> io::Result<()>,
+        terminate: impl FnOnce(&mut Child) -> io::Result<()> + Send + 'static,
     ) -> io::Result<()> {
         if self.stopped {
             return Ok(());
@@ -168,12 +168,10 @@ impl Process {
             unsafe {
                 libc::kill(pid, libc::SIGSTOP);
             }
-            let _ = terminate(self.child_mut());
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         for child in &self.descendants {
             let _ = child.signal(libc::SIGSTOP);
-            let _ = child.signal(libc::SIGKILL);
         }
         let pipes = [
             self.child()
@@ -204,6 +202,7 @@ impl Process {
         let done = reaper::defer(reaper::Pending {
             child,
             pipes,
+            terminate: running.then(|| Box::new(terminate) as reaper::Termination),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             descendants: std::mem::take(&mut self.descendants),
             cleaned: false,
@@ -295,10 +294,11 @@ mod deadline_tests {
         }
         assert!(!pipe_writers_open(&process.pipe_fds()).unwrap());
         let began = Instant::now();
-        let mut requested = false;
+        let requested = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = requested.clone();
         process
-            .stop_with_termination(|child| {
-                requested = true;
+            .stop_with_termination(move |child| {
+                observed.store(true, std::sync::atomic::Ordering::Release);
                 // Resume the owned leader that cleanup froze; leave it alive
                 // until sleep finishes, as if SIGKILL cannot yet complete I/O.
                 let pid = signal_pid(child.id().into())?;
@@ -309,7 +309,6 @@ mod deadline_tests {
             })
             .unwrap();
         let elapsed = began.elapsed();
-        assert!(requested);
         drop(process);
         assert!(
             reaper::owns_child(pid),
@@ -325,10 +324,90 @@ mod deadline_tests {
             !reaper::owns_child(pid),
             "owned delayed worker was not reaped"
         );
+        assert!(requested.load(std::sync::atomic::Ordering::Acquire));
         assert!(!crate::runtime::process_health::process_running(pid));
         assert!(
             elapsed < Duration::from_millis(300),
             "operation waited for reap: {elapsed:?}"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn r6_environment_timeout_discovers_redirected_session_after_last_scan() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let root = crate::test_support::TestWorktree::new("r6-late-probe-fork");
+        let ready = root.path().join("ready");
+        let go = root.path().join("go");
+        let escaped = root.path().join("escaped");
+        let mut command = Command::new("/usr/bin/python3");
+        command
+            .args([
+                "-c",
+                r#"
+import os,sys,time
+ready,go,escaped=sys.argv[1:]
+open(ready,'w').close()
+while not os.path.exists(go): time.sleep(.005)
+if os.fork()==0:
+    os.setsid()
+    null=os.open('/dev/null',os.O_RDWR)
+    os.dup2(null,1); os.dup2(null,2)
+    with open(escaped+'.tmp','w') as file: file.write(str(os.getpid()))
+    os.rename(escaped+'.tmp',escaped)
+    time.sleep(30)
+else:
+    time.sleep(30)
+"#,
+            ])
+            .args([&ready, &go, &escaped])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = Process::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "probe must reach fork barrier");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        process.observe_descendants().unwrap();
+        std::fs::write(go, "fork after the final observation").unwrap();
+        while !escaped.exists() {
+            assert!(Instant::now() < deadline, "late helper must start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid = std::fs::read_to_string(escaped)
+            .unwrap()
+            .parse::<i32>()
+            .unwrap();
+        assert!(pid > 1 && pid != std::process::id() as i32);
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        assert!(fd >= 0);
+        let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+        process
+            .stop_with_termination(|child| {
+                child.kill()?;
+                child.wait()?;
+                Ok(())
+            })
+            .unwrap();
+        let mut poll = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while unsafe { libc::poll(&mut poll, 1, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let survived = unsafe { libc::poll(&mut poll, 1, 0) } == 0;
+        if survived {
+            // Clean up the exact PID owned by this fixture even on the red source.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        assert!(
+            !survived,
+            "late redirected session escaped deferred probe cleanup"
         );
     }
 }
