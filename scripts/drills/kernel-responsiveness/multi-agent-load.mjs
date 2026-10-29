@@ -13,6 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { laneChecks, verdictOf } from './multi-agent-verdict.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -176,10 +177,13 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
         // otherwise the prompt queue only grows and the drill measures that queue.
         const f = timed(timings, 'CompletePrompt')
         tasks.push(paced(1000 / o.promptIntervalMs, async () => {
-          await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))))
+          let submitted = false
+          await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))).then(() => { submitted = true }))
           await delay(o.promptIntervalMs / 2)
           // A prompt still being dispatched is ended by the next tick; that is not a load error.
-          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))).catch(error => {
+          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))).then(() => {
+            if (submitted) lane.prompt_cycles = (lane.prompt_cycles ?? 0) + 1
+          }, error => {
             if (!String(error.message).includes('has no active prompt')) throw error
             out.complete_before_dispatch = (out.complete_before_dispatch ?? 0) + 1
           }))
@@ -239,10 +243,10 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     // The kernel reports its durable writer queue and commits in GetDaemonHealth.
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
+    ...laneChecks(out.lanes),
   }
   out.checks = checks
-  out.red = Object.entries(checks).filter(([, c]) => c.value > c.limit).map(([name]) => name)
-  out.verdict = out.red.length ? 'RED' : 'GREEN'
+  Object.assign(out, verdictOf(checks))
   save()
   for (const lane of out.lanes) await rpc({ EndSession: { session_id: lane.session_id } }).catch(() => { out.lane_cleanup_failed = true })
   await probe.close().catch(() => {})
