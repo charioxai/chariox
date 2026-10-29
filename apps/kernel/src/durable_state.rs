@@ -83,6 +83,7 @@ pub struct DurableKernelStateStore {
     appended_events: tokio::sync::broadcast::Sender<DurableStateEvent>,
     _owner: Option<Arc<owner::OwnerLease>>,
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
+    outside_followed: Arc<agent_lifecycle::outside::Followed>,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -451,7 +452,8 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             }
         })?;
-        let writer = DurableStateWriter::start(&path)?;
+        let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
+        let writer = DurableStateWriter::start(&path, Arc::clone(&outside_followed))?;
         connection
             .pragma_update(None, "query_only", true)
             .map_err(|error| DaemonError::LocalTransport {
@@ -467,6 +469,7 @@ impl DurableKernelStateStore {
             appended_events: tokio::sync::broadcast::channel(APPENDED_EVENT_BACKLOG).0,
             _owner: None,
             workflow_history_authority: Default::default(),
+            outside_followed,
         })
     }
 
@@ -1401,7 +1404,10 @@ impl DurableStateWriter {
             Ok(())
         }
     }
-    fn start(path: &Path) -> Result<Self, DaemonError> {
+    fn start(
+        path: &Path,
+        outside_followed: Arc<agent_lifecycle::outside::Followed>,
+    ) -> Result<Self, DaemonError> {
         let connection = sync_timing::open(path).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.open_writer",
             message: error.to_string(),
@@ -1421,7 +1427,13 @@ impl DurableStateWriter {
             .name("chariox-durable-writer".to_string())
             .stack_size(512 * 1024)
             .spawn(move || {
-                run_durable_writer_with(connection, receiver, worker_health, agent_faults)
+                run_durable_writer_with(
+                    connection,
+                    receiver,
+                    worker_health,
+                    agent_faults,
+                    outside_followed,
+                )
             })
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.spawn_writer",
@@ -1537,6 +1549,7 @@ fn run_durable_writer(
         receiver,
         health,
         agent_lifecycle::faults::AgentFaults::default(),
+        Default::default(),
     )
 }
 
@@ -1545,6 +1558,7 @@ fn run_durable_writer_with(
     receiver: Receiver<DurableWriterRequest>,
     health: Arc<DurableWriterHealth>,
     agent_faults: agent_lifecycle::faults::AgentFaults,
+    outside_followed: Arc<agent_lifecycle::outside::Followed>,
 ) {
     struct MarkStopped(Arc<DurableWriterHealth>);
     impl Drop for MarkStopped {
@@ -1649,7 +1663,12 @@ fn run_durable_writer_with(
                 continue;
             }
             DurableWriterRequest::AgentLifecycle(request) => {
-                if agent_lifecycle::execute(&mut connection, *request, &agent_faults) {
+                if agent_lifecycle::execute(
+                    &mut connection,
+                    *request,
+                    &agent_faults,
+                    &outside_followed,
+                ) {
                     health.fatal.store(true, Ordering::Release);
                     health.stopped_uncertain.store(true, Ordering::Release);
                     break;

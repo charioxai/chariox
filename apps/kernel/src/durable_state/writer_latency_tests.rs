@@ -84,6 +84,7 @@ fn worker_progress_while_commit_is_held(force_blocked_worker: bool, typed: bool)
                     &mut connection,
                     *request,
                     &agent_lifecycle::faults::AgentFaults::default(),
+                    &Default::default(),
                 );
             }
             _ => panic!("test request expected"),

@@ -2,6 +2,8 @@
 use super::*;
 use crate::local::{EventSubscription, EventTarget, EventsBatch, OutsideEvent, OutsideEventValue};
 
+mod followed;
+pub(crate) use followed::Followed;
 mod health;
 mod retention;
 mod validation;
@@ -147,6 +149,12 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
             let Some((kernel, machine)) = identity(tx)? else {
                 return Ok(Outcome::Saved);
             };
+            // One decode and at most one write per part, however many states changed.
+            let mut parts: Vec<_> = parts(tx)?
+                .into_iter()
+                .filter(|part| part.ended.is_none())
+                .map(|part| (part, false))
+                .collect();
             for state in states {
                 let event = OutsideEvent {
                     cursor: 0,
@@ -169,8 +177,8 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     refs: Default::default(),
                 };
                 let key = run_state_key(&event)?;
-                for mut part in parts(tx)? {
-                    if part.ended.is_some() || !matches(&part, &event) {
+                for (part, changed) in &mut parts {
+                    if !matches(part, &event) {
                         continue;
                     }
                     let previous = part
@@ -184,13 +192,16 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     part.run_states.insert(key.clone(), state.state);
                     append(
                         tx,
-                        &mut part,
+                        part,
                         &format!("activity-{:032x}", rand::random::<u128>()),
                         &event,
                     )?;
-                    bound(tx, &mut part, inbox_limit()?)?;
-                    put(tx, &part)?;
+                    *changed = true;
                 }
+            }
+            for (mut part, _) in parts.into_iter().filter(|(_, changed)| *changed) {
+                bound(tx, &mut part, inbox_limit()?)?;
+                put(tx, &part)?;
             }
         }
         #[cfg(test)]
@@ -521,6 +532,12 @@ impl DurableKernelStateStore {
     pub(crate) fn outside_mutate(&self, mutation: Mutation) -> Result<(), DaemonError> {
         self.agent_lifecycle(Operation::Outside(mutation))?;
         Ok(())
+    }
+    /// Run states are committed without a waiter, in queue order: once this empty
+    /// publication commits, every publication queued before it has.
+    #[cfg(test)]
+    pub(crate) fn outside_settled(&self) -> Result<Outcome, DaemonError> {
+        self.agent_lifecycle(Operation::Outside(Mutation::RunStates { states: vec![] }))
     }
     pub(crate) fn outside_part(&self, id: &str) -> Result<Option<Part>, DaemonError> {
         read(&*self.lock_connection("outside.part")?, id)

@@ -258,7 +258,12 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
-pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::AgentFaults) -> bool {
+pub(super) fn execute(
+    db: &mut Connection,
+    request: Request,
+    faults: &faults::AgentFaults,
+    followed: &outside::Followed,
+) -> bool {
     // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
     let trace = match &request.operation {
         Operation::ControlGoal { task, action, .. } => match action.as_str() {
@@ -269,6 +274,10 @@ pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::Ag
             "edit" => Some((task.clone(), "edit")),
             _ => None,
         },
+        _ => None,
+    };
+    let changes_targets = match &request.operation {
+        Operation::Outside(mutation) => Some(mutation.changes_targets()),
         _ => None,
     };
     let started = std::time::Instant::now();
@@ -317,6 +326,11 @@ pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::Ag
         }
         Ok(value)
     })();
+    // Publishers re-read the followed targets and offer every run state again after a
+    // target change, and after an outside mutation nobody may be waiting for that failed.
+    if changes_targets.is_some_and(|changes| changes || result.is_err()) {
+        followed.changed();
+    }
     let _ = request.response.send(result);
     uncertain
 }

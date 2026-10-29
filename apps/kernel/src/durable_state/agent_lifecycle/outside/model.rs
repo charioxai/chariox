@@ -134,6 +134,24 @@ pub(crate) enum Mutation {
     },
 }
 
+impl Mutation {
+    /// Whether committing this changes which sessions and agents the subscriptions follow.
+    pub(in crate::durable_state::agent_lifecycle) fn changes_targets(&self) -> bool {
+        match self {
+            Self::Subscribe { .. } | Self::Unsubscribe { .. } | Self::Restart { .. } => true,
+            Self::Publish { event, .. } => super::followed::removes_target(event),
+            Self::Import { events, .. } => events.iter().any(super::followed::removes_target),
+            Self::KernelHealth { .. }
+            | Self::RunStates { .. }
+            | Self::Ack { .. }
+            | Self::CleanupAck { .. }
+            | Self::Identity { .. } => false,
+            #[cfg(test)]
+            Self::Bound { .. } => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RunState {
     pub session_id: String,

@@ -24,14 +24,7 @@ impl KernelRuntimeState {
         targets: Vec<EventTarget>,
     ) -> Result<(), DaemonError> {
         let _mutation = self.owned.begin_managed_activity_mutation();
-        let baseline = self
-            .owned
-            .outside_run_state_snapshot(&targets)
-            .ok_or_else(|| {
-                crate::durable_state::agent_lifecycle::outside::refused(
-                    "event targets are changing; retry subscribe",
-                )
-            })?;
+        let baseline = self.owned.outside_run_state_baseline(&targets);
         let open_decisions = self.owned.outside_open_decisions(&targets);
         self.outside_store().outside_mutate(Mutation::Subscribe {
             id: id.into(),

@@ -844,3 +844,117 @@ fn check_other_kernel_health(source_before_health: bool) {
         );
     }
 }
+
+fn identify(store: &DurableKernelStateStore) {
+    store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+}
+fn working(session: &str, agent: &str) -> outside::RunState {
+    outside::RunState {
+        session_id: session.into(),
+        agent_id: agent.into(),
+        state: EventRunState::Working,
+    }
+}
+fn run_states(f: &Fixture, id: &str) -> Vec<(String, EventRunState)> {
+    list(f, id)
+        .events
+        .into_iter()
+        .filter_map(|event| match event.value {
+            OutsideEventValue::Agent { run_state, .. } => Some((event.agent_id?, run_state?)),
+            _ => None,
+        })
+        .collect()
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the writer cost of a publication must not multiply
+// the subscription payloads by the number of published states.
+#[test]
+fn outside_run_states_write_each_followed_part_once() {
+    let f = Fixture::new();
+    identify(&f.store);
+    for id in ["a", "b", "c"] {
+        subscribe(&f, id, true, vec![target("s", None)]);
+    }
+    let states = (0..50)
+        .map(|i| working("s", &format!("agent-{i}")))
+        .collect();
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let tx = db.transaction().unwrap();
+    let before = tx.total_changes();
+    outside::apply(&tx, Mutation::RunStates { states }).unwrap();
+    assert_eq!(
+        tx.total_changes() - before,
+        3 * 50 + 3,
+        "one inbox row per part and state, one part write per part"
+    );
+    tx.commit().unwrap();
+    assert_eq!(run_states(&f, "b").len(), 50);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: unchanged run states never reach the writer again,
+// and a new follower is offered every state.
+#[test]
+fn outside_run_states_queue_only_changes_until_the_targets_change() {
+    let f = Fixture::new();
+    identify(&f.store);
+    subscribe(&f, "a", true, vec![target("s", None)]);
+    let queue = |states: Vec<outside::RunState>| {
+        f.store
+            .enqueue_outside_run_states(Some("s"), |_| Some(states))
+            .unwrap()
+    };
+    assert!(queue(vec![working("s", "x")]));
+    assert!(
+        !queue(vec![working("s", "x")]),
+        "unchanged state queued again"
+    );
+    assert!(!f
+        .store
+        .enqueue_outside_run_states(Some("unfollowed"), |_| panic!(
+            "captured an unfollowed session"
+        ))
+        .unwrap());
+    subscribe(&f, "b", true, vec![target("s", None)]);
+    assert!(
+        queue(vec![working("s", "x")]),
+        "a subscribe must offer every state again"
+    );
+    f.store.outside_settled().unwrap();
+    assert_eq!(run_states(&f, "a"), [("x".into(), EventRunState::Working)]);
+    assert_eq!(run_states(&f, "b"), [("x".into(), EventRunState::Working)]);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: nobody waits for a publication, so a state the writer
+// could not commit is offered again by the next one instead of being lost.
+#[test]
+fn outside_run_states_offer_again_after_a_failed_commit() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-outside-reoffer-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(root.join("faults")).unwrap();
+    let store = {
+        let _faults = faults::TestFaultDir::set(&root.join("faults"));
+        DurableKernelStateStore::open_owned(root.join("state.sqlite")).unwrap()
+    };
+    let f = Fixture { root, store };
+    identify(&f.store);
+    subscribe(&f, "a", true, vec![target("s", None)]);
+    let queue = || {
+        f.store
+            .enqueue_outside_run_states(None, |_| Some(vec![working("s", "x")]))
+            .unwrap()
+    };
+    std::fs::write(f.root.join("faults/writer-fail"), "").unwrap();
+    assert!(queue());
+    assert!(f.store.outside_settled().is_err());
+    std::fs::remove_file(f.root.join("faults/writer-fail")).unwrap();
+    assert!(queue(), "the failed state must be offered again");
+    f.store.outside_settled().unwrap();
+    assert_eq!(run_states(&f, "a"), [("x".into(), EventRunState::Working)]);
+}

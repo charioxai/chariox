@@ -148,13 +148,7 @@ impl KernelRuntimeOwnedState {
             &session,
         );
         if changed {
-            if let Err(error) = self.publish_outside_runtime_activity() {
-                crate::logging::error_with_fields(
-                    "outside.events",
-                    "agent run-state projection could not be persisted",
-                    serde_json::json!({"error":error.to_string()}),
-                );
-            }
+            self.publish_outside_run_states(Some(session.id()));
         }
         session
     }

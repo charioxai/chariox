@@ -242,8 +242,10 @@ SQLite commits use the shared durable writer; synchronous actor callers yield
 the Tokio worker while awaiting settlement. SQLite filesystem sync callbacks are
 timed separately from the commit and caller wait. Checkpoint capture stays
 ordered with projection publication, then releases that boundary before encoding
-and saving its immutable result. Outside activity events enter the durable queue
-under the activity boundary and settle after that boundary is released.
+and saving its immutable result. Outside run states enter the durable queue under
+the activity boundary only when they changed since the last publication, and the
+writer commits them in queue order; no caller waits for them. A subscribe takes
+its run-state baseline with blocking store reads under the same boundary.
 
 An ended session leaves the live session and agent projections, command queues,
 terminal streams, and resident session store. Its record is indexed in SQLite in
