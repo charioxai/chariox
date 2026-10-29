@@ -23,7 +23,7 @@ The origin must have normal validation device approval and support the current k
 
 The divergence check observes only archive filenames in its own configured transfer store, then occupies the generated destination before import. It never calls private import helpers or constructs admission tickets. The target must refuse publication and preserve the existing inode, Git state and file tree. Runtime processes and disposable state are cleaned up; value-free JSON results and real TUI review captures remain in the evidence directory.
 
-`durable-move.mjs` uses the same environment with a protocol638/240 kernel and
+`durable-move.mjs` uses the same environment with a protocol639/241 kernel and
 its real built TUI. It runs three short official Codex gpt-6-luna/low turns,
 Moves forward, Returns, and restarts the home kernel after each source capture.
 The same Room recalls the original marker and the intervening target turn;
@@ -40,9 +40,24 @@ at DPR 1 and 2; they do not prove the separately scoped Move route picker or
 MP-08 / MP-09 / MP-10 / MP-11: local protocol638 adds cancellation through
 `MoveAgentToLocal: {session_id, agent_ref, abort_pending: true}`. This restores
 the existing source route and returns `AgentMoveAborted`; it does not Return a
-remote agent. Cancellation is refused once the move may hold a target lease.
+remote agent. Cancellation is refused after target activation; an unactivated Return or failed target setup can still be cancelled.
 Preflight checks source eligibility and native provider/interface/platform/CLI
 compatibility before fencing. Return also checks its original home account.
+
+MP-08 / MP-09 / MP-10 / MP-11: `composed-move.mjs` exercises PR4 with
+local639/peer241. It starts with no target account, transfers the selected
+profile through ordinary account materialization, runs the stored Project
+setup on the target, and verifies matching home/target readiness and commit
+receipts. One real source turn and one gpt-6-luna/low target turn prove the
+same native session/account, a transferred granted skill, and a home-owned
+MCP tool. The ignored setup output must be regenerated at the imported
+primary path. The recipe also installs a tool under preparation HOME and adds
+its directory through the definition PATH entries; the first target turn must
+invoke it in a non-login shell, preserving the inherited Project PATH. The drill restarts the target worker after Move commits and before that turn. This
+proves the ordinary prepared provider environment is reconstructed after restart and
+survives any first-turn tool catalog refresh.
+Use the environment above and the same 4 GiB scope. This kernel
+acceptance leaves the route picker and its `via` label to PR5.
 
 MP-08 / MP-09 / MP-10 / MP-11: `return-native-conflict.mjs` uses the same
 workspace environment and real TUI/provider path. It advances the remote native

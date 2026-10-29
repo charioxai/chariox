@@ -423,6 +423,12 @@ export type UserConfigMutationEffect = {
   } | null
 }
 
+/** `target_ref` is the destination asked for; null or absent is home. A failed Move stays until it is cancelled or asked for again. */
+export type AgentMoveStatus = { target_ref?: string | null } & (
+  | { state: "waiting_for_turn" | "moving" }
+  | { state: "failed"; reason: string }
+)
+
 export type AgentInstance = {
   /** Unknown legacy lineage is never inferred from controller links. */
   spawned_by_agent_id?: string | null
@@ -453,6 +459,8 @@ export type AgentInstance = {
     active_worker_provider_run_id?: string | null
     relay_peer_protocol_version?: number | null
   } | null
+  /** A Move the kernel holds for this agent until it settles or is cancelled (protocol 639). */
+  agent_move?: AgentMoveStatus | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
   /** Tried in order, each for one turn whose provider failed (protocol 397). */

@@ -1176,15 +1176,32 @@ async fn mk03_abort_captured_move_releases_source_and_allows_new_generation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mk03_abort_refuses_after_target_lease_binding() {
+async fn mk03_abort_refuses_after_target_activation() {
     let (fixture, session, _) = crash_fixture().await;
     interrupt_public_move(&fixture, &session, "bound").await;
+    let operation = move_journal(&fixture, &session).await["identity"]["operation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    {
+        // Lost activation reply: the target committed while the home journal is still Bound.
+        let worker = fixture.workers[0].lock().await;
+        let mut target = worker.agent_moves.target(&operation).unwrap();
+        target.active = true;
+        worker.agent_moves.save_target(target).unwrap();
+    }
     let error = dispatch_move_value(&fixture, serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id, "abort_pending": true}})).await.unwrap_err();
-    assert!(error.to_string().contains("lease"), "{error}");
+    assert!(error.to_string().contains("activated"), "{error}");
     assert_eq!(
         move_journal(&fixture, &session).await["phase"]["phase"],
         "bound"
     );
+    {
+        let worker = fixture.workers[0].lock().await;
+        let mut target = worker.agent_moves.target(&operation).unwrap();
+        target.active = false;
+        worker.agent_moves.save_target(target).unwrap();
+    }
     move_request(&fixture, &session, true).await;
 }
 
@@ -1850,6 +1867,1057 @@ async fn mk03_restart_removes_completed_workspace_archives_but_keeps_native() {
     for native in retained_native {
         assert_eq!(std::fs::read(native).unwrap(), b"native state must survive");
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_missing_home_mcp_rejects_before_move_activation() {
+    let (fixture, session, original) = crash_fixture().await;
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .grant_mcp(&fixture.agent_id, "mk04-missing-package".into())
+        .unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-missing",
+        None,
+        None,
+        &request,
+    );
+    let result = router.dispatch(command, request).await;
+    assert!(
+        result.is_err(),
+        "Move must reject a missing granted home MCP before activation"
+    );
+    let home = fixture.home.lock().await;
+    assert!(home
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_none());
+    assert_eq!(
+        std::fs::read(original.join("input")).unwrap(),
+        b"checkpointed workspace\n"
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_changed_grants_invalidate_prepared_move_after_restart() {
+    let (fixture, session, _) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "materialized").unwrap();
+    let home = fixture.home.clone();
+    let agent_id = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref: agent_id,
+                machine_ref,
+            },
+        );
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8);
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-prepared",
+            None,
+            None,
+            &request,
+        );
+        router.dispatch(command, request).await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach the prepared boundary");
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .grant_mcp(&fixture.agent_id, "mk04-new-grant".into())
+        .unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session,
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-changed",
+        None,
+        None,
+        &request,
+    );
+    let error = router
+        .dispatch(command, request)
+        .await
+        .expect_err("Changed grants must invalidate readiness");
+    assert!(
+        error.to_string().contains("changed during Move"),
+        "Must reject the changed requirements, got: {error}"
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_move_records_exact_resource_readiness_and_commit_receipts() {
+    let (fixture, session, _) = crash_fixture().await;
+    move_request(&fixture, &session, true).await;
+    let journal = move_journal(&fixture, &session).await;
+    let composition = &journal["composition"];
+    assert!(composition["requirements"].is_object());
+    assert!(composition["readiness"].is_object());
+    assert_eq!(composition["commit"]["readiness"], composition["readiness"]);
+    assert_eq!(composition["readiness"]["identity"], journal["identity"]);
+    assert_eq!(
+        composition["readiness"]["workspace_sha256"],
+        journal["phase"]["receipt"]["archive_sha256"]
+    );
+    let worker = fixture.workers[0].lock().await;
+    let targets = worker.agent_moves.targets();
+    let target = targets
+        .iter()
+        .find(|target| {
+            target.capture.identity.operation_id
+                == journal["identity"]["operation_id"].as_str().unwrap()
+        })
+        .unwrap();
+    assert!(target.active);
+    assert_eq!(
+        serde_json::to_value(&target.composition.readiness).unwrap(),
+        composition["readiness"]
+    );
+    assert_eq!(
+        serde_json::to_value(&target.composition.commit).unwrap(),
+        composition["commit"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_capability_preparation_cannot_mutate_another_lease() {
+    let (fixture, session, _) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "bound").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-lease-boundary",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach its bound preparation");
+    let requirements = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap()
+        .composition
+        .requirements
+        .unwrap();
+    let mut worker = fixture.workers[0].lock().await;
+    let target = worker
+        .agent_moves
+        .targets()
+        .into_iter()
+        .find(|target| !target.active)
+        .unwrap();
+    let identity = &target.capture.identity;
+    let worktree = fixture.workspace_root.join("unrelated-worker");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let unrelated = {
+        let mut runtime = crate::app::RemoteLeaseRuntime::new(&mut worker);
+        let lease = runtime
+            .create_execution_lease(
+                &identity.home_kernel_id,
+                &identity.home_session_id,
+                &identity.home_agent_id,
+                false,
+                &identity.owner_user_id,
+            )
+            .unwrap();
+        runtime
+            .create_leased_agent(
+                &lease.id,
+                "dev-stub",
+                "default",
+                Some("default".into()),
+                None,
+                None,
+                None,
+                None,
+                Some(worktree.display().to_string()),
+                None,
+            )
+            .unwrap()
+    };
+    worker
+        .agents()
+        .grant_skill(&unrelated.backing_agent_id, "keep-unrelated-grant".into())
+        .unwrap();
+    let error = crate::app::RemoteLeaseRuntime::new(&mut worker)
+        .prepare_agent_move_capabilities(identity, &unrelated.id, &requirements)
+        .unwrap_err();
+    assert!(error.to_string().contains("exact backing lease"));
+    assert_eq!(
+        worker
+            .agents()
+            .get_agent(&unrelated.backing_agent_id)
+            .unwrap()
+            .skill_grants(),
+        vec!["keep-unrelated-grant"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_home_package_hash_change_invalidates_preparation_after_restart() {
+    let (fixture, session, _) = crash_fixture().await;
+    let registry = {
+        let home = fixture.home.lock().await;
+        let session = home.sessions().get_session(&session).unwrap();
+        crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
+            session.workspace_id(),
+        )])
+    };
+    let mut package = crate::mcp::CharioxMcpServerConfig::stdio(
+        "mk04-hash",
+        "/bin/echo",
+        vec!["original".into()],
+    );
+    registry.install(&package).unwrap();
+    let root = {
+        let home = fixture.home.lock().await;
+        home.agents()
+            .grant_mcp(&fixture.agent_id, package.name.clone())
+            .unwrap();
+        home.save_durable_state_snapshot().unwrap();
+        home.config.private_runtime_state_root().join("agent-moves")
+    };
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "materialized").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-hash-capture",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err(), "Move must reach its prepared boundary");
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    package.transport =
+        crate::mcp::CharioxMcpServerConfig::stdio("mk04-hash", "/bin/echo", vec!["changed".into()])
+            .transport;
+    registry.update(&package).unwrap();
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session,
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-hash-check",
+        None,
+        None,
+        &request,
+    );
+    let error =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8)
+            .dispatch(command, request)
+            .await
+            .unwrap_err();
+    assert!(error.to_string().contains("changed during Move"), "{error}");
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active));
+}
+
+async fn committed_grant_recovery(already_activated: bool) {
+    let (mut fixture, session, _) = crash_fixture().await;
+    let root = {
+        let home = fixture.home.lock().await;
+        let room = home.sessions().get_session(&session).unwrap();
+        let registry = crate::mcp::CharioxMcpRegistry::new(vec![
+            crate::mcp::CharioxMcpRegistry::project_root(room.workspace_id()),
+        ]);
+        registry
+            .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+                "mk04-revoked",
+                "/bin/echo",
+                Vec::new(),
+            ))
+            .unwrap();
+        home.agents()
+            .grant_mcp(&fixture.agent_id, "mk04-revoked".into())
+            .unwrap();
+        home.save_durable_state_snapshot().unwrap();
+        home.config.private_runtime_state_root().join("agent-moves")
+    };
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "committed").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-commit-crash",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(
+        crashed.is_err(),
+        "Move must durably commit before simulating a lost acknowledgment"
+    );
+    let operation = fixture
+        .home
+        .lock()
+        .await
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    let mut original_commit = None;
+    if already_activated {
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            fixture.workers[0].clone(),
+            8,
+        );
+        let result = router
+            .relay_agent_move(
+                crate::agent_move::peer::AgentMovePeerRequest::ActivateTarget {
+                    identity: operation.identity.clone(),
+                    readiness: Box::new(operation.composition.readiness.clone().unwrap()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let crate::agent_move::peer::AgentMovePeerResponse::Activated { receipt } = result else {
+            panic!("Target must durably activate");
+        };
+        original_commit = Some(*receipt);
+        drop(router);
+        reboot_worker(&mut fixture).await;
+    }
+    reboot_app(&fixture.home).await;
+    {
+        let home = fixture.home.lock().await;
+        home.remote_relay_inventory_projection_store()
+            .update(Vec::new(), fixture.presences.clone());
+        home.agents()
+            .revoke_mcp(&fixture.agent_id, "mk04-revoked")
+            .unwrap();
+    }
+    move_request(&fixture, &session, true).await;
+    let home = fixture.home.lock().await;
+    let agent = home.agents().get_agent(&fixture.agent_id).unwrap();
+    assert!(
+        agent.mcp_grants().is_empty(),
+        "Recovering a commit must preserve the current revocation"
+    );
+    let settled = home
+        .agent_moves
+        .for_agent(&session, &fixture.agent_id)
+        .unwrap();
+    assert!(matches!(
+        settled.phase,
+        crate::agent_move::HomeMovePhase::Complete { .. }
+    ));
+    if let Some(original) = original_commit {
+        assert_eq!(settled.composition.commit.as_ref(), Some(&original));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_committed_move_recovers_after_grant_revocation() {
+    committed_grant_recovery(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_lost_activation_reply_recovers_after_grant_revocation() {
+    committed_grant_recovery(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_corrupt_captured_archive_rejects_before_target_activation() {
+    let (fixture, session, original) = crash_fixture().await;
+    let root = fixture
+        .home
+        .lock()
+        .await
+        .config
+        .private_runtime_state_root()
+        .join("agent-moves");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("crash-after-phase-for-test"), "captured").unwrap();
+    let home = fixture.home.clone();
+    let agent_ref = fixture.agent_id.clone();
+    let session_id = session.clone();
+    let machine_ref = fixture.presences[0].machine_id.clone();
+    let crashed = tokio::spawn(async move {
+        let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id,
+                agent_ref,
+                machine_ref,
+            },
+        );
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "mk04-archive-capture",
+            None,
+            None,
+            &request,
+        );
+        crate::runtime::router::CommandRouter::with_interactive_capacity(home, 8)
+            .dispatch(command, request)
+            .await
+    })
+    .await;
+    assert!(crashed.is_err());
+    {
+        let home = fixture.home.lock().await;
+        let operation = home
+            .agent_moves
+            .for_agent(&session, &fixture.agent_id)
+            .unwrap();
+        let archive = home.agent_moves.artifact_path(
+            &operation.identity.operation_id,
+            crate::agent_move::AgentMoveArtifactKind::Workspace,
+        );
+        std::fs::write(archive, b"invalid archive input").unwrap();
+    }
+    reboot_app(&fixture.home).await;
+    fixture
+        .home
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .update(Vec::new(), fixture.presences.clone());
+    let request = crate::local::LocalDaemonRequest::MoveAgentToRemote(
+        crate::local::MoveAgentToRemoteRequest {
+            session_id: session.clone(),
+            agent_ref: fixture.agent_id.clone(),
+            machine_ref: fixture.presences[0].machine_id.clone(),
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "mk04-archive-retry",
+        None,
+        None,
+        &request,
+    );
+    assert!(
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8)
+            .dispatch(command, request)
+            .await
+            .is_err()
+    );
+    assert!(fixture.workers[0]
+        .lock()
+        .await
+        .agent_moves
+        .targets()
+        .iter()
+        .all(|target| !target.active && target.composition.readiness.is_none()));
+    assert_eq!(
+        std::fs::read(original.join("input")).unwrap(),
+        b"checkpointed workspace\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk04_locked_required_vault_rejects_before_publication_and_activation() {
+    use crate::managed_context::development::*;
+    use crate::project_environment::*;
+    use std::collections::BTreeMap;
+    let (mut fixture, session, source) = crash_fixture().await;
+    std::fs::write(source.join("app.js"), "console.log(process.env.TOKEN)\n").unwrap();
+    std::fs::write(
+        source.join(".env.local"),
+        "TOKEN=synthetic-selected-input\n",
+    )
+    .unwrap();
+    let (mut source_config, owner, source_project_id) = {
+        let home = fixture.home.lock().await;
+        (
+            home.config.clone(),
+            home.agents()
+                .get_agent(&fixture.agent_id)
+                .unwrap()
+                .owner_user_id()
+                .to_string(),
+            home.sessions()
+                .get_session(&session)
+                .unwrap()
+                .project_id()
+                .to_string(),
+        )
+    };
+    source_config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    source_config.user_config.credential_vault.path = fixture
+        .workspace_root
+        .join("required-source-vault.json")
+        .display()
+        .to_string();
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&source_config.user_config.credential_vault.path),
+        "synthetic-fixture-passphrase",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &source_config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let target_config = {
+        let mut worker = fixture.workers[0].lock().await;
+        worker.config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        worker.config.user_config.credential_vault.path = fixture
+            .workspace_root
+            .join("required-target-vault.json")
+            .display()
+            .to_string();
+        worker.config.clone()
+    };
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        std::path::Path::new(&target_config.user_config.credential_vault.path),
+        "synthetic-fixture-passphrase",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &target_config.user_config.credential_vault.path,
+        "synthetic-fixture-passphrase",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    reboot_worker(&mut fixture).await;
+    crate::secret::lock_chariox_encrypted_vault(&target_config.user_config.credential_vault.path)
+        .unwrap();
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(
+            &target_config.user_config.credential_vault.path
+        )
+        .unwrap()
+        .unlocked
+    );
+    let roots = BTreeMap::from([(source.display().to_string(), source.clone())]);
+    let index = index_project_environment(&roots, &BTreeMap::new()).unwrap();
+    let project_id = format!("move-project-{:032x}", rand::random::<u128>());
+    let manifest = ProjectEnvironmentManifest {
+        schema_version: 1,
+        project_id: project_id.clone(),
+        evidence_digest: index.evidence.digest(),
+        entries: index.references,
+        private_files: Vec::new(),
+        toolchain_hints: Vec::new(),
+        package_hints: Vec::new(),
+        service_hints: Vec::new(),
+    };
+    let vault = crate::secret::project_environment_vault(&source_config).unwrap();
+    let resolved =
+        resolve_project_environment(&manifest, &roots, &BTreeMap::new(), vault.as_ref()).unwrap();
+    assert_eq!(
+        resolved.values.len(),
+        1,
+        "A selected value must require the target Vault"
+    );
+    let operation = format!("move-{:032x}", rand::random::<u128>());
+    let sealed = seal_project_environment(
+        &operation,
+        &source_config.daemon_id,
+        &target_config.daemon_id,
+        &source_config.relay_private_key,
+        &target_config.relay_public_key,
+        &manifest,
+        &resolved,
+    )
+    .unwrap();
+    let source_id = source.display().to_string();
+    let exported = export_development_context_with_environment(
+        DevelopmentContextExportRequest {
+            project_id: project_id.clone(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: source_id.clone(),
+                worktree_id: None,
+                worktree_path: source.clone(),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: fixture.workspace_root.join("required-environment.tar.gz"),
+        },
+        Some(DevelopmentProjectEnvironment {
+            sealed,
+            evidence: index.evidence,
+            repository_workspaces: BTreeMap::new(),
+        }),
+    )
+    .unwrap();
+    let thumb = crate::runtime::terminal_pairings::public_key_thumbprint;
+    let identity = crate::agent_move::AgentMoveIdentity {
+        operation_id: operation,
+        generation: 1,
+        home_kernel_id: source_config.daemon_id.clone(),
+        home_session_id: session,
+        home_agent_id: fixture.agent_id.clone(),
+        owner_user_id: owner,
+        source_kernel_id: source_config.daemon_id.clone(),
+        target_kernel_id: target_config.daemon_id.clone(),
+        home_key_thumbprint: thumb(&source_config.relay_public_key),
+        source_key_thumbprint: thumb(&source_config.relay_public_key),
+        target_key_thumbprint: thumb(&target_config.relay_public_key),
+        target_public_key: target_config.relay_public_key.clone(),
+    };
+    let bytes = std::fs::read(&exported.archive_path).unwrap();
+    let capture = crate::agent_move::AgentMoveCapture {
+        identity: identity.clone(),
+        source_project_id,
+        archive_project_id: project_id,
+        source_provider_run_id: None,
+        source_repositories: vec![DevelopmentSourceRepositoryBinding {
+            workspace_id: source_id,
+            worktree_id: None,
+            role: DevelopmentRepositoryRole::Primary,
+        }],
+        workspace: crate::agent_move::AgentMoveArtifact {
+            sha256: exported.archive_sha256,
+            size_bytes: bytes.len() as u64,
+        },
+        native: None,
+        checkpoint_binding: None,
+    };
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        fixture.workers[0].clone(),
+        8,
+    );
+    use crate::agent_move::peer::{AgentMoveChunk, AgentMovePeerRequest as Request};
+    router
+        .relay_agent_move(
+            Request::BeginTarget {
+                capture: Box::new(capture),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    for (index, chunk) in bytes
+        .chunks(crate::agent_move::MOVE_CHUNK_BYTES)
+        .enumerate()
+    {
+        router
+            .relay_agent_move(
+                Request::WriteChunk {
+                    identity: identity.clone(),
+                    kind: crate::agent_move::AgentMoveArtifactKind::Workspace,
+                    chunk: AgentMoveChunk {
+                        offset: (index * crate::agent_move::MOVE_CHUNK_BYTES) as u64,
+                        bytes: chunk.to_vec(),
+                    },
+                },
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let error = router
+        .relay_agent_move(
+            Request::PublishTarget {
+                identity: identity.clone(),
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.to_lowercase().contains("vault") && message.to_lowercase().contains("locked"),
+        "Must reach the required Vault gate: {message}"
+    );
+    assert!(!message.contains("synthetic-selected-input"));
+    let worker = fixture.workers[0].lock().await;
+    let target = worker.agent_moves.target(&identity.operation_id).unwrap();
+    assert!(!target.active && target.receipt.is_none() && target.composition.readiness.is_none());
+    assert_eq!(
+        std::fs::read_to_string(source.join(".env.local")).unwrap(),
+        "TOKEN=synthetic-selected-input\n"
+    );
+}
+
+#[path = "move_setup_tests.rs"]
+mod move_setup_tests;
+
+async fn dispatch_move(
+    fixture: &Fixture,
+    session: &str,
+    abort: bool,
+) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+    let request = if abort {
+        crate::local::LocalDaemonRequest::MoveAgentToLocal(crate::local::MoveAgentToLocalRequest {
+            abort_pending: true,
+            session_id: session.into(),
+            agent_ref: fixture.agent_id.clone(),
+        })
+    } else {
+        crate::local::LocalDaemonRequest::MoveAgentToRemote(
+            crate::local::MoveAgentToRemoteRequest {
+                session_id: session.into(),
+                agent_ref: fixture.agent_id.clone(),
+                machine_ref: fixture.presences[0].machine_id.clone(),
+            },
+        )
+    };
+    let router =
+        crate::runtime::router::CommandRouter::with_interactive_capacity(fixture.home.clone(), 8);
+    let envelope = crate::runtime::command::KernelCommand::from_local_request(
+        "mk05-wait",
+        None,
+        None,
+        &request,
+    );
+    router.dispatch(envelope, request).await
+}
+
+async fn agent_move_status(fixture: &Fixture) -> Option<crate::agent_move::AgentMoveStatus> {
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .agent_move()
+        .cloned()
+}
+
+async fn agent_is_remote(fixture: &Fixture) -> bool {
+    fixture
+        .home
+        .lock()
+        .await
+        .agents()
+        .get_agent(&fixture.agent_id)
+        .unwrap()
+        .remote_execution()
+        .is_some()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk05_move_requested_during_a_turn_waits_for_it_and_can_be_cancelled() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    let room = fixture
+        .home
+        .lock()
+        .await
+        .sessions()
+        .get_session(&session)
+        .unwrap();
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-1",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    // A Move requested during the turn is acknowledged at once and waits in the kernel.
+    let waiting = tokio::time::timeout(
+        Duration::from_secs(5),
+        dispatch_move(&fixture, &session, false),
+    )
+    .await
+    .expect("the request must not last as long as the turn")
+    .expect("a deferred Move is acknowledged");
+    let crate::local::LocalDaemonResponse::AgentMovedToRemote { agent } = waiting else {
+        panic!("unexpected response {waiting:?}");
+    };
+    assert_eq!(
+        agent.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
+    // No request is pending any more; a client that connects now reads the wait from the Room state.
+    let crate::local::LocalDaemonResponse::SessionState {
+        session: reloaded, ..
+    } = dispatch_move_value(
+        &fixture,
+        serde_json::json!({"GetSessionState": {"session_id": session}}),
+    )
+    .await
+    .unwrap()
+    else {
+        panic!("session state expected");
+    };
+    assert_eq!(
+        reloaded
+            .agents()
+            .iter()
+            .find(|agent| agent.id() == fixture.agent_id)
+            .and_then(|agent| agent.agent_move())
+            .map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn),
+        "the Room state carries the waiting Move"
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!agent_is_remote(&fixture).await);
+    assert!(
+        fixture
+            .home
+            .lock()
+            .await
+            .agent_moves
+            .for_agent(&session, &fixture.agent_id)
+            .is_none(),
+        "a waiting Move must not fence the running agent"
+    );
+    let again = dispatch_move(&fixture, &session, false).await.unwrap_err();
+    assert!(
+        again.to_string().contains("already has a Move waiting"),
+        "{again}"
+    );
+    // Cancelling after the client reconnected ends the wait and leaves the agent alone.
+    dispatch_move(&fixture, &session, true)
+        .await
+        .expect("a waiting Move can be cancelled");
+    assert!(agent_move_status(&fixture).await.is_none());
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        !agent_is_remote(&fixture).await,
+        "a cancelled wait must not move the agent when the turn ends"
+    );
+    // The same request proceeds once the turn has ended.
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-2",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    dispatch_move(&fixture, &session, false).await.unwrap();
+    assert!(!agent_is_remote(&fixture).await);
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !(agent_is_remote(&fixture).await && agent_move_status(&fixture).await.is_none()) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the Move runs after the turn ends: {:?}",
+            agent_move_status(&fixture).await
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mk05_deferred_move_that_fails_publishes_its_reason_and_can_be_cancelled() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_PROVIDER_DEV_STUB", "1");
+    let (fixture, session, _) = crash_fixture().await;
+    let room = fixture
+        .home
+        .lock()
+        .await
+        .sessions()
+        .get_session(&session)
+        .unwrap();
+    let started = fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "turn-1",
+                "client",
+                &fixture.agent_id,
+                "work",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
+    // Returning an agent that is already home fails once the turn ends; nobody is waiting for the reply.
+    let request = serde_json::json!({"MoveAgentToLocal": {"session_id": session, "agent_ref": fixture.agent_id}});
+    dispatch_move_value(&fixture, request).await.unwrap();
+    fixture
+        .home
+        .lock()
+        .await
+        .prompt_state_owner()
+        .complete_active_prompt_only(&room, &fixture.agent_id);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let failed = loop {
+        if let Some(status) = agent_move_status(&fixture).await {
+            if matches!(
+                status.stage,
+                crate::agent_move::AgentMoveStage::Failed { .. }
+            ) {
+                break status;
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the failure must be published"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        matches!(&failed.stage, crate::agent_move::AgentMoveStage::Failed { reason } if reason.contains("already executes at home")),
+        "{failed:?}"
+    );
+    dispatch_move(&fixture, &session, true)
+        .await
+        .expect("a failed Move without an operation is dismissed by cancelling it");
+    assert!(agent_move_status(&fixture).await.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]

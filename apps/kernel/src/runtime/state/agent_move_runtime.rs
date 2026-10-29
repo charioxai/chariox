@@ -1,10 +1,16 @@
 //! Home advances one durable move; peer preparation alone never releases queued work.
 use super::*;
 use crate::agent_move::peer::{AgentMovePeerRequest as Request, AgentMovePeerResponse as Response};
-use crate::agent_move::{error as move_error, AgentMoveIdentity, HomeMoveOperation, HomeMovePhase};
+use crate::agent_move::{
+    error as move_error, AgentMoveIdentity, AgentMoveStage, AgentMoveStatus, HomeMoveOperation,
+    HomeMovePhase, MoveWait,
+};
+
+const AGENT_TURN_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 
 impl KernelRuntimeState {
     pub(super) async fn recover_agent_moves_after_restart(&self) -> usize {
+        self.clear_stale_agent_move_statuses().await;
         for operation in self.owned.agent_moves.pending() {
             let agent = match self
                 .owned
@@ -62,10 +68,129 @@ impl KernelRuntimeState {
         agent: crate::agent::AgentInstance,
         target_ref: Option<String>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .agent_turn_busy(&session, agent.id())
+        {
+            return self
+                .defer_agent_move(session_id, agent.id(), target_ref)
+                .await;
+        }
+        self.run_agent_move(session_id, agent, target_ref, false)
+            .await
+    }
+
+    /// A turn is never interrupted to move its agent. The kernel keeps the Move waiting, shows it
+    /// on the agent and answers at once: the request that asked may end, and a client may reload.
+    async fn defer_agent_move(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        target_ref: Option<String>,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let wait = self
+            .owned
+            .agent_moves
+            .waiting
+            .begin(agent_move_wait_key(session_id, agent_id))
+            .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
+        let waiting = self
+            .publish_agent_move_status(
+                agent_id,
+                Some(AgentMoveStatus::new(
+                    target_ref.clone(),
+                    AgentMoveStage::WaitingForTurn,
+                )),
+            )
+            .await?;
+        let state = self.clone();
+        let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
+        tokio::spawn(async move {
+            state
+                .run_deferred_agent_move(wait, &session_id, &agent_id, target_ref)
+                .await
+        });
+        Ok(waiting)
+    }
+
+    /// Ends when the turn ends or `abort_agent_move` cancels the wait; the outcome is the agent's status.
+    async fn run_deferred_agent_move(
+        &self,
+        wait: MoveWait,
+        session_id: &str,
+        agent_id: &str,
+        target_ref: Option<String>,
+    ) {
+        let outcome = async {
+            let session = self.owned.session_store.get_session(session_id)?;
+            while self
+                .owned
+                .prompt_state_owner
+                .agent_turn_busy(&session, agent_id)
+                && !wait.cancelled()
+            {
+                tokio::time::sleep(AGENT_TURN_POLL).await;
+            }
+            if !wait.finish() {
+                return Ok(());
+            }
+            let agent = self.owned.agent_store.get_agent(agent_id)?;
+            self.run_agent_move(session_id, agent, target_ref, true)
+                .await
+                .map(drop)
+        }
+        .await;
+        if let Err(error) = outcome {
+            crate::logging::warn_with_fields(
+                "agent_move.deferred",
+                "A deferred Move could not start; cancel it from the agent menu and retry",
+                serde_json::json!({"agent_id": agent_id, "error": error.to_string()}),
+            );
+        }
+    }
+
+    /// `deferred`: no request waits for the result, so a failure is published as the agent's status.
+    async fn run_agent_move(
+        &self,
+        session_id: &str,
+        agent: crate::agent::AgentInstance,
+        target_ref: Option<String>,
+        deferred: bool,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent_id = agent.id().to_string();
-        let result = self
-            .move_agent_transaction_inner(session_id, agent, target_ref)
-            .await;
+        self.publish_agent_move_status(
+            &agent_id,
+            Some(AgentMoveStatus::new(
+                target_ref.clone(),
+                AgentMoveStage::Moving,
+            )),
+        )
+        .await?;
+        // Publishing waited for the app; a revoked caller must not continue into the peers.
+        let result = match self.authorize_current_external_command() {
+            Ok(()) => {
+                self.move_agent_transaction_inner(session_id, agent, target_ref.clone())
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let unsettled = self
+            .owned
+            .agent_moves
+            .for_agent(session_id, &agent_id)
+            .is_some_and(|operation| operation.phase.is_pending());
+        let settled = match &result {
+            Err(error) if deferred || unsettled => Some(AgentMoveStatus::new(
+                target_ref,
+                AgentMoveStage::Failed {
+                    reason: error.to_string(),
+                },
+            )),
+            _ => None,
+        };
+        let published = self.publish_agent_move_status(&agent_id, settled).await;
         // Preflight can also queue work under its temporary transition claim.
         if !self
             .owned
@@ -74,7 +199,10 @@ impl KernelRuntimeState {
         {
             self.spawn_agent_move_queue_promotion(session_id, &agent_id)?;
         }
-        result
+        match result {
+            Ok(_) => published,
+            Err(error) => Err(error),
+        }
     }
 
     async fn move_agent_transaction_inner(
@@ -191,7 +319,12 @@ impl KernelRuntimeState {
                 ),
                 target_public_key,
             };
+            let requirements = self.agent_move_requirements(&agent).await?;
             let operation = HomeMoveOperation {
+                composition: crate::agent_move::AgentMoveComposition {
+                    requirements: Some(requirements),
+                    ..Default::default()
+                },
                 identity,
                 revision: 0,
                 original_agent: agent,
@@ -214,10 +347,19 @@ impl KernelRuntimeState {
                             context,
                         },
                     )
-                    .await?;
-                let Response::SourceCompatible { native } = response else {
+                    .await.map_err(|error| move_error(format!("Move source compatibility could not be verified: {error}. Update/restart both selected kernels before retrying")))?;
+                let Response::SourceCompatible {
+                    native,
+                    relay_peer_protocol_version,
+                } = response
+                else {
                     return Err(move_error("Source does not support durable Return; upgrade both kernels before retrying"));
                 };
+                if relay_peer_protocol_version
+                    < crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION
+                {
+                    return Err(move_error("Source peer cannot prove composed Move readiness; update/restart both kernels before moving this session"));
+                }
                 native
             } else {
                 self.probe_agent_move_source(session_id, operation.original_agent.id())
@@ -232,8 +374,10 @@ impl KernelRuntimeState {
                             native,
                         },
                     )
-                    .await?;
-                if reply != Response::Compatible {
+                    .await.map_err(|error| move_error(format!("Move target compatibility could not be verified: {error}. Update/restart both selected kernels before retrying")))?;
+                if !matches!(reply, Response::Compatible { relay_peer_protocol_version }
+                    if relay_peer_protocol_version >= crate::transport::relay_peer::MINIMUM_RELAY_PEER_RUNTIME_VERSION)
+                {
                     return Err(move_error("Target does not support durable Move; upgrade both kernels before retrying"));
                 }
             } else {
@@ -282,6 +426,16 @@ impl KernelRuntimeState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         loop {
             self.authorize_current_external_command()?;
+            if matches!(
+                &operation.phase,
+                HomeMovePhase::Fenced
+                    | HomeMovePhase::SourceStopped
+                    | HomeMovePhase::Captured { .. }
+                    | HomeMovePhase::Materialized { .. }
+                    | HomeMovePhase::Bound { .. }
+            ) {
+                self.verify_agent_move_requirements(&operation).await?;
+            }
             operation = match operation.phase.clone() {
                 HomeMovePhase::Fenced | HomeMovePhase::SourceStopped => {
                     let capture = if let Some(remote) = &operation.source_remote {
@@ -373,7 +527,12 @@ impl KernelRuntimeState {
                     receipt,
                     remote,
                 } => {
-                    if let Some(remote) = &remote {
+                    let requirements = operation
+                        .composition
+                        .requirements
+                        .clone()
+                        .ok_or_else(|| move_error("Move resource requirements are missing"))?;
+                    let readiness = if let Some(remote) = &remote {
                         let context = crate::transport::relay_peer::RemoteSkillSyncContext {
                             home_kernel_id: operation.identity.home_kernel_id.clone(),
                             home_session_id: operation.identity.home_session_id.clone(),
@@ -386,6 +545,7 @@ impl KernelRuntimeState {
                                 Request::AttachTarget {
                                     identity: operation.identity.clone(),
                                     context,
+                                    requirements: Box::new(requirements.clone()),
                                 },
                             )
                             .await?;
@@ -410,11 +570,12 @@ impl KernelRuntimeState {
                             operation = self.owned.agent_moves.save_home(operation)?;
                             continue;
                         }
-                        if response != Response::Attached {
+                        let Response::Attached { receipt: readiness } = response else {
                             return Err(move_error(
-                                "Target did not acknowledge native import and Project membership",
+                                "Target did not acknowledge resource readiness",
                             ));
-                        }
+                        };
+                        *readiness
                     } else {
                         self.attach_agent_move_target(
                             &operation.identity,
@@ -423,7 +584,23 @@ impl KernelRuntimeState {
                             false,
                         )
                         .await?;
+                        self.finish_agent_move_readiness(&operation.identity, &requirements)
+                            .await?
+                    };
+                    if readiness.identity != operation.identity
+                        || readiness.requirements_sha256 != requirements.sha256()?
+                        || readiness.workspace_sha256 != capture.workspace.sha256
+                        || readiness.native_sha256
+                            != capture
+                                .native
+                                .as_ref()
+                                .map(|artifact| artifact.sha256.clone())
+                        || readiness.target_project_id != receipt.target_project_id
+                    {
+                        return Err(move_error("Target resource readiness does not match this Move's requirements and artifacts"));
                     }
+                    self.verify_agent_move_requirements(&operation).await?;
+                    operation.composition.readiness = Some(readiness);
                     // The home fence remains closed across the authority change and its
                     // agent event. Restart repairs publication from this durable phase.
                     operation.phase = HomeMovePhase::Committed { receipt };
@@ -431,23 +608,31 @@ impl KernelRuntimeState {
                     self.owned.agent_moves.save_home(operation)?
                 }
                 HomeMovePhase::Committed { receipt } => {
-                    if operation.target_ref.is_some() {
+                    let readiness = operation.composition.readiness.clone().ok_or_else(|| move_error("Committed Move readiness is missing; reconcile the original generation"))?;
+                    let commit = if operation.target_ref.is_some() {
                         let response = self
                             .move_peer_target(
                                 &operation,
                                 Request::ActivateTarget {
                                     identity: operation.identity.clone(),
+                                    readiness: Box::new(readiness.clone()),
                                 },
                             )
                             .await?;
-                        if response != Response::Activated {
+                        let Response::Activated { receipt: commit } = response else {
                             return Err(move_error(
-                                "Target activation is uncertain; retry this move generation",
+                                "Target activation is uncertain; query this Move generation",
+                            ));
+                        };
+                        if commit.readiness != readiness {
+                            return Err(move_error(
+                                "Target commit does not match its verified readiness",
                             ));
                         }
                         self.owned
                             .kernel_browser_host
                             .revoke_agent(&operation.identity.home_agent_id);
+                        *commit
                     } else {
                         self.owned.retire_agent_move_provider_projection(
                             &operation.identity.home_session_id,
@@ -468,19 +653,11 @@ impl KernelRuntimeState {
                         .await?;
                         self.owned
                             .session_snapshot(&operation.identity.home_session_id)?;
-                        let mut target = self
-                            .owned
-                            .agent_moves
-                            .target(&operation.identity.operation_id)
-                            .ok_or_else(|| move_error("Committed move target is missing"))?;
-                        if !target.ready {
-                            return Err(move_error(
-                                "Committed move target has no native readiness receipt",
-                            ));
-                        }
-                        target.active = true;
-                        self.owned.agent_moves.save_target(target)?;
-                    }
+                        self.activate_agent_move_target(&operation.identity, &readiness)
+                            .await?
+                    };
+                    operation.composition.commit = Some(commit);
+                    operation = self.owned.agent_moves.save_home(operation)?;
                     self.release_agent_move_source(&operation, true, false)
                         .await?;
                     if let Some(source) = &operation.source_remote {
@@ -509,4 +686,8 @@ impl KernelRuntimeState {
             };
         }
     }
+}
+
+pub(super) fn agent_move_wait_key(session_id: &str, agent_id: &str) -> String {
+    format!("{session_id}:{agent_id}")
 }

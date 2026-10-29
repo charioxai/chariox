@@ -393,4 +393,6 @@ pub use workspace::*;
 /// Allocated 637 adds the optional `native_checkpoint_binding` on provider launch requests (native provider checkpoints).
 /// Allocated 638/240 adds durable agent Move and Return: the `AgentMove` peer carrier, `MoveAgentToLocal` and its
 /// `abort_pending` cancellation, and Project materialization on the target.
+/// Allocated 639/241 composes a Move onto a target kernel with native Project setup: resource receipts, probe gating and
+/// the kernel-held deferred Move published on the agent (`agent_move`).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;

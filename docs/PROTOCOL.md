@@ -5783,3 +5783,37 @@ peer connection suffixes identify the same canonical home kernel.
 The home owns commitment and retries. Publishing files or probing native state
 does not authorize a prompt. Native bytes stay in protected artifacts and peer
 transport; the public client protocol gains no native-history projection.
+
+### MP-08 / MP-09 / MP-10 / MP-11: composed Move resource receipts (639/241)
+
+Move binds its selected account configuration, granted extension manifest,
+skill hashes and Project setup definition before source capture. Home checks
+that selection again across preparation waits and before committing. Home MCP
+authority and authenticated forwarding stay at home; required skills are
+materialized and verified through ordinary worker package admission.
+
+The encrypted AttachTarget reply carries a typed readiness receipt for the
+exact Move identity/generation, requirements digest, workspace/native artifact
+digests, target Project/account and backing agent. Project setup uses the
+ordinary target-native setup engine before readiness. ActivateTarget requires
+that receipt and durably records a separate commit receipt before replying.
+Repeating activation queries the same recorded result rather than starting a
+second execution. Account transfer retains the existing no-overwrite/native
+validation and rollback behavior; no Vault or provider profile tree is copied.
+These private peer carriers require peer protocol 241. Existing public Move requests retain
+their shapes; local protocol 639 binds the integrated contract.
+
+### MP-08 / MP-09 / MP-10 / MP-11: kernel-owned deferred Move (639)
+
+A `MoveAgentToRemote` / `MoveAgentToLocal` request made while the agent's turn
+runs is acknowledged at once. The reply is the ordinary `AgentMovedToRemote` /
+`AgentMovedToLocal` whose agent carries `agent_move: {"state":
+"waiting_for_turn", "target_ref"?}`; the home kernel, not the request, holds the
+wait, so a request that ends or a client that reloads does not lose it. The same
+`agent_move` status is published with every `agent.updated` event and Room
+snapshot: `moving` while the Move runs, and
+`{"state":"failed","reason"}` when it cannot continue. A failed status stays
+(with its journalled operation, if any) until the person cancels it with
+`MoveAgentToLocal{abort_pending}` or asks for the Move again. Success and a
+cancelled wait remove the status. A kernel restart ends a wait for a turn. A
+Move requested while the agent is idle still answers when it is done.

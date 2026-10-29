@@ -61,9 +61,11 @@ pub enum AgentMovePeerRequest {
     AttachTarget {
         identity: AgentMoveIdentity,
         context: RemoteSkillSyncContext,
+        requirements: Box<super::AgentMoveRequirements>,
     },
     ActivateTarget {
         identity: AgentMoveIdentity,
+        readiness: Box<super::AgentMoveReadiness>,
     },
     RetireSource {
         identity: AgentMoveIdentity,
@@ -84,7 +86,7 @@ impl AgentMovePeerRequest {
             | Self::WriteChunk { identity, .. }
             | Self::PublishTarget { identity }
             | Self::AttachTarget { identity, .. }
-            | Self::ActivateTarget { identity }
+            | Self::ActivateTarget { identity, .. }
             | Self::RetireSource { identity }
             | Self::ReleaseSource { identity, .. }
             | Self::AbortTarget { identity }
@@ -105,8 +107,11 @@ impl AgentMovePeerRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentMovePeerResponse {
-    Compatible,
+    Compatible {
+        relay_peer_protocol_version: u32,
+    },
     SourceCompatible {
+        relay_peer_protocol_version: u32,
         native: Option<crate::provider::NativeMoveCompatibility>,
     },
     SourceCaptured,
@@ -126,9 +131,13 @@ pub enum AgentMovePeerResponse {
     Published {
         receipt: Box<AgentMoveMaterialization>,
     },
-    Attached,
+    Attached {
+        receipt: Box<super::AgentMoveReadiness>,
+    },
     AttachmentMissing,
-    Activated,
+    Activated {
+        receipt: Box<super::AgentMoveCommitReceipt>,
+    },
     SourceRetired,
     SourceReleased,
 }
@@ -139,11 +148,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     #[test]
-    fn mk03_preflight_and_abort_638_240_shape_and_hash() {
-        let bytes = include_bytes!("protocol-638-240.json");
+    fn mk04_resource_readiness_639_241_shape_and_hash() {
+        let bytes = include_bytes!("protocol-639-241.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "b9ee93ca2d30beccce8e7611a4ae131258bb930529c039d5788ec7e8041e9ef1"
+            "5af2528bd9c7cab12d46067a7dcf237c7cdd70db8cde31bc74ebf0310ca967a1"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(
@@ -157,6 +166,11 @@ mod tests {
         let request: crate::local::LocalDaemonRequest =
             serde_json::from_value(fixture["abort"].clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), fixture["abort"]);
+        for value in fixture["agent_move_statuses"].as_array().unwrap() {
+            let status: crate::agent_move::AgentMoveStatus =
+                serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(status).unwrap(), *value);
+        }
         for value in fixture["peer_requests"].as_array().unwrap() {
             let request: AgentMovePeerRequest = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), *value);
@@ -208,5 +222,22 @@ mod tests {
         );
         assert!(!debug.contains("private-native-history"));
         assert!(!debug.contains("112, 114"));
+    }
+}
+
+#[cfg(test)]
+mod composition_probe_tests {
+    use super::AgentMovePeerResponse;
+    #[test]
+    fn mk04_probe_receipts_require_an_explicit_peer_version() {
+        for value in [
+            serde_json::json!({"result":"compatible"}),
+            serde_json::json!({"result":"source_compatible","native":null}),
+        ] {
+            assert!(
+                serde_json::from_value::<AgentMovePeerResponse>(value).is_err(),
+                "A legacy Probe cannot prove composed Move compatibility"
+            );
+        }
     }
 }

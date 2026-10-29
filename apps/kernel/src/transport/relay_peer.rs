@@ -146,6 +146,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08/MP-09/MP-10/MP-11: landing union 243 carries local 642 (peers 233 dialogs, 234 outside events,
 /// failure cause on provider run terminations) and 243 (that failure renamed to the turn outcome kind and reason).
 /// Allocated 240 carries the local 638 `AgentMove` peer messages.
+/// Allocated 241 carries the composed Move resource receipts and probe messages of local 639.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 361;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

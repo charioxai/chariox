@@ -300,7 +300,7 @@ fn required_native_session_blocks_durable_clearing_until_a_real_resume_ack() {
 }
 
 #[test]
-fn native_checkpoint_launch_601_round_trip_and_hash_preserve_the_constraint() {
+fn native_checkpoint_launch_637_round_trip_and_hash_preserve_the_constraint() {
     use sha2::Digest;
     let binding = serde_json::to_value(checkpoint().binding).unwrap();
     let wire = serde_json::json!({"LaunchProviderRun": {
@@ -683,6 +683,46 @@ fn mk03_native_checkpoint_reimport_preserves_probe_appends_and_checks_original_h
         wrong_account.import(&run),
         Err(NativeCheckpointFailure::AccountMismatch)
     ));
+    // A cancelled Move leaves the imported thread plus its probe append behind.
+    // The source then runs a home turn, so the retry's checkpoint is no longer
+    // an extension of that file until the cancellation rewinds it.
+    let mut cancelled_request = request.clone();
+    cancelled_request
+        .provider_account_env
+        .insert("CODEX_HOME".into(), profile.display().to_string());
+    let mut advanced = checkpoint.clone();
+    advanced.contents.extend_from_slice(b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"home turn\"}}\n");
+    advanced.binding.artifact_sha256 = digest(&advanced.contents);
+    let mut abandoned = checkpoint.contents.clone();
+    abandoned.extend_from_slice(b"{\"type\":\"turn_context\",\"payload\":{}}\n");
+    std::fs::write(&artifact, &abandoned).unwrap();
+    assert!(
+        matches!(
+            codex::import_for_move(&advanced, &run),
+            Err(NativeCheckpointFailure::TargetConflict)
+        ),
+        "an abandoned import with its probe append must not accept advanced history"
+    );
+    checkpoint
+        .discard_probe_appends(&cancelled_request)
+        .expect("cancelling must rewind the abandoned import to its checkpoint");
+    assert_eq!(std::fs::read(&artifact).unwrap(), checkpoint.contents);
+    codex::import_for_move(&advanced, &run)
+        .expect("a retry after a home turn must extend the rewound import");
+    assert!(std::fs::read(&artifact)
+        .unwrap()
+        .starts_with(&advanced.contents));
+    let mut foreign = checkpoint.contents.clone();
+    foreign[0] ^= 1;
+    std::fs::write(&artifact, &foreign).unwrap();
+    assert!(
+        matches!(
+            checkpoint.discard_probe_appends(&cancelled_request),
+            Err(NativeCheckpointFailure::TargetConflict)
+        ),
+        "rewinding must never rewrite history that is not the imported checkpoint"
+    );
+    assert_eq!(std::fs::read(&artifact).unwrap(), foreign);
     std::fs::write(
         &artifact,
         &checkpoint.contents[..checkpoint.contents.len() - 1],

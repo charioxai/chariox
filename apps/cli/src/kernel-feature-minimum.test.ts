@@ -148,3 +148,13 @@ test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before t
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
   }
 })
+
+// An older kernel ignores `abort_pending` and would Return the agent instead of cancelling its Move.
+test("MP-08 MP-10 cancelling a Move is refused by kernels older than protocol 638, while a Return is not", () => {
+  const cancel = { MoveAgentToLocal: { session_id: "room", agent_ref: "agent", abort_pending: true } }
+  for (const version of [undefined, 0, 637]) {
+    assert.throws(() => requireKernelFeatureProtocol(cancel, version), /Move cancellation needs protocol ≥638/)
+  }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(cancel, 638))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol({ MoveAgentToLocal: { session_id: "room", agent_ref: "agent" } }, 600))
+})

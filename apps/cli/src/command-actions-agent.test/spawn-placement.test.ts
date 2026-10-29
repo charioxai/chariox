@@ -112,6 +112,9 @@ test("agent spawn count inherits session defaults for each spawn", async () => {
       return { agent, session: currentSession }
     },
     destroyAgent: async () => currentSession,
+    moveAgent: async () => ({}) as never,
+    cancelAgentMove: async () => {},
+    pause: async () => {},
     focusAgent: async () => ({ agent: currentSession.agents[0] ?? sourceAgent, session: currentSession }),
     resolveSessionAgent: () => ({ agent: currentSession.agents[0] ?? null }),
     workflowScreenActive: () => false,

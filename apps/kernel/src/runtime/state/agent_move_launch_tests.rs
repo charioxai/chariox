@@ -188,6 +188,7 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .save_target(target.clone())
         .unwrap();
     let operation = HomeMoveOperation {
+        composition: Default::default(),
         identity: identity.clone(),
         revision: 0,
         original_agent: agent.clone(),
@@ -214,6 +215,11 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .prepare_provider_launch_request_with_vault(request.clone(), "ordinary remote launch")
         .await
         .is_err());
+    assert!(app
+        .lock()
+        .await
+        .prepare_app_provider_launch_request(request.clone(), "ordinary remote app launch",)
+        .is_err());
     request.agent_move_preparation = Some(identity.operation_id.clone());
     let prepared = runtime
         .prepare_provider_launch_request_with_vault(
@@ -222,6 +228,10 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         )
         .await
         .expect("the captured Return must prepare before clearing its remote route");
+    app.lock()
+        .await
+        .prepare_app_provider_launch_request(prepared.clone(), "prepare fenced Return setup")
+        .expect("app admission must accept the exact fenced Return");
     assert_eq!(prepared.working_directory, request.working_directory);
     assert_eq!(
         runtime
@@ -243,6 +253,11 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
     let mut wrong_directory = request.clone();
     wrong_directory.working_directory = Some(worktree.path().join("other"));
     for invalid in [wrong_operation, wrong_directory] {
+        assert!(app
+            .lock()
+            .await
+            .prepare_app_provider_launch_request(invalid.clone(), "invalid Return app preparation",)
+            .is_err());
         assert!(runtime
             .prepare_provider_launch_request_with_vault(invalid, "invalid Return preparation")
             .await
@@ -294,6 +309,24 @@ async fn mk03_return_native_preparation_keeps_remote_route_and_dispatch_fence() 
         .target(&identity.operation_id)
         .unwrap();
     target.ready = true;
+    target.active = false;
+    runtime
+        .owned
+        .agent_moves
+        .save_target(target.clone())
+        .unwrap();
+    let requirements = runtime.agent_move_requirements(&agent).await.unwrap();
+    let readiness = runtime
+        .finish_agent_move_readiness(&identity, &requirements)
+        .await
+        .unwrap();
+    target = runtime
+        .owned
+        .agent_moves
+        .target(&identity.operation_id)
+        .unwrap();
+    committed.composition.requirements = Some(requirements);
+    committed.composition.readiness = Some(readiness);
     committed.phase = HomeMovePhase::Committed {
         receipt: target.receipt.clone().unwrap(),
     };
@@ -531,6 +564,7 @@ async fn mk03_restart_promotes_queue_of_already_rolled_back_move() {
         .unwrap();
     app.agent_moves
         .save_home(HomeMoveOperation {
+            composition: Default::default(),
             identity: AgentMoveIdentity {
                 operation_id: "settled-queue".into(),
                 generation: 1,
@@ -593,5 +627,79 @@ async fn mk03_restart_promotes_queue_of_already_rolled_back_move() {
             .get_run_for_agent(session.id(), agent.id())
             .is_some(),
         "restart recovery must start its provider"
+    );
+}
+
+#[tokio::test]
+async fn mk03_environment_discovery_does_not_borrow_the_fenced_move_agent() {
+    use crate::agent_move::*;
+    use crate::managed_context::development::*;
+
+    let worktree = crate::test_support::TestWorktree::new("move-discovery-identity");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, mut agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    agent.set_provider("dev-stub");
+    agent.set_model(Some("moved-model".into()));
+    agent.set_effort(Some("low".into()));
+    app.agents().restore_agent(agent.clone());
+    let config = app.config().clone();
+    app.spawn_agent(
+        crate::agent::CreateAgentRequest::new(session.id(), "opencode").with_alias("other"),
+    )
+    .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .agent_moves
+        .save_home(HomeMoveOperation {
+            composition: Default::default(),
+            identity: AgentMoveIdentity {
+                operation_id: "discovery-identity".into(),
+                generation: 1,
+                home_kernel_id: config.daemon_id.clone(),
+                home_session_id: session.id().into(),
+                home_agent_id: agent.id().into(),
+                owner_user_id: agent.owner_user_id().into(),
+                source_kernel_id: config.daemon_id.clone(),
+                target_kernel_id: "worker".into(),
+                home_key_thumbprint: "home-key".into(),
+                source_key_thumbprint: "home-key".into(),
+                target_key_thumbprint: "worker-key".into(),
+                target_public_key: "worker-public-key".into(),
+            },
+            revision: 0,
+            original_agent: agent.clone(),
+            target_ref: None,
+            source_remote: None,
+            phase: HomeMovePhase::Fenced,
+        })
+        .unwrap();
+    let project = runtime
+        .owned
+        .session_store
+        .get_project(session.project_id())
+        .unwrap();
+    let repositories = vec![DevelopmentRepositorySelection {
+        workspace_id: session.workspace_id().into(),
+        worktree_id: None,
+        worktree_path: worktree.path().to_path_buf(),
+        role: DevelopmentRepositoryRole::Primary,
+    }];
+    let (utility_session, utility_agent, cleanup) = runtime
+        .environment_utility_identity(&project, &repositories)
+        .await
+        .unwrap();
+    assert_ne!(
+        utility_agent,
+        agent.id(),
+        "a fenced move agent cannot run utilities"
+    );
+    assert_ne!(utility_session, session.id());
+    assert!(
+        cleanup.is_some(),
+        "the replacement utility session is temporary"
     );
 }

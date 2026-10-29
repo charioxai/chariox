@@ -97,7 +97,13 @@ identity and unused workspace root. It reuses the original home account
 profile. Native import extends the stopped home rollout only when every old
 byte is a complete-record prefix of the incoming history; divergent history
 is preserved and refused. Resolve that divergence before retrying, or cancel
-the pending Move before a target lease is bound. Ordinary checkpoint import
+the pending Move until its target activates. Cancelling retires the target's
+lease and backing agent, restores the agent's previous route and workspace, and
+rewinds the target's native thread to exactly the imported checkpoint, dropping
+only the readiness probe's appends (no user turn can have run there). A retry
+after the source has advanced therefore extends that thread. If the thread is no
+longer an extension of the checkpoint it is left untouched, the cancellation
+still completes, and the retry reports the divergence. Ordinary checkpoint import
 remains strict and accepts only its required original prefix plus native
 appends from the readiness probe, including an unindexed rollout.
 
@@ -114,8 +120,15 @@ recoverable failure can release the source and roll back. After commitment,
 recovery finishes target activation and source retirement. An unavailable peer
 leaves the operation fenced for retry after reconnection.
 
-A source with active provider work or a live leased process wake must finish or
-cancel that work first. If a restart lost the source run before its checkpoint
+A Move or Return requested while the agent's turn runs does not interrupt it:
+the kernel acknowledges it at once, publishes the waiting Move on the agent
+(`agent_move`) and runs it when the turn ends. Cancelling it
+(`MoveAgentToLocal` with `abort_pending`) ends that wait without touching the
+agent; the wait is not journaled, so a kernel restart ends it, but a client that
+disconnects or reloads does not. A Move that fails after the wait stays visible
+as `agent_move` `failed` until it is cancelled or asked for again.
+Queued prompts start before the Move can begin. A live leased process wake must
+finish or cancel first. If a restart lost the source run before its checkpoint
 was captured, the operation rolls back; resume the source for one completed
 turn before retrying. A stored, still-required checkpoint also supports an
 immediate Return before the first target turn. Scope remains the managed Codex

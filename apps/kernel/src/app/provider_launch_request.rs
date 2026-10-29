@@ -87,7 +87,12 @@ impl DaemonApp {
                     agent_id: agent.id().to_string(),
                 });
             }
-            if agent.remote_execution().is_some() {
+            // Return prepares its local Project before committing away the remote route.
+            if agent.remote_execution().is_some_and(|source| {
+                !self
+                    .agent_moves
+                    .prepares_return(&request, source, &self.config.daemon_id)
+            }) {
                 return Err(DaemonError::LocalTransport {
                     operation,
                     message: format!(
@@ -292,6 +297,12 @@ impl DaemonApp {
             mcp_servers,
         )?);
         request = apply_metaagent_launch_policy(request, agent.as_ref());
+        request = crate::runtime::state::restore_agent_move_preparation_environment(
+            &self.config,
+            &self.durable_state,
+            &self.agent_moves,
+            request,
+        )?;
         crate::project_environment::attach_project_provider_environment(
             &self.config,
             &session,

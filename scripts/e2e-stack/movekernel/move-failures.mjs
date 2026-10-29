@@ -55,7 +55,7 @@ export async function exerciseReturnFailures({source, target, sessionId, agentId
     assert.ok(response.error, 'Occupied Return destination must refuse publication');
     assert.equal((await journal(source, 3)).phase.phase, 'captured');
     const prompt = 'Repeat the marker from our previous task. Do not use tools or create agents.';
-    const before = new Set(entries(await source.tui.send('snapshot')).map(row => row.id));
+    const before = entries(await source.tui.send('snapshot'));
     await source.tui.send('submit_prompt', {prompt});
     const aborted = await source.client.send({MoveAgentToLocal: {session_id: sessionId, agent_ref: agentId, abort_pending: true}});
     assert.ok(aborted.AgentMoveAborted, 'Explicit abort must restore captured source ownership');

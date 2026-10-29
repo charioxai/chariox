@@ -73,6 +73,7 @@ struct ProviderCredentialDeliveryProbeState {
 pub(crate) enum ProviderLifecycleFailureStage {
     Spawn,
     Bind,
+    End,
 }
 
 #[cfg(test)]

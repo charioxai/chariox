@@ -35,6 +35,7 @@ use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
 mod agent_move_abort;
+mod agent_move_composition;
 #[cfg(test)]
 mod agent_move_launch_tests;
 mod agent_move_peer;
@@ -43,6 +44,7 @@ mod agent_move_queue;
 mod agent_move_runtime;
 mod agent_move_slices;
 mod agent_move_source;
+mod agent_move_status;
 mod agent_move_target;
 mod agent_move_transport;
 mod context_handoff;
@@ -524,6 +526,7 @@ pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
 mod project_environment_setup;
+pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;

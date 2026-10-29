@@ -277,6 +277,7 @@ impl ProviderProcessServiceStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn launch_run_detached(
         &self,
         request: LaunchProviderRequest,

@@ -212,6 +212,7 @@ impl AgentMoveStore {
             ));
         }
         let target = MoveTarget {
+            composition: Default::default(),
             capture,
             destination_root,
             receipt: None,

@@ -915,3 +915,116 @@ fn prompt_submission_while_native_launch_is_starting_does_not_duplicate_run() {
         1
     );
 }
+
+// MP-08/MP-09/MP-10/MP-11: Move setup must start the provider before
+// checkpoint import. An unavailable endpoint must then leave the run fenced.
+#[cfg(target_os = "linux")]
+#[test]
+fn mk04_detached_checkpoint_launch_starts_provider_before_import() {
+    crate::test_support::isolated_env_test!();
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    let _environment = crate::env_lock::lock();
+    let worktree = crate::test_support::TestWorktree::new("move-setup-native-start");
+    let executable = worktree.path().join("codex");
+    let marker = worktree.path().join("provider-started");
+    std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'codex-cli 0.159.3\\n'; exit 0; fi\nif [ \"$1\" = app-server ] && [ -n \"$MK04_PROVIDER_START_MARKER\" ]; then : > \"$MK04_PROVIDER_START_MARKER\"; fi\nexit 1\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_CODEX_BIN", &executable);
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let owner = crate::account_profile::provider_account_authority_owner_user_id(
+        app.config(),
+        agent.owner_user_id(),
+    );
+    let registry = app.provider_account_profile_registry();
+    let profile = registry
+        .create_managed(&owner, "codex", "checkpoint")
+        .unwrap();
+    registry
+        .update_observation(
+            &owner,
+            "codex",
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    registry
+        .update_usage(
+            &owner,
+            "codex",
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountUsageSnapshot {
+                availability: crate::account_profile::ProviderAccountUsageAvailability::Unavailable,
+                observed_at_ms: Some(crate::session::unix_epoch_ms()),
+                ..crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    &profile.profile_id,
+                    "codex",
+                )
+            },
+        )
+        .unwrap();
+    let contents = b"synthetic native history\n";
+    let checkpoint = serde_json::from_value(serde_json::json!({
+        "format": "codex-jsonl-v1",
+        "relative_path": "sessions/2026/10/25/rollout-2026-10-25T00-00-00-00000000-0000-0000-0000-000000000008.jsonl",
+        "binding": {
+            "provider": "codex", "session_id": "00000000-0000-0000-0000-000000000008",
+            "account_sha256": "a".repeat(64), "model": "gpt-6-luna", "variant": "low",
+            "cli_version": "codex-cli 0.159.3", "source_os": "linux",
+            "artifact_sha256": format!("{:x}", Sha256::digest(contents))
+        },
+        "contents": contents.to_vec()
+    })).unwrap();
+    let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+    credentials.insert(
+        "MK04_PROVIDER_START_MARKER",
+        zeroize::Zeroizing::new(marker.display().to_string()),
+    );
+    let result = app.launch_provider_detached(
+        LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            &profile.profile_id,
+            "gpt-6-luna",
+        )
+        .with_agent_id(agent.id())
+        .with_variant(Some("low".into()))
+        .with_native_checkpoint(checkpoint)
+        .with_provider_credential_env(credentials),
+    );
+    std::env::remove_var("CHARIOX_CODEX_BIN");
+    assert!(
+        result.is_err(),
+        "the synthetic provider cannot import a native session"
+    );
+    let run = app
+        .providers()
+        .get_latest_run_for_agent(session.id(), agent.id())
+        .unwrap();
+    assert!(run.resume_state().required_native_session().is_some());
+    assert!(
+        marker.exists(),
+        "checkpoint readiness must not reject before starting the provider: {}",
+        crate::provider::sanitize_provider_diagnostic(&result.err().unwrap().to_string())
+    );
+    assert_eq!(
+        run.state(),
+        ProviderRunState::Ended,
+        "failed import must keep prompts fenced and retire the provider"
+    );
+    assert!(app
+        .sessions()
+        .get_session(session.id())
+        .unwrap()
+        .active_provider_run_id()
+        .is_none());
+}

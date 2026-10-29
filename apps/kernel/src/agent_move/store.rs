@@ -21,6 +21,7 @@ pub(crate) struct AgentMoveStore {
     root: PathBuf,
     records: Arc<Mutex<MoveRecords>>,
     operations: Arc<Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+    pub(crate) waiting: super::waiting::WaitingMoves,
 }
 
 impl AgentMoveStore {
@@ -32,6 +33,7 @@ impl AgentMoveStore {
             root,
             records: Default::default(),
             operations: Default::default(),
+            waiting: Default::default(),
         };
         let mut records = store.lock();
         for entry in fs::read_dir(&store.root)

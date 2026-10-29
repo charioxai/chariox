@@ -45,7 +45,7 @@ pub enum NativeCheckpointFailure {
     TooLarge,
     #[error("The native session changed during export. Finish writes to that session and retry.")]
     SourceChanged,
-    #[error("The target already has divergent state for this native session. Preserve it and resolve the divergence before retrying. A pending Move can be cancelled before a target lease is bound.")]
+    #[error("The target already has divergent state for this native session. Preserve it and resolve the divergence before retrying. A pending Move can be cancelled until its target activates.")]
     TargetConflict,
     #[error("The target provider profile cannot stage the checkpoint. Check its free space and directory permissions, then retry.")]
     StorageUnavailable,
@@ -156,18 +156,7 @@ impl ProviderNativeCheckpoint {
     ) -> Result<super::ProviderResumeState, NativeCheckpointFailure> {
         self.validate()?;
         supported_interface(&request.adapter_key, request.client_interface)?;
-        let root = request
-            .provider_account_env
-            .get("CODEX_HOME")
-            .map(String::as_str)
-            .or_else(|| {
-                request
-                    .provider_credential_env
-                    .iter()
-                    .find_map(|(key, value)| (key == "CODEX_HOME").then_some(value))
-            })
-            .ok_or(NativeCheckpointFailure::AccountUnavailable)?
-            .to_string();
+        let root = codex_home(request)?.to_string();
         // The original home profile may have a catalog utility that predates
         // the remote turns. Import must not resume a cached native writer.
         super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
@@ -201,6 +190,16 @@ impl ProviderNativeCheckpoint {
         // Retire the utility before the real provider opens the same session.
         super::invalidate_codex_account_endpoint(&request.owner_user_id, &request.account_profile);
         imported
+    }
+
+    /// Cancelling a Move restores the target's native thread to exactly the
+    /// imported checkpoint, so a retry can extend it with newer source history.
+    pub(crate) fn discard_probe_appends(
+        &self,
+        request: &super::LaunchProviderRequest,
+    ) -> Result<(), NativeCheckpointFailure> {
+        self.validate()?;
+        codex::discard_probe_appends(self, Path::new(codex_home(request)?))
     }
 
     pub fn provider_session_id(&self) -> &str {
@@ -262,6 +261,20 @@ fn supported_os(source_os: &str) -> Result<(), NativeCheckpointFailure> {
 
 fn digest(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
+}
+
+fn codex_home(request: &super::LaunchProviderRequest) -> Result<&str, NativeCheckpointFailure> {
+    request
+        .provider_account_env
+        .get("CODEX_HOME")
+        .map(String::as_str)
+        .or_else(|| {
+            request
+                .provider_credential_env
+                .iter()
+                .find_map(|(key, value)| (key == "CODEX_HOME").then_some(value))
+        })
+        .ok_or(NativeCheckpointFailure::AccountUnavailable)
 }
 
 fn profile_root(

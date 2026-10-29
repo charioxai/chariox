@@ -55,7 +55,10 @@ impl KernelRuntimeState {
         match request {
             Request::Probe { native, .. } => {
                 self.probe_agent_move_target(native, None).await?;
-                Ok(Response::Compatible)
+                Ok(Response::Compatible {
+                    relay_peer_protocol_version:
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                })
             }
             Request::CreateLease {
                 home_agent_metaagent,
@@ -102,7 +105,11 @@ impl KernelRuntimeState {
                             &source.backing_agent_id,
                         )
                         .await?;
-                    return Ok(Response::SourceCompatible { native });
+                    return Ok(Response::SourceCompatible {
+                        native,
+                        relay_peer_protocol_version:
+                            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    });
                 }
                 let capture = self
                     .prepare_agent_move_source(
@@ -162,7 +169,11 @@ impl KernelRuntimeState {
                     receipt: Box::new(receipt),
                 })
             }
-            Request::AttachTarget { context, .. } => {
+            Request::AttachTarget {
+                context,
+                requirements,
+                ..
+            } => {
                 let bound = self
                     .with_app_side_effect(|app| {
                         let mut runtime = crate::app::RemoteLeaseRuntime::new(app);
@@ -188,6 +199,12 @@ impl KernelRuntimeState {
                 {
                     return Err(move_error("Move target does not match the home lease"));
                 }
+                self.prepare_agent_move_capabilities(
+                    &identity,
+                    &context.leased_agent_id,
+                    &requirements,
+                )
+                .await?;
                 self.attach_agent_move_target(
                     &identity,
                     &bound.backing_session_id,
@@ -199,18 +216,20 @@ impl KernelRuntimeState {
                     app.retain_agent_move_backing(&identity.operation_id, &context.leased_agent_id)
                 })
                 .await?;
-                Ok(Response::Attached)
+                let receipt = self
+                    .finish_agent_move_readiness(&identity, &requirements)
+                    .await?;
+                Ok(Response::Attached {
+                    receipt: Box::new(receipt),
+                })
             }
-            Request::ActivateTarget { .. } => {
-                let mut target = self.ensure_agent_move_target_identity(&identity)?;
-                if !target.ready || target.retired || target.backing.is_none() {
-                    return Err(move_error(
-                        "Move target is not attached; finish import before committing",
-                    ));
-                }
-                target.active = true;
-                self.owned.agent_moves.save_target(target)?;
-                Ok(Response::Activated)
+            Request::ActivateTarget { readiness, .. } => {
+                let receipt = self
+                    .activate_agent_move_target(&identity, &readiness)
+                    .await?;
+                Ok(Response::Activated {
+                    receipt: Box::new(receipt),
+                })
             }
             Request::RetireSource { .. } | Request::ReleaseSource { .. } => {
                 let Some(mut source) = self.owned.agent_moves.source(&identity.operation_id) else {
@@ -268,13 +287,14 @@ impl KernelRuntimeState {
         &self,
         capture: AgentMoveCapture,
     ) -> Result<(), DaemonError> {
+        // Test Projects must stay outside kernel HOME, like ordinary Moves.
         #[cfg(test)]
         let parent = self
             .owned
             .config_projection
             .snapshot()
             .private_runtime_state_root()
-            .join("move-workspaces");
+            .with_extension("move-workspaces");
         #[cfg(not(test))]
         let parent = std::env::var_os("HOME")
             .map(PathBuf::from)

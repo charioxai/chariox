@@ -29,7 +29,9 @@ import {
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
+  cancelAgentMove as cancelAgentMoveApi,
   destroyAgent as destroyAgentApi,
+  moveAgent as moveAgentApi,
   focusAgent as focusAgentApi,
   forkAgent as forkAgentApi,
   spawnAgent as spawnAgentApi,
@@ -993,6 +995,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         providerRun: payload.providerRun,
       }
     },
+    moveAgent: (agentId, destination) => moveAgentApi(client, sessionState().id, agentId, destination),
+    cancelAgentMove: (agentId) => cancelAgentMoveApi(client, sessionState().id, agentId),
+    pause: ms => new Promise(resolve => setTimeout(resolve, ms)),
     destroyAgent: async (agentId) => {
       await destroyAgentApi(client, sessionState().id, agentId)
       return getSessionState(client, sessionState().id)

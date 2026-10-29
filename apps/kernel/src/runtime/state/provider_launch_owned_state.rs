@@ -378,6 +378,12 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
+        request = super::restore_agent_move_preparation_environment(
+            &config,
+            &self.durable_state_store,
+            &self.agent_moves,
+            request,
+        )?;
         if let Some(checkpoint) = self.agent_moves.checkpoint_for_launch(&request)? {
             request = request.with_native_checkpoint(checkpoint);
         }
