@@ -1,4 +1,10 @@
 {
+  "durable_writer": {
+    "committed_batches": 120,
+    "committed_records": 480,
+    "max_batch_records": 9,
+    "queued": 3
+  },
   "projection_invariants": {
     "checked_agents": 10000,
     "checked_sessions": 5000,

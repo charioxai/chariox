@@ -147,13 +147,18 @@ struct DurableWriterHealth {
     committed_batches: AtomicU64,
     committed_records: AtomicU64,
     max_batch_records: AtomicU64,
+    enqueued: AtomicU64,
+    received: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DurableWriterHealthSnapshot {
-    pub(crate) committed_batches: u64,
-    pub(crate) committed_records: u64,
-    pub(crate) max_batch_records: u64,
+/// The durable writer's queue depth and its commit counters since the kernel started.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DurableWriterHealthSnapshot {
+    /// Requests waiting for the writer.
+    pub queued: u64,
+    pub committed_batches: u64,
+    pub committed_records: u64,
+    pub max_batch_records: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1522,16 +1527,23 @@ impl DurableStateWriter {
                 operation: "durable_state.enqueue_write",
                 message: "durable writer is shutting down".to_string(),
             })?;
-        sender
-            .try_send(request)
-            .map_err(|error| DaemonError::LocalTransport {
+        self.health.enqueued.fetch_add(1, Ordering::AcqRel);
+        sender.try_send(request).map_err(|error| {
+            self.health.enqueued.fetch_sub(1, Ordering::AcqRel);
+            DaemonError::LocalTransport {
                 operation: "durable_state.enqueue_write",
                 message: error.to_string(),
-            })
+            }
+        })
     }
 
     fn health_snapshot(&self) -> DurableWriterHealthSnapshot {
         DurableWriterHealthSnapshot {
+            queued: self
+                .health
+                .enqueued
+                .load(Ordering::Acquire)
+                .saturating_sub(self.health.received.load(Ordering::Acquire)),
             committed_batches: self.health.committed_batches.load(Ordering::Acquire),
             committed_records: self.health.committed_records.load(Ordering::Acquire),
             max_batch_records: self.health.max_batch_records.load(Ordering::Acquire),
@@ -1600,10 +1612,13 @@ fn run_durable_writer_with(
     let mut pending = None;
     loop {
         storage.after_request(&health);
-        let Some(first) = pending
-            .take()
-            .or_else(|| storage.next_request(&receiver, &mut connection, &health))
-        else {
+        let Some(first) = pending.take().or_else(|| {
+            let request = storage.next_request(&receiver, &mut connection, &health);
+            health
+                .received
+                .fetch_add(u64::from(request.is_some()), Ordering::AcqRel);
+            request
+        }) else {
             break;
         };
         if health.fatal.load(Ordering::Acquire) {
@@ -1785,7 +1800,11 @@ fn run_durable_writer_with(
             if health.fatal.load(Ordering::Acquire) {
                 return None;
             }
-            match receiver.try_recv() {
+            let received = receiver.try_recv();
+            health
+                .received
+                .fetch_add(u64::from(received.is_ok()), Ordering::AcqRel);
+            match received {
                 Ok(DurableWriterRequest::Ordinary(request)) => Some(request),
                 Ok(request) => {
                     pending = Some(request);

@@ -749,6 +749,7 @@ pub struct DaemonHealthProjection {
     pub sample_counts: std::collections::BTreeMap<String, usize>,
     #[serde(default)]
     pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,
+    pub durable_writer: crate::durable_state::DurableWriterHealthSnapshot,
 }
 
 impl DaemonHealthProjection {
@@ -809,6 +810,7 @@ impl DaemonHealthProjection {
             request_timings: Vec::new(),
             sample_counts: Default::default(),
             app_lock: crate::runtime::app_lock::AppLockHealthSnapshot::default(),
+            durable_writer: Default::default(),
         }
     }
 }

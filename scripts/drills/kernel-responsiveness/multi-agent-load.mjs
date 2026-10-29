@@ -212,6 +212,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
       durable_events_per_s: +((after.events - before.events) / elapsed).toFixed(2),
+      durable_writer: projection.durable_writer,
       latency: Object.fromEntries(Object.entries(timings).filter(([, v]) => v.length).map(([kind, values]) => [kind, distribution(values)])),
       request_timings: timingsOf(projection, ['relay.status', 'session.state.get', 'session.list', 'session.create', 'session.end', 'session.attach', 'prompt.submit', 'prompt.cancel', 'room.pinned.set', 'machine_file.read']) }
     save()
@@ -232,6 +233,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     writer_cpu_percent_under_load: { value: load.writer_cpu_percent, limit: 40 },
     rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 },
     // The kernel reports its durable writer queue and commits in GetDaemonHealth.
+    durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
   }
   out.checks = checks

@@ -95,6 +95,10 @@ pub(crate) async fn build_daemon_health_projection(
         ),
     );
     projection.app_lock = crate::runtime::app_lock::app_lock_health_snapshot();
+    projection.durable_writer = input
+        .runtime_state
+        .durable_state_store()
+        .writer_health_snapshot();
     projection.request_timings = input.request_metrics.snapshot();
     bounds::bound(projection)
 }
