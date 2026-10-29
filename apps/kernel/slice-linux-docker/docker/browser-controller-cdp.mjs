@@ -581,6 +581,7 @@ export class BrowserCdpClient {
   isTargetSessionAttemptCurrent(attempt) {
     return this.targetSessionAttempts.get(attempt.targetId) === attempt
       && !attempt.invalidated
+      && !attempt.detachedSessionIds.has(attempt.sessionId)
       && this.connectionEpoch === attempt.epoch
       && this.connection === attempt.connection
       && attempt.connection.isOpen()
@@ -593,6 +594,7 @@ export class BrowserCdpClient {
       connection,
       epoch: this.connectionEpoch,
       targetId,
+      detachedSessionIds: new Set(),
       published: false,
       invalidated: false,
     };
@@ -1444,7 +1446,13 @@ export class BrowserCdpClient {
 
   invalidateTargetSession(targetId, sessionId) {
     const pending = this.targetSessionAttempts.get(targetId);
-    if (pending && (sessionId === undefined || pending.sessionId === undefined || pending.sessionId === sessionId)) {
+    // Until attach replies, this detach may belong to a retired attempt. Match
+    // it against the returned session before rejecting the current callers.
+    if (pending && sessionId !== undefined && pending.sessionId === undefined) {
+      pending.detachedSessionIds.add(sessionId);
+      return;
+    }
+    if (pending && (sessionId === undefined || pending.sessionId === sessionId)) {
       pending.invalidated = true;
       this.targetSessionAttempts.delete(targetId);
       pending.rejectInvalidated(new BrowserControllerError(

@@ -293,7 +293,7 @@ test("close during target setup rejects waiters and stale cleanup cannot erase a
   }
 });
 
-test("target detachment invalidates an in-flight attach and a retry survives its late result", { timeout: 5_000 }, async () => {
+test("target detachment before the attach reply rejects that session and permits retry", { timeout: 5_000 }, async () => {
   const firstAttachStarted = deferred();
   const releaseFirstAttach = deferred();
   const staleDetach = deferred();
@@ -322,14 +322,14 @@ test("target detachment invalidates an in-flight attach and a retry survives its
     await firstAttachStarted.promise;
     connection.emit({
       method: "Target.detachedFromTarget",
-      sessionId: "detached-session",
-      params: { sessionId: "detached-session", targetId: "target-a" },
+      sessionId: "stale-session",
+      params: { sessionId: "stale-session", targetId: "target-a" },
     });
+    releaseFirstAttach.resolve();
     await invalidated;
+    await staleDetach.promise;
 
     assert.equal(await browser.ensureTargetSession(activeConnection, "target-a"), "current-session");
-    releaseFirstAttach.resolve();
-    await staleDetach.promise;
     assert.equal(attachCalls, 2);
     assert.equal(browser.sessionsByTarget.get("target-a"), "current-session");
   } finally {
@@ -367,6 +367,91 @@ for (const writer of [false, true]) {
       assert.equal(attachCalls, 1);
       assert.equal(countCalls(connection, "Target.detachFromTarget"), 1);
       assert.equal(await ensure(connection, "target-a"), "session-2");
+    } finally {
+      release.resolve();
+      await browser.close();
+    }
+  });
+
+  for (const detachBeforeReply of [false, true]) {
+    test(`MP-08/MP-09/MP-10/MP-11 retired ${kind} detach ${detachBeforeReply ? "before" : "after"} its attach reply preserves a pending replacement`, { timeout: 5_000 }, async () => {
+      const firstStarted = deferred(), releaseFirst = deferred(), firstDetached = deferred();
+      const replacementStarted = deferred(), releaseReplacement = deferred();
+      let attachCalls = 0;
+      const detach = () => connection.emit({
+        method: "Target.detachedFromTarget",
+        params: { sessionId: "retired", targetId: "target-a" },
+      });
+      const connection = controlledConnection(async (method, params) => {
+        if (method === "Target.attachToTarget") {
+          if (++attachCalls === 1) {
+            firstStarted.resolve();
+            await releaseFirst.promise;
+            return { sessionId: "retired" };
+          }
+          replacementStarted.resolve();
+          await releaseReplacement.promise;
+          return { sessionId: "replacement" };
+        }
+        if (method === "Target.detachFromTarget" && params.sessionId === "retired") {
+          if (!detachBeforeReply) detach();
+          firstDetached.resolve();
+        }
+        return {};
+      });
+      const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+      const ensure = writer ? browser.ensureWriterTargetSession.bind(browser) : browser.ensureTargetSession.bind(browser);
+      try {
+        await browser.ensureConnection();
+        const first = ensure(connection, "target-a");
+        const rejected = assert.rejects(first, { code: "browser_cdp_disconnected" });
+        await firstStarted.promise;
+        await browser.forgetTarget("target-a");
+        await rejected;
+
+        const replacements = [ensure(connection, "target-a"), ensure(connection, "target-a")];
+        const results = replacements.map(promise => promise.then(sessionId => ({ sessionId }), error => ({ code: error.code })));
+        await replacementStarted.promise;
+        if (detachBeforeReply) detach();
+        releaseFirst.resolve();
+        await firstDetached.promise;
+        releaseReplacement.resolve();
+        assert.deepEqual(await Promise.all(results), [{ sessionId: "replacement" }, { sessionId: "replacement" }]);
+        assert.equal(await ensure(connection, "target-a"), "replacement");
+        assert.equal(attachCalls, 2);
+        assert.equal(browser.targetsBySession.get("replacement"), "target-a");
+        assert.equal(countCalls(connection, "Target.detachFromTarget", call => call.params.sessionId === "replacement"), 0);
+      } finally {
+        releaseFirst.resolve();
+        releaseReplacement.resolve();
+        await browser.close();
+      }
+    });
+  }
+
+  test(`MP-08/MP-09/MP-10/MP-11 current ${kind} detach before its attach reply rejects callers and allows retry`, { timeout: 5_000 }, async () => {
+    const started = deferred(), release = deferred();
+    let attachCalls = 0;
+    const connection = controlledConnection(async method => {
+      if (method === "Target.attachToTarget") {
+        if (++attachCalls === 1) { started.resolve(); await release.promise; return { sessionId: "detached" }; }
+        return { sessionId: "replacement" };
+      }
+      return {};
+    });
+    const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+    const ensure = writer ? browser.ensureWriterTargetSession.bind(browser) : browser.ensureTargetSession.bind(browser);
+    try {
+      await browser.ensureConnection();
+      const first = ensure(connection, "target-a"), second = ensure(connection, "target-a");
+      const rejected = Promise.all([first, second].map(promise => assert.rejects(promise, { code: "browser_cdp_disconnected" })));
+      await started.promise;
+      connection.emit({ method: "Target.detachedFromTarget", params: { sessionId: "detached", targetId: "target-a" } });
+      release.resolve();
+      await rejected;
+      assert.equal(countCalls(connection, "Page.enable"), 0);
+      assert.equal(countCalls(connection, "Network.enable"), 0);
+      assert.equal(await ensure(connection, "target-a"), "replacement");
     } finally {
       release.resolve();
       await browser.close();
