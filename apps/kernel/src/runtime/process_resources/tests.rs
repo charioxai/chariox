@@ -98,11 +98,12 @@ fn outside_end_uses_issued_ids_and_keeps_an_unrelated_process_alive() {
     let domain = prepared.start(child.id()).unwrap();
     domain.bind_key("outside-end-regression");
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while domain.samples().is_empty() && std::time::Instant::now() < deadline {
+    while samples_for_key("outside-end-regression").is_empty()
+        && std::time::Instant::now() < deadline
+    {
         std::thread::sleep(Duration::from_millis(25));
     }
-    let id = domain
-        .samples()
+    let id = samples_for_key("outside-end-regression")
         .into_iter()
         .find(|row| row.pid == child.id())
         .unwrap()
@@ -136,8 +137,10 @@ fn cgroup_observations_include_children_that_detach_between_samples() {
         .spawn()
         .unwrap();
     let domain = prepared.start(child.id()).unwrap();
+    let key = format!("detached-tree-{}", child.id());
+    domain.bind_key(&key);
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while domain.samples().is_empty() && std::time::Instant::now() < deadline {
+    while samples_for_key(&key).is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     child.stdin.take().unwrap().write_all(b"go\n").unwrap();
@@ -149,7 +152,7 @@ fn cgroup_observations_include_children_that_detach_between_samples() {
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     let mut observed = false;
     while std::time::Instant::now() < deadline {
-        if domain.samples().iter().any(|row| row.pid == detached) {
+        if samples_for_key(&key).iter().any(|row| row.pid == detached) {
             observed = true;
             break;
         }
@@ -191,7 +194,7 @@ fn shell_exec_keeps_owned_root_and_subsequent_children_addressable() {
     let wait_samples = |expected| {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            let rows = domain.samples();
+            let rows = samples_for_key(&key);
             if rows.len() >= expected || std::time::Instant::now() >= deadline {
                 break rows;
             }
@@ -265,8 +268,10 @@ fn watchdog_covers_children_created_after_shell_exec() {
         cgroup: None,
     };
     let domain = prepared.start(child.id()).unwrap();
+    let key = format!("watchdog-exec-{}", child.id());
+    domain.bind_key(&key);
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while domain.samples().is_empty() && std::time::Instant::now() < deadline {
+    while samples_for_key(&key).is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
     child
