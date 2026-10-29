@@ -134,3 +134,33 @@ fn claude_onboarding_errors_do_not_echo_a_private_launch_home() {
     assert!(!ambient.join(".claude.json").exists());
     assert_eq!(fs::read_to_string(target).unwrap(), "unchanged");
 }
+
+#[cfg(unix)]
+#[test]
+fn claude_onboarding_errors_keep_public_selected_profile_paths() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("claude-public-profile-error");
+    let selected = root.path().join("public-profile");
+    fs::create_dir(&selected).unwrap();
+    let target = root.path().join("unchosen-state");
+    fs::write(&target, "unchanged").unwrap();
+    std::os::unix::fs::symlink(&target, selected.join(".claude.json")).unwrap();
+    let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+    environment.insert(
+        "HOME",
+        zeroize::Zeroizing::new("private-unused-home-fixture".into()),
+    );
+    let request =
+        LaunchProviderRequest::new("session", "claude", "claude-headless", "selected", "haiku")
+            .with_provider_account_env(BTreeMap::from([(
+                "CLAUDE_CONFIG_DIR".into(),
+                selected.display().to_string(),
+            )]))
+            .with_provider_credential_env(environment);
+    let error = ensure_claude_headless_onboarding_state(Some(&request))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not a regular file"));
+    assert!(error.contains(&selected.display().to_string()));
+    assert!(!error.contains("private-unused-home-fixture"));
+}

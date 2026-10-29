@@ -330,10 +330,6 @@ fn ensure_claude_headless_onboarding_state(
                 // HOME may be a private launch binding. Keep its value out of errors.
                 for (name, value) in request.provider_credential_env.iter() {
                     if name == "HOME" && !value.is_empty() {
-                        message = message.replace(
-                            &state_path.display().to_string(),
-                            "[selected Claude profile state]",
-                        );
                         message = message.replace(value, "[redacted]");
                     }
                 }
