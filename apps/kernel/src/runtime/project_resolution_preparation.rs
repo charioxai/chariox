@@ -47,6 +47,13 @@ fn matching_workspace<'a>(candidate: &'a Candidate, workspace: &str) -> Option<&
                 .iter()
                 .find(|path| RuntimeProject::workspace_paths_match(path, workspace))
         })
+        .or_else(|| {
+            let canonical = std::fs::canonicalize(workspace).ok()?;
+            candidate
+                .workspaces
+                .iter()
+                .find(|path| std::fs::canonicalize(path).ok().as_ref() == Some(&canonical))
+        })
         .map(String::as_str)
 }
 pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {

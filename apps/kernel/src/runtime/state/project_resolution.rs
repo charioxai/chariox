@@ -541,4 +541,105 @@ mod tests {
             .is_empty());
         std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     }
+    // MP-08 / MP-10 / MP-11: interpose realpath to model an unavailable saved mount.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r6_environment_create_session_ignores_unrelated_stalled_saved_workspace() {
+        if std::env::var_os("CHARIOX_R6_REALPATH_CHILD").is_none() {
+            let root = crate::test_support::TestWorktree::new("r6-saved-mount");
+            let source = root.path().join("stall.c");
+            let library = root.path().join("stall.so");
+            std::fs::write(
+                &source,
+                r#"
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+char *realpath(const char *path, char *resolved) {
+    const char *blocked=getenv("CHARIOX_R6_SAVED_WORKSPACE");
+    if (blocked && !strcmp(path,blocked)) usleep(2000000);
+    char *(*next)(const char *, char *)=dlsym(RTLD_NEXT,"realpath");
+    return next(path,resolved);
+}
+"#,
+            )
+            .unwrap();
+            assert!(std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&library)
+                .arg(source)
+                .arg("-ldl")
+                .status()
+                .unwrap()
+                .success());
+            let test_name = std::thread::current().name().unwrap().to_owned();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    test_name.as_str(),
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("CHARIOX_R6_REALPATH_CHILD", "1")
+                .env(
+                    "CHARIOX_R6_SAVED_WORKSPACE",
+                    root.path().join("unavailable"),
+                )
+                .env("LD_PRELOAD", library)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "ordinary CreateSession traversed unrelated saved storage: {}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            assert!(
+                String::from_utf8_lossy(&result.stdout).contains("1 passed;"),
+                "the prepared-workspace regression must actually run"
+            );
+            return;
+        }
+        let root = crate::test_support::TestWorktree::new("r6-healthy-session");
+        let blocked = std::env::var("CHARIOX_R6_SAVED_WORKSPACE").unwrap();
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![crate::session::RuntimeProject::new(
+                "saved-unavailable",
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                blocked,
+                "Unavailable",
+                crate::session::RuntimeProjectKind::Default,
+            )]);
+        let began = std::time::Instant::now();
+        let response = r4_dispatch(
+            &router,
+            "r6-create-healthy-folder",
+            crate::local::LocalDaemonRequest::CreateSession(root.session_request()),
+        )
+        .await
+        .unwrap();
+        let elapsed = began.elapsed();
+        if let Ok(LocalDaemonResponse::SessionCreated { session, .. }) = &response {
+            state.delete_session_id(session.id()).await.unwrap();
+        }
+        assert!(
+            matches!(response, Ok(LocalDaemonResponse::SessionCreated { .. })),
+            "healthy local session must be created: {response:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "unrelated saved workspace blocked ordinary CreateSession for {elapsed:?}"
+        );
+    }
+
+
 }
