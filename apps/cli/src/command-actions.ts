@@ -152,7 +152,7 @@ type CommandActionDeps =
   focusedAgentId: () => string | null
   supportsAgentTriggers?: () => Promise<boolean>
   supportsTriggerDeliveryResend?: () => Promise<boolean>
-  /** Sends a trigger change or a legacy CreateAgentPromptSchedule. */
+  /** Sends a trigger change and returns the session it answers with. */
   sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
   runWorkflowRegistryEntry?: (
     name: string,
@@ -525,10 +525,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       return
     }
     const sessionId = deps.sessionState().id
-    const supportsTriggers = await deps.supportsAgentTriggers?.() ?? false
-    const legacyWait = !supportsTriggers && action.type === "create"
-      && /^\/wait-(in|every)(?:\s|$)/.test(command.raw)
-    if (!supportsTriggers && !legacyWait) {
+    if (!(await deps.supportsAgentTriggers?.() ?? false)) {
       deps.flashFooter(`kernel too old for agent triggers (requires protocol ${agentTriggersMinimumProtocolVersion}); upgrade the kernel`, "error")
       return
     }
@@ -557,15 +554,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       deps.flashFooter("agent triggers are unavailable in this kernel", "error")
       return
     }
-    const request = legacyWait && action.type === "create"
-      ? { CreateAgentPromptSchedule: {
-        session_id: sessionId,
-        agent_id: agentId,
-        kind: action.repeat === "every" ? "recurring" : "once",
-        interval_seconds: Math.max(1, Math.round(action.minutes * 60)),
-        ...(action.prompt.trim() ? { prompt: action.prompt.trim() } : {}),
-      } }
-      : action.type === "create"
+    const request = action.type === "create"
       ? createAgentScheduleTriggerRequest({
         sessionId,
         agentId,

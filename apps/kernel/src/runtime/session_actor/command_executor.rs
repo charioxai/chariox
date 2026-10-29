@@ -330,16 +330,6 @@ impl SessionRuntimeCommandExecutor {
                     .cancel_room_environment_action(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CreateAgentPromptSchedule(request) => Box::pin(async move {
-                self.store
-                    .create_agent_prompt_schedule(request, &caller_user_id)
-                    .await
-            }),
-            LocalDaemonRequest::CancelAgentPromptSchedule(request) => Box::pin(async move {
-                self.store
-                    .cancel_agent_prompt_schedule(request, &caller_user_id)
-                    .await
-            }),
             LocalDaemonRequest::CreateAgentTrigger(request) => Box::pin(async move {
                 self.store
                     .create_agent_trigger(request, &caller_user_id)

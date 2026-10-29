@@ -146,9 +146,9 @@ export function submitPromptRequest(
   }
 }
 
-export const agentTriggersMinimumProtocolVersion = 576
+export const agentTriggersMinimumProtocolVersion = 900
 export const agentTriggersCapability = "agent_triggers_v1"
-export const triggerDeliveryMinimumProtocolVersion = 582
+export const triggerDeliveryMinimumProtocolVersion = 901
 export const triggerDeliveryResendCapability = "agent_trigger_resend_v1"
 
 export function createAgentScheduleTriggerRequest(options: {

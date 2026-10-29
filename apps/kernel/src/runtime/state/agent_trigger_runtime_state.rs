@@ -149,30 +149,6 @@ impl KernelRuntimeState {
         Ok(crate::local::LocalDaemonResponse::AgentTriggerCreated { trigger, session })
     }
 
-    pub(crate) async fn create_agent_prompt_schedule(
-        &self,
-        request: crate::local::CreateAgentPromptScheduleRequest,
-        caller_user_id: &str,
-    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let repeat = match request.kind {
-            crate::session::AgentPromptScheduleKind::Once => AgentTriggerRepeat::Once,
-            crate::session::AgentPromptScheduleKind::Recurring => AgentTriggerRepeat::Every,
-        };
-        let (trigger, session) = self.create_agent_schedule_trigger(
-            &request.session_id,
-            &request.agent_id,
-            caller_user_id,
-            request.interval_seconds,
-            repeat,
-            AgentTriggerBusyPolicy::Queue,
-            request.prompt,
-        )?;
-        let schedule = trigger
-            .legacy_schedule()
-            .expect("a new schedule trigger is enabled");
-        Ok(crate::local::LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session })
-    }
-
     pub(crate) async fn update_agent_trigger(
         &self,
         request: crate::local::UpdateAgentTriggerRequest,
@@ -302,37 +278,9 @@ impl KernelRuntimeState {
         Ok(crate::local::LocalDaemonResponse::TriggerDeliveryResent { session })
     }
 
-    pub(crate) async fn cancel_agent_prompt_schedule(
-        &self,
-        request: crate::local::CancelAgentPromptScheduleRequest,
-        caller_user_id: &str,
-    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
-        let schedule = self
-            .owned
-            .session_store
-            .get_session(&request.session_id)?
-            .agent_triggers()
-            .iter()
-            .find(|trigger| trigger.id() == request.schedule_id)
-            .and_then(AgentTrigger::legacy_schedule)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "agent prompt schedule cancel",
-                message: format!(
-                    "no /wait schedule `{}` in session `{}`; a disabled trigger is deleted with DeleteAgentTrigger",
-                    request.schedule_id, request.session_id
-                ),
-            })?;
-        let (_, session) = self.delete_agent_trigger_by_id(
-            &request.session_id,
-            &request.schedule_id,
-            caller_user_id,
-        )?;
-        Ok(crate::local::LocalDaemonResponse::AgentPromptScheduleCancelled { schedule, session })
-    }
-
     #[expect(
         clippy::too_many_arguments,
-        reason = "Both the trigger and legacy /wait requests pass the same distinct fields."
+        reason = "A schedule trigger is created from distinct request fields and the caller identity."
     )]
     fn create_agent_schedule_trigger(
         &self,
@@ -422,8 +370,8 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_prompt_access(trigger.agent_id(), caller_user_id, operation)
         {
-            // A /wait schedule stored before triggers were deleted with their
-            // agent can outlive it; any session member may remove it.
+            // A trigger whose agent is already gone has no prompt access to
+            // check; any session member may remove it.
             Err(DaemonError::AgentNotFound { .. }) => Ok(()),
             result => result.map(|_| ()),
         }

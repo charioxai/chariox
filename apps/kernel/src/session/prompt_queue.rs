@@ -176,12 +176,7 @@ static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
-    /// Read from `agent_prompt_schedule_id` in state written before protocol 900.
-    #[serde(
-        default,
-        alias = "agent_prompt_schedule_id",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) agent_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_client_id: Option<String>,
@@ -1300,13 +1295,6 @@ mod tests {
         let promoted = restored.with_id("running-1");
         assert_eq!(promoted.agent_trigger_id(), Some("wait-1"));
         assert!(promoted.hidden_system_context().is_empty());
-
-        let mut legacy = serde_json::to_value(private).unwrap();
-        let legacy_fields = legacy.as_object_mut().unwrap();
-        let trigger_id = legacy_fields.remove("agent_trigger_id").unwrap();
-        legacy_fields.insert("agent_prompt_schedule_id".to_string(), trigger_id);
-        let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
-        assert_eq!(legacy.agent_trigger_id.as_deref(), Some("wait-1"));
     }
 
     #[test]

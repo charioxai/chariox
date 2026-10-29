@@ -840,7 +840,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendAgentTriggerRequest: async (request) => {
       const response = await client.send<Record<string, unknown>>(request)
-      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted", "AgentPromptScheduleCreated", "TriggerDeliveryResent"]
+      const payload = ["AgentTriggerCreated", "AgentTriggerUpdated", "AgentTriggerDeleted", "TriggerDeliveryResent"]
         .map((key) => response[key] as { session?: RuntimeSession } | undefined)
         .find(Boolean)
       if (!payload?.session) {

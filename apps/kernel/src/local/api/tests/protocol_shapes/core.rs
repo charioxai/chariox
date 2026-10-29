@@ -283,52 +283,6 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
     );
 }
 
-#[test]
-fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
-    assert_eq!(
-        LOCAL_DAEMON_PROTOCOL_VERSION,
-        crate::test_support::expected_local_protocol_version()
-    );
-
-    let create = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Recurring,
-            interval_seconds: 300,
-            prompt: Some("Continue the audit.".to_string()),
-        },
-    );
-    assert_eq!(
-        serde_json::to_value(create).expect("agent prompt schedule request should encode"),
-        serde_json::json!({
-            "CreateAgentPromptSchedule": {
-                "session_id": "session-1",
-                "agent_id": "agent-1",
-                "kind": "recurring",
-                "interval_seconds": 300,
-                "prompt": "Continue the audit."
-            }
-        })
-    );
-
-    let cancel = LocalDaemonRequest::CancelAgentPromptSchedule(
-        crate::local::CancelAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            schedule_id: "schedule-1".to_string(),
-        },
-    );
-    assert_eq!(
-        serde_json::to_value(cancel).expect("agent prompt schedule cancellation should encode"),
-        serde_json::json!({
-            "CancelAgentPromptSchedule": {
-                "session_id": "session-1",
-                "schedule_id": "schedule-1"
-            }
-        })
-    );
-}
-
 /// Protocol 901: a trigger firing the provider did not confirm is listed on the
 /// session, and the person resends it.
 #[test]
@@ -384,8 +338,7 @@ fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
     );
 }
 
-/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
-/// older clients keep reading them as `agent_prompt_schedules`.
+/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers.
 #[test]
 fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     assert_eq!(
@@ -467,11 +420,8 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_prompt_schedules"),
-        Some(&serde_json::json!([{
-            "id": "trigger-1", "agent_id": "agent-1", "kind": "once", "interval_seconds": 60,
-            "prompt": "Continue from where you left off.", "created_at_ms": 1_000,
-            "next_run_at_ms": 61_000, "runs_dispatched": 0,
-        }]))
+        None,
+        "sessions no longer carry the old /wait schedule view"
     );
     assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),

@@ -51,8 +51,6 @@ impl SessionActor {
                 | LocalDaemonRequest::SubmitRoomEnvironmentBrowserAction(_)
                 | LocalDaemonRequest::ReadRoomEnvironmentClipboard(_)
                 | LocalDaemonRequest::CancelRoomEnvironmentAction(_)
-                | LocalDaemonRequest::CreateAgentPromptSchedule(_)
-                | LocalDaemonRequest::CancelAgentPromptSchedule(_)
                 | LocalDaemonRequest::CreateAgentTrigger(_)
                 | LocalDaemonRequest::UpdateAgentTrigger(_)
                 | LocalDaemonRequest::DeleteAgentTrigger(_)

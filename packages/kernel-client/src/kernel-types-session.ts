@@ -74,7 +74,6 @@ export type RuntimeSession = {
   queued_metaagent_tasks?: QueuedMetaagentTask[]
   agent_triggers?: AgentTrigger[]
   trigger_deliveries?: TriggerDelivery[]
-  agent_prompt_schedules?: AgentPromptSchedule[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -129,7 +128,7 @@ export type AgentTriggerSource = {
   next_run_at_ms: number
 }
 
-/** Protocol 576: what fires prompts into an agent's own conversation. */
+/** Protocol 900: what fires prompts into an agent's own conversation. */
 export type AgentTrigger = {
   id: string
   agent_id: string
@@ -146,7 +145,7 @@ export type AgentTrigger = {
   last_error?: string | null
 }
 
-/** Protocol 582: a trigger firing the provider did not confirm; the person can resend it once. */
+/** Protocol 901: a trigger firing the provider did not confirm; the person can resend it once. */
 export type TriggerDelivery = {
   prompt_id: string
   trigger_id: string
@@ -156,20 +155,6 @@ export type TriggerDelivery = {
   busy_policy: AgentTriggerBusyPolicy
   state: "not_confirmed" | "resent"
   recorded_at_ms: number
-}
-
-/** The protocol < 576 view of an enabled schedule trigger. */
-export type AgentPromptSchedule = {
-  id: string
-  agent_id: string
-  kind: "once" | "recurring"
-  interval_seconds: number
-  prompt: string
-  created_at_ms: number
-  next_run_at_ms: number
-  runs_dispatched: number
-  last_triggered_at_ms?: number | null
-  last_error?: string | null
 }
 
 export type MetaagentTask = {

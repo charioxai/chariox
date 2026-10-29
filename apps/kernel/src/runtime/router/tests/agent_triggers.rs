@@ -10,7 +10,7 @@ fn boxed_schedule_future<F: std::future::Future>(
 }
 
 #[tokio::test]
-async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_and_cancel() {
+async fn wait_schedule_triggers_start_queue_recur_and_delete() {
     let worktree = crate::test_support::TestWorktree::new("agent-prompt-schedules");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -27,14 +27,11 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
-    let once_request = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Once,
-            interval_seconds: 60,
-            prompt: None,
-        },
+    let once_request = wait_request(
+        &session,
+        &agent,
+        crate::session::AgentTriggerRepeat::Once,
+        None,
     );
     let once_command =
         KernelCommand::from_local_request("create-wait-in", None, None, &once_request);
@@ -42,7 +39,10 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         .await
         .expect("one-shot schedule should create");
     let once_schedule = match once {
-        LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerCreated {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(schedule.prompt(), "Continue from where you left off.");
             assert_eq!(session.agent_triggers().len(), 1);
             schedule
@@ -50,14 +50,11 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         response => panic!("unexpected one-shot schedule response: {response:?}"),
     };
 
-    let recurring_request = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Recurring,
-            interval_seconds: 60,
-            prompt: Some("Check whether more work remains.".to_string()),
-        },
+    let recurring_request = wait_request(
+        &session,
+        &agent,
+        crate::session::AgentTriggerRepeat::Every,
+        Some("Check whether more work remains."),
     );
     let recurring_command =
         KernelCommand::from_local_request("create-wait-every", None, None, &recurring_request);
@@ -65,7 +62,10 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         .await
         .expect("recurring schedule should create");
     let recurring_schedule = match recurring {
-        LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerCreated {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(session.agent_triggers().len(), 2);
             schedule
         }
@@ -130,19 +130,21 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         assert_eq!(trigger.next_run_at_ms(), now_ms + 60_000);
     }
 
-    let cancel_request = LocalDaemonRequest::CancelAgentPromptSchedule(
-        crate::local::CancelAgentPromptScheduleRequest {
+    let cancel_request =
+        LocalDaemonRequest::DeleteAgentTrigger(crate::local::DeleteAgentTriggerRequest {
             session_id: session.id().to_string(),
-            schedule_id: recurring_schedule.id().to_string(),
-        },
-    );
+            trigger_id: recurring_schedule.id().to_string(),
+        });
     let cancel_command =
         KernelCommand::from_local_request("cancel-wait-every", None, None, &cancel_request);
     let cancelled = boxed_schedule_future(|| router.dispatch(cancel_command, cancel_request))
         .await
         .expect("recurring schedule should cancel");
     match cancelled {
-        LocalDaemonResponse::AgentPromptScheduleCancelled { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerDeleted {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(schedule.id(), recurring_schedule.id());
             assert!(session.agent_triggers().is_empty());
             assert_eq!(
@@ -330,6 +332,25 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
     );
 }
 
+/// What `/wait-in` and `/wait-every` send: a queue-policy schedule trigger.
+fn wait_request(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+    repeat: crate::session::AgentTriggerRepeat,
+    prompt: Option<&str>,
+) -> LocalDaemonRequest {
+    LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
+            interval_seconds: 60,
+            repeat,
+        },
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: prompt.map(str::to_string),
+    })
+}
+
 fn every_minute(
     session: &crate::session::RuntimeSession,
     agent: &crate::agent::AgentInstance,
@@ -426,7 +447,7 @@ async fn busy_policy_steers_or_queues_each_trigger_on_a_running_agent() {
 }
 
 #[tokio::test]
-async fn destroying_an_agent_removes_its_wait_schedules() {
+async fn destroying_an_agent_removes_its_triggers() {
     let worktree = crate::test_support::TestWorktree::new("trigger-agent-destroy");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, kept) = crate::app::KernelSessionService::new(&mut app)
@@ -437,15 +458,17 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
         .expect("agent should spawn");
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     for agent_id in [kept.id(), destroyed.id()] {
-        let request = LocalDaemonRequest::CreateAgentPromptSchedule(
-            crate::local::CreateAgentPromptScheduleRequest {
+        let request =
+            LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent_id.to_string(),
-                kind: crate::session::AgentPromptScheduleKind::Recurring,
-                interval_seconds: 600,
+                source: crate::local::AgentTriggerSourceRequest::Schedule {
+                    interval_seconds: 600,
+                    repeat: crate::session::AgentTriggerRepeat::Every,
+                },
+                busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
                 prompt: None,
-            },
-        );
+            });
         let command = KernelCommand::from_local_request("create-wait-every", None, None, &request);
         boxed_schedule_future(|| router.dispatch(command, request))
             .await
@@ -463,166 +486,13 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
         .await
         .expect("snapshot should read");
     let snapshot = serde_json::to_value(&snapshot).unwrap();
-    let schedule_agents = snapshot["agent_prompt_schedules"]
+    let schedule_agents = snapshot["agent_triggers"]
         .as_array()
         .expect("the kept agent's schedule should remain")
         .iter()
         .map(|schedule| schedule["agent_id"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(schedule_agents, vec![kept.id()]);
-}
-
-#[test]
-fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_view() {
-    let session = crate::session::RuntimeSession::new(
-        "session-wait-reload",
-        None,
-        "workspace",
-        "worktree",
-        "machine",
-        "kernel",
-    );
-    let legacy = serde_json::json!({
-        "id": "wait-1", "agent_id": "agent-1", "kind": "recurring", "interval_seconds": 300,
-        "prompt": "Continue the audit.", "created_at_ms": 1_000, "next_run_at_ms": 301_000,
-        "runs_dispatched": 2, "last_triggered_at_ms": 1_000,
-    });
-    let mut written_before = serde_json::to_value(&session).unwrap();
-    written_before["agent_prompt_schedules"] = serde_json::json!([legacy.clone()]);
-
-    let migrated: crate::session::RuntimeSession =
-        serde_json::from_value(written_before).expect("a pre-900 session should read");
-    let [trigger] = migrated.agent_triggers() else {
-        panic!("the /wait-every schedule should become one trigger");
-    };
-    assert_eq!(trigger.id(), "wait-1");
-    assert_eq!(trigger.agent_id(), "agent-1");
-    assert_eq!(
-        trigger.source(),
-        &crate::session::AgentTriggerSource::Schedule {
-            interval_seconds: 300,
-            repeat: crate::session::AgentTriggerRepeat::Every,
-            next_run_at_ms: 301_000,
-        }
-    );
-    assert_eq!(
-        trigger.busy_policy(),
-        crate::session::AgentTriggerBusyPolicy::Queue
-    );
-    assert!(trigger.enabled());
-    assert_eq!(trigger.fired(), 2);
-    assert_eq!(trigger.created_by_user_id(), None);
-
-    // Written again it carries both shapes, and reading that back neither
-    // duplicates nor loses the trigger.
-    let written = serde_json::to_value(&migrated).unwrap();
-    assert_eq!(
-        written["agent_prompt_schedules"],
-        serde_json::json!([legacy])
-    );
-    let reread: crate::session::RuntimeSession = serde_json::from_value(written).unwrap();
-    assert_eq!(reread.agent_triggers(), migrated.agent_triggers());
-}
-
-#[tokio::test]
-async fn a_migrated_wait_schedule_whose_agent_is_gone_is_removed_with_a_notice() {
-    let worktree = crate::test_support::TestWorktree::new("trigger-orphan");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let session_store = app.session_state_store();
-    // Before 900 a /wait-every outlived its destroyed agent.
-    let mut stored =
-        serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap();
-    stored["agent_prompt_schedules"] = serde_json::json!([{
-        "id": "wait-orphan", "agent_id": "agent-destroyed-before-900", "kind": "recurring",
-        "interval_seconds": 60, "prompt": "Check.", "created_at_ms": 1_000, "next_run_at_ms": 61_000,
-    }]);
-    session_store.restore_session(serde_json::from_value(stored).unwrap());
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(61_000)).await;
-
-    let snapshot = router
-        .runtime_state
-        .session_snapshot(session.id())
-        .await
-        .expect("snapshot should read");
-    assert!(snapshot.agent_triggers().is_empty());
-    let notices = router
-        .app
-        .lock()
-        .await
-        .terminal_stream_store()
-        .notice_records();
-    assert!(
-        notices.iter().any(|notice| notice
-            .message
-            .contains("Trigger `wait-orphan` was removed: its agent")),
-        "the removal is reported, not silent"
-    );
-}
-
-#[tokio::test]
-async fn legacy_cancel_refuses_a_disabled_trigger_without_deleting_it() {
-    let worktree = crate::test_support::TestWorktree::new("trigger-legacy-cancel");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
-        .runtime_state
-        .create_agent_trigger(
-            every_minute(
-                &session,
-                &agent,
-                crate::session::AgentTriggerBusyPolicy::Queue,
-            ),
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should create")
-    else {
-        panic!("unexpected trigger response");
-    };
-    router
-        .runtime_state
-        .update_agent_trigger(
-            crate::local::UpdateAgentTriggerRequest {
-                session_id: session.id().to_string(),
-                trigger_id: trigger.id().to_string(),
-                busy_policy: None,
-                prompt: None,
-                enabled: Some(false),
-            },
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should disable");
-
-    let refused = router
-        .runtime_state
-        .cancel_agent_prompt_schedule(
-            crate::local::CancelAgentPromptScheduleRequest {
-                session_id: session.id().to_string(),
-                schedule_id: trigger.id().to_string(),
-            },
-            agent.owner_user_id(),
-        )
-        .await;
-    assert!(
-        refused.is_err(),
-        "a disabled trigger is not a /wait schedule"
-    );
-    let snapshot = router
-        .runtime_state
-        .session_snapshot(session.id())
-        .await
-        .expect("snapshot should read");
-    assert_eq!(snapshot.agent_triggers().len(), 1);
-    assert!(!snapshot.agent_triggers()[0].enabled());
 }
 
 #[tokio::test]

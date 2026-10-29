@@ -901,36 +901,6 @@ impl SessionRuntimeStore {
         self.with_session_projection_action_result(result).await
     }
 
-    pub(super) async fn create_agent_prompt_schedule(
-        &self,
-        request: crate::local::CreateAgentPromptScheduleRequest,
-        caller_user_id: &str,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
-        let result = self
-            .state
-            .create_agent_prompt_schedule(request, caller_user_id)
-            .await;
-        self.with_session_projection_action_result(result).await
-    }
-
-    pub(super) async fn cancel_agent_prompt_schedule(
-        &self,
-        request: crate::local::CancelAgentPromptScheduleRequest,
-        caller_user_id: &str,
-    ) -> (
-        Result<LocalDaemonResponse, DaemonError>,
-        Option<SessionProjectionAction>,
-    ) {
-        let result = self
-            .state
-            .cancel_agent_prompt_schedule(request, caller_user_id)
-            .await;
-        self.with_session_projection_action_result(result).await
-    }
-
     pub(super) async fn create_agent_trigger(
         &self,
         request: crate::local::CreateAgentTriggerRequest,

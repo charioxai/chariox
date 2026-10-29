@@ -55,8 +55,6 @@ pub(super) fn session_response_projection_action(
         | LocalDaemonResponse::AgentArchived { session, .. }
         | LocalDaemonResponse::AgentForked { session, .. }
         | LocalDaemonResponse::SessionConfigUpdated { session, .. }
-        | LocalDaemonResponse::AgentPromptScheduleCreated { session, .. }
-        | LocalDaemonResponse::AgentPromptScheduleCancelled { session, .. }
         | LocalDaemonResponse::AgentTriggerCreated { session, .. }
         | LocalDaemonResponse::AgentTriggerUpdated { session, .. }
         | LocalDaemonResponse::AgentTriggerDeleted { session, .. }
@@ -204,8 +202,6 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::UndoTurn(request) => &request.session_id,
         LocalDaemonRequest::ForkAgent(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
-        LocalDaemonRequest::CreateAgentPromptSchedule(request) => &request.session_id,
-        LocalDaemonRequest::CancelAgentPromptSchedule(request) => &request.session_id,
         LocalDaemonRequest::CreateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::DeleteAgentTrigger(request) => &request.session_id,

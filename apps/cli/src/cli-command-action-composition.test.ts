@@ -37,7 +37,7 @@ for (const supported of [false, true]) {
       assert.ok(notices.some(message => /sent again/.test(message)))
     } else {
       assert.deepEqual(resends, [])
-      assert.ok(notices.some(message => /582.*upgrade/.test(message)))
+      assert.ok(notices.some(message => /901.*upgrade/.test(message)))
     }
   })
 }

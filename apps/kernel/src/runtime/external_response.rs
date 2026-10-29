@@ -433,8 +433,6 @@ response_policies! {
         PromptSetting,
         PromptSettingPreview,
         PromptSettingsReset,
-        AgentPromptScheduleCreated,
-        AgentPromptScheduleCancelled,
         AgentTriggerCreated,
         AgentTriggerUpdated,
         AgentTriggerDeleted,

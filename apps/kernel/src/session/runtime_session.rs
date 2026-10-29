@@ -134,7 +134,7 @@ pub struct RuntimeSession {
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
-    #[serde(flatten)]
+    #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
     agent_triggers: AgentTriggers,
     /// Trigger firings the provider did not confirm, newest last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

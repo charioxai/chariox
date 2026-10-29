@@ -1,9 +1,6 @@
 //! Agent triggers fire prompts into an agent's own conversation.
-//! `/wait-in` and `/wait-every` are schedule triggers. Sessions written before
-//! protocol 900 stored them as `agent_prompt_schedules`; they are migrated when
-//! read, and the same legacy shape is still written for older clients.
-use serde::ser::SerializeMap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+//! `/wait-in` and `/wait-every` are schedule triggers.
+use serde::{Deserialize, Serialize};
 
 /// What a firing does while its agent is running a turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,148 +346,16 @@ impl AgentTrigger {
                 .saturating_mul(1_000),
         );
     }
-
-    fn from_legacy_schedule(schedule: AgentPromptSchedule) -> Self {
-        Self {
-            id: schedule.id,
-            agent_id: schedule.agent_id,
-            created_by_user_id: None,
-            source: AgentTriggerSource::Schedule {
-                interval_seconds: schedule.interval_seconds,
-                repeat: match schedule.kind {
-                    AgentPromptScheduleKind::Once => AgentTriggerRepeat::Once,
-                    AgentPromptScheduleKind::Recurring => AgentTriggerRepeat::Every,
-                },
-                next_run_at_ms: schedule.next_run_at_ms,
-            },
-            busy_policy: AgentTriggerBusyPolicy::Queue,
-            prompt: schedule.prompt,
-            enabled: true,
-            created_at_ms: schedule.created_at_ms,
-            fired: schedule.runs_dispatched,
-            coalesced: 0,
-            last_fired_at_ms: schedule.last_triggered_at_ms,
-            last_outcome: None,
-            last_error: schedule.last_error,
-            dispatch_in_flight: false,
-            dispatch_generation: 0,
-        }
-    }
-
-    /// The protocol < 900 view of an enabled schedule trigger.
-    pub fn legacy_schedule(&self) -> Option<AgentPromptSchedule> {
-        if !self.enabled {
-            return None;
-        }
-        let AgentTriggerSource::Schedule {
-            interval_seconds,
-            repeat,
-            next_run_at_ms,
-        } = &self.source;
-        Some(AgentPromptSchedule {
-            id: self.id.clone(),
-            agent_id: self.agent_id.clone(),
-            kind: match repeat {
-                AgentTriggerRepeat::Once => AgentPromptScheduleKind::Once,
-                AgentTriggerRepeat::Every => AgentPromptScheduleKind::Recurring,
-            },
-            interval_seconds: *interval_seconds,
-            prompt: self.prompt.clone(),
-            created_at_ms: self.created_at_ms,
-            next_run_at_ms: *next_run_at_ms,
-            runs_dispatched: self.fired,
-            last_triggered_at_ms: self.last_fired_at_ms,
-            last_error: self.last_error.clone(),
-        })
-    }
 }
 
-/// The `/wait-in` and `/wait-every` kinds of protocol < 900 clients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentPromptScheduleKind {
-    Once,
-    Recurring,
-}
-
-/// The protocol < 900 schedule shape: read to migrate, written for older clients.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentPromptSchedule {
-    id: String,
-    agent_id: String,
-    kind: AgentPromptScheduleKind,
-    interval_seconds: u64,
-    prompt: String,
-    created_at_ms: u64,
-    next_run_at_ms: u64,
-    #[serde(default)]
-    runs_dispatched: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_triggered_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    last_error: Option<String>,
-}
-
-impl AgentPromptSchedule {
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-
-    pub fn prompt(&self) -> &str {
-        &self.prompt
-    }
-
-    pub fn next_run_at_ms(&self) -> u64 {
-        self.next_run_at_ms
-    }
-}
-
-/// A session's triggers. Serialized as `agent_triggers` plus the derived
-/// legacy `agent_prompt_schedules`; reading migrates legacy entries that have
-/// no trigger yet, so a session written by an older kernel loses none.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// A session's triggers, serialized as `agent_triggers`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct AgentTriggers(pub(crate) Vec<AgentTrigger>);
 
-impl Serialize for AgentTriggers {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let legacy = self
-            .0
-            .iter()
-            .filter_map(AgentTrigger::legacy_schedule)
-            .collect::<Vec<_>>();
-        let mut map = serializer.serialize_map(None)?;
-        if !self.0.is_empty() {
-            map.serialize_entry("agent_triggers", &self.0)?;
-        }
-        if !legacy.is_empty() {
-            map.serialize_entry("agent_prompt_schedules", &legacy)?;
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for AgentTriggers {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        struct Record {
-            #[serde(default)]
-            agent_triggers: Vec<AgentTrigger>,
-            #[serde(default)]
-            agent_prompt_schedules: Vec<AgentPromptSchedule>,
-        }
-        let Record {
-            mut agent_triggers,
-            agent_prompt_schedules,
-        } = Record::deserialize(deserializer)?;
-        for schedule in agent_prompt_schedules {
-            if !agent_triggers
-                .iter()
-                .any(|trigger| trigger.id == schedule.id)
-            {
-                agent_triggers.push(AgentTrigger::from_legacy_schedule(schedule));
-            }
-        }
-        Ok(Self(agent_triggers))
+impl AgentTriggers {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

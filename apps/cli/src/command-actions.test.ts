@@ -88,7 +88,7 @@ test("/trigger list retains unconfirmed firings after their once trigger retired
   assert.doesNotMatch(notices.join("\n"), /already-resent|other-agent|No triggers/)
 })
 
-test("protocol-567 kernels retain /wait aliases and reject trigger-only commands", async () => {
+test("kernels without agent triggers refuse /wait and /trigger with an upgrade notice", async () => {
   const calls: Record<string, unknown>[] = []
   const errors: string[] = []
   const handlers = createCommandActionHandlers(makeCommandDeps({
@@ -99,22 +99,15 @@ test("protocol-567 kernels retain /wait aliases and reject trigger-only commands
     },
     flashFooter: (message: string, tone: string) => { if (tone === "error") errors.push(message) },
   }))
-  for (const raw of ["/wait-in 1 Ping", "/wait-every 0.5 Check"]) {
+  const commands = ["/wait-in 1 Ping", "/wait-every 0.5 Check", "/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]
+  for (const raw of commands) {
     const command = parseSlashCommand(raw)
     assert.equal(command?.kind, "trigger")
     await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
   }
-  assert.deepEqual(calls, [
-    { CreateAgentPromptSchedule: { session_id: "session-1", agent_id: "agent-1", kind: "once", interval_seconds: 60, prompt: "Ping" } },
-    { CreateAgentPromptSchedule: { session_id: "session-1", agent_id: "agent-1", kind: "recurring", interval_seconds: 30, prompt: "Check" } },
-  ])
-  for (const raw of ["/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]) {
-    const command = parseSlashCommand(raw)
-    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
-  }
-  assert.equal(calls.length, 2, "unsupported requests must never reach an old kernel")
-  assert.equal(errors.length, 5)
-  assert.ok(errors.every((message) => /kernel.*576.*upgrade/i.test(message)))
+  assert.equal(calls.length, 0, "no request reaches a kernel without agent triggers")
+  assert.equal(errors.length, commands.length)
+  assert.ok(errors.every((message) => /kernel.*900.*upgrade/i.test(message)))
 })
 
 test("formatAgentListSummary renders aliases and pluralization", () => {

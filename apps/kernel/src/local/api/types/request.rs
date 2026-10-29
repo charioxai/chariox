@@ -356,8 +356,6 @@ pub enum LocalDaemonRequest {
     RequestNativeProviderTurnInteraction(RequestNativeProviderTurnInteractionRequest),
     SubmitPrompt(SubmitPromptRequest),
     SubmitPrompts(SubmitPromptsRequest),
-    CreateAgentPromptSchedule(CreateAgentPromptScheduleRequest),
-    CancelAgentPromptSchedule(CancelAgentPromptScheduleRequest),
     CreateAgentTrigger(CreateAgentTriggerRequest),
     UpdateAgentTrigger(UpdateAgentTriggerRequest),
     DeleteAgentTrigger(DeleteAgentTriggerRequest),

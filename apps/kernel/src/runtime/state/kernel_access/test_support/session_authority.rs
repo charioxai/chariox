@@ -266,15 +266,16 @@ async fn kernel_access_grants_allow_local_invites_and_scheduled_prompts() {
             max_uses: None,
             collaboration_level: Default::default(),
         }),
-        LocalDaemonRequest::CreateAgentPromptSchedule(
-            crate::local::CreateAgentPromptScheduleRequest {
-                session_id: session.id().into(),
-                agent_id: agent.id().into(),
-                kind: crate::session::AgentPromptScheduleKind::Recurring,
+        LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source: crate::local::AgentTriggerSourceRequest::Schedule {
                 interval_seconds: 60,
-                prompt: Some("run after grant expires".into()),
+                repeat: crate::session::AgentTriggerRepeat::Every,
             },
-        ),
+            busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+            prompt: Some("run after grant expires".into()),
+        }),
     ] {
         assert!(state.authorize_external_request(&grant, &request).is_ok());
     }
