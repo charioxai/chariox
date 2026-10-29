@@ -378,4 +378,6 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 721 pairs bounded raw binary relay chunks with relay capability 97.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity (public snapshot schema 14).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 811;
+/// MP-08/MP-09/MP-10/MP-11: allocated 910 adds the optional `images` data-URL list and `images_omitted` count to the
+/// provider tool payload (Claude tool results), and Codex web search and image view tool calls with their lifecycle status.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 910;

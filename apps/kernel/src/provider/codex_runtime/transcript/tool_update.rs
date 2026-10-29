@@ -191,6 +191,46 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             authority: None,
             execution_location: None,
         },
+        "webSearch" => CodexToolTranscriptUpdate {
+            id,
+            tool: Some("web_search".to_string()),
+            status: Some(status),
+            title: None,
+            description: None,
+            text: None,
+            input: item
+                .get("query")
+                .or_else(|| item.pointer("/action/query"))
+                .or_else(|| item.pointer("/action/queries/0"))
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(|query| json!({ "query": query })),
+            output: None,
+            error: None,
+            raw: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
+        },
+        "imageView" => CodexToolTranscriptUpdate {
+            id,
+            tool: Some("view_image".to_string()),
+            status: Some(status),
+            title: None,
+            description: None,
+            text: None,
+            input: item
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(|path| json!({ "path": path })),
+            output: None,
+            error: None,
+            raw: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
+        },
         _ => return None,
     };
     if codex_item_is_home_proxy(item, remote_extension_manifest) {
@@ -275,5 +315,44 @@ fn is_empty_json_value(value: &Value) -> bool {
         Value::Object(items) => items.is_empty(),
         Value::String(text) => text.trim().is_empty(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rendered(item: Value) -> Value {
+        let state = CodexToolTranscriptState {
+            item,
+            streamed_output: String::new(),
+            pending_output_bytes: Vec::new(),
+            output_stream: None,
+            progress_messages: Vec::new(),
+            last_emitted: None,
+        };
+        let text = render_codex_tool_transcript_update(&state, &RemoteExtensionManifest::default())
+            .expect("a tool update");
+        serde_json::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn web_searches_and_image_views_are_tool_calls() {
+        let search = rendered(
+            json!({"type": "webSearch", "id": "ws-1", "status": "completed", "query": "svg viewbox"}),
+        );
+        assert_eq!(search["tool"], "web_search");
+        assert_eq!(search["status"], "completed");
+        assert_eq!(search["input"], json!({"query": "svg viewbox"}));
+        let action = rendered(
+            json!({"type": "webSearch", "id": "ws-2", "action": {"type": "search", "query": "svg path"}}),
+        );
+        assert_eq!(action["input"], json!({"query": "svg path"}));
+        let view = rendered(json!({"type": "imageView", "id": "iv-1", "path": "/work/chart.png"}));
+        assert_eq!(view["tool"], "view_image");
+        assert_eq!(view["input"], json!({"path": "/work/chart.png"}));
+        assert!(super::super::item::is_codex_tool_item(
+            &json!({"type": "webSearch"})
+        ));
     }
 }

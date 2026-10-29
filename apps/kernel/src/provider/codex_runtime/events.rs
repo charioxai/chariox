@@ -14,7 +14,8 @@ use super::transcript::{
     append_legacy_tool_output_delta, append_text_delta, append_tool_output_delta,
     append_tool_progress, codex_exec_command_item, decode_codex_output_delta_chunk,
     normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
-    text_from_content_value, CodexTextTranscriptState, CodexToolTranscriptState,
+    text_from_content_value, CodexItemLifecycle, CodexTextTranscriptState,
+    CodexToolTranscriptState,
 };
 use super::turn::{
     note_assistant_item_completed, note_tool_item_completed, note_tool_item_started,
@@ -148,9 +149,12 @@ pub(super) fn apply_notification_with_manifest(
             turn_tracker.note_activity();
             trace_codex_tool_item("item_lifecycle", &item);
             note_tool_item_started(turn_tracker, &item);
-            if let Some(chunk) =
-                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
-            {
+            if let Some(chunk) = sync_tool_item_with_manifest(
+                tool_items,
+                &item,
+                CodexItemLifecycle::Started,
+                remote_extension_manifest,
+            ) {
                 chunks.push(chunk);
             }
         }
@@ -159,9 +163,12 @@ pub(super) fn apply_notification_with_manifest(
             trace_codex_tool_item("item_lifecycle", &item);
             note_tool_item_completed(turn_tracker, &item);
             note_assistant_item_completed(turn_tracker, &item);
-            if let Some(chunk) =
-                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
-            {
+            if let Some(chunk) = sync_tool_item_with_manifest(
+                tool_items,
+                &item,
+                CodexItemLifecycle::Completed,
+                remote_extension_manifest,
+            ) {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(text_items, &item) {
                 chunks.push(chunk);
@@ -176,6 +183,7 @@ pub(super) fn apply_notification_with_manifest(
             if let Some(chunk) = sync_tool_item_with_manifest(
                 tool_items,
                 &codex_exec_command_item(&call_id, command, cwd, None),
+                CodexItemLifecycle::Started,
                 remote_extension_manifest,
             ) {
                 chunks.push(chunk);
@@ -203,9 +211,12 @@ pub(super) fn apply_notification_with_manifest(
             if let Some(exit_code) = exit_code {
                 item["exitCode"] = json!(exit_code);
             }
-            if let Some(chunk) =
-                sync_tool_item_with_manifest(tool_items, &item, remote_extension_manifest)
-            {
+            if let Some(chunk) = sync_tool_item_with_manifest(
+                tool_items,
+                &item,
+                CodexItemLifecycle::Completed,
+                remote_extension_manifest,
+            ) {
                 chunks.push(chunk);
             }
         }
@@ -305,9 +316,12 @@ pub(super) fn apply_notification_with_manifest(
             for item in &items {
                 note_tool_item_completed(turn_tracker, item);
                 note_assistant_item_completed(turn_tracker, item);
-                if let Some(chunk) =
-                    sync_tool_item_with_manifest(tool_items, item, remote_extension_manifest)
-                {
+                if let Some(chunk) = sync_tool_item_with_manifest(
+                    tool_items,
+                    item,
+                    CodexItemLifecycle::Completed,
+                    remote_extension_manifest,
+                ) {
                     chunks.push(chunk);
                 } else if let Some(chunk) = sync_completed_text_item(text_items, item) {
                     chunks.push(chunk);
@@ -450,9 +464,12 @@ pub(super) fn backfill_completed_turn(
     }
     if let Some(items) = items {
         for item in items {
-            if let Some(chunk) =
-                sync_tool_item_with_manifest(&mut state.tool_items, item, remote_extension_manifest)
-            {
+            if let Some(chunk) = sync_tool_item_with_manifest(
+                &mut state.tool_items,
+                item,
+                CodexItemLifecycle::Completed,
+                remote_extension_manifest,
+            ) {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(&mut state.text_items, item) {
                 chunks.push(chunk);

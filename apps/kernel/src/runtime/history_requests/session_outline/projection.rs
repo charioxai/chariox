@@ -262,8 +262,15 @@ fn outline_blob_preview(events: &[&HistoryEvent]) -> Option<String> {
         SessionHistoryEntryKind::ProviderTool => {
             let mut snapshot = serde_json::Map::new();
             for entry in &entries {
-                if let Some(serde_json::Value::Object(fields)) = provider_tool_payload(&entry.text)
+                if let Some(serde_json::Value::Object(mut fields)) =
+                    provider_tool_payload(&entry.text)
                 {
+                    // An imported Codex result record names itself, not the call; the call keeps the tool name.
+                    if fields.get("tool").and_then(serde_json::Value::as_str)
+                        == Some("function_call_output")
+                    {
+                        fields.remove("tool");
+                    }
                     snapshot.extend(fields);
                 }
             }
@@ -278,6 +285,7 @@ fn outline_blob_preview(events: &[&HistoryEvent]) -> Option<String> {
                 "contentItems",
                 "result",
                 "agentsStates",
+                "images",
             ] {
                 snapshot.remove(key);
             }
@@ -786,6 +794,58 @@ mod tests {
                 "input": { "command": "ls -la" },
             })
         );
+    }
+
+    #[test]
+    fn an_imported_codex_call_preview_keeps_the_tool_name_of_the_call() {
+        let events = vec![
+            provider_tool_event_with_text(
+                1,
+                "function_call-call_1",
+                serde_json::json!({
+                    "tool": "exec_command", "status": "called", "call_id": "call_1",
+                    "arguments": { "cmd": "ls" },
+                })
+                .to_string(),
+            ),
+            provider_tool_event_with_text(
+                2,
+                "function_call_output-call_1",
+                serde_json::json!({
+                    "tool": "function_call_output", "status": "completed", "call_id": "call_1",
+                    "output": "a.rs",
+                })
+                .to_string(),
+            ),
+        ];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        let preview: serde_json::Value =
+            serde_json::from_str(blobs[0].preview.as_deref().expect("tool preview")).unwrap();
+        assert_eq!(preview["tool"], "exec_command");
+        assert_eq!(preview["status"], "completed");
+    }
+
+    #[test]
+    fn a_tool_blob_preview_leaves_out_result_images() {
+        let events = vec![provider_tool_event_with_text(
+            1,
+            "call-img",
+            serde_json::json!({
+                "id": "call-img",
+                "tool": "Read",
+                "status": "completed",
+                "input": { "file_path": "chart.png" },
+                "images": ["data:image/png;base64,iVBORw0KGgo="],
+            })
+            .to_string(),
+        )];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        let preview = blobs[0].preview.as_deref().expect("tool preview");
+        assert!(!preview.contains("images") && !preview.contains("base64"));
     }
 
     #[test]

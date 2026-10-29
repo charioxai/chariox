@@ -29,19 +29,16 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
   assert.ok(pair.relayPeer >= 124, "paired peer allocation is 124, above target 121")
 })
 
-test("managed upgrades retain the target and the current and previous releases", () => {
+test("managed upgrades retain the current and previous releases and the target", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
-  assert.deepEqual(policy.upgradeFrom, [629, 636, pair.local])
-  assert.deepEqual(policy.rollbackTo, [629, 636, pair.local])
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
+  assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
 })
 
 test("dictation603 keeps its allocated protocol floors", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
-  const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
-  assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
-  assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
-  assert.equal(admittedPredecessorProtocols.length, 1)
 })

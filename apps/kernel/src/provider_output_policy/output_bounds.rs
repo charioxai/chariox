@@ -6,6 +6,8 @@ use serde_json::Value;
 
 pub(crate) const MAX_PROVIDER_OUTPUT_RECORD_BYTES: usize = 16 * 1024;
 const MAX_PROVIDER_TOOL_STRING_BYTES: usize = 12 * 1024;
+/// Four 512 KB images with their data-URL prefixes fit; the `images` list is bounded by whole images, never by cutting a data URL.
+const MAX_PROVIDER_TOOL_IMAGES_BYTES: usize = 2560 * 1024;
 const PROVIDER_TOOL_DELTA_GATE_LIMIT: usize = 4096;
 const PROVIDER_TOOL_DELTA_TAIL_SAMPLE_BYTES: usize = 256;
 const PROVIDER_TOOL_LARGE_PAYLOAD_BYTES: usize = 512 * 1024;
@@ -36,7 +38,11 @@ pub(crate) fn terminal_output_delta_bytes(
     if !matches!(kind, TerminalOutputKind::ProviderTool) {
         return bytes.to_vec();
     }
-    if bytes.len() > PROVIDER_TOOL_LARGE_PAYLOAD_BYTES {
+    if bytes
+        .len()
+        .saturating_sub(provider_tool_images_bytes(bytes))
+        > PROVIDER_TOOL_LARGE_PAYLOAD_BYTES
+    {
         if let Some(delta) =
             large_provider_tool_delta_bytes(session_id, provider_run_id, agent_id, merge_key, bytes)
         {
@@ -275,8 +281,64 @@ fn hash_bounded_string(hash: u64, value: &str) -> u64 {
     hash_bytes(hash, &bytes[bytes.len().saturating_sub(tail_len)..])
 }
 
+/// The size of the payload's `images` data URLs; only payloads past the live cap are parsed to find it.
+fn provider_tool_images_bytes(bytes: &[u8]) -> usize {
+    if bytes.len() <= PROVIDER_TOOL_LARGE_PAYLOAD_BYTES {
+        return 0;
+    }
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("images").and_then(Value::as_array).cloned())
+        .map(|images| images.iter().filter_map(Value::as_str).map(str::len).sum())
+        .unwrap_or(0)
+}
+
+/// Takes the `images` data URLs out of a tool payload so the string and record caps never cut one.
+fn take_tool_images(object: &mut serde_json::Map<String, Value>) -> Vec<String> {
+    match object.remove("images") {
+        Some(Value::Array(images)) => images
+            .into_iter()
+            .filter_map(|image| match image {
+                Value::String(image) => Some(image),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Puts back the images that fit the image budget, whole; each one that does not is counted in `images_omitted` for the client to say so.
+fn restore_tool_images(object: &mut serde_json::Map<String, Value>, images: Vec<String>) {
+    let mut omitted = object
+        .get("images_omitted")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut used = 0;
+    let mut kept = Vec::new();
+    for image in images {
+        if used + image.len() <= MAX_PROVIDER_TOOL_IMAGES_BYTES {
+            used += image.len();
+            kept.push(Value::String(image));
+        } else {
+            omitted += 1;
+        }
+    }
+    if !kept.is_empty() {
+        object.insert("images".to_string(), Value::Array(kept));
+    }
+    if omitted > 0 {
+        object.insert("images_omitted".to_string(), Value::Number(omitted.into()));
+    }
+}
+
 fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut value = serde_json::from_slice::<Value>(bytes).ok()?;
+    let images = match &mut value {
+        Value::Object(object) => take_tool_images(object),
+        _ => Vec::new(),
+    };
+    let image_bytes: usize = images.iter().map(String::len).sum();
+    let original_bytes = bytes.len().saturating_sub(image_bytes);
     let mut truncated = false;
     truncate_json_strings(&mut value, &mut truncated);
     if truncated {
@@ -284,17 +346,20 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
             object.insert("chariox_truncated".to_string(), Value::Bool(true));
             object.insert(
                 "chariox_original_bytes".to_string(),
-                Value::Number((bytes.len() as u64).into()),
+                Value::Number((original_bytes as u64).into()),
             );
         }
     }
     let encoded = serde_json::to_vec(&value).ok()?;
     if encoded.len() <= MAX_PROVIDER_OUTPUT_RECORD_BYTES {
-        return Some(encoded);
+        if let Value::Object(object) = &mut value {
+            restore_tool_images(object, images);
+        }
+        return serde_json::to_vec(&value).ok();
     }
     let mut fallback = serde_json::Map::new();
     if let Value::Object(object) = &value {
-        for key in ["id", "tool", "status", "name", "command"] {
+        for key in ["id", "tool", "status", "name", "command", "images_omitted"] {
             if let Some(value) = object.get(key).cloned() {
                 fallback.insert(key.to_string(), value);
             }
@@ -303,8 +368,9 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     fallback.insert("chariox_truncated".to_string(), Value::Bool(true));
     fallback.insert(
         "chariox_original_bytes".to_string(),
-        Value::Number((bytes.len() as u64).into()),
+        Value::Number((original_bytes as u64).into()),
     );
+    restore_tool_images(&mut fallback, images);
     fallback.insert(
         "message".to_string(),
         Value::String(
@@ -555,6 +621,77 @@ mod tests {
             value.get("chariox_truncated").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    fn data_url(bytes: usize) -> String {
+        format!("data:image/png;base64,{}", "A".repeat(bytes))
+    }
+
+    #[test]
+    fn bounded_provider_tool_keeps_whole_images_past_the_record_and_string_caps() {
+        let image = data_url(64 * 1024);
+        let payload = serde_json::json!({
+            "id": "call-1",
+            "status": "completed",
+            "output": "x".repeat(MAX_PROVIDER_OUTPUT_RECORD_BYTES * 2),
+            "images": [image, image],
+        });
+        let bytes = serde_json::to_vec(&payload).expect("payload should encode");
+
+        let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
+
+        let value: Value = serde_json::from_slice(&bounded).expect("bounded tool is json");
+        assert_eq!(value["images"], payload["images"]);
+        assert!(value.get("images_omitted").is_none());
+        assert_eq!(value["chariox_truncated"], true);
+        assert!(value["output"].as_str().unwrap().len() <= MAX_PROVIDER_TOOL_STRING_BYTES);
+    }
+
+    #[test]
+    fn bounded_provider_tool_drops_whole_images_past_the_image_budget_and_counts_them() {
+        let image = data_url(1024 * 1024);
+        let payload = serde_json::json!({
+            "id": "call-1",
+            "status": "completed",
+            "images_omitted": 1,
+            "images": [image, image, image],
+        });
+        let bytes = serde_json::to_vec(&payload).expect("payload should encode");
+
+        let bounded = bounded_terminal_output_bytes(&TerminalOutputKind::ProviderTool, &bytes);
+
+        let value: Value = serde_json::from_slice(&bounded).expect("bounded tool is json");
+        assert_eq!(value["images"], serde_json::json!([image, image]));
+        assert_eq!(value["images_omitted"], 2);
+    }
+
+    #[test]
+    fn provider_tool_images_do_not_make_a_live_payload_a_suppressed_running_record() {
+        let _guard = provider_tool_delta_test_lock()
+            .lock()
+            .expect("provider tool delta test lock should not be poisoned");
+        reset_provider_tool_delta_gate_for_tests();
+        let image = data_url(500 * 1024);
+        let payload = serde_json::json!({
+            "id": "call-big",
+            "status": "completed",
+            "output": "caption",
+            "images": [image, image],
+        });
+        assert!(payload.to_string().len() > PROVIDER_TOOL_LARGE_PAYLOAD_BYTES);
+
+        let delta = terminal_output_delta_bytes(
+            "session-images",
+            "run-images",
+            None,
+            &TerminalOutputKind::ProviderTool,
+            &Some("call-big".to_string()),
+            payload.to_string().as_bytes(),
+        );
+
+        let value: Value = serde_json::from_slice(&delta).expect("delta is json");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["images"], payload["images"]);
     }
 
     #[test]
