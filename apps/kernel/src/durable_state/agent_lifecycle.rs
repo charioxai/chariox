@@ -230,7 +230,8 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.reply_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT i.room_id,i.agent_id FROM agent_inbox i WHERE json_valid(i.payload) AND json_extract(i.payload,'$.reply_requested')=1 AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=i.room_id AND o.source_id='agent-event-' || i.agent_id || '-' || i.sequence) ORDER BY i.room_id,i.agent_id").map_err(sql)?;
+        // Outside recipients (room '') neither request replies nor take deliveries.
+        let mut q = db.prepare("SELECT DISTINCT i.room_id,i.agent_id FROM agent_inbox i WHERE i.room_id>'' AND json_valid(i.payload) AND json_extract(i.payload,'$.reply_requested')=1 AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=i.room_id AND o.source_id='agent-event-' || i.agent_id || '-' || i.sequence) ORDER BY i.room_id,i.agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
@@ -241,7 +242,7 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
