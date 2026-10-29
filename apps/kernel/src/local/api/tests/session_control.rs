@@ -2366,10 +2366,25 @@ fn r6_envp03_edit_detected_requirement_in_newly_attached_folder() {
         let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
         let LocalDaemonResponse::ProjectEnvironment { environment: detected } = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"new-folder-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
         assert_eq!(detected.content_digest, saved.content_digest);
-        assert_eq!(
+        // Detect reports every owner-attached folder; the snapshot saved before the
+        // second attach only has the first, so Detect must leave that part unchanged.
+        let (detected_draft, saved_draft) = (
             environment_draft_for_test(&detected),
-            environment_draft_for_test(&saved)
+            environment_draft_for_test(&saved),
         );
+        assert_eq!(
+            detected_draft["project_requirements"],
+            saved_draft["project_requirements"]
+        );
+        for saved_folder in saved_draft["folders"].as_array().unwrap() {
+            assert!(
+                detected_draft["folders"]
+                    .as_array()
+                    .unwrap()
+                    .contains(saved_folder),
+                "Detect must not change the saved folder: {saved_folder}"
+            );
+        }
         let proposal = detected
             .proposals
             .iter()
@@ -2398,7 +2413,11 @@ fn r6_envp03_edit_detected_requirement_in_newly_attached_folder() {
         edited.title = "Reviewed brief".into();
         edited.required = true;
         folder.requirements = vec![edited.clone()];
-        draft.folders.push(folder);
+        // Later phases already list every owner-attached folder in the detected draft.
+        match draft.folders.iter_mut().find(|f| &f.folder_id == folder_id) {
+            Some(listed) => listed.requirements = folder.requirements,
+            None => draft.folders.push(folder),
+        }
         let preview = serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":detected.revision,"draft":draft}})).unwrap();
         let LocalDaemonResponse::ProjectEnvironmentDiff { diff: preview } = harness
             .dispatch(preview)
