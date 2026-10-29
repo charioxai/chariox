@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::local_mcp_call_audit;
 use super::*;
 
 impl KernelRuntimeState {
@@ -100,7 +101,8 @@ impl KernelRuntimeState {
                 .room_secret_observations
                 .scrub(run.session_id(), response);
         }
-        if run.mcp_servers().iter().any(|server| {
+        let tool_call = local_mcp_call_audit::mcp_tool_call_name(&payload);
+        let outcome = if run.mcp_servers().iter().any(|server| {
             server.name == name
                 && matches!(
                     &server.transport,
@@ -108,12 +110,11 @@ impl KernelRuntimeState {
                         if url == "http://127.0.0.1/mcp"
                 )
         }) {
-            return Err(DaemonError::LocalTransport {
+            Err(DaemonError::LocalTransport {
                 operation: "remote MCP proxy",
                 message: format!("home-proxy MCP `{name}` is no longer granted"),
-            });
-        }
-        let response =
+            })
+        } else {
             crate::runtime::runtime_mcp_proxy_dispatcher::dispatch_authenticated_mcp_proxy_call(
                 provider_run_projection,
                 auth_token,
@@ -121,11 +122,16 @@ impl KernelRuntimeState {
                 payload,
             )
             .await
-            .map_err(|error| {
-                self.owned
-                    .room_secret_observations
-                    .scrub_error(run.session_id(), error)
-            })?;
+        };
+        // Recorded before scrubbing, which can replace the error that tells a denial apart.
+        if let Some(tool) = tool_call {
+            self.record_local_mcp_tool_call(&run, name, &tool, &outcome);
+        }
+        let response = outcome.map_err(|error| {
+            self.owned
+                .room_secret_observations
+                .scrub_error(run.session_id(), error)
+        })?;
         self.owned
             .room_secret_observations
             .scrub(run.session_id(), response)
