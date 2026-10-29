@@ -2,7 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import type { SessionHistoryPageEntry, SessionHistoryOutlineTurn } from "@chariox/kernel-client/kernel-types"
 import { renderTerminalEntriesByTurn, type TerminalTurnState } from "@chariox/transcript-view"
-import { agentTriggerHistoryEntries } from "./agent-trigger-client.js"
+import { AgentTriggerClient, agentTriggerHistoryEntries } from "./agent-trigger-client.js"
 function row(entry_index: number, kind: "user_prompt" | "provider_output", text: string): SessionHistoryPageEntry {
   return { entry_index, fragment_start: 0, fragment_end: text.length, total_chars: text.length, entry: { kind, text, timestamp_ms: entry_index } }
 }
@@ -48,4 +48,24 @@ test("MP-08/MP-10: a trigger prompt in history keeps the origin the kernel label
   const entries = agentTriggerHistoryEntries("agent", [{ turn_id: "turn-1", prompt_id: "prompt-1", started_at_ms: 1, completed_at_ms: 2, lifecycle: "completed",
     user_prompt: prompt, entries: [], summary: row(2, "provider_output", "Done."), blobs: [] }], new Map())
   assert.deepEqual(entries.map(entry => entry.promptOrigin ?? null), ["schedule", null])
+})
+test("MP-08/MP-10: a prompt past the inline limit is shown whole, read from its own history blob", async () => {
+  const text = "p".repeat(20_000)
+  const cut = text.slice(0, 16_384)
+  const prompt = { ...row(1, "user_prompt", cut), fragment_end: cut.length, total_chars: text.length }
+  const turn: SessionHistoryOutlineTurn = { turn_id: "turn-1", prompt_id: "prompt-1", started_at_ms: 1, completed_at_ms: 3, lifecycle: "completed",
+    user_prompt: prompt, entries: [], summary: row(2, "provider_output", "Done."), blobs: [] }
+  const requested: string[][] = []
+  const client = new AgentTriggerClient("session", "trigger", "ignored")
+  Object.assign(client, { kernel: { send: async (request: Record<string, any>) => {
+    if (request.GetSessionHistoryBlobContents) {
+      requested.push(request.GetSessionHistoryBlobContents.blob_ids)
+      return { SessionHistoryBlobContents: { blobs: [{ blob_id: "history:1:1", entries: [row(1, "user_prompt", text)] }] } }
+    }
+    return { AgentTriggerTranscript: { trigger: { agent_id: "agent", enabled: true }, agent_alias: "a", online: true, busy: false, deliveries: [],
+      history: { SessionHistoryOutline: { agents: [{ agent_id: "agent", turns: [turn], next_cursor: null }] } } } }
+  } } })
+  const conversation = await client.conversation()
+  assert.deepEqual(requested, [["history:1:1"]])
+  assert.equal(conversation.entries[0]!.text, text)
 })

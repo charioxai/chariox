@@ -48,7 +48,7 @@ export class AgentTriggerClient {
     const meta = await this.metadata(cursor)
     const outline = meta.history.SessionHistoryOutline.agents.find(a => a.agent_id === meta.trigger.agent_id)
     const turns = outline?.turns ?? []
-    const blobIds = [...new Set(turns.flatMap(turn => turn.blobs.map(blob => blob.blob_id)))]
+    const blobIds = [...new Set(turns.flatMap(turn => [...turn.blobs.map(blob => blob.blob_id), ...(promptIsCut(turn) ? [promptBlobId(turn)] : [])]))]
     const blobs = new Map<string, Entry[]>()
     for (let offset = 0; offset < blobIds.length; offset += 64) {
       const response = await this.kernel.send<{ SessionHistoryBlobContents: { blobs: Array<{ blob_id: string; entries: Entry[] }> } }>({
@@ -88,7 +88,9 @@ export function agentTriggerHistoryEntries(agentId: string, turns: WireTurn[], b
   const entries: TerminalOutputEntry[] = []
   for (const turn of turns) {
     const rows = new Map<number, Entry>()
-    for (const row of [turn.user_prompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? [])]) rows.set(row.entry_index, row)
+    // The outline cuts a prompt at the inline limit and never lists it in `blobs`; its own blob holds the whole text.
+    const fullPrompt = promptIsCut(turn) ? (blobs.get(promptBlobId(turn)) ?? []).filter(row => row.entry_index === turn.user_prompt.entry_index && row.fragment_end === row.total_chars) : []
+    for (const row of [turn.user_prompt, ...fullPrompt, ...turn.entries, ...turn.blobs.flatMap(b => blobs.get(b.blob_id) ?? [])]) rows.set(row.entry_index, row)
     if (turn.summary) {
       const first = turn.summary.entry_index
       const finalOutput = [...rows.values()].filter(row => row.entry.kind === "provider_output" && row.entry_index >= first).sort((a, b) => a.entry_index - b.entry_index)
@@ -105,6 +107,15 @@ export function agentTriggerHistoryEntries(agentId: string, turns: WireTurn[], b
     }
   }
   return entries
+}
+
+function promptIsCut(turn: WireTurn): boolean {
+  return turn.user_prompt.fragment_end < turn.user_prompt.total_chars
+}
+
+/** A history entry's index is its sequence, and a blob id names a sequence range. */
+function promptBlobId(turn: WireTurn): string {
+  return `history:${turn.user_prompt.entry_index}:${turn.user_prompt.entry_index}`
 }
 
 function historySettlement(lifecycle: string): "completed" | "cancelled" | "failed" {
