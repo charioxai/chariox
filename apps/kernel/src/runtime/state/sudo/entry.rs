@@ -284,8 +284,11 @@ impl KernelRuntimeState {
             format!("{requester_name} wants to run one sudo task")
         };
         let message = format!(
-            "Agent: {}\nSession: {}\nTask: {}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
-            presentation.agent_name, presentation.session_name, task_description,
+            "Agent: {}\nSession: {}\nTask: {}{}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
+            presentation.agent_name,
+            presentation.session_name,
+            task_description,
+            super::approval_attachments::approval_text(&request.attachments),
         );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &entry.entry_id,

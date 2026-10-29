@@ -10,6 +10,7 @@ use crate::session::{
 };
 
 mod end_wake;
+mod approval_attachments;
 mod entry;
 mod external;
 pub(crate) mod leased;
