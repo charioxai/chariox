@@ -50,10 +50,16 @@ impl Grant {
     /// Why the grant has ended at `now`, if it has: its deadline passed or
     /// its holder (or a process reusing its identity) is gone.
     pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
+        // The monotonic deadline does not count host sleep; the expiry clients
+        // display does.
         if self
             .clock
             .as_ref()
             .is_some_and(|clock| now >= clock.deadline)
+            || self
+                .summary
+                .expires_at_ms
+                .is_some_and(|expires_at_ms| crate::session::unix_epoch_ms() >= expires_at_ms)
         {
             Some("expiry")
         } else if !self.holder.alive() {
@@ -220,5 +226,31 @@ impl Refusal {
             message: self.message().into(),
             retryable: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::KernelAccessTerm;
+
+    #[test]
+    fn a_timed_grant_ends_at_its_displayed_expiry_after_host_sleep() {
+        let holder = process::inspect(std::process::id()).unwrap().0;
+        let grant = Grant {
+            summary: KernelAccessGrant {
+                grant_id: "slept".into(),
+                owner_user_id: "local".into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                holder_harness: None,
+                term: KernelAccessTerm::Minutes(30),
+                // The deadline below is still ahead, as after a suspend.
+                expires_at_ms: Some(crate::session::unix_epoch_ms() - 60_000),
+            },
+            holder,
+            clock: Some(GrantClock::new(30, 5)),
+        };
+        assert_eq!(grant.ended_reason(Instant::now()), Some("expiry"));
     }
 }
