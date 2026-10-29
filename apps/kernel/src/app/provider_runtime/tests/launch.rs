@@ -101,7 +101,8 @@ fn detached_provider_launch_profile_persistence_failure_cleans_up_runtime() {
     let worktree = crate::test_support::TestWorktree::new("detached-profile-failure");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request().with_agent_defaults(
-            SessionAgentDefaults::new("dev-stub").with_model("native-tui-idle"),
+            // The launch changes the model, so the runtime profile is written.
+            SessionAgentDefaults::new("dev-stub").with_model("model-source"),
         ))
         .expect("session create should succeed");
     let agent_before_launch = app
