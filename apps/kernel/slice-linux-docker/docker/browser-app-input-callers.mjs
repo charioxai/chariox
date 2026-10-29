@@ -22,7 +22,7 @@ export function createInputCallers() {
     if (!event.isTrusted || !edit || !['inserting', 'accepted'].includes(edit.state) || event.inputType !== 'insertText' || event.data !== edit.text) return;
     // A physical key's own default edit has its own source, even when its
     // text equals the queued CDP text. It must not consume that insertion.
-    if (source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target && source.key === event.data) return;
+    if (source?.type === 'keydown' && !source.defaultPrevented && source.target === event.target && /^[^\p{C}]$/u.test(source.key) && source.key === event.data) return;
     // This check runs in the native insertion task, before App listeners and
     // the edit itself. A change after host admission must still type nothing.
     if (edit.state === 'accepted' || edit.element !== event.target || !currentText(edit)) {

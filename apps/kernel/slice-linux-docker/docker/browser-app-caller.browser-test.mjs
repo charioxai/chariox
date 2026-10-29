@@ -110,7 +110,7 @@ test('caller attribution and registered form completion through Chromium', async
           };
         }
         try {
-          await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:'Inserted'},'agent-one');
+          await browserInput(input === 'printable' ? {kind:'key',key:'a'} : {kind:'text',text:input === 'text_shift' ? 'Shift' : input === 'text_arrow' ? 'ArrowLeft' : 'Inserted'},'agent-one');
         } finally { connection.send = send; }
         if (input.startsWith('text_')) assert.equal(moved, true, 'native input intervenes after armText acknowledges');
         if (input === 'text_shift' || input === 'text_arrow') assert.deepEqual(await evaluate('window.interveningKey'), {key:input === 'text_shift' ? 'Shift' : 'ArrowLeft',trusted:true,focused:'filled',value:'',start:0,end:0});
