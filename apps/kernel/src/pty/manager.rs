@@ -562,6 +562,8 @@ impl PtyManager {
                     message: error.to_string(),
                 }
             })?;
+        #[cfg(unix)]
+        let inner_program = request.program.clone();
         let (program, args) = prepared.command(request.program, request.args);
         let mut command = CommandBuilder::new(program);
         for arg in args {
@@ -589,6 +591,17 @@ impl PtyManager {
         if let Some(working_directory) = request.working_directory {
             command.cwd(working_directory);
         }
+
+        #[cfg(unix)]
+        crate::runtime::process_resources::validate_executable(
+            &inner_program,
+            command.get_cwd().map(std::path::Path::new),
+            command.get_env("PATH"),
+        )
+        .map_err(|error| DaemonError::PtySpawn {
+            provider_run_id: request.provider_run_id.clone(),
+            message: error.to_string(),
+        })?;
 
         // portable-pty calls setsid before exec on Unix, including sandbox
         // wrappers. Keep its controlling-terminal and isolation setup intact.

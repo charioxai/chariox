@@ -22,6 +22,36 @@ const MIB: u64 = 1024 * 1024;
 const DEFAULT_LIMIT: u64 = 16384 * MIB;
 const INTERVAL: Duration = Duration::from_millis(250);
 
+#[cfg(unix)]
+pub(crate) fn validate_executable(
+    program: &str,
+    cwd: Option<&std::path::Path>,
+    path: Option<&std::ffi::OsStr>,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    let cwd = cwd.unwrap_or_else(|| Path::new("."));
+    let executable = |path: &Path| {
+        std::fs::metadata(cwd.join(path))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    let available = if program.contains('/') {
+        executable(Path::new(program))
+    } else {
+        let path = path.unwrap_or_else(|| {
+            std::ffi::OsStr::new("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+        });
+        std::env::split_paths(path).any(|directory| executable(&directory.join(program)))
+    };
+    if !available {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "provider executable is missing or not executable; install it and retry",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) struct PreparedDomain {
     limit: u64,
     #[cfg(target_os = "linux")]
