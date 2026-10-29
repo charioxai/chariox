@@ -26,7 +26,7 @@ export type SessionChromeSummaryRenderOptions<TState, TBox = unknown> = {
 }
 
 export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
-  renderer: unknown
+  renderer: { readonly isDestroyed?: boolean }
   createSummaryRenderState: () => TState
   renderSummary: (options: SessionChromeSummaryRenderOptions<TState, TBox>) => void
   syncPromptPlaceholder: () => void
@@ -64,6 +64,8 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
   let footerSummaryBox: TBox | undefined
 
   const apply = () => {
+    // Pending RPCs may finish during terminal restoration.
+    if (deps.renderer.isDestroyed) return
     const footerFlash = deps.getFooterFlash()
     const connectionLabel = deps.getConnectionLabel?.()
     const footerSummary = deps.isAttached()

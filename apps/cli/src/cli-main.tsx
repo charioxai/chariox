@@ -1,6 +1,7 @@
 import { createCliCachedStartup, CliCachedStartup } from "./cli-cached-startup.js"
 import { parseArgs } from "./cli-options.js"
 import process from "node:process"
+import { CLI_RENDERER_EXIT_SIGNALS } from "./cli-process-lifecycle-controller.js"
 import { runContextCommand } from "./context-command.js"
 import { runCloudClientCommand } from "./cloud-client-command.js"
 import { TUI_MOUSE_ENABLED } from "./terminal-mouse-policy.js"
@@ -85,6 +86,7 @@ async function main() {
       targetFps: 60,
       gatherStats: false,
       exitOnCtrlC: false,
+      exitSignals: CLI_RENDERER_EXIT_SIGNALS,
       useKittyKeyboard: {},
       ...(!TUI_MOUSE_ENABLED ? { useThread: false } : {}),
       // MP-08/MP-10: the terminal owns plain drag-selection and Cmd-C.

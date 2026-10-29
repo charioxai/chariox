@@ -33,13 +33,16 @@ for (const args of [["--help"], ["-h"], ["--unknown"], ["unexpected"], ["--works
       const code = path.join(root, "code")
       await mkdir(code)
       await writeFile(path.join(code, "package.json"), '{"type":"module"}')
-      for (const name of ["index", "cli-options", "app-command-catalog"]) {
+      for (const name of ["index", "cli-options", "app-command-catalog", "cli-launcher-parent", "agent-verbs", "user-app-views-flag"]) {
         const result = await transformAsync(await readFile(path.join(source, `${name}.ts`), "utf8"), { filename: `${name}.ts`, presets: [tsPreset] })
         await writeFile(path.join(code, `${name}.js`), result.code)
       }
       // Only the runtime boundary is replaced: any import past admission writes
       // state and binds a real socket, so a help/error path cannot pass silently.
       await writeFile(path.join(code, "cli-main.js"), `import fs from "node:fs"; import net from "node:net"; fs.mkdirSync(process.env.HOME,{recursive:true}); fs.writeFileSync(process.env.HOME+"/admitted","runtime"); net.createServer().listen(Number(process.env.CHARIOX_KERNEL_PORT),"127.0.0.1");`)
+      // Agent verbs now dispatch before cli-main; replace that runtime boundary too.
+      await writeFile(path.join(code, "access-command.js"), 'export async function runAccessCommand(argv) { if (argv[0] !== "access") return false; process.stdout.write("admitted:" + argv.join(" ")); return true }')
+      await writeFile(path.join(code, "kernels-command.js"), 'export async function runKernelsCommand() { return false }')
       await writeFile(path.join(code, "runner.mjs"), 'globalThis.Bun={plugin(){}}; await import("./index.js");')
       for (const occupied of [false, true]) {
         const empty = path.join(root, occupied ? "occupied" : "free")
@@ -92,11 +95,14 @@ for (const args of [["access", "list"], ["sudo", "request"]]) {
       const code = path.join(root, "code")
       await mkdir(code)
       await writeFile(path.join(code, "package.json"), '{"type":"module"}')
-      for (const name of ["index", "cli-options", "app-command-catalog"]) {
+      for (const name of ["index", "cli-options", "app-command-catalog", "cli-launcher-parent", "agent-verbs", "user-app-views-flag"]) {
         const result = await transformAsync(await readFile(path.join(source, `${name}.ts`), "utf8"), { filename: `${name}.ts`, presets: [tsPreset] })
         await writeFile(path.join(code, `${name}.js`), result.code)
       }
       await writeFile(path.join(code, "cli-main.js"), `process.stdout.write("admitted:" + process.argv.slice(2).join(" "))`)
+      // Agent verbs now dispatch before cli-main; replace that runtime boundary too.
+      await writeFile(path.join(code, "access-command.js"), 'export async function runAccessCommand(argv) { if (argv[0] !== "access") return false; process.stdout.write("admitted:" + argv.join(" ")); return true }')
+      await writeFile(path.join(code, "kernels-command.js"), 'export async function runKernelsCommand() { return false }')
       await writeFile(path.join(code, "runner.mjs"), 'globalThis.Bun={plugin(){}}; await import("./index.js");')
       const child = spawn(process.execPath, [path.join(code, "runner.mjs"), ...args], { stdio: ["ignore", "pipe", "pipe"] })
       let stdout = "", stderr = ""

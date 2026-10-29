@@ -155,3 +155,16 @@ test("MP-08 / MP-10 OWNER-24 pending chrome identifies the selected session with
   assert(calls.some(line => line.includes("Loading session session-1")))
   assert(calls.every(line => !line.includes("Waiting room")))
 })
+
+
+// MP-08/MP-11: delayed RPC/timer completion can update chrome after TUI exit.
+test("session chrome ignores updates after its renderer is destroyed", () => {
+  const calls: string[] = []
+  const renderer = { isDestroyed: false }
+  const controller = createSessionChromeRenderController({ ...createDeps({ calls }), renderer })
+  controller.apply()
+  const beforeExit = [...calls]
+  renderer.isDestroyed = true
+  controller.apply()
+  assert.deepEqual(calls, beforeExit)
+})
