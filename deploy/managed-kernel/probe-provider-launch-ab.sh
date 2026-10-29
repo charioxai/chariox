@@ -520,7 +520,6 @@ run_client_probe() {
     PATH=/usr/local/bin:/usr/bin:/bin \
     HOME="$client_home" \
     CHARIOX_KERNEL_URL="ws://127.0.0.1:$kernel_port" \
-    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN="$token" \
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKSPACE="$workspace" \
     CHARIOX_MANAGED_ISOLATION_PROBE_WORKTREE="$workspace" \
     CHARIOX_MANAGED_ISOLATION_PROBE_RESULT="$result_path" \
@@ -531,7 +530,13 @@ run_client_probe() {
     CHARIOX_MANAGED_ISOLATION_PROBE_MODEL=gpt-5.4 \
     CHARIOX_PROBE_PACKAGE_JSON="$probe_package" \
     CHARIOX_PROBE_TIMEOUT_MS="$probe_timeout_ms" \
-    "$NODE" "$probe_script" 2>&1 | sanitize_probe_stream >"$probe_log"; then
+    /bin/bash -c '
+      # Preserve env -i while transferring auth through a private descriptor.
+      IFS= read -r CHARIOX_KERNEL_LOCAL_AUTH_TOKEN <&3 || exit 1
+      exec 3<&-
+      export CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
+      exec "$@"
+    ' chariox-client-probe "$NODE" "$probe_script" 3<<<"$token" 2>&1 | sanitize_probe_stream >"$probe_log"; then
     probe_status="${PIPESTATUS[0]}"
   else
     probe_status="${PIPESTATUS[0]}"
