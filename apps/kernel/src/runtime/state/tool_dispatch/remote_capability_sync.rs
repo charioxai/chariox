@@ -174,6 +174,7 @@ impl KernelRuntimeState {
                         message: error.to_string(),
                     })?,
             );
+            manifest.tools.extend(Self::remote_app_view_tools(agent));
         }
         Ok(manifest)
     }

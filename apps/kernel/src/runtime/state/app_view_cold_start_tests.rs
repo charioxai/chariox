@@ -40,6 +40,13 @@ fn fixture() -> (KernelRuntimeState, String, Cleanup) {
 }
 
 pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cleanup) {
+    fixture_for_owner_with_turn(owner, false)
+}
+
+pub(super) fn fixture_for_owner_with_turn(
+    owner: &str,
+    with_turn: bool,
+) -> (KernelRuntimeState, String, Cleanup) {
     let root =
         std::env::temp_dir().join(format!("chariox-cold-pump-{:016x}", rand::random::<u64>()));
     std::fs::create_dir(&root).unwrap();
@@ -55,12 +62,24 @@ pub(super) fn fixture_for_owner(owner: &str) -> (KernelRuntimeState, String, Cle
     config.user_config.credential_vault.backend = CredentialVaultBackend::ProcessMemory;
     config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
     let mut app = DaemonApp::bootstrap(config).unwrap();
+    let workspace = if with_turn {
+        root.display().to_string()
+    } else {
+        "cold-pump".into()
+    };
     let (session, _) = KernelSessionService::new(&mut app)
-        .create_session(
-            CreateSessionRequest::new("cold-pump", "cold-pump").with_owner_user_id(owner),
-        )
+        .create_session(CreateSessionRequest::new(&workspace, &workspace).with_owner_user_id(owner))
         .unwrap();
     let session = session.id().to_owned();
+    if with_turn {
+        let agent = app
+            .agents()
+            .list_agents()
+            .into_iter()
+            .find(|a| a.session_id() == session)
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, &session, agent.id());
+    }
     let runtime =
         CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
     (runtime, session, cleanup)

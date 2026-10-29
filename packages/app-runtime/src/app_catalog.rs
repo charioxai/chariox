@@ -213,6 +213,12 @@ impl AppCatalog {
     pub fn generation(&self) -> u64 {
         self.binding.token().generation
     }
+    /// The signed UI actions an agent may run through an open view of this
+    /// generation. A v1 package declares none; R4 returns the v2 package's
+    /// `ui-actions` here, and nothing else in the runtime changes.
+    pub fn ui_actions(&self) -> &[chariox_app_package::v2::UiActionDeclaration] {
+        &[]
+    }
     pub fn catalog_digest(&self) -> &str {
         &self.release.catalog_digest
     }

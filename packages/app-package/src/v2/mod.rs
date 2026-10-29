@@ -8,6 +8,7 @@ mod identity;
 mod manifest;
 mod package;
 mod ui_actions;
+mod view_agent;
 mod world;
 
 #[cfg(test)]
@@ -25,6 +26,9 @@ pub use package::{
 pub use ui_actions::{
     check_agreement, check_registration, UiActionDeclaration, UiActionEffect, UiActionField,
     UiActionMismatch,
+};
+pub use view_agent::{
+    check_input, check_registered, find_declared, plan_batch, BatchPlan, ViewActionError,
 };
 pub use world::{check_world, SupportedWorld, WorldId, WorldRefusal, APP_WORLD, MIGRATION_WORLD};
 

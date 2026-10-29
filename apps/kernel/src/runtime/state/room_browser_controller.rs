@@ -107,7 +107,7 @@ impl KernelRuntimeState {
                 .is_some()
     }
 
-    pub(super) async fn room_browser_controller_command(
+    pub(crate) async fn room_browser_controller_command(
         &self,
         session_id: &str,
         command: Command,
@@ -340,10 +340,18 @@ impl KernelRuntimeState {
                 .is_none()
                 .then(|| slice.worker_kernel_ref.clone()),
         };
-        if matches!(command, Command::NoteObservation { .. }) {
-            // MD-N2: Ping is understood by old workers; only send the new variant
-            // after a current, authenticated response from this exact target.
-            let value = format!("md-notes-protocol:{:016x}", rand::random::<u64>());
+        let feature = match &command {
+            Command::NoteObservation { .. } => Some("Room Notes"),
+            Command::AppView {
+                request:
+                    crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. },
+            } => Some("App view agent actions"),
+            _ => None,
+        };
+        if let Some(feature) = feature {
+            // Ping is understood by old workers. Authenticate this exact target's
+            // version before sending a union variant it may not understand.
+            let value = format!("room-browser-protocol:{:016x}", rand::random::<u64>());
             let response = Box::pin(self.send_room_slice_peer_request(
                 &config,
                 target.clone(),
@@ -361,7 +369,9 @@ impl KernelRuntimeState {
                 } if received == value => relay_peer_protocol_version,
                 _ => None,
             };
-            super::room_browser_controller_admission::require_notes_worker_protocol(version)?;
+            super::room_browser_controller_admission::require_room_feature_worker_protocol(
+                version, feature,
+            )?;
         }
         let recovery = receipt_recovery_command(&command);
         let request = |command| RelayPeerRequest::RoomBrowserController {
@@ -389,6 +399,9 @@ impl KernelRuntimeState {
                     crate::transport::room_browser_controller::RoomComputerInputAction::KeyboardHold { duration_ms, .. }
                     | crate::transport::room_browser_controller::RoomComputerInputAction::PointerHold { duration_ms, .. }, ..
                 } => Duration::from_millis(u64::from(*duration_ms) + 15_000),
+                Command::AppView { request: crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { deadline_ms, .. } } => {
+                    Duration::from_secs(15).saturating_add(Duration::from_millis(*deadline_ms))
+                }
                 _ => Duration::from_secs(15),
             };
             self.send_room_slice_peer_request(&config, target, request(command), timeout)
@@ -587,12 +600,14 @@ fn receipt_recovery_command(command: &Command) -> Option<Command> {
         }),
         Command::Action {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
             action,
             timeout_ms,
         } => Some(Command::RecoverAction {
+            agent_id: agent_id.clone(),
             execution_id: execution_id.clone(),
             target_id: target_id.clone(),
             document_id: document_id.clone(),
@@ -1020,6 +1035,7 @@ async fn execute_local(
             .map(|batch| Response::Events { batch }),
         Command::Action {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
@@ -1032,10 +1048,12 @@ async fn execute_local(
             &document_id,
             &node_ref,
             &action,
+            agent_id.as_deref(),
             timeout_ms,
         ),
         Command::RecoverAction {
             execution_id,
+            agent_id,
             target_id,
             document_id,
             node_ref,
@@ -1048,6 +1066,7 @@ async fn execute_local(
             &document_id,
             &node_ref,
             &action,
+            agent_id.as_deref(),
             timeout_ms,
         ),
         Command::ComputerSecretTarget => {

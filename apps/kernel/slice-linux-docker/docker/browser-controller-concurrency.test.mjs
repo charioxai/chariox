@@ -248,3 +248,20 @@ test("an idle App drain does not block lifecycle barriers", { timeout: 3000 }, a
   enqueue.resolve();
   assert.deepEqual((await drain).result.calls, []);
 });
+
+test("a running App agent call neither blocks the answers its handler waits for nor a lifecycle barrier", { timeout: 3000 }, async t => {
+  const running = deferred(), finish = deferred();
+  const server = startServer(t, {
+    async manageTab() { return { closed: true }; },
+    appTabs: {
+      async agent() { running.resolve(); await finish.promise; return { ok: true, value: 1 }; },
+      async respond() { return { delivered: true }; },
+    },
+  }, () => finish.resolve());
+  const call = server.request(1, "browser.app.agent", {});
+  await running.promise;
+  assert.deepEqual((await server.request(2, "browser.app.respond", {})).result, { delivered: true });
+  assert.deepEqual((await server.request(3, "browser.tab", {})).result, { closed: true });
+  finish.resolve();
+  assert.deepEqual((await call).result, { ok: true, value: 1 });
+});

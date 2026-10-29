@@ -139,7 +139,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 232 also carries protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 239 carries local 636 (peers 233 dialogs, 234 outside events,
 /// 235 binary Room exec and 239 archived-agent discovery with the saved provider thread handoff).
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 239;
+/// MP-08/MP-10/MP-11: allocated 245 carries the trusted Room browser-input caller.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 245;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2478,6 +2479,18 @@ mod room_terminal_peer_shapes {
                 Sha256::digest(serde_json::to_vec(&encoded).unwrap())
             ),
             expected_sha256
+        );
+    }
+
+    #[test]
+    fn room_browser_action_caller_snapshot_and_hash() {
+        assert_wire::<RelayPeerRequest>(
+            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":"agent-1","document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
+            "41f2c13ea62d9beb81d1a132d9565af2e073188334f53845e1e79744ae6304fd",
+        );
+        assert_wire::<RelayPeerRequest>(
+            serde_json::json!({"command":{"action":{"kind":"click"},"agent_id":null,"document_id":"doc","execution_id":"input-1","kind":"action","node_ref":"backend:1","target_id":"target","timeout_ms":500},"kind":"room_browser_controller","session_id":"room","slice_id":"slice"}),
+            "4660dbbf9c897fe827902d22e1789099d917918aa1cb2f3ee14dfd0c41715217",
         );
     }
 
