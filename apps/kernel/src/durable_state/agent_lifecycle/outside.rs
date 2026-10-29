@@ -334,33 +334,6 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                     "ack cursor is ahead of the inbox; list events first",
                 ));
             }
-            if !part.home && cursor > part.ack {
-                let mut query=tx.prepare("SELECT payload FROM agent_inbox WHERE room_id='' AND agent_id=?1 AND sequence>?2 AND sequence<=?3 ORDER BY sequence").map_err(sql)?;
-                let rows = query
-                    .query_map(
-                        params![id, sql_integer(part.ack)?, sql_integer(cursor)?],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .map_err(sql)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(sql)?;
-                for payload in rows {
-                    let event: OutsideEvent = decode(&payload)?;
-                    let key = serde_json::to_string(&(event.session_id, event.agent_id))
-                        .map_err(|_| error("event metric encoding failed"))?;
-                    let key = if part.forwarded_counts.len() < 1024
-                        || part.forwarded_counts.contains_key(&key)
-                    {
-                        key
-                    } else {
-                        "_other".into()
-                    };
-                    let count = part.forwarded_counts.entry(key).or_default();
-                    *count = count
-                        .checked_add(1)
-                        .ok_or_else(|| error("event forwarding counter overflow"))?;
-                }
-            }
             part.ack = part.ack.max(cursor);
             part.floor = part.floor.max(part.ack);
             tx.execute(

@@ -1005,3 +1005,36 @@ fn outside_retention_counts_only_when_an_inbox_could_be_full() {
     assert_eq!(retained, 30);
     assert_eq!(part.counted.map(|counted| counted.rows), Some(30));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: every publication decodes and rewrites the parts it
+// reaches, so a part must not grow with the agents whose events it has forwarded.
+#[test]
+fn an_acknowledged_part_does_not_grow_with_forwarded_agents() {
+    let stored = |agents: usize| {
+        let f = Fixture::new();
+        subscribe(&f, "grant", false, vec![target("x", None)]);
+        for i in 0..agents {
+            publish(&f, &format!("{i}"), event("x", &format!("agent-{i:03}")));
+        }
+        let batch = list(&f, "grant");
+        f.store
+            .outside_mutate(Mutation::Ack {
+                id: "grant".into(),
+                cursor: batch.next_cursor,
+            })
+            .unwrap();
+        Connection::open(f.root.join("state.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT length(payload) FROM agent_outside_subscriptions WHERE id='grant'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let (few, many) = (stored(2), stored(60));
+    assert!(
+        many - few < 16,
+        "the part is {few} bytes after 2 forwarded agents and {many} after 60"
+    );
+}

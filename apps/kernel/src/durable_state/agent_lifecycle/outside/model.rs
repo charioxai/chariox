@@ -41,8 +41,6 @@ pub(crate) struct Part {
     #[serde(default)]
     pub cleanup_targets: Vec<EventTarget>,
     #[serde(default)]
-    pub forwarded_counts: BTreeMap<String, u64>,
-    #[serde(default)]
     pub run_states: BTreeMap<String, crate::local::EventRunState>,
     #[serde(default)]
     pub kernel_health: BTreeMap<String, bool>,
@@ -71,7 +69,6 @@ impl Part {
             ended_at_ms: None,
             remote_cursors: BTreeMap::new(),
             cleanup_targets: Vec::new(),
-            forwarded_counts: BTreeMap::new(),
             run_states: BTreeMap::new(),
             kernel_health: BTreeMap::new(),
             counted: None,
