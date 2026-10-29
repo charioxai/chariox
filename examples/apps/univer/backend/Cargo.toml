@@ -1,0 +1,23 @@
+[package]
+name = "chariox-univer"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+chariox-app-sdk = { path = "../../../../packages/app-sdk-rust" }
+futures = "=0.3.31"
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+[workspace]

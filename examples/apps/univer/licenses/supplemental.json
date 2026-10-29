@@ -1,0 +1,17 @@
+{
+  "react-remove-scroll-bar@2.3.8": {
+    "source": "https://raw.githubusercontent.com/theKashey/react-remove-scroll-bar/8ca9ba5ea52de03308fe8ced94f7b159a44d28ff/LICENSE",
+    "path": "react-remove-scroll-bar2.3.8-LICENSE.txt",
+    "sha256": "a79aae0c0f21990d9d963bb3c5a79cdcea9a46f8523ba55c58d7fe776b6ebc84"
+  },
+  "franc-min@6.2.0": {
+    "source": "https://raw.githubusercontent.com/wooorm/franc/3f9f0b51a96c5df32a407dad865a3011ac0fa2d1/license",
+    "path": "franc-min6.2.0-LICENSE.txt",
+    "sha256": "f5e0c5c44706ddda7ac2f9096f848222f1e0e90f88643955041c2735be84592b"
+  },
+  "@esbuild/linux-x64@0.25.12": {
+    "source": "https://raw.githubusercontent.com/evanw/esbuild/208f539945b145e7c9d6d844290f81c3fe5af320/LICENSE.md",
+    "path": "esbuild-linux-x640.25.12-LICENSE.txt",
+    "sha256": "b40ec5baec7bb34fa5b1c09521fa3cd52d5fad7adafed74932a2010d3612a681"
+  }
+}
