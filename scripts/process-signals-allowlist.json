@@ -18,7 +18,7 @@
     },
     {
       "path": "scripts/lint-process-signals.test.mjs",
-      "sha256": "cb15c739199870ae586c80d06f16b373060b1dc38b90415c79145a331d7532be",
+      "sha256": "85e24045b809bc666b428722f1dc07c8a223233be6588087215024fec951a20f",
       "reason": "MP-11 inert fail-first lint fixtures deliberately contain forbidden signal source text; strings are never executed."
     },
     {
