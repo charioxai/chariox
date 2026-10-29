@@ -120,20 +120,7 @@ impl KernelRuntimeState {
             return Ok(false);
         }
         let session = self.owned.session_store.get_session(room)?;
-        let Ok(attachment) = self
-            .owned
-            .attachment_store
-            .get_attachment(prompt.source_attachment_id())
-        else {
-            return Ok(false);
-        };
-        if attachment.owner_user_id() != session.owner_user_id()
-            || !matches!(
-                attachment.capability_level(),
-                crate::attachment::ClientCapabilityLevel::FullTerminal
-                    | crate::attachment::ClientCapabilityLevel::InteractiveStructured
-            )
-        {
+        if !prompt.owner_request() || prompt.source_user_id() != Some(session.owner_user_id()) {
             return Ok(false);
         }
         let Some(previous) = self

@@ -1957,6 +1957,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
+        assert_restart_owner_prompt_retires_failure(false).await;
+    }
+
+    #[tokio::test]
+    async fn queued_restart_owner_prompt_retires_failure_after_source_detaches() {
+        assert_restart_owner_prompt_retires_failure(true).await;
+    }
+
+    async fn assert_restart_owner_prompt_retires_failure(detach_source: bool) {
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
@@ -2139,6 +2148,27 @@ mod tests {
             .any(|interaction| interaction
                 .id()
                 .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+        if detach_source {
+            runtime
+                .with_app_side_effect(|app| {
+                    KernelSessionService::new(app).attach(AttachRequest::new(
+                        &session_id,
+                        "owner-observer",
+                        ClientCapabilityLevel::FullTerminal,
+                    ))
+                })
+                .await
+                .expect("a second terminal keeps the provider active");
+            runtime
+                .with_app_side_effect(|app| KernelSessionService::new(app).detach(attachment.id()))
+                .await
+                .expect("the submitting terminal detaches before provider readiness");
+            assert!(runtime
+                .owned
+                .attachment_store
+                .get_attachment(attachment.id())
+                .is_err());
+        }
         let dispatch = runtime
             .owned
             .advance_next_queued_prompt_dispatch(&session_id, &agent_id, run.id())
