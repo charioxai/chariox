@@ -204,6 +204,14 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
     },
+    /// MP-08/MP-10: protocol 920: the CSS cursor the page shows at this CSS point, for a viewer that shows the page as
+    /// video; answers `{ generation, cursor }` with a cursor keyword.
+    PointerCursor {
+        tab_id: String,
+        generation: u64,
+        x: u32,
+        y: u32,
+    },
     Input {
         tab_id: String,
         generation: u64,

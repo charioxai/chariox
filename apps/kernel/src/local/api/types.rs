@@ -405,4 +405,7 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: landing union 911 carries 910 with 880 (integration received events), 800
 /// (session process samples and controls, `memory_limit` and `outside_end` terminations) and 890 (daemon
 /// health request timings and durable writer queue).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 911;
+/// MP-08/MP-10/MP-11: allocated 920 carries the page's document mode on mirror resets (`document_mode`, the viewer
+/// frame lays out in the page's mode) and adds `KernelBrowser` `pointer_cursor`, the CSS cursor at a point for a
+/// viewer that shows the page as video.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 920;
