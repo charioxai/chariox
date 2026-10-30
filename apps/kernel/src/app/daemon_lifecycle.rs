@@ -146,6 +146,13 @@ impl DaemonApp {
         let history_migration_owner = self.config.daemon_id.clone();
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        #[cfg(unix)]
+        let hot_reload_task = tokio::spawn(crate::hot_reload::serve(
+            self.room_terminals(),
+            self.config
+                .private_runtime_state_root()
+                .join("handover.json"),
+        ));
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -271,6 +278,8 @@ impl DaemonApp {
         if let Some(task) = remote_execution_lease_reaper_task {
             let _ = task.await;
         }
+        #[cfg(unix)]
+        hot_reload_task.abort();
         result
     }
 }

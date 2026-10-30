@@ -68,6 +68,21 @@ impl PreparedDomain {
         Self::with_limit(limit)
     }
 
+    /// For a child that already runs outside a new cgroup, such as a PTY child
+    /// adopted after a hot reload: watched by resident memory alone.
+    pub(crate) fn watchdog() -> std::io::Result<Self> {
+        let limit = configured_limit(
+            std::env::var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB")
+                .ok()
+                .as_deref(),
+        )?;
+        Ok(Self {
+            limit,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+        })
+    }
+
     fn with_limit(limit: u64) -> std::io::Result<Self> {
         if limit < 16 * MIB {
             return Err(std::io::Error::other(

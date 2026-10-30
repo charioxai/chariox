@@ -59,6 +59,9 @@ impl RoomTerminalService {
             if state.removed || state.shutdown {
                 return None;
             }
+            if state.handed_over {
+                return Some(PUMP_INTERVAL);
+            }
             let TerminalState {
                 pty,
                 terminal,

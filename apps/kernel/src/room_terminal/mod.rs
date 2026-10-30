@@ -39,6 +39,8 @@ pub(crate) fn refused_for_test(message: &str) -> crate::error::DaemonError {
 }
 
 pub use events::{CompletionEvents, WatchOwner};
+#[cfg(unix)]
+pub use service::TerminalHandover;
 pub(crate) use service::KERNEL_SECRET_ENVIRONMENT;
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
 pub use types::*;

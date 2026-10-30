@@ -77,6 +77,11 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
             return Ok(());
         }
+        kernel_arguments::Command::HandoverFormat => {
+            #[cfg(unix)]
+            println!("{}", chariox_kernel::hot_reload::HANDOVER_FORMAT);
+            return Ok(());
+        }
         kernel_arguments::Command::PrepareProtectedSliceIdentity(port) => {
             let proof =
                 chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
@@ -114,6 +119,8 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         }
         kernel_arguments::Command::Run => {}
     }
+    #[cfg(unix)]
+    chariox_kernel::hot_reload::remember_start();
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -138,6 +145,8 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
             }),
         );
     }
+    #[cfg(unix)]
+    chariox_kernel::hot_reload::receive();
     chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
     let config_started = Instant::now();
     let config = DaemonConfig::load_from_env();
