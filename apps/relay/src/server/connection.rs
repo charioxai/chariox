@@ -189,8 +189,6 @@ pub(crate) async fn handle_connection(
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let (control_tx, control_rx) = mpsc::channel(8);
-    let writer_routes = routes.clone();
-    let writer_sender = outgoing_tx.downgrade();
     let usage_routes = routes.clone();
     let usage_sender = outgoing_tx.downgrade();
     let connection_meter = ConnectionMeter::new(meter);
@@ -202,11 +200,6 @@ pub(crate) async fn handle_connection(
         binary_events,
         receipt_rx,
         control_rx,
-        move |subscription_id: &str| {
-            writer_sender
-                .upgrade()
-                .is_some_and(|sender| writer_routes.display_for_sender(subscription_id, &sender))
-        },
         writer::WriterUsage::new(connection_meter.clone(), move |subscription_id: &str| {
             usage_sender
                 .upgrade()

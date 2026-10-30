@@ -25,10 +25,7 @@ enum Lane {
 /// streams, so a small band frame is never queued behind another stream's bulk.
 /// The lane, the per-stream queue key (display events only) and the
 /// stream a frame belongs to (any scope, for byte metering).
-fn lane(
-    message: &Message,
-    display_route: &impl Fn(&str) -> bool,
-) -> (Lane, Option<String>, Option<Stream>) {
+fn lane(message: &Message, usage: &WriterUsage) -> (Lane, Option<String>, Option<Stream>) {
     if let Message::Binary(bytes) = message {
         if matches!(
             crate::binary_response::decode(bytes),
@@ -42,7 +39,7 @@ fn lane(
         return match crate::binary_event::decode(bytes) {
             Ok((header, _)) if header.kind == "client_event" => {
                 let id = header.subscription_id;
-                let key = display_route(&id).then(|| id.clone());
+                let key = usage.is_display(&id).then(|| id.clone());
                 (
                     if key.is_some() {
                         Lane::Event
@@ -69,7 +66,7 @@ fn lane(
         | "daemon_peer_response"
         | "client_connected" => (Lane::Reply, None, None),
         "client_event" => match value.get("subscription_id").and_then(|v| v.as_str()) {
-            Some(id) if display_route(id) => (
+            Some(id) if usage.is_display(id) => (
                 Lane::Event,
                 Some(id.to_string()),
                 Some(Stream::Subscription(id.to_string())),
@@ -256,14 +253,11 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
 /// Counts what the writer puts on the socket, by the scope of the stream the
 /// frame belongs to (control when it belongs to none). Chunk frames count as
 /// sent, so the totals are the payload bytes the peer receives.
+type ScopeOf = Box<dyn Fn(&str) -> Option<Arc<str>> + Send>;
 pub(super) struct WriterUsage {
     meter: ConnectionMeter,
-    scope_of: Box<dyn Fn(&str) -> Option<Arc<str>> + Send>,
-}
-impl Default for WriterUsage {
-    fn default() -> Self {
-        Self::new(ConnectionMeter::detached(), |_| None)
-    }
+    /// The scope of this socket's own subscription, if the id is one.
+    scope_of: ScopeOf,
 }
 impl WriterUsage {
     pub(super) fn new(
@@ -274,6 +268,18 @@ impl WriterUsage {
             meter,
             scope_of: Box::new(scope_of),
         }
+    }
+    /// Display subscriptions keep their own queue per stream.
+    fn is_display(&self, subscription_id: &str) -> bool {
+        (self.scope_of)(subscription_id)
+            .is_some_and(|scope| crate::frame_transport::is_display_scope(Some(&scope)))
+    }
+    /// A writer without a meter whose every subscription is (or is not) a display one.
+    #[cfg(test)]
+    fn fixture(display: bool) -> Self {
+        Self::new(ConnectionMeter::detached(), move |_| {
+            display.then(|| Arc::from(crate::frame_transport::DISPLAY_EVENT_SCOPE))
+        })
     }
     fn scope(&self, stream: Option<&Stream>) -> Arc<str> {
         match stream {
@@ -296,8 +302,8 @@ struct Queued {
     scope: Arc<str>,
 }
 impl Queued {
-    fn new(message: Message, display_route: &impl Fn(&str) -> bool, usage: &WriterUsage) -> Self {
-        let (lane, key, stream) = lane(&message, display_route);
+    fn new(message: Message, usage: &WriterUsage) -> Self {
+        let (lane, key, stream) = lane(&message, usage);
         let scope = usage.scope(stream.as_ref());
         Self {
             message,
@@ -343,19 +349,17 @@ fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
-pub(super) async fn run_writer<S, F>(
+pub(super) async fn run_writer<S>(
     mut writer: S,
     mut outgoing: mpsc::Receiver<Message>,
     chunks: bool,
     binary_events: bool,
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
-    display_route: F,
     usage: WriterUsage,
 ) -> &'static str
 where
     S: Sink<Message> + Unpin,
-    F: Fn(&str) -> bool,
 {
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
@@ -382,7 +386,7 @@ where
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(Queued::new(m, &display_route, &usage)),
+                    Some(m) => pending.push_back(Queued::new(m, &usage)),
                     None => return "bad_outgoing_message",
                 },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -577,7 +581,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
+                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
             }
         }
     }
@@ -624,8 +628,7 @@ mod tests {
             true,
             ack_rx,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let first = client.next().await.unwrap().unwrap();
         let medium=serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(200_000)}).to_string();
@@ -764,8 +767,7 @@ mod tests {
             true,
             ack_rx,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut wire = 0;
         let mut ids = Vec::new();
@@ -820,8 +822,7 @@ mod tests {
             false,
             ack_rx,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut frames = 0;
         while let Ok(Some(Ok(_))) =
@@ -861,8 +862,7 @@ mod tests {
             true,
             ack_rx,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let (mut flights, mut done) = (0, None);
@@ -920,8 +920,7 @@ mod tests {
             true,
             ack_rx,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut ids = Vec::new();
@@ -989,8 +988,7 @@ mod tests {
             true,
             ar,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut total = 0;
         let mut receipts = Vec::new();
@@ -1065,8 +1063,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| false,
-            WriterUsage::default(),
+            WriterUsage::fixture(false),
         ));
         assert!(
             matches!(client.next().await.unwrap().unwrap(),Message::Text(t) if t.contains("requires an updated client"))
@@ -1092,8 +1089,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| false,
-            WriterUsage::default(),
+            WriterUsage::fixture(false),
         ));
         let mut message = client.next().await.unwrap().unwrap();
         tx.send(Message::Text(
@@ -1170,8 +1166,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut done = Vec::new();
@@ -1233,8 +1228,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let mut wire = 0;
         while let Ok(Some(Ok(message))) =
@@ -1286,8 +1280,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
@@ -1370,8 +1363,7 @@ mod tests {
             false,
             ar,
             cr,
-            |_| true,
-            WriterUsage::default(),
+            WriterUsage::fixture(true),
         ));
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(200), client.next()).await
@@ -1464,8 +1456,7 @@ mod tests {
                 true,
                 ar,
                 cr,
-                |_| true,
-                WriterUsage::default(),
+                WriterUsage::fixture(true),
             ));
             let mut receiver = crate::frame_transport::FrameReceiver::default();
             let mut bytes = 0;
@@ -1534,7 +1525,10 @@ mod binary_reply_regression {
             "negotiated successful replies must not base64 ciphertext"
         );
         assert!(
-            matches!(lane(&binary, &|_| true), (Lane::Reply, None, None)),
+            matches!(
+                lane(&binary, &WriterUsage::fixture(true)),
+                (Lane::Reply, None, None)
+            ),
             "response correlation keeps the reply lane"
         );
     }

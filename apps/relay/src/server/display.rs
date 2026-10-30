@@ -94,8 +94,10 @@ pub(crate) async fn handle_display_connection(
                 &registry,
                 daemon_sender,
                 request,
-                stream_id.clone(),
-                tunnel_id,
+                DisplayStreamIds {
+                    stream_id: stream_id.clone(),
+                    tunnel_id,
+                },
                 event_rx,
                 &usage,
             )
@@ -175,16 +177,24 @@ async fn read_display_request(stream: &mut TcpStream) -> Result<DisplayHttpReque
     Ok(request)
 }
 
+struct DisplayStreamIds {
+    stream_id: String,
+    tunnel_id: String,
+}
+
 async fn forward_display_http_stream(
     mut stream: TcpStream,
     registry: &Arc<RwLock<RelayRegistry>>,
     daemon_sender: RelaySender,
     request: DisplayHttpRequest,
-    stream_id: String,
-    tunnel_id: String,
+    ids: DisplayStreamIds,
     mut event_rx: mpsc::Receiver<DisplayStreamEvent>,
     usage: &ConnectionMeter,
 ) -> Result<(), std::io::Error> {
+    let DisplayStreamIds {
+        stream_id,
+        tunnel_id,
+    } = ids;
     usage.record(Direction::In, DISPLAY_TUNNEL_SCOPE, request.body.len());
     let websocket_key = request.websocket_key.clone();
     let open = RelayEnvelope::DaemonDisplayTunnelOpen {
