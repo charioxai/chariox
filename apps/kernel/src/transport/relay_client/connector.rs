@@ -781,6 +781,7 @@ async fn run_daemon_relay_connector_inner(
                 let subscription_tasks: RelaySubscriptionTasks =
                     Arc::new(Mutex::new(BTreeMap::new()));
                 let daemon_id = router.relay_daemon_id();
+                let mut published_accounts = router.provider_account_generation();
                 let mut registration = router.relay_registration().await;
                 if static_relay.is_some() {
                     registration.auth_token = active_relay_token.clone();
@@ -1065,6 +1066,7 @@ async fn run_daemon_relay_connector_inner(
                         }
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
+                            let accounts = router.provider_account_generation();
                             let mut heartbeat_registration = None;
                             if static_relay.is_none() {
                                 let config = router.relay_config_snapshot();
@@ -1106,6 +1108,16 @@ async fn run_daemon_relay_connector_inner(
                                         presence.publish(true, "relay reauthenticated");
                                     }
                                 }
+                            }
+                            // A login added after this socket registered is offered to the
+                            // owner's other kernels now, not at the next reconnect.
+                            if heartbeat_registration.is_none() && accounts != published_accounts {
+                                let mut registration = router.relay_registration().await;
+                                registration.auth_token = active_relay_token.clone();
+                                heartbeat_registration = Some(registration);
+                            }
+                            if heartbeat_registration.is_some() {
+                                published_accounts = accounts;
                             }
                             if refresh_remote_inventory
                                 && remote_inventory_refresh_due(

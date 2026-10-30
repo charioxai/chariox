@@ -425,22 +425,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             "target_kernel_id":target.daemon_id, "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
         }});
         if scenario == CopyScenario::Recipient {
-            // Static-token test connectors do not republish registration on heartbeats.
-            // Publish the same typed update used by the normal enrolled connector.
+            // The connector republishes the new login by itself; nothing here
+            // sends a registration.
             let registration = source_router.relay_registration().await;
             assert!(registration.provider_accounts.iter().any(|account| account
                 .account_id
                 .as_deref()
                 == Some(profile.profile_id.as_str())
                 && account.copyable));
-            super::super::send_outgoing_envelope(
-                &source_state.read().await.outgoing_sender().unwrap(),
-                chariox_relay::protocol::RelayEnvelope::DaemonHeartbeat {
-                    daemon_id: source.daemon_id.clone(),
-                    registration: Some(registration),
-                },
-            )
-            .unwrap();
             let offers = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let response = source_request(
@@ -1247,5 +1239,91 @@ fn account_copy_encrypted_target_entry_point_requires_same_owner() {
             public["code"], "provider_account_copy_unauthorized",
             "MP-11 account copy must reach its same-owner encrypted admission boundary"
         );
+    });
+}
+
+/// A login made after the kernel connected is offered to the owner's other
+/// kernels with no reconnect: the connector republishes its registration
+/// when the profile registry changes.
+#[test]
+fn a_login_added_after_connect_is_published_to_the_relay() {
+    run_async_with_large_test_stack("account-late-login", move || async move {
+        let _relay = relay_client_test_guard().await;
+        let _home = RelayTestHome::new();
+        let root = PathBuf::from(std::env::var_os("CHARIOX_HOME").unwrap());
+        let mut source = config(&root, "late-source");
+        let verifier = ScopedTokenVerifier::new(
+            BTreeMap::from([(source.relay_token.clone().unwrap(), claim(&source))]),
+            BTreeMap::new(),
+            None,
+        );
+        let relay = RelayServer::with_auth_verifier(
+            RelayConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                shared_token: None,
+            },
+            RelayAuthVerifier::ScopedToken(verifier),
+        );
+        let listener = relay.bind_listener().await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let registry = relay.registry();
+        let (stop_relay, stopped_relay) = oneshot::channel();
+        let relay_task = tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = stopped_relay.await;
+                })
+                .await
+                .unwrap();
+        });
+        source.relay_url = Some(url.clone());
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(source.clone()).unwrap()));
+        let state = app.lock().await.relay_client_state();
+        let profiles = app.lock().await.provider_account_profile_registry().clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(app, 16));
+        let (stop, stopped) = watch::channel(false);
+        let task = tokio::spawn(run_daemon_relay_connector_with_router_and_static_relay(
+            router,
+            state,
+            stopped,
+            url,
+            source.relay_token.clone().unwrap(),
+        ));
+        wait_for_copy_peer(registry.clone(), &source.daemon_id).await;
+        let published = |registry: Arc<RwLock<chariox_relay::server::RelayRegistry>>| {
+            let daemon_id = source.daemon_id.clone();
+            async move {
+                registry
+                    .read()
+                    .await
+                    .daemon_in_realm("copy-realm", &daemon_id)
+                    .map(|registration| {
+                        registration
+                            .provider_accounts
+                            .iter()
+                            .any(|account| account.alias.as_deref() == Some("Added later"))
+                    })
+                    .unwrap()
+            }
+        };
+        assert!(!published(registry.clone()).await);
+        profiles
+            .create_managed("local", "claude", "Added later")
+            .unwrap();
+        let seen = tokio::time::timeout(Duration::from_secs(5), async {
+            while !published(registry.clone()).await {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        assert!(
+            seen.is_ok(),
+            "the login created after the kernel connected must reach the relay without a reconnect"
+        );
+        let _ = stop.send(true);
+        let _ = task.await;
+        let _ = stop_relay.send(());
+        let _ = relay_task.await;
     });
 }
