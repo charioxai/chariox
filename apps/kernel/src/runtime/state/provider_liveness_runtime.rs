@@ -387,6 +387,7 @@ impl KernelRuntimeState {
                 true,
                 (!active_prompt.is_external()).then_some(active_prompt.id()),
                 Some(termination.clone()),
+                None,
             )
             .await?;
         if !settled {

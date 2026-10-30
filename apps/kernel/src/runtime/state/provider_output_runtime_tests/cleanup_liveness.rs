@@ -1240,7 +1240,7 @@ fn mixed_prompt_activity_fingerprint(
             saw_response_content: state.saw_response_content,
             completion_recorded: state.completion_recorded,
             settlement_requested: state.settlement_requested,
-            active_tool_ids: state.active_tool_ids.clone(),
+            active_tool_ids: state.active_tools.keys().cloned().collect(),
         })
 }
 
