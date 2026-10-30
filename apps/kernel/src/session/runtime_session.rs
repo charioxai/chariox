@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_triggers::{AgentTrigger, AgentTriggerSettlement, AgentTriggers};
+use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -134,8 +134,11 @@ pub struct RuntimeSession {
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
-    #[serde(flatten)]
+    #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
     agent_triggers: AgentTriggers,
+    /// Trigger firings the provider did not confirm, newest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    trigger_deliveries: Vec<TriggerDelivery>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -287,6 +290,7 @@ impl RuntimeSession {
             agent_wakes: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
             agent_triggers: AgentTriggers::default(),
+            trigger_deliveries: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             pinned: false,
             config_state: SessionConfigState::default(),
@@ -366,62 +370,39 @@ impl RuntimeSession {
         Some(self.agent_triggers.0.remove(index))
     }
 
-    /// The trigger as it reads once its steered firing is recorded; `None`
-    /// when the trigger is gone.
-    pub(crate) fn settlement_of_steered_trigger(
-        &self,
-        trigger_id: &str,
-        now_ms: u64,
-    ) -> Option<AgentTriggerSettlement> {
-        self.agent_triggers
-            .0
-            .iter()
-            .find(|trigger| trigger.id() == trigger_id)
-            .map(|trigger| trigger.settled_by_steer(now_ms))
+    pub fn trigger_deliveries(&self) -> &[TriggerDelivery] {
+        &self.trigger_deliveries
     }
 
-    pub(crate) fn apply_agent_trigger_settlement(&mut self, settlement: AgentTriggerSettlement) {
-        match settlement {
-            AgentTriggerSettlement::Updated(settled) => {
-                if let Some(trigger) = self
-                    .agent_triggers
-                    .0
-                    .iter_mut()
-                    .find(|trigger| trigger.id() == settled.id())
-                {
-                    *trigger = settled;
-                }
-            }
-            AgentTriggerSettlement::Removed(trigger_id) => {
-                self.remove_agent_trigger(&trigger_id);
-            }
+    /// Keeps the first record of a firing, so recovery can run more than once.
+    pub(crate) fn note_unconfirmed_trigger_delivery(&mut self, delivery: TriggerDelivery) {
+        const KEPT_DELIVERIES: usize = 32;
+        if self
+            .trigger_deliveries
+            .iter()
+            .any(|known| known.prompt_id() == delivery.prompt_id())
+        {
+            return;
+        }
+        self.trigger_deliveries.push(delivery);
+        if self.trigger_deliveries.len() > KEPT_DELIVERIES {
+            self.trigger_deliveries.remove(0);
         }
     }
 
-    /// A kernel that died while a trigger steer awaited its provider receipt
-    /// leaves that occurrence due. The persisted delivery fence says the
-    /// provider may already hold it, so the occurrence is settled as steered
-    /// here, before the fence can ever be dropped; a one-shot is done. The
-    /// fence is marked settled in the same step, so a second restart before
-    /// the recovered turn ends does not count the occurrence again.
-    pub(crate) fn settle_trigger_steers_in_doubt(&mut self, now_ms: u64) -> usize {
-        let in_doubt: Vec<String> = self
-            .prompt_runtime
-            .prompt_states()
-            .values()
-            .flat_map(|state| state.queued_prompts())
-            .filter(|prompt| prompt.settle_orphaned_local_steer_fence())
-            .filter_map(|prompt| prompt.agent_trigger_id().map(str::to_owned))
-            .collect();
-        let settlements: Vec<_> = in_doubt
-            .iter()
-            .filter_map(|trigger_id| self.settlement_of_steered_trigger(trigger_id, now_ms))
-            .collect();
-        let settled = settlements.len();
-        for settlement in settlements {
-            self.apply_agent_trigger_settlement(settlement);
-        }
-        settled
+    /// Moves a delivery between its two states; `None` when it was not in `from`.
+    pub(crate) fn move_trigger_delivery(
+        &mut self,
+        prompt_id: &str,
+        from: TriggerDeliveryState,
+        to: TriggerDeliveryState,
+    ) -> Option<TriggerDelivery> {
+        let delivery = self
+            .trigger_deliveries
+            .iter_mut()
+            .find(|delivery| delivery.prompt_id() == prompt_id && delivery.state() == from)?;
+        delivery.set_state(to);
+        Some(delivery.clone())
     }
 
     pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {
@@ -469,6 +450,42 @@ impl RuntimeSession {
             None,
             CollaborationLevel::Private,
         )];
+    }
+
+    /// MP-08/MP-10/MP-11: enrollment identifies the existing OS owner.
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        let local = super::DEFAULT_LOCAL_USER_ID;
+        if self.owner_user_id != local {
+            return;
+        }
+        self.owner_user_id = owner.into();
+        self.members.retain(|member| member.user_id() != owner);
+        for member in &mut self.members {
+            if member.user_id() == local {
+                *member = SessionMember::new(
+                    owner,
+                    member.joined_at_ms(),
+                    member.invited_by_user_id().map(str::to_owned),
+                    member.collaboration_level(),
+                );
+            }
+        }
+        for agent in &mut self.agents {
+            if agent.owner_user_id() == local {
+                agent.set_owner_user_id(owner);
+            }
+        }
+        for trigger in &mut self.agent_triggers.0 {
+            trigger.enroll_local_owner(owner);
+        }
+        for window in &mut self.sudo_windows {
+            if window.owner_user_id == local {
+                window.owner_user_id = owner.into();
+            }
+        }
+        for workflow in &mut self.workflows {
+            workflow.enroll_local_owner(owner);
+        }
     }
 
     pub fn members(&self) -> &[SessionMember] {

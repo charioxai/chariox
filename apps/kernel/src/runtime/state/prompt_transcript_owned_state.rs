@@ -997,6 +997,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
     ) -> Result<u64, DaemonError> {
         // Resolve canonical ownership before the transcript/projection locks.
         let public_owner = self
@@ -1047,6 +1048,12 @@ impl KernelRuntimeOwnedState {
             "source_attachment_id".to_string(),
             serde_json::Value::String(source_attachment_id.to_string()),
         );
+        if prompt_origin != crate::session::PromptOrigin::Chariox {
+            metadata.insert(
+                "prompt_origin".to_string(),
+                serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if !attachments.is_empty() {
             metadata.insert(
                 "attachments".to_string(),

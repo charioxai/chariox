@@ -30,11 +30,14 @@ pub(super) struct RemoteQueuedPromptSteerReceiptQuery {
     pub(super) leased_agent_id: String,
 }
 
-/// The trigger firing a local steer delivers, recorded as steered once the
-/// steer's queue entry is consumed.
-pub(super) struct TriggerFiring {
-    pub(super) trigger_id: String,
-    pub(super) now_ms: u64,
+/// How a queued steer is committed to the queue and the transcript.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QueuedSteerCommit {
+    /// The kernel records the steer now and dispatches it itself.
+    Dispatch,
+    /// A trigger firing was recorded before the provider write: only the queue
+    /// removal and the echoes remain.
+    Recorded { sequence: u64 },
 }
 
 pub(super) struct LocalQueuedPromptSteerPreparation {
@@ -253,60 +256,27 @@ impl KernelRuntimeOwnedState {
         queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
     ) -> Result<(), DaemonError> {
-        self.mirror_prompt_owner_agent_state_settling_steer(
+        let session = self.session_store.mirror_agent_prompt_state(
             session_id,
             agent_id,
             active_prompt,
             queued_prompts,
-            activity_mutation,
-            None,
-        )
-    }
-
-    /// Mirrors the prompt state and, when `steered_trigger` names the trigger
-    /// whose firing the change consumed, records that firing in the same
-    /// durable event and publishes it as one checkpoint-atomic step.
-    fn mirror_prompt_owner_agent_state_settling_steer(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        active_prompt: Option<crate::session::PromptQueueItem>,
-        queued_prompts: std::collections::VecDeque<crate::session::PromptQueueItem>,
-        activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
-        steered_trigger: Option<&TriggerFiring>,
-    ) -> Result<(), DaemonError> {
-        let commit = || {
-            let session = self.session_store.mirror_agent_prompt_state(
-                session_id,
-                agent_id,
-                active_prompt,
-                queued_prompts,
-            )?;
-            let settlement = steered_trigger.and_then(|firing| {
-                session.settlement_of_steered_trigger(&firing.trigger_id, firing.now_ms)
-            });
-            crate::durable_prompt_state::append_durable_prompt_state_event_settling(
-                &self.durable_state_store,
-                &session,
-                agent_id,
-                settlement.clone(),
-            )?;
-            if let Some(settlement) = settlement {
-                self.session_store
-                    .write()
-                    .apply_agent_trigger_settlement(session_id, settlement)?;
+        )?;
+        self.persist_prompt_session_state(&session, agent_id)?;
+        for prompt in session.active_prompt_for_agent(agent_id).into_iter().chain(
+            session
+                .queued_prompts_for_agent(agent_id)
+                .into_iter()
+                .flatten(),
+        ) {
+            if let Some(original_prompt_id) = prompt.trigger_resend_of() {
+                self.session_store.write().move_trigger_delivery(
+                    session_id,
+                    original_prompt_id,
+                    crate::session::TriggerDeliveryState::NotConfirmed,
+                    crate::session::TriggerDeliveryState::Resent,
+                )?;
             }
-            Ok(())
-        };
-        if steered_trigger.is_some() {
-            // A checkpoint taken between the queue entry's removal and the
-            // settlement's publication would record the old trigger at the
-            // sequence of the event that settles it, and restart would skip
-            // that event and admit the occurrence again.
-            self.durable_state_store
-                .with_workflow_runtime_transition_lock(commit)?;
-        } else {
-            commit()?;
         }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();
@@ -1173,23 +1143,27 @@ impl KernelRuntimeOwnedState {
         attachment_id: &str,
         prompt_id: &str,
         context: QueuedPromptSteerContext,
-        steered_trigger: Option<&TriggerFiring>,
+        commit: QueuedSteerCommit,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         let target_active_prompt_id = context.active_prompt.id().to_string();
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             context.queued_prompt.source_attachment_id(),
         )?;
-        let sequence = self.append_steering_prompt_history(
-            session_id,
-            &context.provider_run_id,
-            &target_active_prompt_id,
-            &source_attachment_id,
-            agent_id,
-            context.queued_prompt.id(),
-            context.queued_prompt.prompt(),
-            context.queued_prompt.attachments(),
-        )?;
+        let sequence = match commit {
+            QueuedSteerCommit::Recorded { sequence } => sequence,
+            QueuedSteerCommit::Dispatch => self.append_steering_prompt_history(
+                session_id,
+                &context.provider_run_id,
+                &target_active_prompt_id,
+                &source_attachment_id,
+                agent_id,
+                context.queued_prompt.id(),
+                context.queued_prompt.prompt(),
+                context.queued_prompt.attachments(),
+                context.queued_prompt.prompt_origin(),
+            )?,
+        };
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&context.session, agent_id, prompt_id)
@@ -1202,14 +1176,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&context.session, agent_id);
-        self.mirror_prompt_owner_agent_state_settling_steer(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-            self.begin_managed_activity_mutation(),
-            steered_trigger,
-        )?;
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         self.echo_steering_prompt_to_other_attachments(
             session_id,
             &context.provider_run_id,
@@ -1234,8 +1201,7 @@ impl KernelRuntimeOwnedState {
             ),
         );
         let session = self.session_snapshot(session_id)?;
-        // A trigger firing was delivered by its caller; any other steer is dispatched here.
-        let dispatch = steered_trigger.is_none().then(|| {
+        let dispatch = (commit == QueuedSteerCommit::Dispatch).then(|| {
             Self::queued_prompt_steer_dispatch(
                 session_id,
                 agent_id,
@@ -1265,84 +1231,247 @@ impl KernelRuntimeOwnedState {
             attachment_id,
             prompt_id,
             prepared.context.clone(),
-            None,
+            QueuedSteerCommit::Dispatch,
         )
         .map(Some)
     }
 
-    /// Persists the delivery fence on the durable queue entry. It must land
-    /// before the provider write: after a restart the entry then stays held
-    /// instead of running again as an ordinary queued prompt.
-    pub(super) fn fence_local_queued_prompt_steer(
+    /// Persists the intent to steer before the provider write, so a crash
+    /// between the provider receiving the message and the queue removal can
+    /// never replay the firing.
+    pub(super) fn hold_local_queued_prompt_steer(
         &self,
         prepared: &LocalQueuedPromptSteerPreparation,
-    ) -> Result<(), DaemonError> {
-        self.set_local_queued_prompt_steer_fence(prepared, true)
-    }
-
-    /// A definitive provider rejection releases the fence for automatic replay.
-    pub(super) fn release_local_queued_prompt_steer_fence(
-        &self,
-        prepared: &LocalQueuedPromptSteerPreparation,
-    ) -> Result<(), DaemonError> {
-        self.set_local_queued_prompt_steer_fence(prepared, false)
-    }
-
-    fn set_local_queued_prompt_steer_fence(
-        &self,
-        prepared: &LocalQueuedPromptSteerPreparation,
-        fenced: bool,
+        submitted: bool,
     ) -> Result<(), DaemonError> {
         let session_id = &prepared.dispatch.session_id;
         let agent_id = &prepared.dispatch.agent_id;
-        let prompt_id = &prepared.dispatch.prompt_id;
         let session = self.session_store.get_session(session_id)?;
-        let (active_prompt, mut queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        let Some(current_prompt) = queued_prompts
-            .iter_mut()
-            .find(|prompt| prompt.id() == prompt_id)
-        else {
+        if !self
+            .prompt_state_owner
+            .set_queued_prompt_local_steer_submitted(
+                &session,
+                agent_id,
+                &prepared.dispatch.prompt_id,
+                submitted,
+            )
+        {
             return Err(DaemonError::LocalTransport {
-                operation: "persist queued prompt steer fence",
-                message: format!("queued prompt `{prompt_id}` disappeared before its steer fence"),
-            });
-        };
-        let updated = if fenced {
-            current_prompt.fence_local_steer(prepared.reservation)
-        } else {
-            current_prompt.clear_local_steer_fence(prepared.reservation)
-        };
-        if !updated {
-            return Err(DaemonError::LocalTransport {
-                operation: "persist queued prompt steer fence",
+                operation: "persist queued prompt steer intent",
                 message: format!(
-                    "queued prompt `{prompt_id}` no longer owns its steer reservation"
+                    "queued prompt `{}` disappeared before its steer could be recorded",
+                    prepared.dispatch.prompt_id
                 ),
             });
         }
-        let persisted = self.mirror_prompt_owner_agent_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        );
-        if fenced && persisted.is_err() {
-            prepared
-                .context
-                .queued_prompt
-                .clear_local_steer_fence(prepared.reservation);
-        }
-        persisted
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)
     }
 
-    /// Consumes the steered entry. A trigger firing is recorded by the same
-    /// durable write, so no restart can find the fence gone and the
-    /// occurrence still due.
+    /// The firing counts as sent, and an unconfirmed delivery is remembered
+    /// for the person to resend. This must be durable before the queued copy
+    /// leaves the queue: a stop in between would otherwise leave an overdue
+    /// trigger without its firing, and it would fire a second time.
+    pub(super) fn settle_steered_firing(
+        &self,
+        session_id: &str,
+        trigger_id: Option<&str>,
+        prompt_id: &str,
+        unconfirmed: Option<crate::session::TriggerDelivery>,
+    ) -> Result<(), DaemonError> {
+        let mut sessions = self.session_store.write();
+        let before = sessions.get_session(session_id)?;
+        let settled = (|| {
+            let already_settled = self
+                .durable_state_store
+                .trigger_firing_settled(session_id, prompt_id)?
+                || before
+                    .trigger_deliveries()
+                    .iter()
+                    .any(|delivery| delivery.prompt_id() == prompt_id);
+            sessions.settle_steered_firing(
+                session_id,
+                if already_settled { None } else { trigger_id },
+                crate::session::unix_epoch_ms(),
+                unconfirmed,
+            )?;
+            let session = sessions.get_session(session_id)?.durable_runtime_snapshot();
+            self.durable_state_store.append_event(
+                "session.updated",
+                Some(session_id.to_string()),
+                serde_json::json!({"session": session, "reason": "agent_trigger_fired", "settled_trigger_prompt_id": prompt_id}),
+            )?;
+            Ok(())
+        })();
+        if settled.is_err() {
+            sessions.restore_session(before);
+        }
+        settled
+    }
+
+    /// Once its transient operation ends, a submitted steer may already sit
+    /// in the provider's turn. Reconcile its durable hold without replaying it.
+    pub(super) fn reconcile_inactive_local_steers(&self) -> Vec<(String, String, String)> {
+        let mut dropped = Vec::new();
+        for session in self.session_store.list_all_sessions() {
+            for (agent_id, prompt_state) in session.prompt_states() {
+                for prompt in prompt_state.queued_prompts() {
+                    if !prompt.local_steer_submitted() {
+                        continue;
+                    }
+                    let Some(reservation) = prompt.reserve_remote_steer() else {
+                        continue;
+                    };
+                    let _claim = super::prompt_dispatch::RemoteQueuedPromptSteerReservation::new(
+                        prompt.clone(),
+                        reservation,
+                    );
+                    // The original operation could have finished between the
+                    // session snapshot and this claim. Never revive its row.
+                    let (_, current_queue) =
+                        self.prompt_state_owner.state_parts(&session, agent_id);
+                    let Some(prompt) = current_queue.iter().find(|current| {
+                        current.id() == prompt.id()
+                            && current.local_steer_submitted()
+                            && current.remote_steer_reservation_matches(reservation)
+                    }) else {
+                        continue;
+                    };
+                    if let Some(trigger_id) = prompt.agent_trigger_id() {
+                        // This hold was created by Steer, even if its trigger
+                        // has since retired or its policy has been changed.
+                        let busy_policy = crate::session::AgentTriggerBusyPolicy::Steer;
+                        if let Err(error) = self.settle_steered_firing(
+                            session.id(),
+                            prompt.trigger_resend_of().is_none().then_some(trigger_id),
+                            prompt.id(),
+                            Some(crate::session::TriggerDelivery::not_confirmed(
+                                prompt.id(),
+                                trigger_id,
+                                agent_id,
+                                prompt.prompt_origin(),
+                                prompt.prompt(),
+                                busy_policy,
+                                crate::session::unix_epoch_ms(),
+                            )),
+                        ) {
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to settle a submitted steer; retaining its delivery hold",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "prompt_id": prompt.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            continue;
+                        }
+                    }
+                    let held_position = current_queue
+                        .iter()
+                        .position(|current| current.id() == prompt.id());
+                    let Some(removed) = self.prompt_state_owner.remove_queued_prompt(
+                        &session,
+                        agent_id,
+                        prompt.id(),
+                    ) else {
+                        continue;
+                    };
+                    let (active_prompt, queued_prompts) =
+                        self.prompt_state_owner.state_parts(&session, agent_id);
+                    match self.mirror_prompt_owner_agent_state(
+                        session.id(),
+                        agent_id,
+                        active_prompt,
+                        queued_prompts,
+                    ) {
+                        Ok(()) => {
+                            crate::logging::warn_with_fields(
+                                "durable_state.recovery",
+                                "settled a held steer without replaying it; it may already have reached the agent",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "agent_id": agent_id,
+                                    "prompt_id": removed.id(),
+                                }),
+                            );
+                            dropped.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                removed.id().to_string(),
+                            ));
+                        }
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to persist the removal of a held queued steer; keeping the hold for the next maintenance tick",
+                                serde_json::json!({
+                                    "session_id": session.id(),
+                                    "agent_id": agent_id,
+                                    "prompt_id": removed.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                            // The durable queue still holds the firing. Without it here
+                            // too, no later pass would find the hold and the prompts
+                            // behind it would never be woken.
+                            self.prompt_state_owner.restore_queued_prompt(
+                                &session,
+                                agent_id,
+                                held_position.unwrap_or(0),
+                                removed,
+                            );
+                            let (active_prompt, queued_prompts) =
+                                self.prompt_state_owner.state_parts(&session, agent_id);
+                            if let Err(error) = self.session_store.mirror_agent_prompt_state(
+                                session.id(),
+                                agent_id,
+                                active_prompt,
+                                queued_prompts,
+                            ) {
+                                crate::logging::error_with_fields(
+                                    "durable_state.recovery",
+                                    "failed to restore the session view of a held queued steer",
+                                    serde_json::json!({
+                                        "session_id": session.id(),
+                                        "agent_id": agent_id,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        dropped
+    }
+
+    /// Shows the firing in the transcript before the provider write, so it
+    /// exists even when the kernel stops before the steer is recorded.
+    pub(super) fn record_local_queued_prompt_steer(
+        &self,
+        prepared: &LocalQueuedPromptSteerPreparation,
+    ) -> Result<u64, DaemonError> {
+        let context = &prepared.context;
+        self.append_steering_prompt_history(
+            &prepared.dispatch.session_id,
+            &context.provider_run_id,
+            context.active_prompt.id(),
+            &prepared.dispatch.source_attachment_id,
+            &prepared.dispatch.agent_id,
+            context.queued_prompt.id(),
+            context.queued_prompt.prompt(),
+            context.queued_prompt.attachments(),
+            context.queued_prompt.prompt_origin(),
+        )
+    }
+
     pub(super) fn finish_local_queued_prompt_steer(
         &self,
         prepared: &LocalQueuedPromptSteerPreparation,
-        steered_trigger: &TriggerFiring,
+        recorded_sequence: u64,
     ) -> Result<crate::app::KernelQueuedPromptSteer, DaemonError> {
         self.commit_queued_prompt_steer(
             &prepared.dispatch.session_id,
@@ -1350,7 +1479,9 @@ impl KernelRuntimeOwnedState {
             &prepared.attachment_id,
             &prepared.dispatch.prompt_id,
             prepared.context.clone(),
-            Some(steered_trigger),
+            QueuedSteerCommit::Recorded {
+                sequence: recorded_sequence,
+            },
         )
     }
 
@@ -1498,6 +1629,7 @@ impl KernelRuntimeOwnedState {
             prepared.prompt.id(),
             prepared.prompt.prompt(),
             prepared.prompt.attachments(),
+            prepared.prompt.prompt_origin(),
         )?;
         let prompt = self
             .prompt_state_owner
@@ -1655,6 +1787,7 @@ impl KernelRuntimeOwnedState {
                     queued_prompt_id,
                     queued_prompt.prompt(),
                     queued_prompt.attachments(),
+                    queued_prompt.prompt_origin(),
                 )?;
                 self.prompt_state_owner
                     .remove_queued_prompt(&session, agent_id, queued_prompt_id)

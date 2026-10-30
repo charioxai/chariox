@@ -5,6 +5,7 @@ import { join } from "node:path"
 import test from "node:test"
 
 import { createCommandActionHandlers, formatAgentCapabilityGrants, formatAgentListSummary, formatHomeExtensionAuditEvents, parseMcpInstallConfig, parseRequestedViewLayout } from "./command-actions.js"
+import { parseSlashCommand } from "./commands.js"
 import type { AgentInstance, ProviderProcessInfo, WorkflowQueuedPrompt, RuntimeAttachment, RuntimeProviderRun, RuntimeSession, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
 import { makeAgent, makeCommandDeps, makeSession, runGit } from "./command-actions-test-support.js"
 
@@ -17,49 +18,96 @@ test("parseRequestedViewLayout handles summary, invalid, and set cases", () => {
   })
 })
 
-test("agent wait commands create durable kernel schedules for the focused agent", async () => {
+test("/trigger creates, changes, removes and lists the focused agent's triggers", async () => {
   const calls: string[] = []
-  const scheduledSession = makeSession({
-    agent_prompt_schedules: [{
-      id: "schedule-1",
-      agent_id: "agent-1",
-      kind: "once",
-      interval_seconds: 3,
-      prompt: "Check once",
-      created_at_ms: 0,
-      next_run_at_ms: 3_000,
-      runs_dispatched: 0,
-      last_triggered_at_ms: null,
-      last_error: null,
-    }],
-  })
+  const trigger = {
+    id: "trigger-1",
+    agent_id: "agent-1",
+    source: { kind: "schedule" as const, interval_seconds: 3, repeat: "every" as const, next_run_at_ms: 3_000 },
+    busy_policy: "steer" as const,
+    prompt: "Check the build",
+    enabled: true,
+    created_at_ms: 0,
+    fired: 2,
+    coalesced: 0,
+  }
+  const triggerSession = makeSession({ agent_triggers: [trigger] })
   const handlers = createCommandActionHandlers(makeCommandDeps({
-    createAgentPromptSchedule: async (
-      sessionId: string,
-      agentId: string,
-      kind: string,
-      intervalSeconds: number,
-      prompt: string,
-    ) => {
-      calls.push(`${sessionId}:${agentId}:${kind}:${intervalSeconds}:${prompt}`)
-      return { session: scheduledSession }
+    sessionState: () => triggerSession,
+    supportsAgentTriggers: async () => true,
+    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
+      calls.push(JSON.stringify(request))
+      return { session: triggerSession }
     },
+    appendNotice: (message: string) => calls.push(`notice:${message}`),
     flashFooter: (message: string, tone: string) => calls.push(`${tone}:${message}`),
   }))
+  const run = (raw: string) => {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    return handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
 
-  await handlers.handleWaitCommand({
-    kind: "wait",
-    raw: "/wait-in 0.05 Check once",
-    scheduleKind: "once",
-    minutes: 0.05,
-    prompt: "Check once",
-    error: null,
-  })
+  await run("/trigger every 0.05 --steer Check the build")
+  await run("/wait-in 1 Check once")
+  await run("/trigger off trigger-1")
+  await run("/trigger queue trigger-1")
+  await run("/trigger remove trigger-1")
+  await run("/trigger")
 
-  assert.deepEqual(calls, [
-    "session-1:agent-1:once:3:Check once",
-    "info:/wait-in scheduled for 0.05 minutes",
+  assert.deepEqual(calls.slice(0, 10), [
+    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", interval_seconds: 3, repeat: "every" }, busy_policy: "steer", prompt: "Check the build" } }),
+    "info:trigger every 0.05 minutes · steer",
+    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "schedule", interval_seconds: 60, repeat: "once" }, busy_policy: "queue", prompt: "Check once" } }),
+    "info:trigger in 1 minute · queue",
+    JSON.stringify({ UpdateAgentTrigger: { session_id: "session-1", trigger_id: "trigger-1", enabled: false } }),
+    "info:trigger trigger-1 off",
+    JSON.stringify({ UpdateAgentTrigger: { session_id: "session-1", trigger_id: "trigger-1", busy_policy: "queue" } }),
+    "info:trigger trigger-1 queue",
+    JSON.stringify({ DeleteAgentTrigger: { session_id: "session-1", trigger_id: "trigger-1" } }),
+    "info:trigger trigger-1 removed",
   ])
+  assert.match(calls[10] ?? "", /^notice:Triggers\ntrigger-1  every 3s · steer · next .* · 2 fired$/)
+})
+
+test("/trigger list retains unconfirmed firings after their once trigger retired", async () => {
+  const notices: string[] = []
+  const delivery = { prompt_id: "firing-1", trigger_id: "retired-trigger", agent_id: "agent-1", origin: "schedule", prompt: "Review the restart invariant", busy_policy: "steer" as const, state: "not_confirmed" as const, recorded_at_ms: 1 }
+  const session = makeSession({ agent_triggers: [], trigger_deliveries: [
+    delivery, { ...delivery, prompt_id: "already-resent", state: "resent" },
+    { ...delivery, prompt_id: "other-agent", agent_id: "agent-2" },
+  ] })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session, supportsAgentTriggers: async () => true,
+    appendNotice: (message: string) => notices.push(message),
+  }))
+  const command = parseSlashCommand("/trigger list")!
+  assert.equal(command.kind, "trigger")
+  await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  assert.match(notices.join("\n"), /Schedule.*Not confirmed.*steer.*\/trigger resend firing-1/)
+  assert.doesNotMatch(notices.join("\n"), /already-resent|other-agent|No triggers/)
+})
+
+test("kernels without agent triggers refuse /wait and /trigger with an upgrade notice", async () => {
+  const calls: Record<string, unknown>[] = []
+  const errors: string[] = []
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    supportsAgentTriggers: async () => false,
+    sendAgentTriggerRequest: async (request: Record<string, unknown>) => {
+      calls.push(request)
+      return { session: makeSession() }
+    },
+    flashFooter: (message: string, tone: string) => { if (tone === "error") errors.push(message) },
+  }))
+  const commands = ["/wait-in 1 Ping", "/wait-every 0.5 Check", "/trigger", "/trigger every 1 Ping", "/trigger in 1 --steer Ping", "/trigger off t1", "/trigger remove t1"]
+  for (const raw of commands) {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    await handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
+  assert.equal(calls.length, 0, "no request reaches a kernel without agent triggers")
+  assert.equal(errors.length, commands.length)
+  assert.ok(errors.every((message) => /kernel.*900.*upgrade/i.test(message)))
 })
 
 test("formatAgentListSummary renders aliases and pluralization", () => {

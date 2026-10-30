@@ -283,54 +283,62 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
     );
 }
 
+/// Protocol 901: a trigger firing the provider did not confirm is listed on the
+/// session, and the person resends it.
 #[test]
-fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
+fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-
-    let create = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Recurring,
-            interval_seconds: 300,
-            prompt: Some("Continue the audit.".to_string()),
-        },
-    );
+    let resend = serde_json::json!(LocalDaemonRequest::ResendTriggerDelivery(
+        crate::local::ResendTriggerDeliveryRequest {
+            session_id: "session-1".into(),
+            prompt_id: "prompt-7".into(),
+        }
+    ));
     assert_eq!(
-        serde_json::to_value(create).expect("agent prompt schedule request should encode"),
+        resend,
         serde_json::json!({
-            "CreateAgentPromptSchedule": {
-                "session_id": "session-1",
-                "agent_id": "agent-1",
-                "kind": "recurring",
-                "interval_seconds": 300,
-                "prompt": "Continue the audit."
-            }
+            "ResendTriggerDelivery": { "session_id": "session-1", "prompt_id": "prompt-7" }
         })
     );
-
-    let cancel = LocalDaemonRequest::CancelAgentPromptSchedule(
-        crate::local::CancelAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            schedule_id: "schedule-1".to_string(),
-        },
-    );
+    let hash = Sha256::digest(serde_json::to_string(&resend).unwrap().as_bytes());
     assert_eq!(
-        serde_json::to_value(cancel).expect("agent prompt schedule cancellation should encode"),
-        serde_json::json!({
-            "CancelAgentPromptSchedule": {
-                "session_id": "session-1",
-                "schedule_id": "schedule-1"
-            }
-        })
+        format!("{hash:x}"),
+        "38c08e5e006324a79d32f7fcb1cd5df52224349a2b3ddac5d064dff3c4a3adab"
+    );
+
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    session.note_unconfirmed_trigger_delivery(crate::session::TriggerDelivery::not_confirmed(
+        "prompt-7",
+        "trigger-1",
+        "agent-1",
+        crate::session::PromptOrigin::Schedule,
+        "Check the build.",
+        crate::session::AgentTriggerBusyPolicy::Steer,
+        2_000,
+    ));
+    let snapshot = serde_json::to_value(LocalDaemonResponse::TriggerDeliveryResent { session })
+        .expect("trigger delivery response should encode");
+    assert_eq!(
+        snapshot.pointer("/TriggerDeliveryResent/session/trigger_deliveries"),
+        Some(&serde_json::json!([{
+            "prompt_id": "prompt-7", "trigger_id": "trigger-1", "agent_id": "agent-1",
+            "origin": "schedule", "prompt": "Check the build.", "busy_policy": "steer",
+            "state": "not_confirmed", "recorded_at_ms": 2_000,
+        }]))
     );
 }
 
-/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
-/// older clients keep reading them as `agent_prompt_schedules`.
+/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers.
 #[test]
 fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     assert_eq!(
@@ -412,11 +420,8 @@ fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_prompt_schedules"),
-        Some(&serde_json::json!([{
-            "id": "trigger-1", "agent_id": "agent-1", "kind": "once", "interval_seconds": 60,
-            "prompt": "Continue from where you left off.", "created_at_ms": 1_000,
-            "next_run_at_ms": 61_000, "runs_dispatched": 0,
-        }]))
+        None,
+        "sessions no longer carry the old /wait schedule view"
     );
     assert_eq!(
         snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),

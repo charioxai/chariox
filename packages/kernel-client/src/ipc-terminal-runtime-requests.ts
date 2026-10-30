@@ -1,6 +1,7 @@
 import type { NativeInteractionOrigin } from "./kernel-types-runtime.js"
 
 import type { PromptAttachmentPart } from "./kernel-types.js"
+import type { AgentTriggerBusyPolicy } from "./kernel-types-session.js"
 
 export const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX = "deployment-credential-enrollment:"
 
@@ -145,31 +146,52 @@ export function submitPromptRequest(
   }
 }
 
-export function createAgentPromptScheduleRequest(options: {
+export const agentTriggersMinimumProtocolVersion = 900
+export const agentTriggersCapability = "agent_triggers_v1"
+export const triggerDeliveryMinimumProtocolVersion = 901
+export const triggerDeliveryResendCapability = "agent_trigger_resend_v1"
+
+export function createAgentScheduleTriggerRequest(options: {
   sessionId: string
   agentId: string
-  kind: "once" | "recurring"
+  repeat: "once" | "every"
   intervalSeconds: number
+  busyPolicy: AgentTriggerBusyPolicy
   prompt?: string | null
 }) {
   return {
-    CreateAgentPromptSchedule: {
+    CreateAgentTrigger: {
       session_id: options.sessionId,
       agent_id: options.agentId,
-      kind: options.kind,
-      interval_seconds: options.intervalSeconds,
-      prompt: options.prompt?.trim() || null,
+      source: { kind: "schedule", interval_seconds: options.intervalSeconds, repeat: options.repeat },
+      busy_policy: options.busyPolicy,
+      ...(options.prompt?.trim() ? { prompt: options.prompt.trim() } : {}),
     },
   }
 }
 
-export function cancelAgentPromptScheduleRequest(sessionId: string, scheduleId: string) {
+export function updateAgentTriggerRequest(
+  sessionId: string,
+  triggerId: string,
+  changes: { busyPolicy?: AgentTriggerBusyPolicy; prompt?: string; enabled?: boolean },
+) {
   return {
-    CancelAgentPromptSchedule: {
+    UpdateAgentTrigger: {
       session_id: sessionId,
-      schedule_id: scheduleId,
+      trigger_id: triggerId,
+      ...(changes.busyPolicy ? { busy_policy: changes.busyPolicy } : {}),
+      ...(changes.prompt !== undefined ? { prompt: changes.prompt } : {}),
+      ...(changes.enabled !== undefined ? { enabled: changes.enabled } : {}),
     },
   }
+}
+
+export function deleteAgentTriggerRequest(sessionId: string, triggerId: string) {
+  return { DeleteAgentTrigger: { session_id: sessionId, trigger_id: triggerId } }
+}
+
+export function resendTriggerDeliveryRequest(sessionId: string, promptId: string) {
+  return { ResendTriggerDelivery: { session_id: sessionId, prompt_id: promptId } }
 }
 
 export type SubmitPromptBatchItem = {

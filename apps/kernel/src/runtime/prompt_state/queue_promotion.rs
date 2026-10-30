@@ -61,6 +61,32 @@ impl PromptStateOwner {
 mod tests {
     use super::*;
 
+    // MP-08/MP-10/MP-11: a failed settlement retains a durable delivery
+    // hold after its transient mailbox reservation has been released.
+    #[test]
+    fn local_steer_hold_excludes_idle_queue_promotion() {
+        let owner = PromptStateOwner::default();
+        let session =
+            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let mut prompt = PromptQueueItem::new(
+            "held",
+            "client",
+            "agent",
+            "already submitted",
+            PromptStatus::Queued,
+        );
+        prompt.set_local_steer_submitted(true);
+        owner
+            .submit_prepared_prompt(&session, prompt, true)
+            .unwrap();
+        assert!(
+            owner
+                .try_claim_idle_queue_promotion(&session, "agent")
+                .is_none(),
+            "a durable steer hold must prevent automatic replay"
+        );
+    }
+
     #[test]
     fn idle_promotion_claim_deduplicates_preparation_and_releases_for_retry() {
         let owner = PromptStateOwner::default();

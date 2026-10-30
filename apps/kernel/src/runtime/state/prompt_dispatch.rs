@@ -3,28 +3,25 @@
 //! This layer validates runtime state, starts or queues prompts, and hands provider-specific
 //! submission work to the provider runtime without exposing owned-state internals to transports.
 
-use super::prompt_queue_owned_state::{RemoteQueuedPromptSteerPreparation, TriggerFiring};
+use super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation;
 use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
-/// How a trigger's steer ended.
+/// Whether the provider confirmed a trigger's steer. `Unconfirmed` firings are
+/// consumed, never replayed, because the provider may already hold them.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum TriggerSteerDelivery {
-    /// A leased agent took the steer; the caller records the firing.
-    Delivered,
-    /// A local steer consumed its queue entry and recorded its firing in one
-    /// write. Unconfirmed means the provider never answered: it may hold the
-    /// message, so the firing is consumed, never replayed.
-    Settled { confirmed: bool },
+    Confirmed,
+    Unconfirmed,
 }
 
-struct RemoteQueuedPromptSteerReservation {
+pub(super) struct RemoteQueuedPromptSteerReservation {
     prompt: crate::session::PromptQueueItem,
     id: u64,
 }
 
 impl RemoteQueuedPromptSteerReservation {
-    fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
+    pub(super) fn new(prompt: crate::session::PromptQueueItem, id: u64) -> Self {
         Self { prompt, id }
     }
 
@@ -36,18 +33,6 @@ impl RemoteQueuedPromptSteerReservation {
 impl Drop for RemoteQueuedPromptSteerReservation {
     fn drop(&mut self) {
         let _ = self.prompt.release_remote_steer(self.id);
-    }
-}
-
-/// A definitive refusal means the provider never held the message, so the
-/// firing may be replayed. A fence that cannot be cleared only makes a later
-/// restart drop the entry, never replay it.
-fn release_steer_fence(
-    owned: &KernelRuntimeOwnedState,
-    prepared: &super::prompt_queue_owned_state::LocalQueuedPromptSteerPreparation,
-) {
-    if let Err(error) = owned.release_local_queued_prompt_steer_fence(prepared) {
-        tracing::warn!(?error, "could not release a refused queued steer fence");
     }
 }
 
@@ -631,6 +616,7 @@ impl KernelRuntimeState {
                 prompt.id(),
                 prompt.prompt(),
                 prompt.attachments(),
+                prompt.prompt_origin(),
             )?;
             owned.echo_steering_prompt_to_other_attachments(
                 session_id,
@@ -678,9 +664,9 @@ impl KernelRuntimeState {
     pub(super) async fn submit_prepared_agent_trigger_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
-        claim: &crate::session::AgentTriggerDispatch,
+        claim: Option<&crate::session::AgentTriggerDispatch>,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
-        self.submit_prepared_prompt_authorized(prepared, true, None, Some(claim))
+        self.submit_prepared_prompt_authorized(prepared, true, None, claim)
             .await
     }
 
@@ -1010,7 +996,7 @@ impl KernelRuntimeState {
         target_agent_id: &str,
         attachment_id: &str,
         prompt_id: &str,
-        firing: TriggerFiring,
+        settle_firing: impl FnOnce(TriggerSteerDelivery) -> Result<(), DaemonError>,
     ) -> Result<TriggerSteerDelivery, DaemonError> {
         let owned = &self.owned;
         if owned
@@ -1028,7 +1014,7 @@ impl KernelRuntimeState {
                     None,
                 )
                 .await
-                .map(|_| TriggerSteerDelivery::Delivered);
+                .map(|_| TriggerSteerDelivery::Confirmed);
         }
         let prepared = owned.prepare_local_queued_prompt_steer(
             session_id,
@@ -1041,32 +1027,36 @@ impl KernelRuntimeState {
                 .provider_runtime_lanes
                 .acquire(&prepared.dispatch.provider_run_id)
                 .await;
-            // Persisted before the provider can see the message, so a kernel
-            // restart while the receipt is pending cannot replay the firing.
-            owned.fence_local_queued_prompt_steer(&prepared)?;
+            let recorded_sequence = owned.record_local_queued_prompt_steer(&prepared)?;
+            owned.hold_local_queued_prompt_steer(&prepared, true)?;
             let delivery = match self
                 .enqueue_prompt_dispatch_with_receipt(&prepared.dispatch, SteerReceipt::Awaited)
                 .await
             {
-                Ok(true) => TriggerSteerDelivery::Settled { confirmed: true },
+                Ok(true) => TriggerSteerDelivery::Confirmed,
                 // The provider may already hold the message, so the firing
                 // leaves the queue instead of being replayed as a second one.
                 Err(DaemonError::ProviderPromptSteerUnconfirmed { .. }) => {
-                    TriggerSteerDelivery::Settled { confirmed: false }
+                    TriggerSteerDelivery::Unconfirmed
                 }
+                // The provider never took the message: release the hold so
+                // the retained firing can run on a later turn.
                 Ok(false) => {
-                    release_steer_fence(owned, &prepared);
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
                     return Err(DaemonError::LocalTransport {
                         operation: "steer queued prompt",
                         message: "provider did not accept the queued prompt steer".into(),
                     });
                 }
                 Err(error) => {
-                    release_steer_fence(owned, &prepared);
+                    owned.hold_local_queued_prompt_steer(&prepared, false)?;
                     return Err(error);
                 }
             };
-            owned.finish_local_queued_prompt_steer(&prepared, &firing)?;
+            // The trigger is settled while the hold still stands, so a stop
+            // before the queue removal cannot leave it due without a firing.
+            settle_firing(delivery)?;
+            owned.finish_local_queued_prompt_steer(&prepared, recorded_sequence)?;
             Ok(delivery)
         }
         .await;

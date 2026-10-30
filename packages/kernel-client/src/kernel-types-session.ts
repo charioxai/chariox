@@ -72,7 +72,8 @@ export type RuntimeSession = {
   agent_wakes?: AgentWake[]
   metaagent_tasks?: MetaagentTask[]
   queued_metaagent_tasks?: QueuedMetaagentTask[]
-  agent_prompt_schedules?: AgentPromptSchedule[]
+  agent_triggers?: AgentTrigger[]
+  trigger_deliveries?: TriggerDelivery[]
   focused_agent_id: string | null
   max_agents: number
   agents: AgentInstance[]
@@ -118,17 +119,42 @@ export type RuntimeProject = {
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
 
-export type AgentPromptSchedule = {
+export type AgentTriggerBusyPolicy = "queue" | "steer"
+
+export type AgentTriggerSource = {
+  kind: "schedule"
+  interval_seconds: number
+  repeat: "once" | "every"
+  next_run_at_ms: number
+}
+
+/** Protocol 900: what fires prompts into an agent's own conversation. */
+export type AgentTrigger = {
   id: string
   agent_id: string
-  kind: "once" | "recurring"
-  interval_seconds: number
+  created_by_user_id?: string | null
+  source: AgentTriggerSource
+  busy_policy: AgentTriggerBusyPolicy
   prompt: string
+  enabled: boolean
   created_at_ms: number
-  next_run_at_ms: number
-  runs_dispatched: number
-  last_triggered_at_ms?: number | null
+  fired: number
+  coalesced: number
+  last_fired_at_ms?: number | null
+  last_outcome?: "started" | "queued" | "steered" | "coalesced" | null
   last_error?: string | null
+}
+
+/** Protocol 901: a trigger firing the provider did not confirm; the person can resend it once. */
+export type TriggerDelivery = {
+  prompt_id: string
+  trigger_id: string
+  agent_id: string
+  origin: string
+  prompt: string
+  busy_policy: AgentTriggerBusyPolicy
+  state: "not_confirmed" | "resent"
+  recorded_at_ms: number
 }
 
 export type MetaagentTask = {

@@ -363,15 +363,16 @@ async fn check(native: bool) {
     assert!(changes["cursor"].as_u64().unwrap() > grants["cursor"].as_u64().unwrap());
     assert_eq!(changes["notice"]["agent_id"], first.id());
     // A scheduled wake retains access after the parent turn has settled.
-    let request = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: session.id().into(),
-            agent_id: first.id().into(),
-            kind: crate::session::AgentPromptScheduleKind::Once,
+    let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: session.id().into(),
+        agent_id: first.id().into(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
             interval_seconds: 600,
-            prompt: None,
+            repeat: crate::session::AgentTriggerRepeat::Once,
         },
-    );
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: None,
+    });
     terminal(
         &router,
         terminal_command("mdaccess-wake", &request),

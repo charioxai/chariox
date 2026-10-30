@@ -385,8 +385,8 @@ pub enum DaemonError {
     )]
     SteerDeliveredEventUnrecorded { steer_id: String },
     /// A steer was written but its acknowledgement failed, so the provider may
-    /// already hold it.
-    #[error("provider steer for run `{provider_run_id}` was not confirmed")]
+    /// already hold it. Replaying it could show the agent the message twice.
+    #[error("provider steer for run `{provider_run_id}` was not confirmed and is not replayed")]
     ProviderPromptSteerUnconfirmed { provider_run_id: String },
     #[error("provider protocol `{operation}` failed for run `{provider_run_id}`: {message}")]
     ProviderProtocol {

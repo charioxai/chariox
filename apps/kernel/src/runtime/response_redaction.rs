@@ -17,6 +17,29 @@ pub(crate) fn redact_response_for_user(
         None => Ok(session.redacted_for_user(caller_user_id)),
     };
     Ok(match response {
+        LocalDaemonResponse::AgentTriggerCreated { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerCreated {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::AgentTriggerUpdated { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerUpdated {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::AgentTriggerDeleted { trigger, session } => {
+            LocalDaemonResponse::AgentTriggerDeleted {
+                trigger,
+                session: redact_session(session)?,
+            }
+        }
+        LocalDaemonResponse::TriggerDeliveryResent { session } => {
+            LocalDaemonResponse::TriggerDeliveryResent {
+                session: redact_session(session)?,
+            }
+        }
         LocalDaemonResponse::SessionCreated { session, agent, .. } => {
             LocalDaemonResponse::SessionCreated {
                 session: redact_session(session)?,
@@ -758,6 +781,172 @@ mod tests {
                 None
             )
             .is_err());
+        }
+    }
+
+    /// A room where one user's agent has a trigger and an unconfirmed firing
+    /// whose prompt text must stay private to its owner.
+    fn session_with_a_private_trigger_firing() -> RuntimeSession {
+        use crate::agent::{AgentInstance, GridPosition};
+        use crate::session::{
+            AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerRepeat, PromptOrigin,
+            TriggerDelivery, DEFAULT_LOCAL_USER_ID,
+        };
+        let mut session = RuntimeSession::new(
+            "session-private-trigger",
+            None,
+            "workspace-private-trigger",
+            "worktree-private-trigger",
+            "machine-private-trigger",
+            "daemon-private-trigger",
+        );
+        session.set_agents(vec![AgentInstance::new(
+            "agent",
+            "agent",
+            "session-private-trigger",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        )]);
+        session.add_agent_trigger(AgentTrigger::schedule(
+            "trigger",
+            "agent",
+            DEFAULT_LOCAL_USER_ID,
+            60,
+            AgentTriggerRepeat::Every,
+            AgentTriggerBusyPolicy::Queue,
+            "the owner's private prompt",
+            1,
+        ));
+        session.note_unconfirmed_trigger_delivery(TriggerDelivery::not_confirmed(
+            "prompt",
+            "trigger",
+            "agent",
+            PromptOrigin::Schedule,
+            "the owner's private prompt",
+            AgentTriggerBusyPolicy::Queue,
+            1,
+        ));
+        session
+    }
+
+    fn session_state_response() -> LocalDaemonResponse {
+        let session = session_with_a_private_trigger_firing();
+        LocalDaemonResponse::SessionState {
+            room_workflows:
+                crate::runtime::projection::RoomWorkflowInventory::project_with_history(
+                    &session, "member", None,
+                )
+                .expect("workflow inventory should project"),
+            session,
+            agent_activity: Default::default(),
+            agent_activity_revision: 0,
+        }
+    }
+
+    fn assert_no_private_trigger_state(session: &RuntimeSession) {
+        assert!(session.agent_triggers().is_empty(), "{session:?}");
+        assert!(session.trigger_deliveries().is_empty(), "{session:?}");
+        assert!(
+            !serde_json::to_string(session)
+                .unwrap()
+                .contains("the owner's private prompt"),
+            "another user's trigger prompt must not reach a collaborator"
+        );
+    }
+
+    #[test]
+    fn session_state_hides_another_users_trigger_prompts() {
+        let LocalDaemonResponse::SessionState { session, .. } = redact_response_for_user(
+            session_state_response(),
+            "member",
+            &ProviderRunProjectionStore::default(),
+            None,
+            None,
+        )
+        .expect("session state should redact") else {
+            panic!("unexpected response")
+        };
+        assert_no_private_trigger_state(&session);
+    }
+
+    #[test]
+    fn trigger_resend_reply_hides_another_users_trigger_prompts() {
+        let LocalDaemonResponse::TriggerDeliveryResent { session } = redact_response_for_user(
+            LocalDaemonResponse::TriggerDeliveryResent {
+                session: session_with_a_private_trigger_firing(),
+            },
+            "member",
+            &ProviderRunProjectionStore::default(),
+            None,
+            None,
+        )
+        .expect("resend response should redact") else {
+            panic!("unexpected response")
+        };
+        assert_no_private_trigger_state(&session);
+    }
+
+    #[test]
+    fn trigger_replies_hide_the_session_trigger_prompts_of_other_users() {
+        let session = session_with_a_private_trigger_firing();
+        let trigger = session.agent_triggers()[0].clone();
+        for response in [
+            LocalDaemonResponse::AgentTriggerCreated {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+            LocalDaemonResponse::AgentTriggerUpdated {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+            LocalDaemonResponse::AgentTriggerDeleted {
+                trigger: trigger.clone(),
+                session: session.clone(),
+            },
+        ] {
+            let (LocalDaemonResponse::AgentTriggerCreated { session, .. }
+            | LocalDaemonResponse::AgentTriggerUpdated { session, .. }
+            | LocalDaemonResponse::AgentTriggerDeleted { session, .. }) = redact_response_for_user(
+                response,
+                "member",
+                &ProviderRunProjectionStore::default(),
+                None,
+                None,
+            )
+            .expect("trigger response should redact")
+            else {
+                panic!("unexpected response")
+            };
+            assert_no_private_trigger_state(&session);
+        }
+    }
+
+    #[test]
+    fn the_owner_keeps_their_trigger_prompts_in_both_replies() {
+        for response in [
+            LocalDaemonResponse::TriggerDeliveryResent {
+                session: session_with_a_private_trigger_firing(),
+            },
+            session_state_response(),
+        ] {
+            let (LocalDaemonResponse::TriggerDeliveryResent { session }
+            | LocalDaemonResponse::SessionState { session, .. }) = redact_response_for_user(
+                response,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                &ProviderRunProjectionStore::default(),
+                None,
+                None,
+            )
+            .expect("owner response should redact")
+            else {
+                panic!("unexpected response")
+            };
+            assert_eq!(session.agent_triggers().len(), 1);
+            assert_eq!(session.trigger_deliveries().len(), 1);
         }
     }
 }

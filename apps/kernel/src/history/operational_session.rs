@@ -619,8 +619,8 @@ fn history_user_prompt_counts_as_chariox_owned(
     metadata_text: &str,
 ) -> bool {
     match entry.and_then(|entry| entry.prompt_origin) {
-        Some(PromptOrigin::Chariox | PromptOrigin::CompletionCheck) => true,
         Some(PromptOrigin::External) => false,
+        Some(_) => true,
         None => !SessionHistoryEntrySource::metadata_text_contains_external_provider_observed(
             metadata_text,
         ),

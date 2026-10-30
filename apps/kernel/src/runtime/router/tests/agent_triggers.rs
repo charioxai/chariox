@@ -10,7 +10,7 @@ fn boxed_schedule_future<F: std::future::Future>(
 }
 
 #[tokio::test]
-async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_and_cancel() {
+async fn wait_schedule_triggers_start_queue_recur_and_delete() {
     let worktree = crate::test_support::TestWorktree::new("agent-prompt-schedules");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -27,14 +27,11 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
-    let once_request = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Once,
-            interval_seconds: 60,
-            prompt: None,
-        },
+    let once_request = wait_request(
+        &session,
+        &agent,
+        crate::session::AgentTriggerRepeat::Once,
+        None,
     );
     let once_command =
         KernelCommand::from_local_request("create-wait-in", None, None, &once_request);
@@ -42,7 +39,10 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         .await
         .expect("one-shot schedule should create");
     let once_schedule = match once {
-        LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerCreated {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(schedule.prompt(), "Continue from where you left off.");
             assert_eq!(session.agent_triggers().len(), 1);
             schedule
@@ -50,14 +50,11 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         response => panic!("unexpected one-shot schedule response: {response:?}"),
     };
 
-    let recurring_request = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: session.id().to_string(),
-            agent_id: agent.id().to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Recurring,
-            interval_seconds: 60,
-            prompt: Some("Check whether more work remains.".to_string()),
-        },
+    let recurring_request = wait_request(
+        &session,
+        &agent,
+        crate::session::AgentTriggerRepeat::Every,
+        Some("Check whether more work remains."),
     );
     let recurring_command =
         KernelCommand::from_local_request("create-wait-every", None, None, &recurring_request);
@@ -65,7 +62,10 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         .await
         .expect("recurring schedule should create");
     let recurring_schedule = match recurring {
-        LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerCreated {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(session.agent_triggers().len(), 2);
             schedule
         }
@@ -130,19 +130,21 @@ async fn legacy_wait_requests_create_schedule_triggers_that_start_queue_recur_an
         assert_eq!(trigger.next_run_at_ms(), now_ms + 60_000);
     }
 
-    let cancel_request = LocalDaemonRequest::CancelAgentPromptSchedule(
-        crate::local::CancelAgentPromptScheduleRequest {
+    let cancel_request =
+        LocalDaemonRequest::DeleteAgentTrigger(crate::local::DeleteAgentTriggerRequest {
             session_id: session.id().to_string(),
-            schedule_id: recurring_schedule.id().to_string(),
-        },
-    );
+            trigger_id: recurring_schedule.id().to_string(),
+        });
     let cancel_command =
         KernelCommand::from_local_request("cancel-wait-every", None, None, &cancel_request);
     let cancelled = boxed_schedule_future(|| router.dispatch(cancel_command, cancel_request))
         .await
         .expect("recurring schedule should cancel");
     match cancelled {
-        LocalDaemonResponse::AgentPromptScheduleCancelled { schedule, session } => {
+        LocalDaemonResponse::AgentTriggerDeleted {
+            trigger: schedule,
+            session,
+        } => {
             assert_eq!(schedule.id(), recurring_schedule.id());
             assert!(session.agent_triggers().is_empty());
             assert_eq!(
@@ -330,6 +332,25 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
     );
 }
 
+/// What `/wait-in` and `/wait-every` send: a queue-policy schedule trigger.
+fn wait_request(
+    session: &crate::session::RuntimeSession,
+    agent: &crate::agent::AgentInstance,
+    repeat: crate::session::AgentTriggerRepeat,
+    prompt: Option<&str>,
+) -> LocalDaemonRequest {
+    LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: session.id().to_string(),
+        agent_id: agent.id().to_string(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
+            interval_seconds: 60,
+            repeat,
+        },
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: prompt.map(str::to_string),
+    })
+}
+
 fn every_minute(
     session: &crate::session::RuntimeSession,
     agent: &crate::agent::AgentInstance,
@@ -426,7 +447,7 @@ async fn busy_policy_steers_or_queues_each_trigger_on_a_running_agent() {
 }
 
 #[tokio::test]
-async fn destroying_an_agent_removes_its_wait_schedules() {
+async fn destroying_an_agent_removes_its_triggers() {
     let worktree = crate::test_support::TestWorktree::new("trigger-agent-destroy");
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, kept) = crate::app::KernelSessionService::new(&mut app)
@@ -437,15 +458,17 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
         .expect("agent should spawn");
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     for agent_id in [kept.id(), destroyed.id()] {
-        let request = LocalDaemonRequest::CreateAgentPromptSchedule(
-            crate::local::CreateAgentPromptScheduleRequest {
+        let request =
+            LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent_id.to_string(),
-                kind: crate::session::AgentPromptScheduleKind::Recurring,
-                interval_seconds: 600,
+                source: crate::local::AgentTriggerSourceRequest::Schedule {
+                    interval_seconds: 600,
+                    repeat: crate::session::AgentTriggerRepeat::Every,
+                },
+                busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
                 prompt: None,
-            },
-        );
+            });
         let command = KernelCommand::from_local_request("create-wait-every", None, None, &request);
         boxed_schedule_future(|| router.dispatch(command, request))
             .await
@@ -463,166 +486,13 @@ async fn destroying_an_agent_removes_its_wait_schedules() {
         .await
         .expect("snapshot should read");
     let snapshot = serde_json::to_value(&snapshot).unwrap();
-    let schedule_agents = snapshot["agent_prompt_schedules"]
+    let schedule_agents = snapshot["agent_triggers"]
         .as_array()
         .expect("the kept agent's schedule should remain")
         .iter()
         .map(|schedule| schedule["agent_id"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(schedule_agents, vec![kept.id()]);
-}
-
-#[test]
-fn sessions_written_before_triggers_migrate_wait_schedules_and_keep_the_legacy_view() {
-    let session = crate::session::RuntimeSession::new(
-        "session-wait-reload",
-        None,
-        "workspace",
-        "worktree",
-        "machine",
-        "kernel",
-    );
-    let legacy = serde_json::json!({
-        "id": "wait-1", "agent_id": "agent-1", "kind": "recurring", "interval_seconds": 300,
-        "prompt": "Continue the audit.", "created_at_ms": 1_000, "next_run_at_ms": 301_000,
-        "runs_dispatched": 2, "last_triggered_at_ms": 1_000,
-    });
-    let mut written_before = serde_json::to_value(&session).unwrap();
-    written_before["agent_prompt_schedules"] = serde_json::json!([legacy.clone()]);
-
-    let migrated: crate::session::RuntimeSession =
-        serde_json::from_value(written_before).expect("a pre-900 session should read");
-    let [trigger] = migrated.agent_triggers() else {
-        panic!("the /wait-every schedule should become one trigger");
-    };
-    assert_eq!(trigger.id(), "wait-1");
-    assert_eq!(trigger.agent_id(), "agent-1");
-    assert_eq!(
-        trigger.source(),
-        &crate::session::AgentTriggerSource::Schedule {
-            interval_seconds: 300,
-            repeat: crate::session::AgentTriggerRepeat::Every,
-            next_run_at_ms: 301_000,
-        }
-    );
-    assert_eq!(
-        trigger.busy_policy(),
-        crate::session::AgentTriggerBusyPolicy::Queue
-    );
-    assert!(trigger.enabled());
-    assert_eq!(trigger.fired(), 2);
-    assert_eq!(trigger.created_by_user_id(), None);
-
-    // Written again it carries both shapes, and reading that back neither
-    // duplicates nor loses the trigger.
-    let written = serde_json::to_value(&migrated).unwrap();
-    assert_eq!(
-        written["agent_prompt_schedules"],
-        serde_json::json!([legacy])
-    );
-    let reread: crate::session::RuntimeSession = serde_json::from_value(written).unwrap();
-    assert_eq!(reread.agent_triggers(), migrated.agent_triggers());
-}
-
-#[tokio::test]
-async fn a_migrated_wait_schedule_whose_agent_is_gone_is_removed_with_a_notice() {
-    let worktree = crate::test_support::TestWorktree::new("trigger-orphan");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let session_store = app.session_state_store();
-    // Before 900 a /wait-every outlived its destroyed agent.
-    let mut stored =
-        serde_json::to_value(session_store.get_session(session.id()).unwrap()).unwrap();
-    stored["agent_prompt_schedules"] = serde_json::json!([{
-        "id": "wait-orphan", "agent_id": "agent-destroyed-before-900", "kind": "recurring",
-        "interval_seconds": 60, "prompt": "Check.", "created_at_ms": 1_000, "next_run_at_ms": 61_000,
-    }]);
-    session_store.restore_session(serde_json::from_value(stored).unwrap());
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(61_000)).await;
-
-    let snapshot = router
-        .runtime_state
-        .session_snapshot(session.id())
-        .await
-        .expect("snapshot should read");
-    assert!(snapshot.agent_triggers().is_empty());
-    let notices = router
-        .app
-        .lock()
-        .await
-        .terminal_stream_store()
-        .notice_records();
-    assert!(
-        notices.iter().any(|notice| notice
-            .message
-            .contains("Trigger `wait-orphan` was removed: its agent")),
-        "the removal is reported, not silent"
-    );
-}
-
-#[tokio::test]
-async fn legacy_cancel_refuses_a_disabled_trigger_without_deleting_it() {
-    let worktree = crate::test_support::TestWorktree::new("trigger-legacy-cancel");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
-        .runtime_state
-        .create_agent_trigger(
-            every_minute(
-                &session,
-                &agent,
-                crate::session::AgentTriggerBusyPolicy::Queue,
-            ),
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should create")
-    else {
-        panic!("unexpected trigger response");
-    };
-    router
-        .runtime_state
-        .update_agent_trigger(
-            crate::local::UpdateAgentTriggerRequest {
-                session_id: session.id().to_string(),
-                trigger_id: trigger.id().to_string(),
-                busy_policy: None,
-                prompt: None,
-                enabled: Some(false),
-            },
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should disable");
-
-    let refused = router
-        .runtime_state
-        .cancel_agent_prompt_schedule(
-            crate::local::CancelAgentPromptScheduleRequest {
-                session_id: session.id().to_string(),
-                schedule_id: trigger.id().to_string(),
-            },
-            agent.owner_user_id(),
-        )
-        .await;
-    assert!(
-        refused.is_err(),
-        "a disabled trigger is not a /wait schedule"
-    );
-    let snapshot = router
-        .runtime_state
-        .session_snapshot(session.id())
-        .await
-        .expect("snapshot should read");
-    assert_eq!(snapshot.agent_triggers().len(), 1);
-    assert!(!snapshot.agent_triggers()[0].enabled());
 }
 
 #[tokio::test]
@@ -1233,8 +1103,10 @@ async fn restart_with_pending_steer(
     );
     let (_, queued) = prompt_owner.state_parts(&restored_session, agent.id());
     assert!(
-        queued.is_empty(),
-        "the unconfirmed firing is resolved, not kept"
+        queued
+            .front()
+            .is_some_and(|prompt| prompt.remote_steer_reserved()),
+        "the firing stays held for reconciliation, never promoted"
     );
 
     // The occurrence the provider may already hold is settled: the scheduler
@@ -1335,372 +1207,4 @@ async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
         snapshot.agent_triggers()[0].last_outcome(),
         Some(AgentTriggerOutcome::Steered)
     );
-}
-
-fn durable_config(name: &str) -> (DaemonConfig, std::path::PathBuf) {
-    let state_path = std::env::temp_dir().join("chariox-tests").join(format!(
-        "{name}-{}-{}.db",
-        std::process::id(),
-        crate::session::unix_epoch_ms()
-    ));
-    let mut config = DaemonConfig::for_tests();
-    config.user_config.state.path = Some(state_path.display().to_string());
-    (config, state_path)
-}
-
-fn restored_trigger(
-    config: &DaemonConfig,
-    session_id: &str,
-    trigger_id: &str,
-) -> Option<crate::session::AgentTrigger> {
-    let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restart");
-    app.sessions()
-        .get_session(session_id)
-        .expect("session should restore")
-        .agent_triggers()
-        .iter()
-        .find(|trigger| trigger.id() == trigger_id)
-        .cloned()
-}
-
-struct SteeredTriggerRig {
-    config: DaemonConfig,
-    state_path: std::path::PathBuf,
-    session: crate::session::RuntimeSession,
-    agent: crate::agent::AgentInstance,
-    prompt_owner: crate::runtime::prompt_state::PromptStateOwner,
-    router: CommandRouter,
-    trigger: crate::session::AgentTrigger,
-    sessions: crate::session::SessionStateStore,
-    durable_state: crate::durable_state::DurableKernelStateStore,
-}
-
-/// A running turn whose busy-policy-steer trigger is created and not yet due.
-async fn steered_trigger_rig(
-    name: &str,
-    repeat: crate::session::AgentTriggerRepeat,
-) -> SteeredTriggerRig {
-    let (config, state_path) = durable_config(name);
-    let worktree = crate::test_support::TestWorktree::new(name);
-    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let run = launch_test_provider(
-        &mut app,
-        session.id(),
-        agent.id(),
-        "dev-stub",
-        "dev-stub",
-        "schedule-model",
-    );
-    install_structured_run(
-        &mut app,
-        &session,
-        &agent,
-        run.id(),
-        "dev-stub",
-        "slow-structured",
-    );
-    let prompt_owner = start_running_turn(&app, &session, &agent);
-    let sessions = app.session_state_store();
-    let durable_state = app.durable_state_store();
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
-        .runtime_state
-        .create_agent_trigger(
-            {
-                let mut request = every_minute(
-                    &session,
-                    &agent,
-                    crate::session::AgentTriggerBusyPolicy::Steer,
-                );
-                request.source = crate::local::AgentTriggerSourceRequest::Schedule {
-                    interval_seconds: 60,
-                    repeat,
-                };
-                request
-            },
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should create")
-    else {
-        panic!("unexpected trigger response");
-    };
-    SteeredTriggerRig {
-        config,
-        state_path,
-        session,
-        agent,
-        prompt_owner,
-        router,
-        trigger,
-        sessions,
-        durable_state,
-    }
-}
-
-/// A kernel that dies right after a steer's queue entry is consumed must not
-/// admit the same occurrence again: the entry is consumed and the occurrence
-/// settled in one durable write. Every write that would settle the trigger
-/// separately is made to fail, which is the state a crash between the two
-/// writes leaves behind.
-async fn restart_after_a_confirmed_steer_consumed_its_fence(
-    repeat: crate::session::AgentTriggerRepeat,
-) -> (Option<crate::session::AgentTrigger>, u64) {
-    let rig = steered_trigger_rig("trigger-steer-settles-with-fence", repeat).await;
-    let due = rig.trigger.next_run_at_ms();
-    let connection = rusqlite::Connection::open(rig.durable_state.path()).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TRIGGER crash_before_trigger_update BEFORE INSERT ON durable_state_events
-             WHEN NEW.kind = 'session.updated'
-             BEGIN SELECT RAISE(FAIL, 'crash before the trigger update'); END;",
-        )
-        .unwrap();
-    boxed_schedule_future(|| rig.router.runtime_state.dispatch_due_agent_triggers(due)).await;
-    let (_, queued) = rig.prompt_owner.state_parts(&rig.session, rig.agent.id());
-    assert!(queued.is_empty(), "the acknowledged steer leaves the queue");
-    connection
-        .execute_batch("DROP TRIGGER crash_before_trigger_update;")
-        .unwrap();
-    drop(connection);
-    let SteeredTriggerRig {
-        config,
-        state_path,
-        session,
-        trigger,
-        prompt_owner,
-        router,
-        sessions,
-        durable_state,
-        ..
-    } = rig;
-    drop(prompt_owner);
-    drop(router);
-    drop(sessions);
-    drop(durable_state);
-
-    let left_behind = restored_trigger(&config, session.id(), trigger.id());
-    let _ = std::fs::remove_file(state_path);
-    (left_behind, due)
-}
-
-/// A checkpoint is captured under the transition lock. The steer that
-/// consumes a trigger's occurrence removes the queue entry, commits the
-/// combined settlement and publishes the settled trigger; none of that may
-/// become visible while a checkpoint holds the boundary, or a checkpoint taken
-/// in between records the entry gone and the trigger still due at the
-/// sequence of the event that settles it, which restart then skips.
-async fn steer_waits_for_the_checkpoint_boundary(repeat: crate::session::AgentTriggerRepeat) {
-    let rig = steered_trigger_rig("trigger-steer-checkpoint-boundary", repeat).await;
-    let due = rig.trigger.next_run_at_ms();
-    let (held_tx, held_rx) = std::sync::mpsc::channel();
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let checkpoint = {
-        let durable_state = rig.durable_state.clone();
-        std::thread::spawn(move || {
-            durable_state
-                .with_workflow_runtime_transition_lock(|| {
-                    held_tx.send(()).expect("hold should signal");
-                    release_rx.recv().expect("release should signal");
-                    Ok(())
-                })
-                .expect("transition lock should release");
-        })
-    };
-    held_rx.recv().expect("checkpoint boundary should be held");
-    let dispatching = {
-        let runtime_state = rig.router.runtime_state.clone();
-        tokio::spawn(async move {
-            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
-        })
-    };
-    let queued = |sessions: &crate::session::SessionStateStore| {
-        sessions
-            .get_session(rig.session.id())
-            .expect("session should read")
-            .queued_prompts_for_agent(rig.agent.id())
-            .map_or(0, |queued| queued.len())
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while queued(&rig.sessions) == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .expect("the trigger prompt should queue");
-    // The stub provider acknowledges a steer within a second; give the commit
-    // the time to publish if the boundary does not hold it back.
-    let started = std::time::Instant::now();
-    while queued(&rig.sessions) == 1 && started.elapsed() < std::time::Duration::from_secs(3) {
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    }
-    assert_eq!(
-        queued(&rig.sessions),
-        1,
-        "the steer published its queue state inside a held checkpoint boundary"
-    );
-    release_tx.send(()).expect("release should send");
-    checkpoint.join().expect("checkpoint thread should join");
-    dispatching.await.expect("dispatch should finish");
-    assert_eq!(queued(&rig.sessions), 0, "the steer completes");
-    let settled = rig
-        .sessions
-        .get_session(rig.session.id())
-        .expect("session should read")
-        .agent_triggers()
-        .iter()
-        .find(|trigger| trigger.id() == rig.trigger.id())
-        .cloned();
-    match repeat {
-        crate::session::AgentTriggerRepeat::Once => assert!(settled.is_none()),
-        _ => assert_eq!(settled.expect("a recurring trigger stays").fired(), 1),
-    }
-    let _ = std::fs::remove_file(rig.state_path);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_recurring_steer_waits_for_the_checkpoint_boundary() {
-    steer_waits_for_the_checkpoint_boundary(crate::session::AgentTriggerRepeat::Every).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_one_shot_steer_waits_for_the_checkpoint_boundary() {
-    steer_waits_for_the_checkpoint_boundary(crate::session::AgentTriggerRepeat::Once).await;
-}
-
-#[tokio::test]
-async fn a_recurring_steer_is_settled_with_the_write_that_consumes_its_fence() {
-    let (trigger, due) = restart_after_a_confirmed_steer_consumed_its_fence(
-        crate::session::AgentTriggerRepeat::Every,
-    )
-    .await;
-    let trigger = trigger.expect("a recurring trigger stays");
-    assert_eq!(trigger.fired(), 1, "the steered occurrence is counted");
-    assert!(
-        trigger.next_run_at_ms() > due,
-        "the occurrence the provider already received must not be due again"
-    );
-}
-
-#[tokio::test]
-async fn a_one_shot_steer_is_settled_with_the_write_that_consumes_its_fence() {
-    let (trigger, _) = restart_after_a_confirmed_steer_consumed_its_fence(
-        crate::session::AgentTriggerRepeat::Once,
-    )
-    .await;
-    assert!(
-        trigger.is_none(),
-        "a one-shot whose provider already received it is done"
-    );
-}
-
-/// A second restart before the recovered turn ends finds the same retained
-/// fence; the occurrence it stands for was settled by the first restart.
-#[tokio::test]
-async fn a_second_restart_does_not_settle_the_same_steered_occurrence_again() {
-    let (config, state_path) = durable_config("trigger-steer-second-restart");
-    let worktree = crate::test_support::TestWorktree::new("trigger-steer-second-restart");
-    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .expect("session should create");
-    let run = launch_test_provider(
-        &mut app,
-        session.id(),
-        agent.id(),
-        "dev-stub",
-        "dev-stub",
-        "schedule-model",
-    );
-    install_structured_run(
-        &mut app,
-        &session,
-        &agent,
-        run.id(),
-        "dev-stub",
-        "lost-ack-structured",
-    );
-    let prompt_owner = start_running_turn(&app, &session, &agent);
-    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
-        .runtime_state
-        .create_agent_trigger(
-            every_minute(
-                &session,
-                &agent,
-                crate::session::AgentTriggerBusyPolicy::Steer,
-            ),
-            agent.owner_user_id(),
-        )
-        .await
-        .expect("trigger should create")
-    else {
-        panic!("unexpected trigger response");
-    };
-    let due = trigger.next_run_at_ms();
-    let dispatching = {
-        let runtime_state = router.runtime_state.clone();
-        tokio::spawn(async move {
-            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
-        })
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let (_, queued) = prompt_owner.state_parts(&session, agent.id());
-            if queued
-                .front()
-                .is_some_and(|prompt| prompt.remote_steer_reserved())
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-    })
-    .await
-    .expect("the steer should be in flight");
-    dispatching.abort();
-    let _ = dispatching.await;
-    drop(prompt_owner);
-    drop(router);
-
-    let mut settled_by_first_restart = None;
-    for restart in 1..=2 {
-        let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restart");
-        let restored = app.sessions().get_session(session.id()).unwrap();
-        assert!(
-            restored
-                .queued_prompts_for_agent(agent.id())
-                .is_some_and(|queued| queued.iter().any(|prompt| prompt.local_steer_fenced())),
-            "restart {restart} keeps the fence while the recovered turn is active"
-        );
-        let trigger = restored.agent_triggers()[0].clone();
-        match &settled_by_first_restart {
-            None => {
-                assert_eq!(
-                    trigger.fired(),
-                    1,
-                    "the first restart settles the occurrence"
-                );
-                settled_by_first_restart = Some(trigger);
-            }
-            Some(first) => {
-                assert_eq!(
-                    trigger.fired(),
-                    first.fired(),
-                    "settled once, not per restart"
-                );
-                assert_eq!(
-                    trigger.next_run_at_ms(),
-                    first.next_run_at_ms(),
-                    "a repeated restart does not push the next occurrence back"
-                );
-            }
-        }
-        drop(app);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let _ = std::fs::remove_file(state_path);
 }

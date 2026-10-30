@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{TriggerDelivery, TriggerDeliveryState};
 
 impl SessionService {
     pub fn next_scheduled_runtime_wake_at_ms(&self) -> Option<u64> {
@@ -157,16 +158,6 @@ impl SessionService {
         })
     }
 
-    pub(crate) fn apply_agent_trigger_settlement(
-        &mut self,
-        session_id: &str,
-        settlement: crate::session::AgentTriggerSettlement,
-    ) -> Result<(), DaemonError> {
-        self.agent_trigger_session_mut(session_id)?
-            .apply_agent_trigger_settlement(settlement);
-        Ok(())
-    }
-
     pub fn mark_agent_trigger_failed(
         &mut self,
         session_id: &str,
@@ -215,6 +206,44 @@ impl SessionService {
         self.settle_agent_trigger(session_id, trigger_id, |trigger| {
             trigger.mark_coalesced(now_ms)
         })
+    }
+
+    /// Settles a steered firing in one change: the trigger counts as fired and
+    /// an unconfirmed delivery is remembered, so a single durable write covers
+    /// both.
+    pub fn settle_steered_firing(
+        &mut self,
+        session_id: &str,
+        trigger_id: Option<&str>,
+        now_ms: u64,
+        unconfirmed: Option<TriggerDelivery>,
+    ) -> Result<(), DaemonError> {
+        if let Some(trigger_id) = trigger_id {
+            self.mark_agent_trigger_fired(
+                session_id,
+                trigger_id,
+                now_ms,
+                AgentTriggerOutcome::Steered,
+                None,
+            )?;
+        }
+        if let Some(delivery) = unconfirmed {
+            self.agent_trigger_session_mut(session_id)?
+                .note_unconfirmed_trigger_delivery(delivery);
+        }
+        Ok(())
+    }
+
+    pub fn move_trigger_delivery(
+        &mut self,
+        session_id: &str,
+        prompt_id: &str,
+        from: TriggerDeliveryState,
+        to: TriggerDeliveryState,
+    ) -> Result<Option<TriggerDelivery>, DaemonError> {
+        Ok(self
+            .agent_trigger_session_mut(session_id)?
+            .move_trigger_delivery(prompt_id, from, to))
     }
 
     /// Records a settled firing; a one-shot trigger is done after its first.

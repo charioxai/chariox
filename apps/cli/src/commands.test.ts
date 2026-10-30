@@ -6,6 +6,7 @@ import {
   parseSlashCommand,
   sharedShellCommandForSlashCommand,
   shouldClearCommandCenterForSlashCommand,
+  TRIGGER_USAGE,
 } from "./commands.js"
 
 test("parseSlashCommand parses session commands with action and value", () => {
@@ -123,31 +124,55 @@ test("prompt settings slash commands use the shared kernel shell path", () => {
   )
 })
 
-test("parseSlashCommand parses durable agent wait schedules", () => {
+test("/trigger resend requires exactly one prompt id", () => {
+  assert.deepEqual(parseSlashCommand("/trigger resend prompt-1"), {
+    kind: "trigger", raw: "/trigger resend prompt-1",
+    action: { type: "resend", promptId: "prompt-1" }, error: null,
+  })
+  for (const raw of ["/trigger resend", "/trigger resend prompt-1 extra"]) {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    assert.ok(command?.kind === "trigger" && command.error)
+  }
+})
+
+test("parseSlashCommand parses /trigger and its /wait aliases", () => {
+  const create = (repeat: "once" | "every", minutes: number, busyPolicy: "queue" | "steer", prompt: string) =>
+    ({ type: "create", repeat, minutes, busyPolicy, prompt })
   assert.deepEqual(parseSlashCommand("/wait-in 0.05 Check once"), {
-    kind: "wait",
+    kind: "trigger",
     raw: "/wait-in 0.05 Check once",
-    scheduleKind: "once",
-    minutes: 0.05,
-    prompt: "Check once",
+    action: create("once", 0.05, "queue", "Check once"),
     error: null,
   })
+  assert.deepEqual(parseSlashCommand("/wait-every 5 --steer Check")?.kind === "trigger"
+    && (parseSlashCommand("/wait-every 5 --steer Check") as { action: unknown }).action,
+  create("every", 5, "queue", "--steer Check"), "the /wait aliases always queue")
+  assert.deepEqual(parseSlashCommand("/trigger every 10 --steer Check the build"), {
+    kind: "trigger",
+    raw: "/trigger every 10 --steer Check the build",
+    action: create("every", 10, "steer", "Check the build"),
+    error: null,
+  })
+  assert.deepEqual((parseSlashCommand("/trigger in 2 --queue Ping") as { action: unknown }).action, create("once", 2, "queue", "Ping"))
+  assert.deepEqual((parseSlashCommand("/trigger") as { action: unknown }).action, { type: "list" })
+  assert.deepEqual((parseSlashCommand("/trigger list") as { action: unknown }).action, { type: "list" })
+  assert.deepEqual((parseSlashCommand("/trigger steer trigger-1") as { action: unknown }).action, { type: "update", triggerId: "trigger-1", change: "steer" })
+  assert.deepEqual((parseSlashCommand("/trigger off trigger-1") as { action: unknown }).action, { type: "update", triggerId: "trigger-1", change: "off" })
+  assert.deepEqual((parseSlashCommand("/trigger remove trigger-1") as { action: unknown }).action, { type: "remove", triggerId: "trigger-1" })
   assert.deepEqual(parseSlashCommand("/wait-every 5"), {
-    kind: "wait",
+    kind: "trigger",
     raw: "/wait-every 5",
-    scheduleKind: "recurring",
-    minutes: 5,
-    prompt: "",
-    error: null,
+    action: null,
+    error: "usage: /wait-every <minutes> <prompt>",
   })
-  assert.deepEqual(parseSlashCommand("/wait-in later"), {
-    kind: "wait",
-    raw: "/wait-in later",
-    scheduleKind: "once",
-    minutes: null,
-    prompt: "",
-    error: "usage: /wait-in <minutes> [prompt]",
+  assert.deepEqual(parseSlashCommand("/trigger every later"), {
+    kind: "trigger",
+    raw: "/trigger every later",
+    action: null,
+    error: "usage: /trigger every <minutes> [--steer|--queue] <prompt>",
   })
+  assert.equal((parseSlashCommand("/trigger remove") as { error: string }).error, TRIGGER_USAGE)
 })
 
 test("parseSlashCommand parses workspace link commands and args", () => {
@@ -248,7 +273,7 @@ test("shouldClearCommandCenterForSlashCommand only clears selector-backed comman
   assert.equal(shouldClearCommandCenterForSlashCommand(parseSlashCommand("/stop")!), false)
 })
 
-test("executeSlashCommand dispatches agent wait schedules", async () => {
+test("executeSlashCommand dispatches /wait-every as a schedule trigger", async () => {
   const calls: string[] = []
   const command = await executeSlashCommand("/wait-every 5 Check repeatedly", {
     onExit: () => undefined,
@@ -279,7 +304,7 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
     onWorkflow: () => undefined,
     onLoop: () => undefined,
     onGoal: () => undefined,
-    onWait: (wait) => calls.push(`${wait.scheduleKind}:${wait.minutes}:${wait.prompt}`),
+    onTrigger: (command) => calls.push(`trigger:${JSON.stringify(command.action)}`),
     onMcp: () => undefined,
     onSkill: () => undefined,
     onEnv: () => undefined,
@@ -289,8 +314,8 @@ test("executeSlashCommand dispatches agent wait schedules", async () => {
     onExtension: () => undefined,
   })
 
-  assert.deepEqual(calls, ["recurring:5:Check repeatedly"])
-  assert.equal(command?.kind, "wait")
+  assert.deepEqual(calls, [`trigger:${JSON.stringify({ type: "create", repeat: "every", minutes: 5, busyPolicy: "queue", prompt: "Check repeatedly" })}`])
+  assert.equal(command?.kind, "trigger")
 })
 
 test("executeSlashCommand dispatches to the matching handlers", async () => {

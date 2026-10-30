@@ -5,6 +5,7 @@ import {
   type TextRenderable,
 } from "@opentui/core"
 
+import { triggerPromptOriginLabel } from "@chariox/kernel-client/agent-trigger-state"
 import { linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
 
 import type { TranscriptEntry } from "./cli-types.js"
@@ -26,6 +27,8 @@ export function applyTranscriptTextContent(text: TextRenderable, entry: Transcri
 }
 
 function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  const origin = triggerPromptOriginLabel(entry.promptOrigin)
+  if (origin) text.add(`${origin}\n`)
   if (entry.attachments?.length && !hasInlineAttachmentToken(entry.text)) {
     appendHistoryAttachmentChips(text, entry)
     text.add("\n")

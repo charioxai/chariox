@@ -231,6 +231,7 @@ struct KernelRuntimeOwnedState {
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
         >,
     >,
+    trigger_resend_claims: agent_trigger_runtime_state::TriggerResendClaims,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
     workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims,
@@ -995,6 +996,7 @@ impl KernelRuntimeState {
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),
+                trigger_resend_claims: Default::default(),
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_entry_claims: workflow_queue_durable::WorkflowEntryClaims::default(),

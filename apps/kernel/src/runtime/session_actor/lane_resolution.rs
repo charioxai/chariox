@@ -97,12 +97,6 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
-        LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
-            resolve_direct_session_lane_key(session_projection, &request.session_id)
-        }
-        LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
-            resolve_direct_session_lane_key(session_projection, &request.session_id)
-        }
         LocalDaemonRequest::CreateAgentTrigger(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
@@ -110,6 +104,9 @@ pub(super) async fn resolve_session_lane_key(
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::DeleteAgentTrigger(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::ResendTriggerDelivery(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::UpdateAgentConfig(request) => {

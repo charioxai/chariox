@@ -482,6 +482,7 @@ impl DaemonApp {
             .attach_workflow_history_authority(app.config_projection.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;
+        app.enroll_existing_local_state()?;
         if app.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
             && !app.sessions.list_all_sessions().is_empty()
         {
