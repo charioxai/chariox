@@ -163,7 +163,9 @@ export class MirrorFrames {
   // Deltas of attached children; a navigated child is re-snapshotted under its owner.
   async drain(stream, policy, tab) {
     const out = { ops: [], resources: [], changed: [] };
-    for (const [owner, entry] of stream.frames) {
+    // Each child attached when the credit began, once: a re-mounted child re-enters the map and is drained next credit.
+    for (const [owner, entry] of [...stream.frames]) {
+      if (stream.frames.get(owner) !== entry) continue; // forgotten with the child that hosted it
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');

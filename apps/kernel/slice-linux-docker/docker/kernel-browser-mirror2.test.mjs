@@ -1106,3 +1106,27 @@ test('P9: resource bytes ride DOM changes only without recent input', () => {
   stream.inputAt = Date.now();
   assert.equal(mirror.resourcesRide(stream, source), false, 'an echo never queues behind resource bytes');
 });
+
+// mirrorfid (dashboard.stripe.com/login): a child frame whose delta keeps failing is re-mounted under the same owner,
+// which put it back in the map being drained; the credit re-mounted it forever and the page's next packet (with its
+// deferred full stylesheet) never left. One credit drains each child attached when it began, once.
+test('MP-10: a child frame whose delta keeps failing is re-mounted once per credit, not in an endless loop', async () => {
+  const { MirrorFrames } = await import('./kernel-browser-mirror2-frames.mjs');
+  const stream = { frames: new Map(), frameSlots: new Map() };
+  const frames = new MirrorFrames({ parentWorld: () => ({ ref: 'top' }), evaluate: async () => ({ unexpected_field: true }) });
+  const entry = { owner: 'n5', slot: 1, hostSlot: 0, depth: 1, child: { ref: 'child' }, loaderId: 'L' };
+  stream.frames.set('n5', entry); stream.frameSlots.set(1, entry);
+  let mounts = 0;
+  frames.loaderId = async () => 'L';
+  frames.owners = async () => new Map([['n5', { id: 'f' }]]);
+  frames.mount = async (_host, hostSlot, s, owner) => {
+    if (++mounts > 5) throw new Error('re-mounted in a loop');
+    const next = { ...entry, slot: 1 + mounts }; s.frames.set(owner, next); s.frameSlots.set(next.slot, next);
+    return { records: [{ id: `n${next.slot}-1` }], ops: [], resources: [] };
+  };
+  const out = await frames.drain(stream, null, null);
+  assert.equal(mounts, 1);
+  assert.deepEqual(out.ops.map(op => op.op), ['children']);
+  await frames.drain(stream, null, null);
+  assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
+});
