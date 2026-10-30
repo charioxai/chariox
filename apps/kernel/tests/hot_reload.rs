@@ -69,6 +69,12 @@ fn start_kernel(scratch: &Path) -> Kernel {
 }
 
 fn start_kernel_with(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
+    start_kernel_inheriting(scratch, env, &[])
+}
+
+/// Starts the kernel with `inherited` descriptors open in it (and only in it),
+/// as a supervisor hands them over.
+fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &[i32]) -> Kernel {
     // The drill may point at another build, e.g. the base binary for the red run.
     let binary = std::env::var_os("CHARIOX_HOT_RELOAD_KERNEL")
         .map(PathBuf::from)
@@ -103,6 +109,18 @@ fn start_kernel_with(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
     let files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
     let mut command = Command::new(&installed);
     command.env_clear();
+    let inherited = inherited.to_vec();
+    // SAFETY: fcntl is async-signal-safe; it runs in the child between fork and exec.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut command, move || {
+            for fd in &inherited {
+                if libc::fcntl(*fd, libc::F_SETFD, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
     if token_file.is_none() {
         command.env("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", &token);
     }
@@ -427,6 +445,57 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
         std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
         scratch.join("bin/chariox-kernel")
     );
+}
+
+/// A managed kernel reaches its slice Docker broker over a connection its
+/// supervisor handed it (`CHARIOX_SLICE_DOCKER_BROKER_FD`, with no socket path
+/// to reconnect to): the new program keeps that connection.
+#[test]
+fn a_hot_reload_keeps_the_managed_slice_broker_connection() {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let scratch = std::env::temp_dir().join(format!("hr-broker-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let (kernel_end, mut broker) = std::os::unix::net::UnixStream::pair().unwrap();
+    let fd = kernel_end.as_raw_fd();
+    let kernel = start_kernel_inheriting(
+        &scratch,
+        &[("CHARIOX_SLICE_DOCKER_BROKER_FD", fd.to_string().into())],
+        &[fd],
+    );
+    #[cfg(target_os = "linux")]
+    let socket_name = std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+    // Only the kernel holds its end now: the broker reads EOF once it closes.
+    drop(kernel_end);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let socket = connect(&kernel, Duration::from_secs(60)).await;
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        connect(&kernel, Duration::from_secs(60)).await;
+    });
+    // The new program holds the connection: no EOF, and requests still reach
+    // the broker (it sends none by itself).
+    broker.set_nonblocking(true).unwrap();
+    let mut byte = [0; 1];
+    match broker.read(&mut byte) {
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+        other => panic!("the broker connection ended at the hot reload: {other:?}"),
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let held = std::fs::read_link(format!("/proc/{}/fd/{fd}", kernel.child.id()));
+        assert_eq!(
+            held.ok(),
+            Some(socket_name),
+            "the new program holds the connection"
+        );
+    }
 }
 
 #[test]

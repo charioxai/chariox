@@ -68,6 +68,12 @@ pub fn initialize_managed_docker_broker() {
     broker::initialize();
 }
 
+/// The supervisor's broker connection, kept for the next program of a hot reload.
+#[cfg(unix)]
+pub(crate) fn hand_over_managed_docker_broker() -> Option<i32> {
+    broker::hand_over_inherited_connection()
+}
+
 pub(crate) fn managed_docker_broker_configured() -> bool {
     broker::configured()
 }
