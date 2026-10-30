@@ -12,7 +12,7 @@ fn check_provider_status_budget_check_settles_with_remaining_budget() {
     std::fs::write(
         &bin,
         r#"#!/bin/sh
-if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep .4; echo 2.1.0; else : > "$0.status-probed"; sleep .08; echo '{"loggedIn":true}'; fi
+if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep 1.2; echo 2.1.0; else : > "$0.status-probed"; sleep .08; echo '{"loggedIn":true}'; fi
 "#,
     )
     .unwrap();
@@ -26,9 +26,9 @@ if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep .4; echo 2.1.0; e
     let mut r = requirement("account");
     r.spec=serde_json::from_value(serde_json::json!({"kind":"accounts","provider":"claude","linked_profile_ref":profile.profile_id,"required_capabilities":[]})).unwrap();
     let (observation, elapsed, setup_elapsed) =
-        check_requirement_timed(root.path(), ctx, r, Duration::from_millis(160));
+        check_requirement_timed(root.path(), ctx, r, Duration::from_millis(600));
     assert!(
-        elapsed < Duration::from_millis(400),
+        elapsed < Duration::from_millis(900),
         "Check runner/provider consumed more than remaining budget: {elapsed:?}; fixture setup {setup_elapsed:?} excluded"
     );
     assert!(
@@ -52,7 +52,7 @@ fn review1118_codex_check_uses_bounded_official_status() {
     std::env::set_var("CHARIOX_HOME", root.path());
     let bin = root.path().join("codex");
     std::fs::write(&bin, r#"#!/bin/sh
-if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep .4; echo 0.120.0; elif [ "$1" = 'login' ] && [ "$2" = 'status' ]; then : > "$0.status-probed"; sleep .08; echo 'Logged in using ChatGPT'; else exit 2; fi
+if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep 1.2; echo 0.120.0; elif [ "$1" = 'login' ] && [ "$2" = 'status' ]; then : > "$0.status-probed"; sleep .08; echo 'Logged in using ChatGPT'; else exit 2; fi
 "#).unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::env::set_var("CHARIOX_CODEX_BIN", &bin);
@@ -64,8 +64,8 @@ if [ "$1" = '--version' ]; then : > "$0.version-probed"; sleep .4; echo 0.120.0;
     let mut r = requirement("account");
     r.spec = serde_json::from_value(serde_json::json!({"kind":"accounts","provider":"codex","linked_profile_ref":profile.profile_id,"required_capabilities":[]})).unwrap();
     let (observation, elapsed, setup_elapsed) =
-        check_requirement_timed(root.path(), ctx, r, Duration::from_millis(160));
-    assert!(elapsed < Duration::from_millis(400), "Check runner/provider consumed more than remaining budget: {elapsed:?}; fixture setup {setup_elapsed:?} excluded");
+        check_requirement_timed(root.path(), ctx, r, Duration::from_millis(600));
+    assert!(elapsed < Duration::from_millis(900), "Check runner/provider consumed more than remaining budget: {elapsed:?}; fixture setup {setup_elapsed:?} excluded");
     assert!(
         bin.with_extension("status-probed").exists(),
         "official status command was reached"

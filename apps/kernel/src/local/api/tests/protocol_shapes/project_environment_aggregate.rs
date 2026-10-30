@@ -35,7 +35,7 @@ fn envp01_full_environment_shapes_require_protocol_bump() {
             "{:x}",
             Sha256::digest(view.split("#[cfg(test)]").next().unwrap().as_bytes())
         ),
-        "ee7fde1092a82995b81e141a9bc374a3bd888e7207d728528302b9c2b17ee20c"
+        "12358696ba1097268fca362eae8045d95957f64fb41fb704cd59251f7b723705"
     );
     let requests = include_str!("../../types/project_environment_aggregate.rs");
     assert_eq!(

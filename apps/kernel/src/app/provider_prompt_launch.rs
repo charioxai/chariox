@@ -211,6 +211,7 @@ mod tests {
         };
         ProjectEnvironmentStore::new(&app.config.private_runtime_state_root())
             .save(&StoredProjectEnvironment {
+                apply_owned_bindings: Default::default(),
                 source: None,
                 manifest,
                 evidence: ProjectEnvironmentEvidence::default(),

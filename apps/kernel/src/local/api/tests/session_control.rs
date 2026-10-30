@@ -1340,11 +1340,19 @@ fn envp01_delivered_operations_authorize_and_future_operations_remain_unsupporte
         let delivered = value.as_object().unwrap().keys().any(|name| {
             matches!(
                 name.as_str(),
-                "CheckProjectEnvironment" | "GetEnvironmentOperation"
+                "PlanProjectEnvironment"
+                    | "ApplyProjectEnvironment"
+                    | "CheckProjectEnvironment"
+                    | "GetEnvironmentOperation"
+                    | "CancelEnvironmentOperation"
+                    | "RetryEnvironmentOperation"
             )
         });
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         if delivered {
+            // MP-08 / MP-10 / MP-11: P04/P05a are delivered, but an absent
+            // Project/target request must be rejected before any operation
+            // is admitted. Check may reject its malformed digest first.
             assert!(harness.dispatch(request).is_err());
             continue;
         }

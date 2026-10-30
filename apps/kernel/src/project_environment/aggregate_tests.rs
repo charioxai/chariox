@@ -92,6 +92,7 @@ fn envp01_legacy_adapter_is_lossless_idempotent_and_never_promotes_status() {
         service_hints: vec!["postgres".into()],
     };
     let state = StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest: manifest.clone(),
         evidence,
@@ -357,6 +358,35 @@ mod revision_excluded_files;
 #[path = "revision_filename_privacy_tests.rs"]
 mod revision_filename_privacy;
 
+// MP-08 / MP-10 / MP-11: first Apply includes its recovery controls.
+#[test]
+fn envp05a_first_apply_advertises_durable_controls_together() {
+    let root = crate::test_support::TestWorktree::new("envp05-capabilities");
+    let project = RuntimeProject::new(
+        "project",
+        "owner",
+        "/plain/one",
+        "Apply",
+        RuntimeProjectKind::Named,
+    );
+    let env = ProjectEnvironmentStore::new(root.path())
+        .snapshot(&project)
+        .unwrap();
+    for capability in [
+        EnvironmentCapability::Plan,
+        EnvironmentCapability::Apply,
+        EnvironmentCapability::GetOperation,
+        EnvironmentCapability::CancelOperation,
+        EnvironmentCapability::RetryOperation,
+    ] {
+        assert!(
+            env.delivered_capabilities
+                .enabled_environment_operations
+                .contains(&capability),
+            "missing {capability:?}"
+        );
+    }
+}
 #[path = "revision_platform_compatibility_tests.rs"]
 mod revision_platform_compatibility;
 #[path = "revision_setup_source_privacy_tests.rs"]

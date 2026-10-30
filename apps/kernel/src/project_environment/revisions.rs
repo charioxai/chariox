@@ -240,6 +240,20 @@ fn validate_draft(
                     }
                 }
                 RequirementSpec::Variables { name, locator } => {
+                    // An unchanged saved source does not authorize reading or binding
+                    // kernel/provider controls. New public sources cannot override them.
+                    if project_environment_public_source_protected(locator)
+                        && !requirements(&before).any(|old| {
+                            old.requirement_id == r.requirement_id
+                                && old.scope == r.scope
+                                && old.spec == r.spec
+                        })
+                    {
+                        return Err(environment_error(format!(
+                            "protected kernel/provider source for requirement `{}` cannot be rebound",
+                            r.title
+                        )));
+                    }
                     if !environment_variable_name(name) {
                         return Err(environment_error("invalid variable name"));
                     }

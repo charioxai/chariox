@@ -661,6 +661,7 @@ async fn empty_profile_queue_does_not_prepare_project_or_request_a_vault_unlock(
             .private_runtime_state_root(),
     )
     .save(&crate::project_environment::StoredProjectEnvironment {
+        apply_owned_bindings: Default::default(),
         source: None,
         manifest: crate::project_environment::ProjectEnvironmentManifest {
             schema_version: 1,

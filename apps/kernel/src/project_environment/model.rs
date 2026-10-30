@@ -155,11 +155,13 @@ impl ProjectEnvironmentManifest {
             if entry.workspace_id.is_empty()
                 || entry.workspace_id.len() > 4096
                 || !identities.insert((&entry.workspace_id, &entry.name))
-                || entry.uses.is_empty()
                 || entry.uses.len() > 128
             {
                 return Err("invalid Project environment entry binding or evidence");
             }
+            // MP-08 / MP-10 / MP-11: manually reviewed P01 locators need no
+            // invented detected use site. Discovery separately requires exact
+            // kernel-indexed references; this metadata is not grant authority.
             match entry.kind {
                 ProjectEnvironmentEntryKind::Variable
                     if !environment_variable_name(&entry.name) =>
@@ -197,7 +199,7 @@ impl ProjectEnvironmentManifest {
                     }
                 }
                 (
-                    ProjectEnvironmentEntryKind::ConfigFile,
+                    ProjectEnvironmentEntryKind::Variable | ProjectEnvironmentEntryKind::ConfigFile,
                     ProjectEnvironmentLocator::ConfigFile { path },
                 ) => relative_environment_path(path)?,
                 (_, ProjectEnvironmentLocator::Vault { service, key })
@@ -264,4 +266,29 @@ pub fn project_environment_protected_name(name: &str) -> bool {
                 | "BASH_ENV"
                 | "ENV"
         )
+}
+
+// MP-08 / MP-10 / MP-11: Credentials belong in the Vault, so a public (non-secret) binding cannot
+// carry a GitHub token or a provider's API credential. A Vault-backed Project input may use these
+// names as application credentials; only the launching provider's own account variables conflict
+// at launch.
+pub(crate) fn project_environment_public_name_protected(name: &str) -> bool {
+    project_environment_protected_name(name)
+        || matches!(name, "GITHUB_TOKEN" | "GH_TOKEN")
+        || ["codex", "claude", "opencode"].iter().any(|provider| {
+            crate::account_profile::provider_auth_env_vars(provider).contains(&name)
+        })
+}
+
+pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocator) -> Option<&str> {
+    match locator {
+        ProjectEnvironmentLocator::WorkspaceEnvironment { name } => Some(name),
+        ProjectEnvironmentLocator::EnvFile { key, .. } => Some(key),
+        _ => None,
+    }
+}
+pub(crate) fn project_environment_public_source_protected(
+    locator: &ProjectEnvironmentLocator,
+) -> bool {
+    project_environment_source_name(locator).is_some_and(project_environment_public_name_protected)
 }

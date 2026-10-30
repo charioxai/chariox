@@ -21,6 +21,51 @@ fn environment() -> (
 fn requirement(id: &str) -> Requirement {
     serde_json::from_value(serde_json::json!({"requirement_id":id,"title":id,"scope":{"kind":"project"},"origins":[],"spec":{"kind":"software","identity":"node","version_constraint":null,"platform":null,"install_scope":"system","install_source":null,"detect_only":true},"depends_on":[],"platform_variants":[],"required":true,"legacy_entry":null})).unwrap()
 }
+
+#[test]
+fn envp05a_check_selection_freshly_includes_optional_prerequisites() {
+    let (_root, _store, mut env) = environment();
+    let mut node = requirement("node");
+    node.required = false;
+    let mut npm = requirement("npm");
+    npm.depends_on = vec!["node".into()];
+    let mut unrelated = requirement("unrelated");
+    unrelated.required = false;
+    env.project_requirements = vec![node, npm, unrelated];
+    assert_eq!(check_selection(&env, &[]).unwrap(), vec!["node", "npm"]);
+    assert_eq!(
+        check_selection(&env, &["npm".into(), "npm".into()]).unwrap(),
+        vec!["node", "npm"]
+    );
+    assert!(check_selection(&env, &["foreign".into()]).is_err());
+    env.project_requirements[1]
+        .depends_on
+        .push("missing".into());
+    assert!(check_selection(&env, &["npm".into()]).is_err());
+}
+
+#[test]
+fn envp05a_check_selection_includes_service_specific_transitive_dependencies() {
+    let (_root, _store, mut env) = environment();
+    let mut node = requirement("node");
+    node.required = false;
+    let mut npm = requirement("npm");
+    npm.required = false;
+    npm.depends_on = vec!["node".into()];
+    let mut service = requirement("service");
+    service.spec = RequirementSpec::Services {
+        identity: "documentation".into(),
+        target_binding: None,
+        probe: None,
+        health_expectation: None,
+        depends_on: vec!["npm".into()],
+    };
+    env.project_requirements = vec![node, npm, service];
+    assert_eq!(
+        check_selection(&env, &[]).unwrap(),
+        vec!["node", "npm", "service"]
+    );
+}
 fn observation(
     env: &ProjectEnvironment,
     id: &str,
@@ -405,6 +450,14 @@ fn r4_inventory_preserves_symlinked_multicall_invocation() {
         );
     }
 }
+#[path = "review0034_tests.rs"]
+mod review0034;
+
+#[path = "review0440_tests.rs"]
+mod review0440;
+
+#[path = "review0440_migration_tests.rs"]
+mod review0440_migration;
 
 // MP-08 / MP-10 / MP-11: full Check publication cannot exhaust retained journal bodies.
 #[test]

@@ -168,6 +168,7 @@ impl PreparedProjectEnvironmentImport {
         }
         manifest.evidence_digest = evidence.digest();
         let state = StoredProjectEnvironment {
+            apply_owned_bindings: Default::default(),
             source: None,
             reviewed_manifest: Some(manifest.clone()),
             manifest,

@@ -3,11 +3,100 @@ use super::*;
 use crate::{config::DaemonConfig, error::DaemonError};
 use std::{collections::BTreeMap, path::Path};
 
+// MP-08 / MP-10 / MP-11: unlock only when the existing resolver accesses
+// Vault. Public file/environment bindings require no protected authorization.
+pub(crate) fn project_environment_requires_vault(manifest: &ProjectEnvironmentManifest) -> bool {
+    manifest.entries.iter().any(|entry| {
+        !entry.excluded
+            && (entry.classification == ProjectEnvironmentClassification::Secret
+                || matches!(
+                    entry.locator,
+                    ProjectEnvironmentLocator::Vault { .. } | ProjectEnvironmentLocator::Missing
+                ))
+    })
+}
+
 pub(crate) fn project_launch_environment(
     config: &DaemonConfig,
     project_id: &str,
     workspace_id: &str,
     directory: &Path,
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    project_launch_environment_selected(config, project_id, workspace_id, directory, |_| true)
+}
+
+// MP-08 / MP-10 / MP-11: filter authority before resolving any values or Vault refs.
+pub(crate) fn project_public_setup_environment(
+    config: &DaemonConfig,
+    project_id: &str,
+    folder: &EnvironmentFolder,
+    directory: &Path,
+    dependencies: &[&Requirement],
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    // Keep the selected requirement's scope and source identity until resolution.
+    // Cross-folder prerequisites cannot be substituted by equal names here.
+    let mut permitted = BTreeMap::new();
+    for dependency in dependencies {
+        let RequirementSpec::Variables { name, locator } = &dependency.spec else {
+            continue;
+        };
+        if dependency.scope != RequirementScope::Project
+            && dependency.scope
+                != (RequirementScope::Folder {
+                    folder_id: folder.folder_id.clone(),
+                })
+        {
+            return Err(super::resolver::environment_error(
+                "Setup public prerequisite scope does not match its execution folder",
+            ));
+        }
+        if permitted.insert(name.as_str(), locator).is_some() {
+            return Err(super::resolver::environment_error(
+                "Setup public prerequisites are ambiguous",
+            ));
+        }
+    }
+    let environment = project_launch_environment_selected(
+        config,
+        project_id,
+        &folder.local_workspace_binding,
+        directory,
+        |entry| {
+            permitted
+                .get(entry.name.as_str())
+                .is_some_and(|locator| *locator == &entry.locator)
+                && entry.classification == ProjectEnvironmentClassification::NonSecret
+                && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
+        },
+    )?;
+    // MP-08 / MP-10 / MP-11: a missing required public input is preparation,
+    // never permission to execute the command with a silently reduced environment.
+    if permitted
+        .keys()
+        .any(|name| !environment.iter().any(|(binding, _)| binding == *name))
+    {
+        return Err(super::resolver::environment_error(
+            "Setup public prerequisites unavailable",
+        ));
+    }
+    // MP-11: saved classification cannot authorize freshly changed credential content.
+    if environment
+        .iter()
+        .any(|(_, value)| super::detect_index::credential_content(value))
+    {
+        return Err(super::resolver::environment_error(
+            "Setup public input requires Vault classification",
+        ));
+    }
+    Ok(environment)
+}
+
+fn project_launch_environment_selected(
+    config: &DaemonConfig,
+    project_id: &str,
+    workspace_id: &str,
+    directory: &Path,
+    selected: impl Fn(&ProjectEnvironmentEntry) -> bool,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
     let mut environment = crate::provider::ProviderCredentialEnvironment::default();
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
@@ -17,7 +106,17 @@ pub(crate) fn project_launch_environment(
     let mut manifest = state.manifest;
     manifest
         .entries
-        .retain(|entry| entry.workspace_id == workspace_id);
+        .retain(|entry| entry.workspace_id == workspace_id && selected(entry));
+    // Reject before collecting ambient names; old manifests cannot bypass Apply.
+    if manifest.entries.iter().any(|entry| {
+        !entry.excluded
+            && entry.classification == ProjectEnvironmentClassification::NonSecret
+            && project_environment_public_source_protected(&entry.locator)
+    }) {
+        return Err(super::resolver::environment_error(
+            "Protected public source binding",
+        ));
+    }
     let roots = BTreeMap::from([(workspace_id.to_string(), directory.to_path_buf())]);
     let names = manifest
         .entries

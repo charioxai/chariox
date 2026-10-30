@@ -21,7 +21,7 @@ impl std::fmt::Debug for ResolvedProjectEnvironment {
     }
 }
 
-pub(crate) fn environment_error(message: &'static str) -> DaemonError {
+pub(crate) fn environment_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "Project environment",
         message: message.into(),
@@ -155,6 +155,12 @@ pub(crate) fn read_environment_file(
     root: &Path,
     relative: &str,
 ) -> Result<Zeroizing<String>, DaemonError> {
+    #[cfg(test)]
+    if let Some(marker) = std::env::var_os("CHARIOX_TYPED_CHECK_STALL_MARKER") {
+        std::fs::write(marker, std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
     let mut bytes = Zeroizing::new(Vec::new());
     open_workspace_file(root, relative)?
         .take(1024 * 1024 + 1)
@@ -201,6 +207,12 @@ pub fn resolve_project_environment(
             skipped.status = ProjectEnvironmentEntryStatus::Missing;
             resolved.unresolved.push(skipped);
             continue;
+        }
+        // MP-11: export/refresh share the same public-source fence as launch.
+        if entry.classification == ProjectEnvironmentClassification::NonSecret
+            && project_environment_public_source_protected(&entry.locator)
+        {
+            return Err(environment_error("Protected public source binding"));
         }
         let root = workspaces
             .get(&entry.workspace_id)

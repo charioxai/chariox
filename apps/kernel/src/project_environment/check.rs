@@ -3,7 +3,7 @@ use super::check_inventory as inventory;
 use super::*;
 use crate::config::DaemonConfig;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use zeroize::Zeroizing;
 
@@ -57,20 +57,30 @@ pub(crate) fn check_requirement(
     baseline: &mut BTreeMap<String, String>,
     deadline: Instant,
 ) -> MachineObservation {
+    check_requirement_in_workspace(
+        ctx,
+        env,
+        r,
+        target,
+        operation,
+        baseline,
+        deadline,
+        &mut super::check_workspace::CheckWorkspace::default(),
+    )
+}
+// Keep the operation identity, deadline and mutable probe state explicit.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_requirement_in_workspace(
+    ctx: &EnvironmentCheckContext,
+    env: &ProjectEnvironment,
+    r: &Requirement,
+    target: &EnvironmentTargetBinding,
+    operation: &str,
+    baseline: &mut BTreeMap<String, String>,
+    deadline: Instant,
+    workspace: &mut super::check_workspace::CheckWorkspace,
+) -> MachineObservation {
     let mut facts = inventory::facts();
-    let roots: Vec<PathBuf> = env
-        .folders
-        .iter()
-        .filter(|f| {
-            !f.local_workspace_binding.is_empty()
-                && !matches!(&r.spec, RequirementSpec::Files { .. })
-        })
-        .filter_map(|f| {
-            PathBuf::from(&f.local_workspace_binding)
-                .canonicalize()
-                .ok()
-        })
-        .collect();
     let budget = || {
         outcome(
             NeedsYourInput,
@@ -96,19 +106,16 @@ pub(crate) fn check_requirement(
                 "This requirement is unavailable on this platform",
             );
         }
-        if let RequirementScope::Folder { folder_id } = &r.scope {
-            if !env.folders.iter().any(|f| {
-                &f.folder_id == folder_id
-                    && !f.local_workspace_binding.is_empty()
-                    && (matches!(&r.spec, RequirementSpec::Files { .. })
-                        || std::fs::read_dir(&f.local_workspace_binding).is_ok())
-            }) {
-                return outcome(
-                    Missing,
-                    "folder_unavailable",
-                    "The required folder is absent or inaccessible",
-                );
-            }
+        let (roots, folder_accessible) = match workspace.for_requirement(&ctx.config, env, r, deadline) {
+            Ok(measured) => measured,
+            Err(()) => return outcome(NeedsYourInput, "workspace_preflight_unavailable", "Workspace metadata could not be checked within the probe budget; retry when the folder is available"),
+        };
+        if !folder_accessible {
+            return outcome(
+                Missing,
+                "folder_unavailable",
+                "The required folder is absent or inaccessible",
+            );
         }
         match &r.spec {
             RequirementSpec::Files { .. } => super::check_assets::check_assets(

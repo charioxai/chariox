@@ -1112,12 +1112,28 @@ mod tests {
                     .private_runtime_state_root(),
             )
             .save(&crate::project_environment::StoredProjectEnvironment {
+                apply_owned_bindings: Default::default(),
                 source: None,
                 manifest: crate::project_environment::ProjectEnvironmentManifest {
                     schema_version: 1,
                     project_id,
                     evidence_digest: evidence.digest(),
-                    entries: vec![],
+                    // MP-08 / MP-10 / MP-11: an actual protected binding must
+                    // require the Vault wait whose post-unlock authority is tested.
+                    entries: vec![crate::project_environment::ProjectEnvironmentEntry {
+                        name: "SYNTHETIC_PRIVATE_INPUT".into(),
+                        workspace_id: session.clone(),
+                        kind: crate::project_environment::ProjectEnvironmentEntryKind::Variable,
+                        classification:
+                            crate::project_environment::ProjectEnvironmentClassification::Secret,
+                        excluded: false,
+                        uses: vec![],
+                        locator: crate::project_environment::ProjectEnvironmentLocator::Vault {
+                            service: "synthetic MP11".into(),
+                            key: "private input".into(),
+                        },
+                        status: crate::project_environment::ProjectEnvironmentEntryStatus::Found,
+                    }],
                     private_files: vec![],
                     toolchain_hints: vec![],
                     package_hints: vec![],
