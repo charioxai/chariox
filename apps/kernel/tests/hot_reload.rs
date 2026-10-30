@@ -1009,18 +1009,27 @@ const FAKE_CODEX: &str = include_str!("hot_reload/fake_codex.py");
 /// stall longer than the swap itself, each once and in order.
 #[test]
 fn a_codex_item_keeps_streaming_across_a_hot_reload() {
-    codex_turn_across_a_hot_reload(false);
+    codex_turn_across_a_hot_reload(false, false);
+}
+
+/// Two turns are handed over at once: the Codex item keeps streaming beside a
+/// Claude turn that is still running.
+#[test]
+fn a_codex_turn_continues_beside_a_running_claude_turn() {
+    codex_turn_across_a_hot_reload(false, true);
 }
 
 /// The turn may end while the kernel program is being replaced.
 #[test]
 fn a_hot_reload_keeps_a_codex_turn_that_ends_during_the_swap() {
-    codex_turn_across_a_hot_reload(true);
+    codex_turn_across_a_hot_reload(true, false);
 }
 
-fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
-    let scratch =
-        std::env::temp_dir().join(format!("hr-codex-{}-{finish_in_gap}", std::process::id()));
+fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
+    let scratch = std::env::temp_dir().join(format!(
+        "hr-codex-{}-{finish_in_gap}-{beside_claude}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&scratch);
     let record = scratch.join("record");
     std::fs::create_dir_all(&record).unwrap();
@@ -1047,6 +1056,30 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
     ];
     if finish_in_gap {
         env.push(("CHARIOX_FAKE_CODEX_FINISH_IN_GAP", "1".into()));
+    }
+    // A signed-in Claude Code whose turn holds at part 200 until `go`.
+    let claude_record = scratch.join("claude-record");
+    if beside_claude {
+        std::fs::create_dir_all(&claude_record).unwrap();
+        std::fs::create_dir_all(scratch.join("claude-config")).unwrap();
+        std::fs::write(
+            scratch.join("claude-config/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture"}}"#,
+        )
+        .unwrap();
+        let claude = scratch.join("claude");
+        let _files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::write(&claude, FAKE_CLAUDE).unwrap();
+        std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        env.extend([
+            ("CHARIOX_CLAUDE_BIN", claude),
+            ("CHARIOX_FAKE_CLAUDE_RECORD", claude_record.clone()),
+            ("CLAUDE_CONFIG_DIR", scratch.join("claude-config")),
+            ("XDG_CONFIG_HOME", scratch.join("config")),
+            ("XDG_STATE_HOME", scratch.join("state")),
+            ("XDG_CACHE_HOME", scratch.join("cache")),
+        ]);
     }
     let kernel = start_kernel_with(&scratch, &env);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1087,6 +1120,30 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
             .as_str()
             .unwrap_or_else(|| panic!("{attached}"))
             .to_string();
+        if beside_claude {
+            let spawned = request(
+                &mut socket,
+                json!({"SpawnAgent": {"session_id": session_id, "alias": "counter",
+                    "provider": "claude", "model": "haiku", "effort": null,
+                    "worktree_id": null, "no_subscribe": true}}),
+            )
+            .await;
+            let claude_id = spawned["AgentSpawned"]["agent"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{spawned}"))
+                .to_string();
+            request(
+                &mut socket,
+                json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                    "target_agent_id": claude_id, "prompt": "write sixteen parts", "attachments": []}}),
+            )
+            .await;
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while lines(&claude_record.join("parts")).len() < 200 {
+                assert!(Instant::now() < deadline, "the Claude turn did not start");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
         request(
             &mut socket,
             json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
