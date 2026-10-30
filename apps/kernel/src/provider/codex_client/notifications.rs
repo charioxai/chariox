@@ -7,7 +7,8 @@ use crate::provider::ProviderRunTokenUsage;
 
 use super::JsonRpcMessage;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Serialized only into a hot reload's handover, read by the next program.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CodexNotification {
     /// Provider-local correlation, never serialized in the Chariox protocol.
     TurnScoped {
