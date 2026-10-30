@@ -431,12 +431,26 @@ async function executeAction(
   return { dialogOpened: false };
 }
 
+// The fill runs in an isolated world that cannot reach the App view's caller
+// bridge, so the bridge in the page's own world tags the events it dispatches.
 async function secureFillElement(connection, sessionId, objectId, action, inputToken) {
+  if (!inputToken) return fillSecret(connection, sessionId, objectId, action);
+  const bridge = method => connection.send("Runtime.evaluate", {
+    expression: `globalThis.__charioxViewInput.${method}(${JSON.stringify(inputToken)})`, returnByValue: true,
+  }, sessionId);
+  if ((await bridge("armVaultFill")).exceptionDetails) {
+    throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
+  }
+  try { await fillSecret(connection, sessionId, objectId, action); }
+  finally { await bridge("clearVaultFill"); }
+}
+
+async function fillSecret(connection, sessionId, objectId, action) {
   const response = await connection.send(
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput, inputToken) {
+      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput) {
         const ownerDocument = this.ownerDocument;
         const ownerWindow = ownerDocument?.defaultView;
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
@@ -523,16 +537,14 @@ async function secureFillElement(connection, sessionId, objectId, action, inputT
           setter.call(this, nextValue);
         }
         const inputEvent = new ownerWindow.Event("input", { bubbles: true, composed: true });
-        if (inputToken) ownerWindow.__charioxViewInput.dispatch(this, inputEvent, inputToken);
-        else this.dispatchEvent(inputEvent);
+        this.dispatchEvent(inputEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         const changeEvent = new ownerWindow.Event("change", { bubbles: true });
-        if (inputToken) ownerWindow.__charioxViewInput.dispatch(this, changeEvent, inputToken);
-        else this.dispatchEvent(changeEvent);
+        this.dispatchEvent(changeEvent);
         if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
-          try { if (inputToken) ownerWindow.__charioxViewInput.submit(form, inputToken); else submitForm.call(form); }
+          try { submitForm.call(form); }
           catch { return { ok: false, reason: "form_submit_failed" }; }
         }
         return { ok: true };
@@ -543,7 +555,6 @@ async function secureFillElement(connection, sessionId, objectId, action, inputT
         { value: action.expectedDocumentUrl },
         { value: action.submit },
         { value: action.maskCodeInput },
-        ...(inputToken ? [{ value: inputToken }] : []),
       ],
       returnByValue: true,
       awaitPromise: false,

@@ -225,3 +225,24 @@ test('nonediting key names can be inserted literally with the queued caller', ()
     assert.equal(f.inputs.finishText('caller'),true);f.inputs.clearText('caller');
   }
 });
+
+test('a Vault fill tags only its own field events and form submit, and only while armed', () => {
+  const listeners = new Map();
+  const field = {}; const form = {}; field.form = form;
+  const inputs = vm.runInNewContext(`(${createInputCallers.toString()})()`, {
+    performance:{timeOrigin:0,now:()=>1},document:{activeElement:field},
+    addEventListener:(type,listener)=>{ if(!listeners.has(type)) listeners.set(type,[]); listeners.get(type).push(listener); },
+  });
+  const fire = event => { for (const listener of listeners.get(event.type)) listener(event); return inputs.token(event); };
+  inputs.begin('caller', 86400);
+  assert.equal(fire({type:'input',target:field,isTrusted:false}), undefined, 'not armed');
+  inputs.armVaultFill('caller');
+  assert.equal(fire({type:'input',target:field,isTrusted:false}), 'caller');
+  assert.equal(fire({type:'change',target:field,isTrusted:false}), 'caller');
+  assert.equal(fire({type:'submit',target:form,isTrusted:true}), 'caller');
+  assert.equal(fire({type:'input',target:field,isTrusted:true}), undefined, 'a person typing is never tagged');
+  assert.equal(fire({type:'input',target:{},isTrusted:false}), undefined, 'another element is not the filled field');
+  inputs.clearVaultFill('caller');
+  assert.equal(fire({type:'input',target:field,isTrusted:false}), undefined, 'cleared');
+  assert.throws(() => inputs.armVaultFill('other'), /expired/);
+});

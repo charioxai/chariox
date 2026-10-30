@@ -8,6 +8,7 @@ export function createInputCallers() {
   const edits = new WeakMap();
   let source;
   let textEdit;
+  let vaultFill;
   const clearText = () => { if (textEdit) clearTimeout(textEdit.timer); textEdit = undefined; };
   const fingerprint = element => {
     if (typeof element.value === 'string') return [element.value, element.selectionStart, element.selectionEnd, element.selectionDirection];
@@ -17,6 +18,19 @@ export function createInputCallers() {
   const currentText = edit => entries.get(edit.token)?.timestamp != null && !edit.expired
     && edit.element.isConnected && document.activeElement === edit.element
     && fingerprint(edit.element).every((value, index) => value === edit.fingerprint[index]);
+  // A Vault fill runs in an isolated world, whose events carry no caller of
+  // their own. While one is armed, the input/change events it dispatches on
+  // the focused field and the submit of that field's form belong to that
+  // caller. The browser itself dispatches the submit, so it is trusted; a
+  // person's submit inside the window is then attributed to the agent, which
+  // gives it less authority, never more.
+  for (const type of ['input', 'change', 'submit']) {
+    globalThis.addEventListener(type, event => {
+      if (!vaultFill || entries.get(vaultFill)?.timestamp == null) return;
+      const field = document.activeElement;
+      if (type === 'submit' ? event.target === field?.form : !event.isTrusted && event.target === field) callers.set(event, vaultFill);
+    }, true);
+  }
   // The keypress whose default action may be the next beforeinput. Every trusted
   // event retires it, so no key state outlives the edit it can still produce.
   let pendingKeypress;
@@ -114,6 +128,11 @@ export function createInputCallers() {
         else { edit.expired = true; edit.before = undefined; }
       }, 30_000);
     },
+    armVaultFill(token) {
+      if (entries.get(token)?.timestamp == null) throw new Error('App input caller expired');
+      vaultFill = token;
+    },
+    clearVaultFill(token) { if (vaultFill === token) vaultFill = undefined; },
     startText(token) {
       const edit = textEdit;
       if (!edit || edit.token !== token || edit.state !== 'armed' || !currentText(edit)) return false;
@@ -167,6 +186,7 @@ export function createInputCallers() {
       // Dispatch has acknowledged every event. No later event gets this caller;
       // the handlers already holding it retain it until their promises settle.
       entry.timestamp = null;
+      if (vaultFill === token) vaultFill = undefined;
       if (textEdit?.token === token) {
         if (textEdit.state === 'armed') clearText();
         else { clearTimeout(textEdit.timer); textEdit.expired = true; textEdit.before = undefined; }
