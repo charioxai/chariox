@@ -643,7 +643,8 @@ exit 90
                 agent_id: None,
             },
         );
-        let command = KernelCommand::from_local_request("duplicate", None, None, &request);
+        let mut command = KernelCommand::from_local_request("duplicate", None, None, &request);
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
         let error = router
             .dispatch(command, request)
             .await
