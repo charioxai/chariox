@@ -504,6 +504,69 @@ async fn restored_grant_is_in_place_before_event_pumps_look_for_it() {
     assert!(state.outside_ended_response("kept").unwrap().is_none());
 }
 
+// A start while the host cannot read a live holder just now keeps both the grant and
+// the holder's event inbox: the next confirmed answer decides.
+#[tokio::test]
+async fn a_restart_that_cannot_read_a_live_holder_keeps_its_grant_and_inbox() {
+    let root = crate::test_support::TestWorktree::new("access-restart-unreadable");
+    let mut child = std::process::Command::new("sleep")
+        .arg("600")
+        .spawn()
+        .unwrap();
+    let holder = process::inspect(child.id()).unwrap().0;
+    {
+        let router = reopen_kernel(&root);
+        let state = router.runtime_state();
+        let summary = KernelAccessGrant {
+            grant_id: "kept".into(),
+            owner_user_id: "local".into(),
+            holder_pid: holder.pid,
+            holder_executable: holder.executable.clone(),
+            holder_harness: None,
+            term: KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+            covered: Vec::new(),
+        };
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder.clone(), None)
+            .unwrap();
+        drop(access);
+        state
+            .outside_store()
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    open_decisions: vec![],
+                    baseline: vec![],
+                    id: "kept".into(),
+                    home: true,
+                    targets: vec![],
+                },
+            )
+            .unwrap();
+    }
+    for errno in [libc::ENOMEM, libc::EMFILE] {
+        let _fault = process::fault::inject(holder.pid, errno);
+        let router = reopen_kernel(&root);
+        let state = router.runtime_state();
+        assert!(
+            state.access_grant_summary("kept").is_some(),
+            "grant dropped by errno {errno}"
+        );
+        assert!(
+            state.outside_ended_response("kept").unwrap().is_none(),
+            "inbox ended by errno {errno}"
+        );
+        assert!(state.outside_subscription_response("kept").is_ok());
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    assert!(state.access_grant_summary("kept").is_none());
+    assert!(state.outside_ended_response("kept").unwrap().is_some());
+}
+
 /// An until-exit grant whose revocation could not be written: the grant is
 /// gone from memory, the fault is still on, and its holder (this process) lives.
 fn failed_revocation(

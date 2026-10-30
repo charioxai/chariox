@@ -870,15 +870,15 @@ fn recorded_access_grants(
         .collect())
 }
 
-/// Ids of the grants whose holder is still running: their event inboxes must
-/// outlive this start.
+/// Ids of the grants whose holder has not been confirmed gone (the same rule as
+/// `restore_kernel_access_grants`): their event inboxes must outlive this start.
 pub(crate) fn grant_inboxes_to_keep(
     store: &crate::durable_state::DurableKernelStateStore,
 ) -> Result<Vec<String>, DaemonError> {
     Ok(recorded_access_grants(store)?
         .into_iter()
         .filter(|grant| {
-            grant.end.is_none() && grant.holder.as_ref().is_some_and(ProcessIdentity::alive)
+            grant.end.is_none() && grant.holder.as_ref().is_some_and(|holder| !holder.gone())
         })
         .map(|grant| grant.id)
         .collect())
