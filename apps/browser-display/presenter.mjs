@@ -473,7 +473,7 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   const held = new Map(), unread = [], waiters = new Set();
   const presentationQueue=new PresentationQueue(presenter,frame=>!recovering||independent(frame));
   let nextSequence = presenter.sequence + 1, heldBytes = 0, failure = null, running = false, closed = false, ackedAt = 0, predictionEpoch = 0;
-  let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = false, resync = false;
+  let recovering = false, keyRequestedAt = -Infinity, gapTimer = null, paused = options.watched?.value === false, resync = false;
   const fail = error => { failure ??= error; for (const wake of waiters) wake(); };
   // MP-08/MP-10/MP-11: ACK replies must not delay delivery feedback by another
   // WAN round trip. Bound outstanding requests and coalesce only at that bound.
@@ -559,7 +559,12 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   if(options.initialEvents)options.initialEvents.length=0;
   // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.
   const heartbeat = setInterval(() => { if (!paused && performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
-  ack(presenter.sequence);
+  // A stream runs only while a person can see it: while unwatched there are no ACKs (the kernel pump goes dormant) and
+  // no frames are kept; being watched again asks for one independent frame.
+  const halt = () => { paused = true; clearTimeout(gapTimer); gapTimer = null; held.clear(); heldBytes = 0; };
+  const resume = () => { if (paused && options.watched?.value !== false) { paused = false; resync = true; keyRequestedAt = -Infinity; recover(); } };
+  const unwatch = options.watched?.subscribe(watched => { if (watched) { if (running) resume(); } else halt(); });
+  if (!paused) ack(presenter.sequence);
   const next = async () => {
     if (failure) throw failure;
     if (!unread.length) await new Promise(resolve => { const wake = () => { clearTimeout(timer); waiters.delete(wake); resolve(); }; const timer = setTimeout(wake, idleMs); waiters.add(wake); });
@@ -569,8 +574,8 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   return { binding, presenter, next, push: true,
     // MP-08/MP-10: stop pauses reception, presentation and acknowledgements;
     // start resumes from an independent frame (frames were dropped meanwhile).
-    start: () => { if (failure) throw failure; running = true; unread.length = 0; if (paused) { paused = false; resync = true; keyRequestedAt = -Infinity; recover(); } },
-    stop: async () => { running = false; paused = true; clearTimeout(gapTimer); gapTimer = null; held.clear(); heldBytes = 0; await presentationQueue.tail; if (failure) throw failure; },
+    start: () => { if (failure) throw failure; running = true; unread.length = 0; resume(); },
+    stop: async () => { running = false; halt(); await presentationQueue.tail; if (failure) throw failure; },
     get running() { return running; },
     get error() { return failure; },
     requestKey: () => ack(presenter.sequence, true),
@@ -581,6 +586,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
+    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); unwatch?.(); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
   };
 }
