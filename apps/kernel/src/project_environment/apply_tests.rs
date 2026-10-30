@@ -666,3 +666,87 @@ fn envp05a_github_vault_binding_applies_and_reaches_provider_launch() {
     );
     crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path).unwrap();
 }
+
+// MP-08 / MP-10 / MP-11: Application credentials that share a provider's variable names are
+// ordinary Vault inputs; only public (non-secret) destinations refuse them.
+#[test]
+fn envr10_application_credentials_apply_and_reach_provider_launch() {
+    let root = crate::test_support::TestWorktree::new("envr10-aws-vault");
+    let config = unlocked_fixture_vault_config(root.path());
+    let vault = crate::secret::project_environment_vault(&config).unwrap();
+    let names = [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ];
+    for name in names {
+        vault
+            .set_secret("fixture-service", name, &format!("synthetic-{name}"))
+            .unwrap();
+    }
+    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    let project = crate::session::RuntimeProject::new(
+        "aws",
+        "owner",
+        root.path().to_string_lossy(),
+        "Application",
+        crate::session::RuntimeProjectKind::Named,
+    );
+    let mut env = store.snapshot(&project).unwrap();
+    let requirements: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let mut secret = requirement(name);
+            secret.spec = RequirementSpec::Secrets {
+                name: (*name).into(),
+                vault: Some(EnvironmentVaultReference {
+                    service: "fixture-service".into(),
+                    key: (*name).into(),
+                }),
+            };
+            secret
+        })
+        .collect();
+    env.project_requirements = requirements.clone();
+    for secret in &requirements {
+        apply_scoped_binding(&store, &config, &env, secret)
+            .expect("an authorized application credential must apply");
+    }
+    let launch = project_launch_environment(
+        &config,
+        project.id(),
+        &root.path().to_string_lossy(),
+        root.path(),
+    )
+    .expect("an existing manifest with application credentials must reach provider launch");
+    for name in names {
+        assert!(
+            launch
+                .iter()
+                .any(|(bound, value)| bound == name && value == format!("synthetic-{name}")),
+            "{name} must reach the provider launch"
+        );
+    }
+    for name in ["AWS_SECRET_ACCESS_KEY", "OPENAI_API_KEY"] {
+        let mut public = requirement("public-credential");
+        public.spec = RequirementSpec::Variables {
+            name: name.into(),
+            locator: ProjectEnvironmentLocator::EnvFile {
+                path: "public-input".into(),
+                key: "PUBLIC_INPUT".into(),
+            },
+        };
+        std::fs::write(
+            root.path().join("public-input"),
+            "PUBLIC_INPUT=public-value\n",
+        )
+        .unwrap();
+        env.project_requirements = vec![public.clone()];
+        let refused = apply_scoped_binding(&store, &config, &env, &public).unwrap_err();
+        assert!(
+            refused.to_string().contains("Protected launch binding"),
+            "a public binding cannot carry {name}: {refused}"
+        );
+    }
+    crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path).unwrap();
+}

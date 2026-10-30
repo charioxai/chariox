@@ -240,10 +240,7 @@ impl ProjectEnvironmentManifest {
 
 // MP-08 / MP-10: Host/provider process controls are recreated by the target, never exported.
 pub fn project_environment_protected_name(name: &str) -> bool {
-    ["codex", "claude", "opencode"]
-        .iter()
-        .any(|provider| crate::account_profile::provider_auth_env_vars(provider).contains(&name))
-        || name.starts_with("CHARIOX_")
+    name.starts_with("CHARIOX_")
         || name.starts_with("DYLD_")
         || matches!(
             name,
@@ -271,10 +268,16 @@ pub fn project_environment_protected_name(name: &str) -> bool {
         )
 }
 
-// MP-08 / MP-10 / MP-11: GitHub tokens belong in the Vault; a public (non-secret) binding cannot
-// carry one or override a kernel/provider process control.
+// MP-08 / MP-10 / MP-11: Credentials belong in the Vault, so a public (non-secret) binding cannot
+// carry a GitHub token or a provider's API credential. A Vault-backed Project input may use these
+// names as application credentials; only the launching provider's own account variables conflict
+// at launch.
 pub(crate) fn project_environment_public_name_protected(name: &str) -> bool {
-    project_environment_protected_name(name) || matches!(name, "GITHUB_TOKEN" | "GH_TOKEN")
+    project_environment_protected_name(name)
+        || matches!(name, "GITHUB_TOKEN" | "GH_TOKEN")
+        || ["codex", "claude", "opencode"].iter().any(|provider| {
+            crate::account_profile::provider_auth_env_vars(provider).contains(&name)
+        })
 }
 
 pub(crate) fn project_environment_source_name(locator: &ProjectEnvironmentLocator) -> Option<&str> {
