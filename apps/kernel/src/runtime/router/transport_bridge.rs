@@ -231,6 +231,11 @@ impl CommandRouter {
         self.runtime_state.shutdown_cleanup().await
     }
 
+    /// Changes as soon as the kernel connects to or loses its relay.
+    pub(crate) async fn relay_connection_changes(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.relay_state.read().await.connection_changes()
+    }
+
     pub(crate) async fn transport_relay_status_snapshot(&self) -> RelayStatus {
         crate::runtime::remote_relay_inventory::projected_relay_status(
             self.relay_state.clone(),

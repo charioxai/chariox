@@ -448,6 +448,83 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     );
 }
 
+/// A local browser picks a kernel only while its presence record says it is
+/// on the relay, so the new program must say so as soon as it is back on the
+/// relay, not at its next presence heartbeat (10 s later in the web drill).
+#[test]
+fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
+    let scratch = std::env::temp_dir().join(format!("hr-presence-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    // A relay that accepts the kernel and reads what it sends.
+    let relay = runtime
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let relay_url = format!("ws://{}", relay.local_addr().unwrap());
+    runtime.spawn(async move {
+        while let Ok((stream, _)) = relay.accept().await {
+            tokio::spawn(async move {
+                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                    while let Some(Ok(_)) = socket.next().await {}
+                }
+            });
+        }
+    });
+    let kernel = start_kernel_with(
+        &scratch,
+        &[
+            ("CHARIOX_RELAY_URL", PathBuf::from(&relay_url)),
+            ("CHARIOX_RELAY_TOKEN", PathBuf::from("hot-reload-presence")),
+            ("CHARIOX_DAEMON_ID", PathBuf::from("hr-presence")),
+        ],
+    );
+    let record_path = scratch.join("home/.chariox/kernels/active/hr-presence.json");
+    let on_relay_since = |started_after_ms: u64, within: Duration| {
+        let deadline = Instant::now() + within;
+        loop {
+            let record = std::fs::read(&record_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            if record.as_ref().is_some_and(|record| {
+                record["relay_connected"] == true
+                    && record["started_at_ms"].as_u64() > Some(started_after_ms)
+            }) {
+                return epoch_ms();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the presence record never said the kernel is on the relay: {record:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    on_relay_since(0, Duration::from_secs(60));
+    let installed = scratch.join("bin/chariox-kernel");
+    install(
+        |staged| {
+            std::fs::copy(&installed, staged).unwrap();
+        },
+        &installed,
+    );
+    let reload_at = epoch_ms();
+    let pid = kernel.child.id() as i32;
+    assert!(pid > 1);
+    unsafe { libc::kill(pid, libc::SIGUSR2) };
+    let published_at = on_relay_since(reload_at, Duration::from_secs(30));
+    let registered_at = logged_after(&scratch, "relay register sent", reload_at);
+    assert!(
+        published_at <= registered_at + 2_000,
+        "the new program was back on the relay {} ms after the reload, but its presence record said so only {} ms after the reload",
+        registered_at - reload_at,
+        published_at - reload_at
+    );
+}
+
 /// A managed kernel reaches its slice Docker broker over a connection its
 /// supervisor handed it (`CHARIOX_SLICE_DOCKER_BROKER_FD`, with no socket path
 /// to reconnect to): the new program keeps that connection.
@@ -1294,6 +1371,11 @@ fn epoch_ms() -> u64 {
 
 /// When the kernel first logged `message`.
 fn logged_at(scratch: &Path, message: &str) -> u64 {
+    logged_after(scratch, message, 0)
+}
+
+/// When the kernel first logged `message` after `after_ms`.
+fn logged_after(scratch: &Path, message: &str, after_ms: u64) -> u64 {
     std::fs::read_dir(scratch.join("logs"))
         .unwrap()
         .flat_map(|file| {
@@ -1303,6 +1385,7 @@ fn logged_at(scratch: &Path, message: &str) -> u64 {
                 .filter_map(|line| serde_json::from_str::<Value>(line).ok())
                 .filter(|line| line["message"] == message)
                 .filter_map(|line| line["timestamp_ms"].as_u64())
+                .filter(|at| *at > after_ms)
                 .collect::<Vec<_>>()
         })
         .min()
