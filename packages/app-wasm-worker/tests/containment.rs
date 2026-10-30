@@ -481,11 +481,34 @@ fn child(scenario: &str, mode: &str) {
                 runtime.block_on(async { tokio::spawn(async { 42 }).await.unwrap() }),
                 42
             );
-            let mut pair = [0; 2];
-            let datagrams =
-                unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, pair.as_mut_ptr()) };
-            assert_eq!(datagrams < 0, green, "datagram socketpair");
-            println!("async runtime starts and runs tasks after containment; datagram pairs stay refused");
+            // Only the filter answers EPERM; the kernel would answer these with
+            // EAFNOSUPPORT or EPROTONOSUPPORT, or succeed.
+            let pair = |domain, kind, protocol| {
+                let mut fds = [0; 2];
+                let result = unsafe { libc::socketpair(domain, kind, protocol, fds.as_mut_ptr()) };
+                if result == 0 {
+                    unsafe {
+                        libc::close(fds[0]);
+                        libc::close(fds[1]);
+                    }
+                }
+                (result == 0, std::io::Error::last_os_error().raw_os_error())
+            };
+            let refused =
+                |(opened, errno): (bool, Option<i32>)| !opened && errno == Some(libc::EPERM);
+            let stream = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+            assert!(pair(libc::AF_UNIX, stream, 0).0, "in-process stream pair");
+            for (name, attempt) in [
+                ("datagram", pair(libc::AF_UNIX, libc::SOCK_DGRAM, 0)),
+                ("seqpacket", pair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0)),
+                ("raw", pair(libc::AF_UNIX, libc::SOCK_RAW, 0)),
+                ("inet", pair(libc::AF_INET, libc::SOCK_STREAM, 0)),
+                ("netlink", pair(libc::AF_NETLINK, libc::SOCK_RAW, 0)),
+                ("protocol", pair(libc::AF_UNIX, libc::SOCK_STREAM, 1)),
+            ] {
+                assert_eq!(refused(attempt), green, "{name} socketpair");
+            }
+            println!("async runtime starts and runs tasks after containment; only in-process stream pairs open");
         }
         "installation-files" => {
             fs::write(data.join("note"), b"App file").unwrap();
