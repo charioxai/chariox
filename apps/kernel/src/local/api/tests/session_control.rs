@@ -54,6 +54,83 @@ fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
 }
 
 #[test]
+fn archived_room_refuses_a_late_attach_and_keeps_its_agent() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-archive-late-attach");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree
+                .session_request()
+                .with_project_selection(SessionProjectSelection::New { name: None }),
+        ))
+        .expect("session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let attach = || {
+        harness.dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "background-window".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+    };
+    attach().expect("the window attaches while the Room is live");
+    harness
+        .dispatch(LocalDaemonRequest::ArchiveProject(ArchiveProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("idle project should archive");
+
+    let error = attach().expect_err("an archived Room refuses a late attach");
+    assert!(
+        matches!(
+            error,
+            DaemonError::SessionOperationNotAllowed {
+                status: crate::session::SessionStatus::Ended,
+                operation: "attach",
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
+    let sessions = match harness
+        .dispatch(LocalDaemonRequest::ListSessions(ListSessionsRequest))
+        .expect("list should succeed")
+    {
+        LocalDaemonResponse::SessionsListed { sessions } => sessions,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert!(
+        sessions
+            .iter()
+            .all(|listed| listed.status() == crate::session::SessionStatus::Ended),
+        "the archived Room must stay Ended: {sessions:?}"
+    );
+    harness
+        .dispatch(LocalDaemonRequest::RestoreProject(RestoreProjectRequest {
+            project_id: session.project_id().to_string(),
+        }))
+        .expect("archived project should restore");
+    let agents = match harness
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .expect("the restored Room's agents are listed")
+    {
+        LocalDaemonResponse::AgentsListed { agents } => agents,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(
+        agents.iter().map(|a| a.id()).collect::<Vec<_>>(),
+        vec![agent.id()],
+        "restore must bring back the original agent, not a replacement"
+    );
+}
+
+#[test]
 fn project_delete_cascades_when_last_session_removes_project_record() {
     let workspace = crate::test_support::TestWorktree::new("session-control-project-delete");
     let first_worktree = crate::test_support::TestWorktree::new("session-control-delete-first");

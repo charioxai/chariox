@@ -183,3 +183,162 @@ async fn accepted_catalog_continuation_survives_source_provider_retirement() {
         1
     );
 }
+
+// P2-4: a loader promises "Chariox will continue your request"; the whole
+// completion path (settlement, reload, task replay) must keep that promise.
+#[tokio::test]
+async fn loader_turn_completion_schedules_the_promised_continuation() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-loader-continuation");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    // The agent's provider reloads its tool catalog; the fixture run is inert.
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let source = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "loader-requester",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            source.id(),
+            Some(agent.id()),
+            "open example.com in my browser",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!("the loader turn must start");
+    };
+    let continuation_id = format!("task-catalog:{}", prompt.id());
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    let result = runtime.runtime_catalog_loader_result(
+        &agent,
+        &[],
+        false,
+        serde_json::json!({"loaded":"chariox.kernel_browser"}),
+    );
+    assert_eq!(result.payload["requires_provider_restart"], true);
+
+    runtime
+        .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let sequence = runtime
+                .owned
+                .session_projection
+                .session_change_sequence(session.id());
+            let state = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap();
+            if state
+                .active_prompt_for_agent(agent.id())
+                .is_some_and(|prompt| prompt.id() == continuation_id)
+            {
+                break;
+            }
+            runtime
+                .owned
+                .session_projection
+                .wait_for_session_change_after(session.id(), sequence)
+                .await;
+        }
+    })
+    .await
+    .expect("the promised continuation turn must start after the loader turn ends");
+}
+
+// P2-4: when the refreshed task cannot resume, the owner is told instead of
+// the Room staying idle after the agent promised a continuation.
+#[tokio::test]
+async fn catalog_continuation_without_a_retained_intent_projects_failure() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-no-retained-intent");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    let prompt = crate::session::PromptQueueItem::new(
+        "catalog-unretained",
+        "kernel-owner",
+        agent.id(),
+        "finish the request",
+        crate::session::PromptStatus::Queued,
+    );
+    // The turn is admitted but its catalog hand-off never retained a continuation.
+    runtime
+        .owned
+        .ensure_agent_task(session.id(), agent.id(), &prompt, Some(run.id()))
+        .unwrap();
+    runtime.owned.pending_mcp_continuations.write().insert(
+        agent.id().into(),
+        PendingMcpContinuation {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source_prompt_id: Some(prompt.id().into()),
+            mcp_name: "chariox-runtime".into(),
+            previous_prompt: prompt.prompt().into(),
+            reload_reason: ProviderReloadReason::RuntimeToolCatalog,
+        },
+    );
+    assert!(runtime
+        .run_pending_mcp_continuation_after_completion(session.id(), agent.id())
+        .await
+        .is_err());
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .unwrap();
+    assert!(
+        entries.iter().any(|e| e
+            .text
+            .contains("could not safely continue the interrupted request")),
+        "a continuation that cannot resume must tell the owner"
+    );
+}

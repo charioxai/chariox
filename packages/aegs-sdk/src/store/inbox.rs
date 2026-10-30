@@ -471,16 +471,30 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
+    /// One stored event summarized over every owner's delivery rows, for the publication worker.
     pub fn inbox_event(&self, delivery_id: &str) -> Result<Option<InboxEntry>, String> {
-        inbox_entry(&*self.lock()?, delivery_id)
+        let connection = self.lock()?;
+        let stored = connection
+            .query_row(
+                &format!("SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE delivery_id = ?1"),
+                params![delivery_id],
+                read_entry,
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .transpose()?;
+        stored
+            .map(|stored| summarize(&connection, stored, None))
+            .transpose()
     }
 
     /// The per-interest delivery rows of one stored event.
     pub fn inbox_deliveries(&self, delivery_id: &str) -> Result<Vec<InboxDelivery>, String> {
-        delivery_rows(&*self.lock()?, delivery_id)
+        delivery_rows(&*self.lock()?, delivery_id, None)
     }
 
-    /// The newest stored events of one owner, newest first.
+    /// The newest stored events of one owner, newest first, summarized over that owner's
+    /// delivery rows only.
     pub fn inbox_events_for_owner(
         &self,
         owner_id: &str,
@@ -497,11 +511,12 @@ impl AegsStore {
             .query_map(params![owner_id, limit as i64], read_entry)
             .map_err(|error| error.to_string())?;
         rows.map(|row| row.map_err(|error| error.to_string())?)
-            .map(|entry| summarize(&connection, entry?))
+            .map(|entry| summarize(&connection, entry?, Some(owner_id)))
             .collect()
     }
 
-    /// One stored event, only if it belongs to `owner_id`.
+    /// One stored event, only if it belongs to `owner_id`, summarized over that owner's delivery
+    /// rows only.
     pub fn inbox_event_for_owner(
         &self,
         owner_id: &str,
@@ -519,7 +534,9 @@ impl AegsStore {
             .optional()
             .map_err(|error| error.to_string())?
             .transpose()?;
-        entry.map(|entry| summarize(&connection, entry)).transpose()
+        entry
+            .map(|entry| summarize(&connection, entry, Some(owner_id)))
+            .transpose()
     }
 
     /// Drops events older than the retention window. Events with a pending interest, or whose
@@ -643,49 +660,39 @@ struct StoredEvent {
     selected: bool,
 }
 
-fn inbox_entry(
-    connection: &rusqlite::Connection,
-    delivery_id: &str,
-) -> Result<Option<InboxEntry>, String> {
-    let stored = connection
-        .query_row(
-            &format!("SELECT {INBOX_COLUMNS} FROM webhook_inbox WHERE delivery_id = ?1"),
-            params![delivery_id],
-            read_entry,
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .transpose()?;
-    stored
-        .map(|stored| summarize(connection, stored))
-        .transpose()
-}
-
+/// The delivery rows of one event, `owner_id`'s only when given.
 fn delivery_rows(
     connection: &rusqlite::Connection,
     delivery_id: &str,
+    owner_id: Option<&str>,
 ) -> Result<Vec<InboxDelivery>, String> {
     let mut statement = connection
         .prepare(&format!(
             "SELECT {DELIVERY_COLUMNS} FROM webhook_inbox_delivery WHERE delivery_id = ?1
+               AND (?2 IS NULL OR owner_id = ?2)
              ORDER BY connection_id, event_interest_key, binding_id"
         ))
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map(params![delivery_id], read_delivery)
+        .query_map(params![delivery_id, owner_id], read_delivery)
         .map_err(|error| error.to_string())?;
     rows.map(|row| row.map_err(|error| error.to_string())?)
         .collect()
 }
 
 /// Folds the delivery rows into the entry's status: pending while any interest still has
-/// attempts to make, failed if one ran out, published once every interest is settled.
-fn summarize(connection: &rusqlite::Connection, stored: StoredEvent) -> Result<InboxEntry, String> {
+/// attempts to make, failed if one ran out, published once every interest is settled. With an
+/// `owner_id` only that owner's rows count, so one owner never sees another's outcome.
+fn summarize(
+    connection: &rusqlite::Connection,
+    stored: StoredEvent,
+    owner_id: Option<&str>,
+) -> Result<InboxEntry, String> {
     let StoredEvent {
         mut entry,
         selected,
     } = stored;
-    let rows = delivery_rows(connection, &entry.delivery_id)?;
+    let rows = delivery_rows(connection, &entry.delivery_id, owner_id)?;
     let any = |status| rows.iter().any(|row| row.status == status);
     entry.status = if !selected || any(DeliveryStatus::Pending) {
         InboxStatus::Pending
@@ -1117,6 +1124,65 @@ mod tests {
         assert_eq!(
             store.inbox_event("d1").unwrap().unwrap().status,
             InboxStatus::Pending
+        );
+    }
+
+    #[test]
+    fn owner_summaries_fold_only_the_requesting_owners_rows() {
+        let (store, _) = selected_store(&[("c-a", "owner-a"), ("c-b", "owner-b")]);
+        store
+            .reconcile(
+                "kernel",
+                "dev.chariox.github",
+                &[claim("c-a"), claim("c-b")],
+            )
+            .unwrap();
+        // A published; B ran out of attempts.
+        let claimed = store.claim_all_inbox_deliveries("d1", None, 0).unwrap();
+        assert!(store.finish_inbox_delivery(&claimed[0], 1).unwrap());
+        let mut token = claimed[1].clone();
+        let mut now = 1;
+        loop {
+            let status = store
+                .fail_inbox_delivery(&token, "refused", now)
+                .unwrap()
+                .unwrap();
+            if status == DeliveryStatus::Failed {
+                break;
+            }
+            now += MAX_RETRY_DELAY_MS;
+            token = store
+                .claim_all_inbox_deliveries("d1", Some("owner-b"), now)
+                .unwrap()
+                .remove(0);
+        }
+
+        let for_a = store
+            .inbox_event_for_owner("owner-a", "d1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(for_a.status, InboxStatus::Published);
+        assert_eq!(
+            (for_a.attempts, for_a.last_error),
+            (1, None),
+            "not B's attempts"
+        );
+        let listed = store.inbox_events_for_owner("owner-a", 10).unwrap();
+        assert_eq!(listed[0].status, InboxStatus::Published);
+        assert_eq!(listed[0].last_error, None);
+
+        let for_b = store
+            .inbox_event_for_owner("owner-b", "d1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(for_b.status, InboxStatus::Failed);
+        assert_eq!(for_b.last_error.as_deref(), Some("refused"));
+        assert_eq!(for_b.publication_count, 0);
+
+        assert_eq!(
+            store.inbox_event("d1").unwrap().unwrap().status,
+            InboxStatus::Failed,
+            "the worker's summary stays aggregate"
         );
     }
 

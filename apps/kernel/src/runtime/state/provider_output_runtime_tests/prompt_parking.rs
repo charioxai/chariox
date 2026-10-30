@@ -287,3 +287,70 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
         .provider_run_has_prompt_work(session.id(), &projected)
         .unwrap());
 }
+
+#[tokio::test]
+async fn move_waiting_for_the_turn_holds_queued_work_until_it_is_cancelled() {
+    let worktree = crate::test_support::TestWorktree::new("move-waiting-queue-hold");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let prompt = |id: &str| {
+        crate::session::PromptQueueItem::new(
+            id,
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id("move-wait-run"),
+            agent.id(),
+            id,
+            crate::session::PromptStatus::Queued,
+        )
+    };
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("active-prompt"), false)
+        .expect("first prompt should start");
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("queued-prompt"), true)
+        .expect("second prompt should queue behind the turn");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let waiting = runtime
+        .move_agent_transaction(session.id(), agent.clone(), Some("target".to_string()))
+        .await
+        .expect("a Move requested during a turn is deferred");
+    assert_eq!(
+        waiting.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
+    app.lock()
+        .await
+        .prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+        .expect("the turn ends");
+
+    // The queue behind the turn belongs to the Move until it runs or is cancelled.
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let owner = &runtime.owned.prompt_state_owner;
+    assert!(owner
+        .peek_next_queued_prompt(&session_state, agent.id())
+        .is_none());
+    assert!(owner
+        .activate_next_queued_prompt_for_dispatch(&session_state, agent.id(), None)
+        .unwrap()
+        .is_none());
+    assert!(owner
+        .try_claim_idle_queue_promotion(&session_state, agent.id())
+        .is_none());
+
+    runtime
+        .abort_agent_move(session.id(), agent.agent_ref(), agent.owner_user_id())
+        .await
+        .expect("a waiting Move can be cancelled");
+    assert!(
+        owner
+            .peek_next_queued_prompt(&session_state, agent.id())
+            .is_some(),
+        "cancelling the wait releases the queue"
+    );
+}

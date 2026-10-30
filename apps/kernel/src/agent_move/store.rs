@@ -320,7 +320,14 @@ impl AgentMoveStore {
         Ok(())
     }
 
+    /// A Move that waits for the agent's turn already reserves the queue behind that turn.
     pub(crate) fn dispatch_fenced(&self, session: &str, agent: &str) -> bool {
+        if self
+            .waiting
+            .contains(&super::waiting::wait_key(session, agent))
+        {
+            return true;
+        }
         let records = self.lock();
         records.homes.values().any(|operation| {
             operation.identity.home_session_id == session
@@ -542,22 +549,28 @@ impl AgentMoveStore {
 
 impl AgentMoveStore {
     pub(crate) async fn operation(&self, key: String) -> tokio::sync::OwnedMutexGuard<()> {
-        let operation = {
-            let mut operations = self
-                .operations
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            operations.retain(|_, operation| operation.strong_count() > 0);
-            match operations.get(&key).and_then(std::sync::Weak::upgrade) {
-                Some(operation) => operation,
-                None => {
-                    let operation = Arc::new(tokio::sync::Mutex::new(()));
-                    operations.insert(key, Arc::downgrade(&operation));
-                    operation
-                }
+        self.operation_lock(key).lock_owned().await
+    }
+
+    /// None while another task holds the operation.
+    pub(crate) fn try_operation(&self, key: String) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        self.operation_lock(key).try_lock_owned().ok()
+    }
+
+    fn operation_lock(&self, key: String) -> Arc<tokio::sync::Mutex<()>> {
+        let mut operations = self
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operations.retain(|_, operation| operation.strong_count() > 0);
+        match operations.get(&key).and_then(std::sync::Weak::upgrade) {
+            Some(operation) => operation,
+            None => {
+                let operation = Arc::new(tokio::sync::Mutex::new(()));
+                operations.insert(key, Arc::downgrade(&operation));
+                operation
             }
-        };
-        operation.lock_owned().await
+        }
     }
 }
 

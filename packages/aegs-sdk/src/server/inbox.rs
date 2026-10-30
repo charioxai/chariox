@@ -404,10 +404,15 @@ impl AegsServer {
             }
             self.attempt_inbox_delivery(&replay.delivery_id, Some(&replay.owner_id), now_ms())
                 .await?;
-            Ok(match self.store.inbox_event(&replay.delivery_id)? {
-                Some(entry) => Replayed::Entry(Box::new(entry)),
-                None => Replayed::NotFound,
-            })
+            Ok(
+                match self
+                    .store
+                    .inbox_event_for_owner(&replay.owner_id, &replay.delivery_id)?
+                {
+                    Some(entry) => Replayed::Entry(Box::new(entry)),
+                    None => Replayed::NotFound,
+                },
+            )
         }
         .await;
         match replayed {

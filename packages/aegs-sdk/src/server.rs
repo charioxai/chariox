@@ -2072,7 +2072,7 @@ mod mp11_delivery_http_tests {
                             }
                             std::thread::sleep(Duration::from_millis(delay.load(Ordering::SeqCst)));
                             if refuse
-                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
                                 })
                                 .is_ok()
@@ -2674,7 +2674,15 @@ mod mp11_delivery_http_tests {
         let (status, replayed) = replay_as(&server, "owner", "matrix-1").await;
         assert_eq!(status, 200, "{replayed}");
         assert_eq!(accepted_interests(&publisher), vec!["interest"]);
-        assert_eq!(replayed["event"]["status"], "pending", "B is still owed");
+        assert_eq!(
+            replayed["event"]["status"], "published",
+            "A's response folds A's rows only; B's backoff is B's"
+        );
+        assert_eq!(
+            store.inbox_event("matrix-1").unwrap().unwrap().status,
+            crate::InboxStatus::Pending,
+            "the retry worker still sees B owed"
+        );
         let after = store.inbox_deliveries("matrix-1").unwrap();
         assert_eq!(after[1], before[1], "B keeps its attempts, timer and error");
 

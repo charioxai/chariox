@@ -12,27 +12,7 @@ impl KernelRuntimeState {
     pub(super) async fn recover_agent_moves_after_restart(&self) -> usize {
         self.clear_stale_agent_move_statuses().await;
         for operation in self.owned.agent_moves.pending() {
-            let agent = match self
-                .owned
-                .agent_store
-                .get_agent(&operation.identity.home_agent_id)
-            {
-                Ok(agent) => agent,
-                Err(_) => continue,
-            };
-            if let Err(error) = self
-                .move_agent_transaction(
-                    &operation.identity.home_session_id,
-                    agent,
-                    operation.target_ref,
-                )
-                .await
-            {
-                crate::logging::warn_with_fields(
-                    "agent_move.recovery", "Durable move recovery remains fenced; retry the move after reconnecting its kernels",
-                    serde_json::json!({"operation_id": operation.identity.operation_id, "error": error.to_string()}),
-                );
-            }
+            self.spawn_agent_move_recovery(operation);
         }
         // A newer generation must not hide staging left by an older cancellation.
         for operation in self.owned.agent_moves.cancelled() {
@@ -60,6 +40,47 @@ impl KernelRuntimeState {
             }
         }
         self.owned.agent_moves.pending().len()
+    }
+
+    /// A Move can wait on target setup or a peer, so each recovers on its own task: it never
+    /// delays another agent's recovery, and its agent stays fenced while the Move is pending.
+    /// A later pass skips a Move whose recovery is still running.
+    fn spawn_agent_move_recovery(&self, operation: HomeMoveOperation) {
+        let Some(recovering) = self
+            .owned
+            .agent_moves
+            .try_operation(format!("recovery:{}", operation.identity.operation_id))
+        else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _recovering = recovering;
+            state.recover_agent_move_after_restart(operation).await;
+        });
+    }
+
+    async fn recover_agent_move_after_restart(&self, operation: HomeMoveOperation) {
+        let Ok(agent) = self
+            .owned
+            .agent_store
+            .get_agent(&operation.identity.home_agent_id)
+        else {
+            return;
+        };
+        if let Err(error) = self
+            .move_agent_transaction(
+                &operation.identity.home_session_id,
+                agent,
+                operation.target_ref,
+            )
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "agent_move.recovery", "Durable move recovery remains fenced; retry the move after reconnecting its kernels",
+                serde_json::json!({"operation_id": operation.identity.operation_id, "error": error.to_string()}),
+            );
+        }
     }
 
     pub(super) async fn move_agent_transaction(
@@ -94,7 +115,7 @@ impl KernelRuntimeState {
             .owned
             .agent_moves
             .waiting
-            .begin(agent_move_wait_key(session_id, agent_id))
+            .begin(crate::agent_move::wait_key(session_id, agent_id))
             .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
         let waiting = self
             .publish_agent_move_status(
@@ -686,8 +707,4 @@ impl KernelRuntimeState {
             };
         }
     }
-}
-
-pub(super) fn agent_move_wait_key(session_id: &str, agent_id: &str) -> String {
-    format!("{session_id}:{agent_id}")
 }

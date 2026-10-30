@@ -3,6 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+pub(crate) fn wait_key(session_id: &str, agent_id: &str) -> String {
+    format!("{session_id}:{agent_id}")
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct WaitingMoves(Arc<Mutex<Waits>>);
 
@@ -40,6 +44,10 @@ impl WaitingMoves {
             key,
             id,
         })
+    }
+
+    pub(crate) fn contains(&self, key: &str) -> bool {
+        self.lock().by_key.contains_key(key)
     }
 
     /// True when a waiting Move was cancelled.

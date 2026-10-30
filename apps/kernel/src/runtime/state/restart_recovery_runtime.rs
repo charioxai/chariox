@@ -1819,6 +1819,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_prompt_recovers_while_another_agents_move_is_stalled() {
+        use crate::agent_move::{AgentMoveIdentity, HomeMoveOperation, HomeMovePhase};
+        let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(true);
+        let moving = runtime
+            .with_app_side_effect(|app| {
+                KernelSessionService::new(app)
+                    .spawn_agent(crate::agent::CreateAgentRequest::new(
+                        &session_id,
+                        "dev-stub",
+                    ))
+                    .expect("second agent should spawn")
+            })
+            .await;
+        let daemon_id = runtime.owned.config_projection.snapshot().daemon_id.clone();
+        runtime
+            .owned
+            .agent_moves
+            .save_home(HomeMoveOperation {
+                composition: Default::default(),
+                identity: AgentMoveIdentity {
+                    operation_id: format!("move-{:032x}", 1),
+                    generation: 1,
+                    home_kernel_id: daemon_id.clone(),
+                    home_session_id: session_id.clone(),
+                    home_agent_id: moving.id().into(),
+                    owner_user_id: moving.owner_user_id().into(),
+                    source_kernel_id: daemon_id,
+                    target_kernel_id: "target".into(),
+                    home_key_thumbprint: "home-key".into(),
+                    source_key_thumbprint: "home-key".into(),
+                    target_key_thumbprint: "target-key".into(),
+                    target_public_key: "target-public".into(),
+                },
+                revision: 0,
+                original_agent: moving.clone(),
+                target_ref: Some("target".into()),
+                source_remote: None,
+                phase: HomeMovePhase::Fenced,
+            })
+            .expect("pending Move should journal");
+        // The Move waits on target setup or a peer for as long as its operation lock is held.
+        let _stalled = runtime
+            .owned
+            .agent_moves
+            .operation(format!("home:{session_id}:{}", moving.id()))
+            .await;
+
+        let recovery = {
+            let runtime = runtime.clone();
+            tokio::spawn(async move { runtime.recover_durable_runtime_after_restart().await })
+        };
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while runtime
+                .owned
+                .provider_store
+                .get_run_for_agent(&session_id, &agent_id)
+                .is_none()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        recovery.abort();
+        assert!(
+            recovered.is_ok(),
+            "an unrelated agent's queued prompt must not wait for a stalled Move"
+        );
+        assert!(
+            runtime
+                .owned
+                .agent_moves
+                .dispatch_fenced(&session_id, moving.id()),
+            "the stalled Move's own agent stays fenced"
+        );
+    }
+
+    #[tokio::test]
     async fn queued_local_prompt_starts_provider_after_restart() {
         let (runtime, session_id, agent_id) = runtime_with_queued_workflow_prompt(true);
 

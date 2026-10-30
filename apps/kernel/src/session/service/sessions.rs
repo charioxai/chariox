@@ -172,6 +172,21 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
 
+        // Only RestoreProject brings an archived Room back; a window that was
+        // still open when the Room was archived must not resurrect it.
+        let archived = self
+            .projects
+            .get(session.project_id())
+            .is_some_and(|project| project.status() == RuntimeProjectStatus::Archived);
+        if archived && session.status() == SessionStatus::Ended {
+            self.retire_ended_session(session_id);
+            return Err(DaemonError::SessionOperationNotAllowed {
+                session_id: session_id.to_string(),
+                status: SessionStatus::Ended,
+                operation: "attach",
+            });
+        }
+
         if session.status() == SessionStatus::Ended {
             let _ = session.transition_to(SessionStatus::Parked);
         }

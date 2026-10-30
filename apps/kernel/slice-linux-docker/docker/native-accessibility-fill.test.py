@@ -1,13 +1,23 @@
 """MP-11: a Vault-filled kernel-browser window is covered only while its field cannot be placed."""
 import importlib.util
 import pathlib
+import sys
 import types
 import unittest
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('native_accessibility', pathlib.Path(__file__).with_name('native-accessibility.py'))
 driver = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(driver)
+# The fill logic never reads the AT-SPI tree, and CI runners do not ship pyatspi.
+_installed_pyatspi = sys.modules.get('pyatspi')
+sys.modules['pyatspi'] = types.ModuleType('pyatspi')
+try:
+    spec.loader.exec_module(driver)
+finally:
+    if _installed_pyatspi is None:
+        sys.modules.pop('pyatspi', None)
+    else:
+        sys.modules['pyatspi'] = _installed_pyatspi
 FRAME = [0, 0, 400, 300]
 
 
