@@ -3661,9 +3661,12 @@ Workflow trigger and deployment direction:
   approval, passkey, secret, authority or remote-kernel action: owner-only),
   `kernel_access_not_covered` (the peer is not the approved holder or one of its
   sub-processes, including a sibling that names the holder's PID),
-  `kernel_access_ended` (the grant expired or was revoked; the holder, or its
-  sub-process, asks again) and `kernel_access_already_granted` (a second access
-  request while covered).
+  `kernel_access_ended` (the grant expired, was revoked, lost its holder or ended
+  with the passkey; the message says which, and the holder, or its sub-process,
+  asks again), `kernel_access_unconfirmed` (retryable: the kernel could not read
+  the caller's process just now; nothing ended, and only a confirmed exit of the
+  holder ends an until-exit grant) and `kernel_access_already_granted` (a second
+  access request while covered).
 
   Protocol 641 (peer protocol unchanged) adds `CoverKernelAccessProcess { pid, start? }`,
   over the Unix socket only. A caller the grant covers names a background process it

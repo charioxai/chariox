@@ -36,10 +36,10 @@ Exit codes and the error codes behind them:
 | 2 | usage | `usage` |
 | 3 | refused | `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `command_id_required`, `duplicate_command_conflict` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
 | 6 | approval pending | |
 
-On `kernel_request_timeout` or `kernel_connection_lost`, retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
+On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 
 
 MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;

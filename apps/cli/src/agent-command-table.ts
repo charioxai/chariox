@@ -102,7 +102,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
 
 const REFUSED = ["events_refused", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
-const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown"]
+const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
