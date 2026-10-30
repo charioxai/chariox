@@ -200,5 +200,17 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
     );
 
     chariox_kernel::logging::info("daemon.main", app.startup_message());
-    app.run_on_listener(boot_listener.into_listener()?).await
+    let result = app.run_on_listener(boot_listener.into_listener()?).await;
+    #[cfg(unix)]
+    if let Some(error) = chariox_kernel::hot_reload::finish() {
+        // Everything already stopped as for a restart: exit as failed, so the
+        // supervisor starts the installed program as after any restart.
+        chariox_kernel::logging::error_with_fields(
+            "hot_reload",
+            "the new kernel program could not start; exiting for a restart",
+            serde_json::json!({ "error": error }),
+        );
+        std::process::exit(1);
+    }
+    result
 }

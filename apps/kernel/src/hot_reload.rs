@@ -1,8 +1,9 @@
 //! Hot reload: a planned upgrade replaces the kernel program in place on
-//! SIGUSR2. The process keeps its PID, so every child stays its own; running
-//! terminals are handed to the new program, which adopts them. Everything
-//! else (client connections, the relay, provider links) reconnects as after
-//! any restart.
+//! SIGUSR2. The kernel stops as for a planned restart, except that running
+//! terminals are handed over instead of ended; then it `exec`s the installed
+//! program, keeping its PID, so those terminals' programs stay its children
+//! and the new program adopts them. Everything else (clients, the relay,
+//! provider turns) comes back as after any restart.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -105,9 +106,18 @@ pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
         .unwrap_or_default()
 }
 
-/// Hot-reloads on every SIGUSR2. A refused reload changes nothing: this
-/// program keeps running with everything it had.
-pub async fn serve(terminals: RoomTerminalService, handover_path: PathBuf) {
+/// A prepared swap: the terminals are held and saved; the rest of the kernel
+/// stops as for a planned restart before `finish` replaces the program.
+struct Prepared {
+    handover: Handover,
+    path: PathBuf,
+}
+
+static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
+
+/// Completes when a SIGUSR2 hot reload is prepared. A refused request
+/// changes nothing: the kernel keeps running and waits for the next one.
+pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     use tokio::signal::unix::{signal, SignalKind};
     let mut requests = match signal(SignalKind::user_defined2()) {
         Ok(requests) => requests,
@@ -117,48 +127,63 @@ pub async fn serve(terminals: RoomTerminalService, handover_path: PathBuf) {
                 "failed to register the SIGUSR2 handler; hot reload is unavailable",
                 serde_json::json!({ "error": error.to_string() }),
             );
-            return;
+            return std::future::pending().await;
         }
     };
     while requests.recv().await.is_some() {
-        let error = reload(&terminals, &handover_path).await;
-        crate::logging::error_with_fields(
-            "hot_reload",
-            "hot reload refused; the kernel keeps running",
-            serde_json::json!({ "reason": error }),
-        );
+        match prepare(&terminals).await {
+            Ok(handover) => {
+                *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Prepared {
+                    handover,
+                    path: handover_path,
+                });
+                return;
+            }
+            Err(reason) => crate::logging::error_with_fields(
+                "hot_reload",
+                "hot reload refused; the kernel keeps running",
+                serde_json::json!({ "reason": reason }),
+            ),
+        }
     }
+    std::future::pending().await
 }
 
-/// Returns only when the swap did not happen, with the reason.
-async fn reload(terminals: &RoomTerminalService, handover_path: &std::path::Path) -> String {
-    let Some(start) = START.get() else {
-        return "the kernel program path is unknown".to_string();
-    };
-    if let Err(error) = verify(start).await {
-        return error;
-    }
+async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
+    let start = START.get().ok_or("the kernel program path is unknown")?;
+    verify(start).await?;
     let handing = terminals.clone();
-    let terminals_handed = match tokio::task::spawn_blocking(move || handing.hand_over()).await {
-        Ok(Ok(handed)) => handed,
+    match tokio::task::spawn_blocking(move || handing.hand_over()).await {
+        Ok(Ok(terminals)) => Ok(Handover {
+            format: HANDOVER_FORMAT,
+            terminals,
+        }),
         Ok(Err(error)) => {
             terminals.release_handover();
-            return error.to_string();
+            Err(error.to_string())
         }
         Err(error) => {
             terminals.release_handover();
-            return error.to_string();
+            Err(error.to_string())
         }
-    };
-    let inherited: Vec<i32> = terminals_handed.iter().map(|t| t.master_fd()).collect();
-    let handover = Handover {
-        format: HANDOVER_FORMAT,
-        terminals: terminals_handed,
-    };
-    if let Err(error) = write_private(handover_path, &handover) {
-        terminals.release_handover();
-        return format!("the handover could not be written: {error}");
     }
+}
+
+/// After the kernel stopped for a prepared hot reload: replaces this program
+/// with the installed one, handing over the terminals. Returns `None` when no
+/// hot reload was prepared, or why the new program could not start.
+pub fn finish() -> Option<String> {
+    let prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let start = START.get()?;
+    if let Err(error) = write_private(&prepared.path, &prepared.handover) {
+        return Some(format!("the handover could not be written: {error}"));
+    }
+    let inherited: Vec<i32> = prepared
+        .handover
+        .terminals
+        .iter()
+        .map(TerminalHandover::master_fd)
+        .collect();
     crate::logging::info_with_fields(
         "hot_reload",
         "replacing the kernel program in place",
@@ -172,15 +197,10 @@ async fn reload(terminals: &RoomTerminalService, handover_path: &std::path::Path
         .args(&start.args)
         .env_clear()
         .envs(start.env.iter().map(|(name, value)| (name, value)))
-        .env(HANDOVER_ENV, handover_path);
-    let error = tokio::task::spawn_blocking(move || {
-        crate::process_spawn::exec_in_place(command, inherited)
-    })
-    .await
-    .map_or_else(|error| error.to_string(), |error| error.to_string());
-    let _ = std::fs::remove_file(handover_path);
-    terminals.release_handover();
-    format!("the new kernel program could not start: {error}")
+        .env(HANDOVER_ENV, &prepared.path);
+    let error = crate::process_spawn::exec_in_place(command, inherited);
+    let _ = std::fs::remove_file(&prepared.path);
+    Some(error.to_string())
 }
 
 /// The new program must run here and take this handover format. Its release

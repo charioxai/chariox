@@ -36,7 +36,9 @@ impl Drop for Kernel {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.scratch);
+        if std::env::var_os("CHARIOX_HOT_RELOAD_KEEP").is_none() {
+            let _ = std::fs::remove_dir_all(&self.scratch);
+        }
     }
 }
 
@@ -165,10 +167,10 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
             .as_str()
             .unwrap()
             .to_string();
-        // Prints for about four seconds, so lines are produced before, during
+        // Prints for about eight seconds, so lines are produced before, during
         // and after the swap.
         let script =
-            "i=0; while [ $i -lt 40 ]; do echo tick-$i; i=$((i+1)); sleep 0.1; done; echo done";
+            "i=0; while [ $i -lt 80 ]; do echo tick-$i; i=$((i+1)); sleep 0.1; done; echo done";
         let opened = terminal(
             &mut socket,
             &session_id,
@@ -258,7 +260,7 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
             "{status}"
         );
         let text = String::from_utf8_lossy(&output);
-        for tick in 0..40 {
+        for tick in 0..80 {
             assert_eq!(
                 text.matches(&format!("tick-{tick}\r\n")).count(),
                 1,
@@ -271,4 +273,60 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
         kernel.child.try_wait().unwrap().is_none(),
         "the kernel process kept its PID through the reload"
     );
+}
+
+#[test]
+fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
+    let scratch = std::env::temp_dir().join(format!("hr-refused-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let opened = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "open", "cols": 80, "rows": 24,
+                "command": ["/bin/sh", "-c", "sleep 3; echo still-here"]}),
+        )
+        .await;
+        let terminal_id = opened["terminal"]["terminal_id"].as_str().unwrap();
+        // An older program that knows no handover format.
+        let installed = scratch.join("bin/chariox-kernel");
+        let staged = scratch.join("bin/chariox-kernel.new");
+        std::fs::write(&staged, "#!/bin/sh\nexit 2\n").unwrap();
+        std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        std::fs::rename(&staged, &installed).unwrap();
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        let waited = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "wait", "terminal_id": terminal_id,
+                "watches": [{"kind": "output_contains", "text": "still-here"}],
+                "timeout_ms": 20000}),
+        )
+        .await;
+        // The kernel kept running and its connection open: the command finished here.
+        assert_eq!(
+            waited["waited"]["fired"]["kind"], "output_matched",
+            "{waited}"
+        );
+    });
 }

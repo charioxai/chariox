@@ -147,12 +147,12 @@ impl DaemonApp {
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         #[cfg(unix)]
-        let hot_reload_task = tokio::spawn(crate::hot_reload::serve(
+        let hot_reload = crate::hot_reload::requested(
             self.room_terminals(),
             self.config
                 .private_runtime_state_root()
                 .join("handover.json"),
-        ));
+        );
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -232,6 +232,14 @@ impl DaemonApp {
         // must not mutate kernel-owned active prompt state.
 
         let shutdown = async {
+            // A hot reload stops like a planned restart, except that running
+            // terminals are handed over; main then replaces the program.
+            #[cfg(unix)]
+            tokio::select! {
+                () = wait_for_shutdown_signal() => {}
+                () = hot_reload => {}
+            }
+            #[cfg(not(unix))]
             wait_for_shutdown_signal().await;
             runtime_state.finish_outside_waits_on_shutdown().await;
             let _ = shutdown_tx.send(true);
@@ -278,8 +286,6 @@ impl DaemonApp {
         if let Some(task) = remote_execution_lease_reaper_task {
             let _ = task.await;
         }
-        #[cfg(unix)]
-        hot_reload_task.abort();
         result
     }
 }
