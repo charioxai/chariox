@@ -529,6 +529,9 @@ pub(crate) async fn handle_connection(
                                 RelayAction::ClientMetadataRead,
                                 None,
                             )?;
+                            // The request's own token proves the realm, so the
+                            // request and its answer count for it too.
+                            connection_meter.bind_realm(&identity.realm_id);
                             let guard = registry.read().await;
                             let (machines, kernels, kernel) = match query {
                                 RelayMetadataQuery::ListLiveMachines => (

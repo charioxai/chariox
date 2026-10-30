@@ -405,3 +405,66 @@ async fn two_realms_on_one_relay_are_counted_apart() {
     let _ = shutdown_tx.send(());
     let _ = server_task.await;
 }
+
+/// A connection that only asks for metadata is authenticated by the token in each request, and its bytes count for that realm.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_metadata_only_connection_is_counted_for_its_realm() {
+    let probe = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = probe
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let meter = server.usage_meter();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let mut tally = Tally {
+        sent: 0,
+        received: 0,
+    };
+    let (mut client, _) = connect_async_with_retry(&url)
+        .await
+        .expect("client should connect");
+    send(
+        &mut client,
+        &mut tally,
+        &RelayEnvelope::ClientMetadataRequest {
+            request_id: "machines".to_string(),
+            auth_token: "secret".to_string(),
+            query: RelayMetadataQuery::ListLiveMachines,
+        },
+    )
+    .await;
+    receive(&mut client, &mut tally).await;
+    drop(client);
+    sleep(Duration::from_millis(200)).await;
+
+    let counted = meter.snapshot();
+    let control = counted
+        .get(&(
+            DEFAULT_RELAY_REALM_ID.to_string(),
+            CONTROL_SCOPE.to_string(),
+        ))
+        .expect("the realm's bytes reach the meter, not only the connection");
+    assert_eq!(control.bytes_in, tally.sent);
+    assert_eq!(control.bytes_out, tally.received);
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
+}
