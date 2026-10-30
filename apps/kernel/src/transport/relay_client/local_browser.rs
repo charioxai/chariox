@@ -99,6 +99,10 @@ impl LocalBrowserDirect {
             command_result_cache,
             shutdown,
             configured_port(std::env::var(LOCAL_BROWSER_PORT_ENV).ok().as_deref()),
+            rtc::RtcEndpoint::new(
+                configured_port(std::env::var(rtc::UDP_PORT_ENV).ok().as_deref()),
+                Arc::new(rtc::host_addresses),
+            ),
         )
     }
 
@@ -109,6 +113,7 @@ impl LocalBrowserDirect {
         command_result_cache: RelayCommandResultCache,
         shutdown: watch::Receiver<bool>,
         port: Option<u16>,
+        rtc: rtc::RtcEndpoint,
     ) -> Arc<Self> {
         let authority = current_authority(&router.relay_config_snapshot());
         let (bound, bound_rx) = mpsc::unbounded_channel();
@@ -124,9 +129,7 @@ impl LocalBrowserDirect {
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
-            rtc: rtc::RtcEndpoint::new(configured_port(
-                std::env::var(rtc::UDP_PORT_ENV).ok().as_deref(),
-            )),
+            rtc,
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.

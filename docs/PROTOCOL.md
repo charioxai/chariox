@@ -5931,7 +5931,9 @@ data channel (binary messages: one kind byte — 0 last fragment, 1 more, 2 ping
 managed-upgrade list is [629, 636, 917].
 
 The answer carries a host candidate per interface address and a server-reflexive
-candidate per socket a NAT translates. Both sides learn their public address from
+candidate per socket a NAT translates. The interface list is read for every offer:
+after a network change the kernel binds the new addresses, stops offering the
+vanished ones and keeps the sockets of addresses that remain. Both sides learn their public address from
 the STUN Binding responder every relay runs on UDP 3478 of its host
 (`CHARIOX_RELAY_STUN_ADDRESS`, `off` disables): the kernel asks from each of its
 sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only

@@ -59,16 +59,29 @@ const FRAME_PONG: u8 = 3;
 /// to one address knows the destination str0m matches candidates against).
 pub(in crate::transport::relay_client) struct RtcEndpoint {
     port: Option<u16>,
+    interfaces: Interfaces,
     state: Mutex<Option<Bound>>,
 }
+
+/// The machine's usable interface addresses right now.
+pub(super) type Interfaces = Arc<dyn Fn() -> Vec<IpAddr> + Send + Sync>;
 
 #[derive(Clone)]
 struct Bound {
     epoch: String,
+    /// The interface addresses these sockets were bound for; a different
+    /// list means the machine changed network and the sockets are stale.
+    interfaces: Vec<IpAddr>,
     sockets: Vec<Arc<UdpSocket>>,
     addresses: Vec<SocketAddr>,
-    peers: mpsc::UnboundedSender<NewPeer>,
+    commands: mpsc::UnboundedSender<Command>,
     stun: Arc<StunWaits>,
+}
+
+enum Command {
+    /// The sockets to read and send from from now on.
+    Sockets(Vec<Arc<UdpSocket>>),
+    Peer(NewPeer),
 }
 
 /// Binding requests in flight, by transaction id; the socket readers hand
@@ -82,9 +95,10 @@ struct NewPeer {
 }
 
 impl RtcEndpoint {
-    pub(super) fn new(port: Option<u16>) -> Self {
+    pub(super) fn new(port: Option<u16>, interfaces: Interfaces) -> Self {
         Self {
             port,
+            interfaces,
             state: Mutex::new(None),
         }
     }
@@ -129,30 +143,48 @@ impl RtcEndpoint {
             .accept_offer(offer)
             .map_err(|_| invalid_offer("WebRTC offer has no usable data channel"))?;
         bound
-            .peers
-            .send(NewPeer {
+            .commands
+            .send(Command::Peer(NewPeer {
                 rtc,
                 grant: grant.to_owned(),
                 direct,
-            })
+            }))
             .map_err(|_| unavailable("direct WebRTC endpoint is shutting down"))?;
         Ok((answer.to_sdp_string(), bound.epoch))
     }
 
+    /// The endpoint for the interfaces the machine has now. A changed
+    /// interface list (a laptop moving between networks) rebinds: sockets of
+    /// addresses that remain keep serving their peers, vanished addresses are
+    /// no longer offered and new ones are.
     async fn bind(
         &self,
         direct: &std::sync::Weak<LocalBrowserDirect>,
     ) -> Result<Bound, RelayError> {
         let mut state = self.state.lock().await;
-        if let Some(bound) = state.as_ref() {
+        let interfaces = (self.interfaces)();
+        if let Some(bound) = state
+            .as_ref()
+            .filter(|bound| bound.interfaces == interfaces)
+        {
             return Ok(bound.clone());
         }
         let port = self
             .port
             .ok_or_else(|| unavailable("direct WebRTC connections are disabled on this kernel"))?;
         let mut sockets = Vec::new();
-        for ip in host_addresses() {
-            match UdpSocket::bind(SocketAddr::new(ip, port)).await {
+        for ip in &interfaces {
+            let kept = state.as_ref().and_then(|bound| {
+                bound
+                    .sockets
+                    .iter()
+                    .find(|socket| socket.local_addr().is_ok_and(|address| address.ip() == *ip))
+            });
+            if let Some(kept) = kept {
+                sockets.push(Arc::clone(kept));
+                continue;
+            }
+            match UdpSocket::bind(SocketAddr::new(*ip, port)).await {
                 Ok(socket) => sockets.push(Arc::new(socket)),
                 Err(error) => crate::logging::warn_with_fields(
                     "daemon.local_browser",
@@ -168,32 +200,42 @@ impl RtcEndpoint {
         if addresses.is_empty() {
             return Err(unavailable("direct WebRTC endpoint has no usable address"));
         }
-        let shutdown = direct
-            .upgrade()
-            .map(|direct| direct.shutdown.clone())
-            .ok_or_else(|| unavailable("direct WebRTC endpoint is shutting down"))?;
         crate::logging::info_with_fields(
             "daemon.local_browser",
             "direct WebRTC endpoint listening",
             serde_json::json!({"addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>()}),
         );
-        let (peers, new_peers) = mpsc::unbounded_channel();
-        let stun = Arc::new(StunWaits::default());
-        tokio::spawn(drive(
-            sockets.clone(),
-            Arc::clone(&stun),
-            new_peers,
-            shutdown,
-        ));
-        let bound = Bound {
-            epoch: random_token(),
-            sockets,
-            addresses,
-            peers,
-            stun,
+        let bound = match state.take() {
+            Some(previous) => Bound {
+                interfaces,
+                sockets,
+                addresses,
+                ..previous
+            },
+            None => {
+                let shutdown = direct
+                    .upgrade()
+                    .map(|direct| direct.shutdown.clone())
+                    .ok_or_else(|| unavailable("direct WebRTC endpoint is shutting down"))?;
+                let (commands, new_commands) = mpsc::unbounded_channel();
+                let stun = Arc::new(StunWaits::default());
+                tokio::spawn(drive(Arc::clone(&stun), new_commands, shutdown));
+                Bound {
+                    epoch: random_token(),
+                    interfaces,
+                    sockets,
+                    addresses,
+                    commands,
+                    stun,
+                }
+            }
         };
+        let handed = bound
+            .commands
+            .send(Command::Sockets(bound.sockets.clone()))
+            .map_err(|_| unavailable("direct WebRTC endpoint is shutting down"));
         *state = Some(bound.clone());
-        Ok(bound)
+        handed.map(|()| bound)
     }
 }
 
@@ -277,7 +319,7 @@ fn invalid_offer(message: &str) -> RelayError {
 /// Unicast interface addresses a peer could reach: LAN, public and VPN
 /// (Tailscale is an interface like any other). Loopback and link-local are
 /// left out; a same-machine browser reaches the LAN address.
-fn host_addresses() -> Vec<IpAddr> {
+pub(super) fn host_addresses() -> Vec<IpAddr> {
     let mut addresses = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills `list` with a linked list we free below.
@@ -393,50 +435,52 @@ struct OpenChannel {
     session_done: bool,
 }
 
+/// Reads one socket until the driver retires it; STUN answers go to their
+/// waiting request, everything else to str0m.
+async fn read_socket(
+    socket: Arc<UdpSocket>,
+    stun_waits: Arc<StunWaits>,
+    datagrams: mpsc::Sender<(SocketAddr, SocketAddr, Vec<u8>)>,
+) {
+    let Ok(local) = socket.local_addr() else {
+        return;
+    };
+    let mut buf = vec![0_u8; MAX_DATAGRAM];
+    while let Ok((len, source)) = socket.recv_from(&mut buf).await {
+        if let Some(answer) = stun::transaction(&buf[..len]).and_then(|transaction| {
+            let waiting = stun_waits
+                .lock()
+                .expect("STUN waits poisoned")
+                .remove(&transaction)?;
+            Some((waiting, stun::mapped_address(&buf[..len], transaction)))
+        }) {
+            if let (waiting, Some(mapped)) = answer {
+                let _ = waiting.send(mapped);
+            }
+            continue;
+        }
+        if datagrams
+            .send((source, local, buf[..len].to_vec()))
+            .await
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// One task owns every `Rtc`: str0m is sans-IO, so this loop feeds datagrams
 /// and timeouts in and writes transmits and channel data out.
 async fn drive(
-    sockets: Vec<Arc<UdpSocket>>,
     stun_waits: Arc<StunWaits>,
-    mut new_peers: mpsc::UnboundedReceiver<NewPeer>,
+    mut commands: mpsc::UnboundedReceiver<Command>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let wake = Arc::new(Notify::new());
     let (datagrams_tx, mut datagrams) = mpsc::channel::<(SocketAddr, SocketAddr, Vec<u8>)>(1024);
-    let mut readers = tokio::task::JoinSet::new();
-    for socket in &sockets {
-        let socket = Arc::clone(socket);
-        let datagrams_tx = datagrams_tx.clone();
-        let stun_waits = Arc::clone(&stun_waits);
-        readers.spawn(async move {
-            let Ok(local) = socket.local_addr() else {
-                return;
-            };
-            let mut buf = vec![0_u8; MAX_DATAGRAM];
-            while let Ok((len, source)) = socket.recv_from(&mut buf).await {
-                if let Some(answer) = stun::transaction(&buf[..len]).and_then(|transaction| {
-                    let waiting = stun_waits
-                        .lock()
-                        .expect("STUN waits poisoned")
-                        .remove(&transaction)?;
-                    Some((waiting, stun::mapped_address(&buf[..len], transaction)))
-                }) {
-                    if let (waiting, Some(mapped)) = answer {
-                        let _ = waiting.send(mapped);
-                    }
-                    continue;
-                }
-                if datagrams_tx
-                    .send((source, local, buf[..len].to_vec()))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-        });
-    }
-    drop(datagrams_tx);
+    let mut sockets: Vec<Arc<UdpSocket>> = Vec::new();
+    let mut readers: HashMap<SocketAddr, tokio::task::AbortHandle> = HashMap::new();
+    let mut tasks = tokio::task::JoinSet::new();
     let mut peers: Vec<Peer> = Vec::new();
     loop {
         let now = std::time::Instant::now();
@@ -469,15 +513,41 @@ async fn drive(
                     return;
                 }
             }
-            peer = new_peers.recv() => match peer {
-                Some(peer) if peers.len() < MAX_PEERS => peers.push(Peer {
+            command = commands.recv() => match command {
+                Some(Command::Sockets(current)) => {
+                    // A socket that is no longer offered stops being read and
+                    // is closed once its last peer lets go of it.
+                    readers.retain(|address, reader| {
+                        let kept = current
+                            .iter()
+                            .any(|socket| socket.local_addr().ok() == Some(*address));
+                        if !kept {
+                            reader.abort();
+                        }
+                        kept
+                    });
+                    for socket in &current {
+                        if let Ok(address) = socket.local_addr() {
+                            readers.entry(address).or_insert_with(|| {
+                                tasks.spawn(read_socket(
+                                    Arc::clone(socket),
+                                    Arc::clone(&stun_waits),
+                                    datagrams_tx.clone(),
+                                ))
+                            });
+                        }
+                    }
+                    while tasks.try_join_next().is_some() {}
+                    sockets = current;
+                }
+                Some(Command::Peer(peer)) if peers.len() < MAX_PEERS => peers.push(Peer {
                     rtc: peer.rtc,
                     grant: peer.grant,
                     direct: peer.direct,
                     created: Instant::now(),
                     channel: None,
                 }),
-                Some(mut peer) => {
+                Some(Command::Peer(mut peer)) => {
                     peer.rtc.disconnect();
                     if let Some(direct) = peer.direct.upgrade() {
                         direct.forget_grant(&peer.grant);

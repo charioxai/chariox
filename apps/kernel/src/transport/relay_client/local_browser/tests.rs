@@ -90,6 +90,11 @@ impl Kernel {
     }
 
     fn build(paired_at_start: bool, port: Option<u16>) -> Self {
+        Self::build_on(paired_at_start, port, Arc::new(rtc::host_addresses))
+    }
+
+    /// `interfaces` stands in for the machine's network interfaces.
+    fn build_on(paired_at_start: bool, port: Option<u16>, interfaces: rtc::Interfaces) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             kernel_credential: None,
@@ -138,6 +143,7 @@ impl Kernel {
             Arc::new(CommandResultCache::default()),
             shutdown_rx,
             port,
+            rtc::RtcEndpoint::new(Some(0), interfaces),
         );
         if !paired_at_start {
             let mut paired = projection.snapshot();
@@ -1565,6 +1571,10 @@ impl RtcClient {
             .into_iter()
             .find(|ip| ip.is_ipv4())
             .expect("a non-loopback IPv4 interface for the WebRTC test");
+        Self::offer_from(ip)
+    }
+
+    fn offer_from(ip: std::net::IpAddr) -> (Self, String) {
         let socket = std::net::UdpSocket::bind((ip, 0)).unwrap();
         socket.set_nonblocking(true).unwrap();
         let socket = tokio::net::UdpSocket::from_std(socket).unwrap();
@@ -1878,5 +1888,37 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
         let grant = issued["grant"].as_str().unwrap().to_owned();
         let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
         assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+    });
+}
+
+/// MP-08 TR-15: after the machine changes network a new offer is answered from
+/// the interfaces that exist now; the address it left is no longer offered.
+#[test]
+fn mp08_webrtc_offer_after_a_network_change_uses_the_current_interfaces() {
+    large_stack(async {
+        let before: std::net::IpAddr = "127.0.0.2".parse().unwrap();
+        let after: std::net::IpAddr = "127.0.0.3".parse().unwrap();
+        let interfaces = Arc::new(std::sync::Mutex::new(vec![before]));
+        let listing = Arc::clone(&interfaces);
+        let kernel = Kernel::build_on(
+            true,
+            Some(0),
+            Arc::new(move || listing.lock().unwrap().clone()),
+        );
+        let browser = Browser::new();
+        for (ip, absent) in [(before, after), (after, before)] {
+            *interfaces.lock().unwrap() = vec![ip];
+            let (mut client, offer) = RtcClient::offer_from(ip);
+            let issued = kernel.mint_rtc(&browser, &offer).await;
+            let answer = issued["answer"].as_str().expect("an SDP answer");
+            assert!(
+                answer.contains(&format!(" {ip} ")) && !answer.contains(&format!(" {absent} ")),
+                "{answer}"
+            );
+            client.accept(answer);
+            let grant = issued["grant"].as_str().unwrap().to_owned();
+            let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+            assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        }
     });
 }
