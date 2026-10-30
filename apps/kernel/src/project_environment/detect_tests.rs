@@ -338,9 +338,9 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     let root = TestWorktree::new("envp02a-utility-cache");
     write(&root, "package.json", r#"{"engines":{"node":"22"}}"#);
     let folder = folder(&root);
-    let detection = detect_environment(&[folder.clone()], "environment").unwrap();
+    let detection = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
     assert_eq!(
-        detection.model_folders(None, &[], &[folder.clone()]),
+        detection.model_folders(None, &[], std::slice::from_ref(&folder)),
         ["folder".into()].into()
     );
     let target = EnvironmentTargetBinding {
@@ -378,12 +378,16 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     store.save_detection(&cache).unwrap();
     let reloaded = store.load_detection("project").unwrap().unwrap();
     assert!(detection
-        .model_folders(Some(&reloaded), &["folder".into()], &[folder.clone()])
+        .model_folders(
+            Some(&reloaded),
+            &["folder".into()],
+            std::slice::from_ref(&folder)
+        )
         .is_empty());
     write(&root, "package.json", r#"{"engines":{"node":"24"}}"#);
-    let changed = detect_environment(&[folder.clone()], "environment").unwrap();
+    let changed = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
     assert!(!changed
-        .model_folders(Some(&reloaded), &[], &[folder.clone()])
+        .model_folders(Some(&reloaded), &[], std::slice::from_ref(&folder))
         .is_empty());
     cache.operation.phase = EnvironmentOperationPhase::Failed;
     assert!(!detection
@@ -489,4 +493,33 @@ fn r4_detect_excludes_generated_dependency_references() {
     assert!(detection.proposals.iter().flat_map(|p| &p.requirement.origins).all(|o| {
         !matches!(o, RequirementOrigin::Detected { relative_path, .. } if relative_path.ends_with("dependency.ts"))
     }));
+}
+
+// MP-08 / MP-10 / MP-11: reject each credential-shaped component before any model input.
+#[test]
+fn review1356_detect_excludes_credential_shaped_names_and_parent_directories() {
+    let root = TestWorktree::new("review1356-detect-path");
+    write(&root, "package.json", "{}");
+    for name in [
+        "api_key=synthetic-value.txt",
+        "api_key=synthetic-value.js",
+        "api_key=synthetic-parent/ordinary.js",
+    ] {
+        write(&root, name, "process.env.PUBLIC_SETTING");
+    }
+    write(&root, "ordinary.js", "process.env.BENIGN_SETTING");
+    let folders = vec![folder(&root)];
+    let detection = detect_environment(&folders, "environment").unwrap();
+    let (input, _) = detection.discovery_input(
+        "project",
+        &folders,
+        &std::collections::BTreeSet::from(["folder".into()]),
+    );
+    let retained = serde_json::to_string(&(detection.proposals, detection.skips, input)).unwrap();
+    assert!(
+        !retained.contains("synthetic-value") && !retained.contains("synthetic-parent"),
+        "protected filename bytes must not reach deterministic metadata or utility input"
+    );
+    assert!(retained.contains("protected_metadata"));
+    assert!(retained.contains("BENIGN_SETTING"));
 }

@@ -1,3 +1,4 @@
+import { resolveProjectRequest, projectResolutionFromResponse, projectResolutionFailureMessage } from "@chariox/kernel-client"
 import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 // MP-08 / MP-10 / MP-11: Detect uses shared request builders.
 import { createEnvironmentApplyController } from "./project-environment-apply-controller.js"
@@ -37,8 +38,9 @@ export function createProjectEnvironmentReadController(deps: {
   send: (request: unknown) => Promise<unknown>
   render: () => void
   pageSize: () => number
-  textWidth: () => number
   copyLink?: (link: string) => void
+  kernelKey?: () => unknown
+  textWidth?: () => number
 }) {
   const cache = createEnvironmentViewCache()
   let previousProposalOffsets: number[] = []
@@ -49,8 +51,10 @@ export function createProjectEnvironmentReadController(deps: {
   let generation = 0
   let lines: string[] = []
   let offset = 0
-  const displayLines = () => lines.flatMap(line => wrapLine(line, deps.textWidth()))
   let requestedProjectId: string | null = null
+  let requestedWorkspaceId: string | null = null
+  let resolutionConfirmed = false
+  let resolutionKernel: unknown
   let current: ProjectEnvironment | null = null
   let proposalIndex = 0
   let diff: EnvironmentRevisionDiff | null = null
@@ -62,12 +66,41 @@ export function createProjectEnvironmentReadController(deps: {
   let checkingGeneration: number | null = null
   let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const apply = createEnvironmentApplyController({ send: deps.send, current: () => current, snapshot: snapshot => { cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render() }, render: () => { if(open && current){ lines=viewLines(current); deps.render() } } })
+  const displayLines = () => (current ? lines : ["An Environment lists what this project needs on this machine.", ...lines]).flatMap(line => wrapLine(line, deps.textWidth?.() ?? Infinity))
   const controller = {
     isOpen: () => open,
     visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),
-    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; deps.render() },
-    async open(projectId: string) {
-      apply.reset()
+    close() { apply.reset(); clearTimeout(expiryTimer); open = false; generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; deps.render() },
+    async resolveOpening(projectId: string | null, workspaceId: string | null, create = false): Promise<void> {
+      if (!workspaceId) { generation++; requestedProjectId = null; requestedWorkspaceId = null; resolutionConfirmed = false; refreshing = false; offset = 0; open = true; current = null; lines = ["Choose a folder on this kernel before opening Environment."]; deps.render(); return }
+      const g = ++generation, kernel = deps.kernelKey?.()
+      requestedProjectId = projectId; requestedWorkspaceId = workspaceId
+      open = true; current = null; refreshing = true; resolutionConfirmed = false; offset = 0
+      lines = [create ? "Setting up Environment…" : "Looking for this Project’s Environment…"]; deps.render()
+      try {
+        const project = projectResolutionFromResponse(await deps.send(resolveProjectRequest(workspaceId, projectId, create)))
+        if (g !== generation) return
+        if (kernel !== deps.kernelKey?.()) throw new Error("Kernel selection changed. Close Environment and reopen it on the selected kernel.")
+        if (project) { await controller.open(project.id, project.workspace_id); return }
+        if (create) throw new Error("Project setup response is unavailable")
+        resolutionConfirmed = true; resolutionKernel = kernel
+        lines = ["No Environment for this project yet.", `Folder: ${workspaceId}`, "s · Set up Environment for this folder", "r · Refresh"]
+      } catch (cause) { if (g === generation) lines = [projectResolutionFailureMessage(cause), "r · Refresh"] }
+      finally { if (g === generation) { refreshing = false; deps.render() } }
+    },
+    async setup(): Promise<void> {
+      if (!resolutionConfirmed || refreshing || !requestedWorkspaceId) return
+      if (resolutionKernel !== deps.kernelKey?.()) {
+        apply.reset(); resolutionConfirmed = false
+        lines = ["Kernel selection changed. Close Environment and reopen it on the selected kernel."]; deps.render(); return
+      }
+      await controller.resolveOpening(requestedProjectId, requestedWorkspaceId, true)
+    },
+    async open(projectId: string | null, workspaceId?: string): Promise<void> {
+      const workspace = workspaceId ?? (projectId !== null && projectId === requestedProjectId ? requestedWorkspaceId : null)
+      requestedWorkspaceId = workspace
+      if (!projectId) { await controller.resolveOpening(null, workspace); return }
+      apply.reset(); resolutionConfirmed = false
       previousProposalOffsets = []
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
@@ -84,6 +117,9 @@ export function createProjectEnvironmentReadController(deps: {
       } catch (error) {
         if (requestGeneration !== generation) return
         cache.forget(scope, projectId); current = null
+        if (workspace && environmentReadFailureMessage(error) === "No Environment for this project yet.") {
+          await controller.resolveOpening(projectId, workspace); return
+        }
         lines = [environmentReadFailureMessage(error), "r · Refresh"]
       }
       if (requestGeneration === generation) refreshing = false
@@ -127,6 +163,7 @@ export function createProjectEnvironmentReadController(deps: {
       const projectId = current.local_project_id
       detectionGeneration = requestGeneration
       lines = ["Detecting requirements…"]; deps.render()
+      let detectedReply: ProjectEnvironment | null = null
       try {
         const statusResponse = await deps.send(relayStatusRequest()) as { RelayStatus?: { status: { machine_id: string; daemon_id: string } } }
         const status = statusResponse.RelayStatus?.status
@@ -136,10 +173,20 @@ export function createProjectEnvironmentReadController(deps: {
         const environment = response.ProjectEnvironment?.environment
         if (!environment || environment.local_project_id !== projectId) throw new Error("Detect unavailable for this Project")
         if (requestGeneration !== generation) return
-        cache.remember(scope, environment); current = environment; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(environment); offset = 0
+        detectedReply = environment
+        // MP-08 / MP-10: full Detect replies cannot replace a compact kernel-clock anchor.
+        // The shared reader also restores snapshot-bound proposal paging after Detect.
+        const fresh = current.read_view && !environment.read_view ? await readEnvironment(projectId) : environment
+        if (requestGeneration !== generation) return
+        if (fresh.local_project_id !== projectId || fresh.lineage.environment_id !== environment.lineage.environment_id || fresh.revision < environment.revision || (current.read_view && !fresh.read_view)) throw new Error("Detected Environment refresh unavailable")
+        cache.remember(scope, fresh); current = fresh; previousProposalOffsets = []; proposalIndex = 0; lines = viewLines(fresh); offset = 0
       } catch (error) {
         if (requestGeneration !== generation) return
-        lines = [error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
+        if (detectedReply) {
+          current = {...detectedReply, observations: detectedReply.observations.map(o => ({...o, stale: true}))}
+          cache.remember(scope, current); previousProposalOffsets = []; proposalIndex = 0; offset = 0
+        }
+        lines = [detectedReply ? "Requirements detected · Refresh to load current Check freshness" : error instanceof Error ? error.message : "Detect unavailable", ...viewLines(current!)]
       } finally { if (detectionGeneration === requestGeneration) detectionGeneration = null; if (requestGeneration === generation) deps.render() }
     },
     async web() {
@@ -220,12 +267,13 @@ export function createProjectEnvironmentReadController(deps: {
           const heading = lines.indexOf(section.title, sourceOffset + 1)
           if (heading < 0) return []
           sourceOffset = heading
-          return [{ id: section.id, offset: lines.slice(0, heading).reduce((rows, line) => rows + wrapLine(line, deps.textWidth()).length, 0) }]
+          return [{ id: section.id, offset: lines.slice(0, heading).reduce((rows, line) => rows + wrapLine(line, deps.textWidth?.() ?? Infinity).length, 0) }]
         }).map(section => section.offset)
         offset = event.name === "right" ? (positions.find(p => p > offset) ?? 0) : ([...positions].reverse().find(p => p < offset) ?? 0)
         deps.render(); return true
       }
-      if (event.name === "r" && requestedProjectId) { void controller.open(requestedProjectId); return true }
+      if (event.name === "s" && !current) { void controller.setup(); return true }
+      if (event.name === "r" && (requestedProjectId || requestedWorkspaceId)) { void controller.open(requestedProjectId, requestedWorkspaceId ?? undefined); return true }
       if (event.name === "a" || event.name === "x") { void controller.review(event.name === "a" ? "accept" : "exclude"); return true }
       if (!refreshing && !showingDiff && savingGeneration !== generation && detectionGeneration !== generation && checkingGeneration !== generation && apply.handleKey(event.name)) return true
       if ((event.name === "n" || event.name === "p") && current && (current.proposals.length || (current.read_view?.proposal_count ?? 0)>0)) {
@@ -257,7 +305,7 @@ export function createProjectEnvironmentReadController(deps: {
       expiryTimer.unref?.()
     }
     const selected = environment.proposals[proposalIndex]
-    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${(environment.read_view?.proposal_offset ?? 0)+proposalIndex + 1}/${environment.read_view?.proposal_count ?? environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : [environment.read_view?.proposal_count ? `${environment.read_view.proposal_count} proposals · n to begin review` : "No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...apply.lines(), ...projectEnvironmentLines(environment), "An Environment lists what this project needs on this machine.", environment.delivered_capabilities.enabled_environment_operations.includes("save") ? "Edit requirements in Web; this terminal supports Check and proposal review." : "Read only: this kernel can show Environments but cannot change them yet. Update Chariox on this machine to edit."]
+    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${(environment.read_view?.proposal_offset ?? 0)+proposalIndex + 1}/${environment.read_view?.proposal_count ?? environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : [environment.read_view?.proposal_count ? `${environment.read_view.proposal_count} proposals · n to begin review` : "No pending proposals"])] : []), "An Environment lists what this project needs on this machine.", ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...apply.lines(), ...projectEnvironmentLines(environment), environment.delivered_capabilities.enabled_environment_operations.includes("save") ? "Edit requirements in Web; this terminal supports Check and proposal review." : "Read only: this kernel can show Environments but cannot change them yet. Update Chariox on this machine to edit."]
   }
   return controller
 }

@@ -24,7 +24,7 @@ test("ENV P01 standalone TUI request and protocol gate", async () => {
   await controller.open("project")
   assert.deepEqual(requests, [{ GetProjectEnvironment: { projectId: "project", view:{knownDigest:null,proposals:null} } }])
   assert.equal(controller.isOpen(), true)
-  assert.deepEqual(controller.visibleLines(), ["Environment unavailable. Check the kernel connection and refresh.", "r · Refresh"])
+  assert.deepEqual(controller.visibleLines(), ["An Environment lists what this project needs on this machine.", "Environment unavailable. Check the kernel connection and refresh.", "r · Refresh"])
   assert.throws(() => requireKernelFeatureProtocol(requests[0], 504), /660/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(requests[0], 660))
   controller.handleKey({ name: "escape" })
@@ -291,23 +291,26 @@ test("TUI previous page returns to the actual prior byte-bounded offset", async 
 
 // MP-08 / MP-10 / MP-11: TUI proposal exclusion is an unchanged-content
 // Save too. It must retain the compact kernel clock after a real Check reply.
-for (const offset of [-600000,600000]) test(`review0634 TUI Save preserves checked rows at clock offset ${offset}`,async()=>{
+for (const offset of [-600000,600000]) test(`review1356 TUI Detect and Save preserve checked rows at clock offset ${offset}`,async()=>{
  const realNow=Date.now,kernelNow=realNow();Date.now=()=>realNow()+offset
  let controller:ReturnType<typeof createProjectEnvironmentReadController>|undefined
  try {
   const row={requirement_id:"node",title:"Node",scope:{kind:"project"},origins:[],spec:{kind:"software",identity:"node",version_constraint:null,detect_only:true},depends_on:[],required:true,legacy_entry:null}
-  const env:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{environment_id:"env",project_id:"lineage"},folders:[],project_requirements:[row],proposals:[{proposal_id:"optional",requirement:{...row,requirement_id:"optional",title:"Optional",required:false}}],operations:[],observations:[],delivered_capabilities:{enabled_environment_operations:["get","save","check"],supported_schema:1}}
+  const env:any={schema_version:1,local_project_id:"project",revision:1,content_digest:"digest",lineage:{environment_id:"env",project_id:"lineage"},folders:[],project_requirements:[row],proposals:[{proposal_id:"optional",requirement:{...row,requirement_id:"optional",title:"Optional",required:false}}],operations:[],observations:[],delivered_capabilities:{enabled_environment_operations:["get","save","check","detect"],supported_schema:1}}
   let operationId="",saved=false
   const current=()=>({...env,revision:saved?2:1,proposals:saved?[]:env.proposals,operations:operationId?[{operation_id:operationId,kind:"check",phase:"ready",per_item_results:[]}]:[],observations:operationId?[{environment_id:"env",requirement_id:"node",revision_digest:"digest",status:"ready",checked_at_ms:kernelNow,stale:false,safe_summary:"Named probe passed",target:{machine_id:"machine",target_instance_generation:"boot",slice_ref:null},measured_facts:{}}]:[]})
   controller=createProjectEnvironmentReadController({render(){},pageSize:()=>100, textWidth: () => 72,send:async(request:any)=>{
    if(request.RelayStatus===null)return {RelayStatus:{status:{machine_id:"machine",daemon_id:"kernel"}}}
    if(request.CheckProjectEnvironment){operationId=request.CheckProjectEnvironment.operationId;return {EnvironmentOperation:{operation:{operation_id:operationId,phase:"ready"}}}}
+   if(request.DetectProjectEnvironment)return {ProjectEnvironment:{environment:current()}}
    if(request.SaveProjectEnvironmentRevision){saved=true;return {ProjectEnvironmentSaved:{environment:current()}}}
    if(request.GetProjectEnvironment)return {ProjectEnvironmentView:{view:{observed_at_ms:realNow(),snapshot_digest:saved?"saved":operationId?"checked":"initial",environment:current(),proposal_count:current().proposals.length,proposal_offset:0,next_proposal_offset:null,proposals:current().proposals,operation_item_counts:[]}}}
    throw new Error("unexpected request")
   }})
   await controller.open("project");await controller.check()
   assert(controller.visibleLines().some(line=>line.includes("Node · Ready")))
+  await controller.detect()
+  assert(controller.visibleLines().some(line=>line.includes("Node · Ready")),"Detect discarded the compact kernel clock")
   await controller.review("exclude")
   assert(saved)
   assert(controller.visibleLines().some(line=>line.includes("Node · Ready")),"Save discarded the kernel clock reference")
@@ -324,4 +327,69 @@ test("ENV-UX-02 TUI explains Environment and available editing",async()=>{
 // MP-08 / MP-10 / MP-11: keep transport diagnostics out of the user's empty state.
 test("ENV-UX-01 missing Project TUI is a clear empty state",async()=>{
  const controller=createProjectEnvironmentReadController({send:async()=>{throw new Error("local transport `project.get` failed: project `missing` was not found (code=local_transport_error retryable=true)")},render(){},pageSize:()=>100, textWidth: () => 72});await controller.open("missing");assert(controller.visibleLines().includes("No Environment for this project yet."));assert(!controller.visibleLines().some(line=>line.includes("local transport")))
+})
+
+// MP-08 / MP-10 / MP-11: the kernel returns the durable ID; no provider or session.
+test("standalone TUI confirms absence then explicitly sets up and opens the returned Project",async()=>{
+ const requests:unknown[]=[]
+ const environment:any={schema_version:1,local_project_id:"kernel-project",lineage:{project_id:"p",environment_id:"e"},revision:0,content_digest:"d",project_requirements:[],folders:[],proposals:[],observations:[],operations:[],delivered_capabilities:{enabled_environment_operations:["get"],supported_schema:1}}
+ const controller=createProjectEnvironmentReadController({send:async request=>{requests.push(request);const r=request as any;if(r.ResolveProject)return{ProjectResolved:{project:r.ResolveProject.create_if_missing?{id:"kernel-project",name:"Source",workspace_id:"/source"}:null}};return environmentReadResponse(environment)},render(){},pageSize:()=>100, textWidth: () => 72,kernelKey:()=>"kernel"})
+ await controller.open(null,"/source")
+ assert(controller.visibleLines().includes("An Environment lists what this project needs on this machine."), "empty Set up keeps its explanation")
+ assert(controller.visibleLines().includes("s · Set up Environment for this folder"))
+ await controller.setup()
+ assert(controller.visibleLines().includes("Project-wide"))
+ assert.deepEqual(requests.slice(0,2),[{ResolveProject:{workspace_id:"/source",project_id:null,create_if_missing:false}},{ResolveProject:{workspace_id:"/source",project_id:null,create_if_missing:true}}])
+ assert(!requests.some(r=>"CreateSession" in (r as object)))
+ controller.close()
+})
+test("standalone TUI does not create after a kernel selection change",async()=>{
+ let kernel="one",calls=0
+ const controller=createProjectEnvironmentReadController({send:async()=>{calls++;return{ProjectResolved:{project:null}}},render(){},pageSize:()=>100, textWidth: () => 72,kernelKey:()=>kernel})
+ await controller.open(null,"/source");kernel="two";await controller.setup()
+ assert.equal(calls,1);assert(controller.visibleLines().some(line=>line.includes("selection changed")));controller.close()
+})
+
+// MP-08 / MP-10 / MP-11: the explanation wraps to the panel width and every wrapped row stays reachable.
+test("ENV-UX-02 TUI explanation wraps to the panel width without losing text", async () => {
+  const controller = createProjectEnvironmentReadController({ send: async () => (environmentReadResponse({schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}})), render() {}, pageSize: () => 100, textWidth: () => 30 })
+  await controller.open("project")
+  const rows = controller.visibleLines()
+  assert(rows.every(row => row.length <= 30), rows.filter(row => row.length > 30).join("|"))
+  const text = rows.join(" ").replace(/\s+/g, " ")
+  assert(text.includes("cannot change them yet."))
+  assert(text.includes("Update Chariox on this machine to edit."))
+})
+
+test("ENV-UX-02 TUI scrolls wrapped rows, not source lines", async () => {
+  const controller = createProjectEnvironmentReadController({ send: async () => { throw new Error("not available") }, render() {}, pageSize: () => 3, textWidth: () => 20 })
+  await controller.open("project")
+  for (let index = 0; index < 40; index++) controller.handleKey({ name: "down" })
+  assert(controller.visibleLines().join(" ").endsWith("r · Refresh"), controller.visibleLines().join("|"))
+  assert(controller.visibleLines().every(row => row.length <= 20))
+})
+
+// MP-08 / MP-10 / MP-11: section navigation uses the rendered row after wrapping.
+test("wrapped Environment navigation still lands on the Project-wide section", async () => {
+  const environment: any = {schema_version:1,local_project_id:"project",lineage:{},folders:[],project_requirements:[],observations:[],operations:[],proposals:[],delivered_capabilities:{enabled_environment_operations:["get"]}}
+  const controller = createProjectEnvironmentReadController({send:async()=>(environmentReadResponse(environment)),render(){},pageSize:()=>3,textWidth:()=>30})
+  await controller.open("project")
+  controller.handleKey({name:"right"})
+  assert.equal(controller.visibleLines()[0], "Project-wide")
+  controller.close()
+})
+
+// MP-02 / MP-08 / MP-10 / MP-11: a new opening never inherits the previous target.
+for (const prior of [null, "project"]) test(`review0440 empty Workspace forgets prior Environment ${prior}`, async () => {
+ const calls: unknown[] = []
+ const controller = createProjectEnvironmentReadController({send:async request=>{calls.push(request);return {ProjectResolved:{project:null}}},render(){},pageSize:()=>100, textWidth: () => 72})
+ await controller.open(prior, "/a")
+ controller.close()
+ calls.length = 0
+ await controller.open(null)
+ assert(controller.visibleLines().some(line=>line.includes("Choose a folder")))
+ controller.handleKey({name:"r"})
+ await new Promise(resolve=>setTimeout(resolve,0))
+ assert.equal(calls.length,0)
+ controller.close()
 })

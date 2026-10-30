@@ -85,8 +85,10 @@ fn check_projection_waits_for_the_durable_writer() {
 fn check_journal_updates_do_not_grow_the_durable_inode() {
     let root = crate::test_support::TestWorktree::new("envp04-check-fixed-size");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "first".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "first".into(),
+        ..EnvironmentChecks::default()
+    };
     store.save_checks("project", &checks).unwrap();
     let file = store.path("project").with_extension("checks.wal");
     let before = std::fs::metadata(&file).unwrap().len();
@@ -103,8 +105,10 @@ fn check_journal_retains_last_complete_durable_snapshot() {
     use std::io::{Seek, SeekFrom, Write};
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "first".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "first".into(),
+        ..EnvironmentChecks::default()
+    };
     store.save_checks("project", &checks).unwrap();
     checks.folder_binding_digest = "second".into();
     store.save_checks("project", &checks).unwrap();
@@ -138,8 +142,10 @@ fn check_journal_grows_atomically_and_reuses_slots() {
     let root = crate::test_support::TestWorktree::new("envp04-check-resize");
     let store = ProjectEnvironmentStore::new(root.path());
     let path = store.path("project").with_extension("checks.wal");
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "initial".into();
+    let mut checks = EnvironmentChecks {
+        folder_binding_digest: "initial".into(),
+        ..EnvironmentChecks::default()
+    };
     store.save_checks("project", &checks).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,
@@ -166,8 +172,10 @@ fn check_journal_grows_atomically_and_reuses_slots() {
 fn check_journal_rejects_symlinks_and_hardlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks::default();
-    checks.folder_binding_digest = "current".into();
+    let checks = EnvironmentChecks {
+        folder_binding_digest: "current".into(),
+        ..EnvironmentChecks::default()
+    };
     store.save_checks("project", &checks).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,

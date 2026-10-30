@@ -640,7 +640,7 @@ impl ProjectEnvironmentStore {
                 );
             }
         }
-        super::manual_files::verify_manual_files(current, &mut draft)?;
+        self.verify_revision_files(current, &mut draft)?;
         let mut diff = environment_revision_diff(current, &draft)?;
         for r in draft
             .project_requirements
@@ -716,5 +716,24 @@ impl ProjectEnvironmentStore {
         )
         .map_err(|_| environment_error("revision commit failed"))?;
         Ok((saved, diff))
+    }
+}
+
+impl ProjectEnvironmentStore {
+    pub(crate) fn verify_revision_files(
+        &self,
+        current: &ProjectEnvironment,
+        draft: &mut EnvironmentRevisionDraft,
+    ) -> Result<(), DaemonError> {
+        if super::manual_files::has_included_files(draft) {
+            super::check_files::manual_files(
+                &self.root,
+                current,
+                draft,
+                std::time::Instant::now() + std::time::Duration::from_secs(60),
+            )
+        } else {
+            super::manual_files::verify_manual_files(current, draft)
+        }
     }
 }

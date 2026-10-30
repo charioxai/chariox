@@ -35,6 +35,23 @@ const PROTECTED_FILE_ENV_NAMES: &[&str] = &[
     "CHARIOX_DAEMON_SOCKET",
 ];
 
+pub(crate) fn working_directory_environment_names() -> impl Iterator<Item = &'static str> {
+    [
+        "HOME",
+        "CHARIOX_HOME",
+        "CHARIOX_SLICE_ROOT",
+        "CHARIOX_MANAGED_PROVIDER_ISOLATION",
+    ]
+    .into_iter()
+    .chain(PROTECTED_DIRECTORY_ENV_NAMES.iter().copied())
+    .chain(
+        MANAGED_ISOLATION_PROTECTED_DIRECTORY_ENV_NAMES
+            .iter()
+            .copied(),
+    )
+    .chain(PROTECTED_FILE_ENV_NAMES.iter().copied())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkingDirectoryPreflight {
     pub(crate) requested_path: PathBuf,

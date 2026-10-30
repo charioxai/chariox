@@ -175,6 +175,13 @@ impl EnvironmentDetection {
                 if !model_folders.contains(folder_id) {
                     continue;
                 }
+                // MP-11: old cached proposals cannot submit protected path components either.
+                if relative_path.split('/').any(|part| {
+                    !super::detect_index::safe_metadata(part)
+                        || super::detect_index::credential_metadata(part)
+                }) {
+                    continue;
+                }
                 let Some(folder) = folders.iter().find(|f| &f.folder_id == folder_id) else {
                     continue;
                 };

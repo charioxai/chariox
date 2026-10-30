@@ -250,7 +250,10 @@ impl KernelRuntimeState {
     }
 
     pub(crate) fn waiting_room_change_sequence(&self) -> u64 {
-        self.owned.runtime_projection_changes.sequence()
+        self.owned
+            .runtime_projection_changes
+            .sequence()
+            .wrapping_add(crate::runtime::waiting_room_git_metadata::revision())
     }
 
     pub(crate) fn record_waiting_room_change(&self) {
@@ -258,10 +261,15 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
-        self.owned
-            .runtime_projection_changes
-            .wait_for_change_after(sequence)
-            .await;
+        let runtime = self.owned.runtime_projection_changes.sequence();
+        let metadata = crate::runtime::waiting_room_git_metadata::revision();
+        if runtime.wrapping_add(metadata) != sequence {
+            return;
+        }
+        tokio::select! {
+            _ = self.owned.runtime_projection_changes.wait_for_change_after(runtime) => {},
+            _ = crate::runtime::waiting_room_git_metadata::wait_for_change_after(metadata) => {},
+        }
     }
 
     pub(crate) fn session_projection_change_sequence(&self) -> u64 {

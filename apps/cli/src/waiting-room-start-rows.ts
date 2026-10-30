@@ -228,7 +228,7 @@ export function waitingRoomStartRows(
     {
       id: "workspace",
       title: "Workspace",
-      value: options.targets?.workspacePath ?? (options.inventoryLoading ? options.loadingText : "Set workspace path"),
+      value: options.targets?.workspacePath ? `${options.targets.workspacePath} · V Environment` : (options.inventoryLoading ? options.loadingText : "Set workspace path"),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "workspace",

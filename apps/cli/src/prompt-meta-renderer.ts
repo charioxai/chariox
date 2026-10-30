@@ -78,7 +78,7 @@ function setTextRenderable(
   fg: (typeof theme)[keyof typeof theme],
   attributes = TextAttributes.NONE,
 ): void {
-  if (!text) {
+  if (!text || text.isDestroyed) {
     return
   }
   text.content = content

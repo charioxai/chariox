@@ -12,6 +12,7 @@ pub(super) async fn resolve_session_lane_key(
 ) -> Result<String, DaemonError> {
     match request {
         LocalDaemonRequest::CreateSession(_)
+        | LocalDaemonRequest::ResolveProject(_)
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)

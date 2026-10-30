@@ -46,6 +46,8 @@ pub struct RuntimeProject {
     workspace_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workspace_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    standalone: bool,
     name: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pinned: bool,
@@ -74,6 +76,7 @@ impl RuntimeProject {
             owner_user_id: owner_user_id.into(),
             workspace_ids: vec![workspace_id.clone()],
             workspace_id,
+            standalone: false,
             name: name.into(),
             pinned: false,
             kind,
@@ -82,6 +85,18 @@ impl RuntimeProject {
             updated_at_ms: now,
             archived_at_ms: None,
             environment_definition: None,
+        }
+    }
+
+    // MP-08 / MP-10 / MP-11: explicit Project setup survives without sessions.
+    pub(crate) fn is_standalone(&self) -> bool {
+        self.standalone
+    }
+
+    pub(crate) fn retain_without_sessions(&mut self) {
+        if !self.standalone {
+            self.standalone = true;
+            self.updated_at_ms = unix_epoch_ms();
         }
     }
 
@@ -108,10 +123,16 @@ impl RuntimeProject {
         }
     }
 
+    // Store/creation-lane matching is lexical only. Filesystem equivalence is
+    // prepared by the bounded metadata worker, which supplies the saved binding.
+    pub(crate) fn workspace_paths_match(a: &str, b: &str) -> bool {
+        std::path::Path::new(a) == std::path::Path::new(b)
+    }
+
     pub fn contains_workspace(&self, workspace_id: &str) -> bool {
         self.workspace_ids()
             .iter()
-            .any(|candidate| candidate == workspace_id)
+            .any(|candidate| Self::workspace_paths_match(candidate, workspace_id))
     }
 
     pub fn name(&self) -> &str {
@@ -186,4 +207,8 @@ impl RuntimeProject {
         self.updated_at_ms = unix_epoch_ms();
         self.archived_at_ms = None;
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

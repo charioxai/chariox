@@ -1987,3 +1987,33 @@ CHA-16 is complete only when:
 - adjacent Chariox regression matrix passes
 - exact-head reviewers have no comments on every merged PR
 - all temporary infrastructure and local artifacts are cleaned up
+
+## MP-08 / MP-10 / MP-11: standalone Project entry acceptance
+
+Coordinator instruction 2026-10-14 allocates local protocol 524 and peer 132 to
+session-free Project resolution/creation. This entry creates a durable Project
+binding before the existing Environment editor is opened. It does not declare a
+machine build-ready, install software by itself, or replace the setup/validation
+phases above. Ordinary session creation must reuse the same default Project
+identity. No placeholder session, agent or provider turn is allowed.
+
+- `ENV-SETUP-01`: From a fresh real kernel and an existing real public source
+  folder, open Environment and see definitive absence. Use Set up in the real
+  Web client at 1440×900 and 1920×1080, each DPR 1 and 2, and the native TUI
+  (Workspace V, then S). The returned Project is visible with zero sessions.
+  Use the existing editor to add installed Node as a requirement, Save and Check
+  it on the real kernel, restart that kernel, and reopen the same durable
+  Project. Repeat opens/creation retries must not duplicate it. Capture and
+  inspect recordings/stills; delete owned Projects/state after the drill.
+- `ENV-SETUP-02`: Repeat session-free entry on another ordinary kernel through
+  its real relay target. Verify the action stays on the selected kernel, a
+  selection change cannot redirect creation, protected folders/foreign Project
+  IDs are refused, and an older supported kernel displays a clear upgrade step
+  while its existing Environment reads remain usable. Retain the existing
+  ordinary/managed deployment, provider, security review and readiness gates;
+  these entry checks do not close those broader gates.
+
+Focused regression checks additionally cover pure lookup without mutation,
+caller/workspace ownership, archived Projects, journal-before-publication,
+standalone visibility/recovery, and ordinary-session identity reuse. They are
+supplementary to the real client drills and cannot replace them.

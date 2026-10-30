@@ -1,6 +1,5 @@
 //! MP-08 / MP-10 / MP-11: production Check/Plan/Apply concurrency with a bounded probe gate.
 use super::*;
-use crate::project_environment::*;
 use std::time::{Duration, Instant};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

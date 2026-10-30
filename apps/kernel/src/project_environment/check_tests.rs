@@ -140,9 +140,16 @@ fn envp04_inventory_constraints_and_unknowns_fail_closed() {
         ("1.5.0", "~1.4.0", false),
         ("1.4.9", "1.4.*", true),
     ] {
-        assert_eq!(inventory::satisfies(v, c), Some(want), "{v} {c}");
+        assert_eq!(
+            inventory::satisfies(v, c, inventory::VersionSemantics::Npm),
+            Some(want),
+            "{v} {c}"
+        );
     }
-    assert_eq!(inventory::satisfies("22.3.1", "latest"), None);
+    assert_eq!(
+        inventory::satisfies("22.3.1", "latest", inventory::VersionSemantics::Npm),
+        None
+    );
     assert_eq!(
         inventory::version("opaque-shell-check", &[]),
         Err("unsupported_inventory")
@@ -459,6 +466,8 @@ mod review0440;
 #[path = "review0440_migration_tests.rs"]
 mod review0440_migration;
 
+#[path = "review1356_tests.rs"]
+mod review1356;
 // MP-08 / MP-10 / MP-11: full Check publication cannot exhaust retained journal bodies.
 #[test]
 fn r6_environment_repeated_full_checks_keep_history_within_byte_capacity() {
@@ -638,7 +647,11 @@ fn r6_environment_inventory_does_not_promote_prerelease_probe_output() {
             .as_ref()
             .ok()
             .and_then(|v| v.as_deref())
-            .is_none_or(|v| inventory::satisfies(v, ">=1.93.0") != Some(true)),
+            .is_none_or(|v| inventory::satisfies(
+                v,
+                ">=1.93.0",
+                inventory::VersionSemantics::Numeric
+            ) != Some(true)),
         "prerelease output cannot establish stable readiness: {version:?}"
     );
     std::fs::write(

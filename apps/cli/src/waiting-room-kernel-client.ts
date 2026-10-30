@@ -93,7 +93,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
   homeKernelId(): string | null
   homeMachineId(): string | null
   currentKernelId(): string | null | undefined
-  invalidateInventory(): void
+  invalidateInventory(connectedSnapshot?: WaitingRoomInventory): void
   clearProjectSetup(): void
   connected(label: string): void
 }) {
@@ -194,7 +194,7 @@ export function createWaitingRoomKernelConnectionController(deps: {
       directTargetKernelId = targetInventory.kernelId === deps.homeKernelId() ? homeDirectTargetKernelId : targetInventory.kernelId
       connected?.(targetInventory)
     }
-    deps.invalidateInventory()
+    deps.invalidateInventory(targetInventory)
     deps.connected(connection.label)
     return isCurrent()
   }

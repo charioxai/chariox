@@ -35,7 +35,7 @@ impl KernelRuntimeState {
             review_new_proposal_folders(&mut current, &mut draft, &[], &attached.folders)?;
             // Validate before any path read; Preview measures the same selections as Save.
             environment_revision_diff(&current, &draft)?;
-            verify_manual_files(&current, &mut draft)?;
+            store.verify_revision_files(&current, &mut draft)?;
             environment_revision_diff(&current, &draft)
         })
         .await

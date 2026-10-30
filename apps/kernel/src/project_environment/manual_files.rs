@@ -208,6 +208,17 @@ pub(crate) fn verify_manual_files(
 ) -> Result<(), DaemonError> {
     verify_files(current, draft, true, None)
 }
+pub(super) fn verify_manual_files_until(
+    current: &ProjectEnvironment,
+    draft: &mut EnvironmentRevisionDraft,
+    deadline: std::time::Instant,
+) -> Result<(), DaemonError> {
+    verify_files(current, draft, true, Some(deadline))
+}
+pub(super) fn has_included_files(draft: &EnvironmentRevisionDraft) -> bool {
+    draft.project_requirements.iter().chain(draft.folders.iter().flat_map(|f| &f.requirements)).any(|r|
+        matches!(&r.spec, RequirementSpec::Files { entries, .. } if entries.iter().any(|e| e.transfer_inclusion != EnvironmentTransferInclusion::Exclude)))
+}
 // MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
 pub(super) fn verify_check_files(
     current: &ProjectEnvironment,
@@ -222,16 +233,7 @@ fn verify_files(
     git_metadata: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), DaemonError> {
-    let roots: Vec<_> = current
-        .folders
-        .iter()
-        .filter(|folder| !folder.local_workspace_binding.is_empty())
-        .filter_map(|folder| {
-            Path::new(&folder.local_workspace_binding)
-                .canonicalize()
-                .ok()
-        })
-        .collect();
+    let mut roots: Option<Vec<std::path::PathBuf>> = None;
     let mut total_bytes = 0;
     let mut total_count = 0;
     for requirement in draft
@@ -336,7 +338,26 @@ fn verify_files(
             total_bytes = selection.bytes;
             total_count = selection.count;
             if git_metadata {
-                entry.git_ignored = ignored(path, &entry.relative_path, &roots);
+                let roots = roots.get_or_insert_with(|| {
+                    current
+                        .folders
+                        .iter()
+                        .filter(|folder| !folder.local_workspace_binding.is_empty())
+                        .filter_map(|folder| {
+                            #[cfg(test)]
+                            if let Some(marker) =
+                                std::env::var_os("CHARIOX_MANUAL_ROOT_STALL_MARKER")
+                            {
+                                std::fs::write(marker, std::process::id().to_string()).unwrap();
+                                std::thread::sleep(std::time::Duration::from_secs(2));
+                            }
+                            Path::new(&folder.local_workspace_binding)
+                                .canonicalize()
+                                .ok()
+                        })
+                        .collect()
+                });
+                entry.git_ignored = ignored(path, &entry.relative_path, roots);
             }
             entry.secret_looking = selection.protected;
             if selection.protected {
@@ -358,4 +379,64 @@ fn verify_files(
         }
     }
     Ok(())
+}
+
+// Worker metadata carries only these safe validation outcomes, never arbitrary error text.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ManualFilesFailure {
+    ByteCapacity,
+    FileCountCapacity,
+    DepthCapacity,
+    ChangedDuringReview,
+    FolderDetached,
+    SymlinkOrNonRegular,
+    FolderUnavailable,
+    FileUnavailable,
+    UnsupportedEncoding,
+    BudgetExceeded,
+    InvalidSelection,
+}
+impl ManualFilesFailure {
+    pub(super) fn from_error(error: &DaemonError) -> Self {
+        let DaemonError::LocalTransport {
+            operation: "Project environment",
+            message,
+        } = error
+        else {
+            return Self::InvalidSelection;
+        };
+        match message.as_str() {
+            "selected Files exceed the 8 GiB review capacity" => Self::ByteCapacity,
+            "selected folder exceeds File count capacity" => Self::FileCountCapacity,
+            "selected folder exceeds depth capacity" => Self::DepthCapacity,
+            "selected File changed during review; retry Save" => Self::ChangedDuringReview,
+            "selected File folder is no longer attached" => Self::FolderDetached,
+            "selected folder contains symlink or non-regular File" => Self::SymlinkOrNonRegular,
+            "selected folder unavailable" | "selected folder entry unavailable" => {
+                Self::FolderUnavailable
+            }
+            "File metadata unavailable"
+            | "selected File read failed"
+            | "selected File type unavailable" => Self::FileUnavailable,
+            "selected File path encoding unsupported" => Self::UnsupportedEncoding,
+            "Check file measurement budget exceeded" => Self::BudgetExceeded,
+            _ => Self::InvalidSelection,
+        }
+    }
+    pub(super) fn error(self) -> DaemonError {
+        environment_error(match self {
+            Self::ByteCapacity => "selected Files exceed the 8 GiB review capacity",
+            Self::FileCountCapacity => "selected folder exceeds File count capacity",
+            Self::DepthCapacity => "selected folder exceeds depth capacity",
+            Self::ChangedDuringReview => "selected File changed during review; retry Save",
+            Self::FolderDetached => "selected File folder is no longer attached",
+            Self::SymlinkOrNonRegular => "selected folder contains symlink or non-regular File",
+            Self::FolderUnavailable => "selected folder unavailable; check the selected path and retry Save",
+            Self::FileUnavailable => "selected File unavailable; check the selected path and permissions, then retry Save",
+            Self::UnsupportedEncoding => "selected File path encoding unsupported",
+            Self::BudgetExceeded => "Check file measurement budget exceeded; select fewer Files and retry Save",
+            Self::InvalidSelection => "selected Files could not be validated; check paths and permissions, then retry Save",
+        })
+    }
 }

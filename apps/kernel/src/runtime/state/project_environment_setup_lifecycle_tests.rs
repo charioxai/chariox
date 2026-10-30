@@ -3092,6 +3092,29 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
             .await
     });
 
+    // Cancellation intent is committed locally before its worker RPC. Waiting
+    // for a remote receipt while holding Gets consumes their transport budget.
+    tokio::time::timeout_at(cancellation_barrier_deadline, async {
+        loop {
+            let (_, _, cancel_requested) = runtime
+                .owned
+                .project_environment_setups
+                .get_entry_with_cancellation(cancel_during_missing_status_operation_id, "user-1")
+                .expect("the cancelling operation remains owned");
+            if cancel_requested {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("home should record cancellation intent before releasing missing status");
+    for release in get_releases.drain(..) {
+        release
+            .send(())
+            .expect("held worker status request should remain open");
+    }
+
     let mut cancel_releases = Vec::new();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -3107,7 +3130,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
                     operation_id,
                     release,
                 }) if operation_id == cancel_during_missing_status_operation_id => {
-                    get_releases.push(release);
+                    release
+                        .send(())
+                        .expect("post-intent status request should remain open");
                 }
                 Some(TestPeerRequestObservation::StartProjectEnvironmentSetup { operation_id })
                     if operation_id == cancel_during_missing_status_operation_id =>
@@ -3125,14 +3150,9 @@ async fn public_setup_status_transport_recovery_and_missing_dispatch_replay_pres
     .expect("authenticated worker should receive Cancel after intent is recorded");
     assert!(
         !cancellation.is_finished(),
-        "public Cancel should remain at the worker boundary until held status requests are released"
+        "public Cancel should remain at the held worker boundary"
     );
 
-    for release in get_releases.drain(..) {
-        release
-            .send(())
-            .expect("held worker status request should remain open");
-    }
     // Home Cancel holds the operation gate while awaiting the worker response.
     // Release the observed worker boundary before joining the delayed Get,
     // whose missing-operation path must acquire that same gate.

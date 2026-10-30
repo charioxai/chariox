@@ -97,6 +97,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   const environmentController = createProjectEnvironmentReadController({
     copyLink: link => { void copyTextToClipboard(link,deps.renderer).then(()=>deps.flashFooter("Web Environment link copied · select this kernel and Project in Web","info")).catch(()=>deps.flashFooter("Copy the displayed Web Environment link","info")) },
     send: request => deps.client.send(request),
+    kernelKey: () => deps.waitingRoomRemoteState()?.relay?.daemon_id,
     pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
     textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),

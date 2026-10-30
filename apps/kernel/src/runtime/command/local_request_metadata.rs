@@ -740,6 +740,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "project.environment.CommitEnvironmentImport"
         }
         LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
+        LocalDaemonRequest::ResolveProject(_) => "project.resolve",
         LocalDaemonRequest::ListProjects(_) => "project.list",
         LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
         LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",

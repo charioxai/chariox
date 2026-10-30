@@ -265,6 +265,7 @@ response_policies! {
         ProjectsListed,
         ProjectPinned,
         RoomPinned,
+        ProjectResolved,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,

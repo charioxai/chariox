@@ -26,12 +26,32 @@ pub(crate) fn project_launch_environment(
 }
 
 // MP-08 / MP-10 / MP-11: filter authority before resolving any values or Vault refs.
+#[cfg(test)]
 pub(crate) fn project_public_setup_environment(
     config: &DaemonConfig,
     project_id: &str,
     folder: &EnvironmentFolder,
     directory: &Path,
     dependencies: &[&Requirement],
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    project_public_setup_environment_until(
+        config,
+        project_id,
+        folder,
+        directory,
+        dependencies,
+        std::time::Instant::now() + std::time::Duration::from_secs(60),
+        || false,
+    )
+}
+pub(crate) fn project_public_setup_environment_until(
+    config: &DaemonConfig,
+    project_id: &str,
+    folder: &EnvironmentFolder,
+    directory: &Path,
+    dependencies: &[&Requirement],
+    deadline: std::time::Instant,
+    mut cancelled: impl FnMut() -> bool,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
     // Keep the selected requirement's scope and source identity until resolution.
     // Cross-folder prerequisites cannot be substituted by equal names here.
@@ -56,7 +76,7 @@ pub(crate) fn project_public_setup_environment(
             ));
         }
     }
-    let environment = project_launch_environment_selected(
+    let environment = project_launch_environment_selected_with_reader(
         config,
         project_id,
         &folder.local_workspace_binding,
@@ -67,6 +87,9 @@ pub(crate) fn project_public_setup_environment(
                 .is_some_and(|locator| *locator == &entry.locator)
                 && entry.classification == ProjectEnvironmentClassification::NonSecret
                 && !matches!(entry.locator, ProjectEnvironmentLocator::Vault { .. })
+        },
+        &mut |root, path| {
+            super::setup_inputs::setup_public_file(config, root, path, deadline, &mut cancelled)
         },
     )?;
     // MP-08 / MP-10 / MP-11: a missing required public input is preparation,
@@ -97,6 +120,23 @@ fn project_launch_environment_selected(
     workspace_id: &str,
     directory: &Path,
     selected: impl Fn(&ProjectEnvironmentEntry) -> bool,
+) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
+    project_launch_environment_selected_with_reader(
+        config,
+        project_id,
+        workspace_id,
+        directory,
+        selected,
+        &mut super::resolver::read_environment_file,
+    )
+}
+fn project_launch_environment_selected_with_reader(
+    config: &DaemonConfig,
+    project_id: &str,
+    workspace_id: &str,
+    directory: &Path,
+    selected: impl Fn(&ProjectEnvironmentEntry) -> bool,
+    read: &mut impl FnMut(&Path, &str) -> Result<zeroize::Zeroizing<String>, DaemonError>,
 ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
     let mut environment = crate::provider::ProviderCredentialEnvironment::default();
     let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
@@ -134,11 +174,12 @@ fn project_launch_environment_selected(
         })
         .collect();
     let vault = crate::secret::project_environment_vault(config)?;
-    let resolved = resolve_project_environment(
+    let resolved = super::resolver::resolve_project_environment_with_reader(
         &manifest,
         &roots,
         &BTreeMap::from([(workspace_id.into(), inherited)]),
         vault.as_ref(),
+        read,
     )?;
     for (name, value) in project_environment_launch_bindings(&manifest, &resolved, workspace_id)? {
         environment.insert(name, value);

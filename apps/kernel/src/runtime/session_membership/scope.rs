@@ -693,6 +693,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SaveAppFileExport(_)
         | LocalDaemonRequest::CreateSession(_)
         | LocalDaemonRequest::JoinSessionInvite(_)
+        | LocalDaemonRequest::ResolveProject(_)
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::SetProjectPinned(_)
         | LocalDaemonRequest::RenameProject(_)

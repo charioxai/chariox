@@ -4,6 +4,7 @@ use super::*;
 use crate::local::provider_requests::resolve_bounded_host as resolve_host;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+#[cfg(test)]
 pub(super) fn health(
     probe: &EnvironmentProbe,
     expectation: &Option<EnvironmentHealthExpectation>,

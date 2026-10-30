@@ -3,7 +3,6 @@ use crate::local::{
     CommitAndPushWorkspaceChangesRequest, CommitWorkspaceChangesRequest,
     CreateWorkspaceDirectoryRequest, CreateWorkspacePullRequestRequest,
     CreateWorkspaceWorktreeRequest, DeleteWorkspaceWorktreeRequest, GetWorkspaceFileContentRequest,
-    GetWorkspaceGitOverviewRequest, ListWorkspaceFilesRequest, ListWorkspaceWorktreesRequest,
     LocalDaemonRequest, LocalDaemonResponse, PushWorkspaceBranchRequest,
     SearchWorkspaceDirectoriesRequest,
 };
@@ -14,11 +13,10 @@ use crate::runtime::workspace_git_actions::{
     commit_and_push_workspace_changes, commit_workspace_changes, create_workspace_pull_request,
     push_workspace_branch,
 };
-use crate::runtime::workspace_git_overview::inspect_workspace_git_overview;
-use crate::runtime::workspace_repo_files::{get_workspace_file_content, list_workspace_repo_files};
+use crate::runtime::workspace_repo_files::get_workspace_file_content;
 use crate::runtime::workspace_search::{create_workspace_directory, search_workspace_directories};
 use crate::runtime::workspace_worktrees::{
-    create_waiting_room_worktree, delete_workspace_worktree, list_workspace_worktrees,
+    create_waiting_room_worktree, delete_workspace_worktree,
 };
 
 pub(crate) async fn execute_workspace_command_request(
@@ -34,7 +32,18 @@ pub(crate) async fn execute_workspace_command_request(
             execute_create_workspace_directory_request(request)
         }
         LocalDaemonRequest::ListWorkspaceWorktrees(request) => {
-            execute_list_workspace_worktrees_request(request)
+            let current = infer_waiting_room_launch_target(&[]).map(|target| target.worktree_id);
+            crate::runtime::workspace_inspection::inspect(
+                runtime_state
+                    .config_snapshot()
+                    .await
+                    .private_runtime_state_root(),
+                crate::runtime::workspace_inspection::Inspection::Worktrees {
+                    workspace: request.workspace_id,
+                    current,
+                },
+            )
+            .await
         }
         LocalDaemonRequest::CreateWorkspaceWorktree(request) => {
             execute_create_workspace_worktree_request(request)
@@ -47,10 +56,24 @@ pub(crate) async fn execute_workspace_command_request(
             execute_create_workspace_pull_request_request(request)
         }
         LocalDaemonRequest::GetWorkspaceGitOverview(request) => {
-            execute_get_workspace_git_overview_request(request)
+            crate::runtime::workspace_inspection::inspect(
+                runtime_state
+                    .config_snapshot()
+                    .await
+                    .private_runtime_state_root(),
+                crate::runtime::workspace_inspection::Inspection::GitOverview(request),
+            )
+            .await
         }
         LocalDaemonRequest::ListWorkspaceFiles(request) => {
-            execute_list_workspace_files_request(request)
+            crate::runtime::workspace_inspection::inspect(
+                runtime_state
+                    .config_snapshot()
+                    .await
+                    .private_runtime_state_root(),
+                crate::runtime::workspace_inspection::Inspection::Files(request),
+            )
+            .await
         }
         LocalDaemonRequest::GetWorkspaceFileContent(request) => {
             execute_get_workspace_file_content_request(request)
@@ -98,22 +121,6 @@ pub(crate) fn execute_create_workspace_directory_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let directory = create_workspace_directory(&request.path)?;
     Ok(LocalDaemonResponse::WorkspaceDirectoryCreated { directory })
-}
-
-pub(crate) fn execute_list_workspace_worktrees_request(
-    request: ListWorkspaceWorktreesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let launch_target = infer_waiting_room_launch_target(&[]);
-    let worktrees = list_workspace_worktrees(
-        &request.workspace_id,
-        launch_target
-            .as_ref()
-            .map(|target| target.worktree_id.as_str()),
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceWorktreesListed {
-        workspace_id: request.workspace_id,
-        worktrees,
-    })
 }
 
 pub(crate) fn execute_create_workspace_worktree_request(
@@ -173,30 +180,6 @@ pub(crate) fn execute_create_workspace_pull_request_request(
         request.draft,
     )?;
     Ok(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-}
-
-pub(crate) fn execute_get_workspace_git_overview_request(
-    request: GetWorkspaceGitOverviewRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let overview = inspect_workspace_git_overview(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.compare_ref.as_deref(),
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceGitOverview { overview })
-}
-
-pub(crate) fn execute_list_workspace_files_request(
-    request: ListWorkspaceFilesRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let listing = list_workspace_repo_files(
-        &request.workspace_id,
-        &request.worktree_id,
-        request.path_prefix.as_deref(),
-        request.compare_ref.as_deref(),
-        request.limit,
-    )?;
-    Ok(LocalDaemonResponse::WorkspaceFilesListed { listing })
 }
 
 pub(crate) fn execute_get_workspace_file_content_request(

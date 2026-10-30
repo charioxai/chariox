@@ -693,6 +693,7 @@ fn claude_profile_auth_status(
     })
 }
 
+#[cfg(test)]
 fn claude_auth_status(
     provider: &str,
     account_profile: &str,
@@ -779,12 +780,6 @@ fn ensure_status_budget(deadline: Option<std::time::Instant>) -> Result<(), Daem
     Ok(())
 }
 
-fn bounded_status_output(
-    command: Command,
-    label: &str,
-) -> Result<std::process::Output, DaemonError> {
-    bounded_status_output_until(command, label, None)
-}
 fn bounded_status_output_until(
     command: Command,
     label: &str,
@@ -1246,9 +1241,6 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
     }
 }
 
-fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    command_version_until(executable, None)
-}
 fn command_version_until(
     executable: &std::path::Path,
     deadline: Option<std::time::Instant>,

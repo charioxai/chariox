@@ -13,7 +13,15 @@ pub(crate) struct AgentOutputSeenAck {
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
+        request: crate::session::CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.create_prepared_session_response(request, None).await
+    }
+
+    pub(crate) async fn create_prepared_session_response(
+        &self,
         mut request: crate::session::CreateSessionRequest,
+        prepared_workspace: Option<crate::runtime::state::PreparedSessionWorkspace>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         // Every session-create path (local, sliced, remote) starts from here:
         // the first agent gets a real provider, never the `default` placeholder.
@@ -56,6 +64,9 @@ impl KernelRuntimeState {
             request = prepare_local_session_worktree_placement(request)?;
         }
         request = canonicalize_session_workspace(request);
+        if slice_ref.is_none() && kernel_ref.is_none() {
+            request = self.apply_prepared_session_workspace(request, prepared_workspace)?;
+        }
         let existing_project_ids = self
             .owned
             .session_store
@@ -1355,11 +1366,14 @@ impl Drop for UnpublishedSessionGuard {
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
-    crate::git_worktree_placement::preflight_existing_absolute_directory(
+    let admitted = crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.workspace_id,
         "workspace_id",
         "session.create",
     )?;
+    // MP-02 / MP-08 / MP-10 / MP-11: preserve the shared filesystem preflight's
+    // canonical spelling before Git normalization, just like Project resolution.
+    request.workspace_id = admitted.canonical_path.to_string_lossy().into_owned();
     crate::git_worktree_placement::preflight_existing_absolute_directory(
         &request.worktree_id,
         "worktree_id",
@@ -1439,7 +1453,10 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
 }
 
-fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+pub(super) fn kernel_ref_matches_local_config(
+    config: &crate::config::DaemonConfig,
+    kernel_ref: &str,
+) -> bool {
     let kernel_ref = kernel_ref.trim();
     !kernel_ref.is_empty()
         && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))

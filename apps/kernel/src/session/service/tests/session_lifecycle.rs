@@ -2210,3 +2210,108 @@ fn mp08_owner19_automatic_assignment_keeps_workspace_membership_bound() {
         32
     );
 }
+
+// MP-08 / MP-10 / MP-11: standalone Projects own their lifecycle without a session.
+#[test]
+fn standalone_project_remains_visible_and_survives_empty_project_recovery() {
+    let mut service = SessionService::new(&DaemonConfig::for_tests());
+    let project = RuntimeProject::new(
+        "standalone",
+        "owner",
+        "/public/source",
+        "Source",
+        RuntimeProjectKind::Default,
+    );
+    let mut encoded = serde_json::to_value(project).unwrap();
+    encoded["standalone"] = serde_json::json!(true);
+    service.restore_projects(vec![serde_json::from_value(encoded).unwrap()]);
+    assert_eq!(service.list_visible_projects("owner", false).len(), 1);
+    assert!(service.list_visible_projects("other", true).is_empty());
+    assert!(service
+        .remove_projects_without_visible_sessions()
+        .is_empty());
+    assert_eq!(service.durable_projects().len(), 1);
+}
+
+// MP-02 / MP-08 / MP-10 / MP-11: session cleanup cannot own a standalone Project.
+#[test]
+fn review0440_standalone_survives_last_session_delete_and_unpublished_rollback() {
+    for rollback in [false, true] {
+        let mut service = SessionService::new(&DaemonConfig::for_tests());
+        let mut project = RuntimeProject::new(
+            "standalone",
+            "owner",
+            "/public/source",
+            "Source",
+            RuntimeProjectKind::Default,
+        );
+        project.retain_without_sessions();
+        service.restore_projects(vec![project.clone()]);
+        let session = service
+            .create_session(
+                CreateSessionRequest::new("/public/source", "/public/source")
+                    .with_owner_user_id("owner"),
+            )
+            .unwrap();
+        assert_eq!(session.project_id(), project.id());
+        let removed = if rollback {
+            service
+                .delete_session_with_project_cleanup(session.id())
+                .unwrap()
+                .1
+        } else {
+            service.delete_session(session.id()).unwrap();
+            None
+        };
+        assert!(removed.is_none());
+        assert_eq!(service.list_visible_projects("owner", false).len(), 1);
+        assert!(service.sessions_in_project(project.id()).is_empty());
+    }
+}
+#[cfg(unix)]
+#[test]
+fn review0440_restored_project_alias_reuses_identity_and_workspace_session_refs() {
+    let root = crate::test_support::TestWorktree::new("legacy-project-alias");
+    let folder = root.path().join("source");
+    std::fs::create_dir(&folder).unwrap();
+    let symlink = root.path().join("alias");
+    std::os::unix::fs::symlink(&folder, &symlink).unwrap();
+    for alias in [
+        symlink.display().to_string(),
+        format!("{}/", folder.display()),
+    ] {
+        let mut service = SessionService::new(&DaemonConfig::for_tests());
+        let project = RuntimeProject::new(
+            "legacy-id",
+            "owner",
+            &alias,
+            "Legacy",
+            RuntimeProjectKind::Default,
+        );
+        service.restore_projects(vec![project.clone()]);
+        // This service commits only prepared identities; filesystem alias discovery
+        // belongs to the runtime's metadata worker, which supplies this saved binding.
+        let resolved = service
+            .prepare_project_resolution(Some(project.id()), &alias, "owner", false, None)
+            .unwrap()
+            .expect("legacy Project must remain discoverable");
+        assert_eq!(resolved.id(), project.id());
+        assert_eq!(
+            resolved.workspace_id(),
+            alias,
+            "keep Environment folder identity stable"
+        );
+        let session = service
+            .create_session(CreateSessionRequest::new(&alias, &alias).with_owner_user_id("owner"))
+            .unwrap();
+        assert_eq!(session.project_id(), project.id());
+        assert_eq!(
+            service
+                .resolve_session_ref(session.alias().unwrap(), Some(&alias))
+                .unwrap()
+                .id(),
+            session.id()
+        );
+        assert_eq!(service.durable_projects().len(), 1);
+    }
+}
