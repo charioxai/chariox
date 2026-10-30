@@ -18,8 +18,10 @@ pub type CodexSocket = WebSocket<CodexStream>;
 pub struct CodexStream {
     tcp: TcpStream,
     framing: Framing,
-    // The bytes the socket took since the last complete message.
+    // The bytes the socket took since the last complete message, and where
+    // the frame being read starts in them.
     unread: Vec<u8>,
+    frame_start: usize,
 }
 
 #[derive(Debug)]
@@ -45,6 +47,7 @@ impl CodexStream {
             tcp,
             framing: Framing::Handshake,
             unread: Vec::new(),
+            frame_start: 0,
         }
     }
 
@@ -54,6 +57,7 @@ impl CodexStream {
             tcp,
             framing: Framing::header(),
             unread: Vec::new(),
+            frame_start: 0,
         };
         stream.follow(unread);
         stream
@@ -97,6 +101,9 @@ impl CodexStream {
             return;
         }
         while !bytes.is_empty() {
+            if let Framing::Header { have: 0, .. } = self.framing {
+                self.frame_start = self.unread.len();
+            }
             // Each step takes the bytes of one header or payload, so a frame
             // that ends a message never clears the start of the next one.
             let (taken, done) = match &mut self.framing {
@@ -135,23 +142,15 @@ impl CodexStream {
 
     fn frame_done(&mut self, (opcode, fin): (u8, bool)) {
         self.framing = Framing::header();
-        // A data frame without FIN starts a fragmented message; its
-        // continuation with FIN ends it. Control frames never end one.
-        let ends_message = match opcode {
-            0..=7 => fin,
-            _ => !self.in_fragmented_message(),
-        };
-        if ends_message {
-            self.unread.clear();
+        match opcode {
+            // A data frame with FIN ends its message; without, the message
+            // continues in the next data frame.
+            0..=7 if fin => self.unread.clear(),
+            0..=7 => {}
+            // A control frame is complete in itself, also between the
+            // fragments of a message.
+            _ => self.unread.truncate(self.frame_start),
         }
-    }
-
-    fn in_fragmented_message(&self) -> bool {
-        // The message so far is in `unread`: it is fragmented when its first
-        // frame is a data frame without FIN.
-        self.unread
-            .first()
-            .is_some_and(|first| first & 0x80 == 0 && first & 0x0F < 8)
     }
 }
 
