@@ -419,7 +419,9 @@ fn display_subscription_caller(
 ) -> Result<crate::runtime::command::KernelCaller, DaemonError> {
     use crate::runtime::command::KernelCaller;
     Ok(match router.admit_self_host_terminal(public_key)? {
-        Some(grant) => KernelCaller::from_paired_terminal(grant),
+        Some(grant) => {
+            KernelCaller::from_paired_terminal(grant, router.self_host_terminal_owner_user_id())
+        }
         None => KernelCaller::for_relay_request(identity),
     })
 }

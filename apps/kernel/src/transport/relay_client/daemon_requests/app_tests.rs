@@ -1455,3 +1455,176 @@ async fn oversized_request_is_refused_before_crypto_decode() {
     assert!(error.message.contains("12 MiB"));
     assert!(!error.retryable);
 }
+
+// MP-08 / MP-10 / MP-11: a terminal paired over a private relay acts for the kernel owner, so
+// the sessions the owner created (under the retained profile's user id) stay visible to it.
+#[test]
+fn paired_terminal_on_a_private_relay_lists_and_attaches_the_owners_session() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let root = TestRoot::new();
+                    let mut config = root.config();
+                    config.relay_url = Some("ws://127.0.0.1:1".into());
+                    config.relay_token = Some("synthetic-operator-transport".into());
+                    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                        relay_url: "wss://cloud-relay".into(),
+                        user_id: "cloud-owner".into(),
+                        realm_id: "cloud-realm".into(),
+                        ..Default::default()
+                    });
+                    let app = crate::DaemonApp::bootstrap(config).unwrap();
+                    let router = CommandRouter::with_interactive_capacity(
+                        Arc::new(tokio::sync::Mutex::new(app)),
+                        8,
+                    );
+                    let receiver = relay_crypto::public_key_from_private_key_base64(
+                        &router.relay_private_key(),
+                    )
+                    .unwrap();
+                    let sender = relay_crypto::generate_private_key_base64();
+                    let sender_public =
+                        relay_crypto::public_key_from_private_key_base64(&sender).unwrap();
+                    let cache = Arc::new(CommandResultCache::default());
+                    let worktree = crate::test_support::TestWorktree::new("owner-session");
+                    let create = LocalDaemonRequest::CreateSession(worktree.session_request());
+                    let owner = router
+                        .local_command_caller(
+                            crate::runtime::command::KernelCommandSource::LocalCli,
+                            crate::local::KernelConnectionClass::Terminal,
+                        )
+                        .await;
+                    assert_eq!(owner.user_id.as_deref(), Some("cloud-owner"));
+                    let created = router
+                        .dispatch(
+                            KernelCommand::from_local_request_with_caller(
+                                "create-session",
+                                crate::runtime::command::KernelCommandSource::LocalCli,
+                                owner,
+                                None,
+                                None,
+                                &create,
+                            ),
+                            create,
+                        )
+                        .await
+                        .unwrap();
+                    let LocalDaemonResponse::SessionCreated { session, .. } = created else {
+                        panic!("expected the owner's session")
+                    };
+                    let session_id = session.id().to_string();
+
+                    let pairing = LocalDaemonRequest::CreateTerminalPairingLink(
+                        crate::local::CreateTerminalPairingLinkRequest {
+                            terminal_type: Some(crate::local::TerminalType::Cli),
+                            alias: None,
+                            expires_in_ms: Some(60_000),
+                        },
+                    );
+                    let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } = router
+                        .dispatch(
+                            KernelCommand::from_local_request("pair", None, None, &pairing),
+                            pairing,
+                        )
+                        .await
+                        .unwrap()
+                    else {
+                        panic!("expected pairing link")
+                    };
+                    let send = |sequence: u64, command_id: &str, request: LocalDaemonRequest| {
+                        let bytes = serde_json::to_vec(
+                            &serde_json::json!({"command_id": command_id, "request": request}),
+                        )
+                        .unwrap();
+                        let encrypted =
+                            relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &bytes)
+                                .unwrap();
+                        let router = &router;
+                        let cache = &cache;
+                        async move {
+                            handle_daemon_request(
+                                router,
+                                &AtomicU64::new(sequence),
+                                None,
+                                encrypted,
+                                cache,
+                                &Default::default(),
+                                None,
+                            )
+                            .await
+                        }
+                    };
+                    let reply = |outcome: RelayRequestOutcome| -> serde_json::Value {
+                        assert!(
+                            outcome.error.is_none(),
+                            "paired terminal request failed: {:?}",
+                            outcome.error.map(|e| e.message)
+                        );
+                        let plaintext = relay_crypto::decrypt_payload_for_private_key(
+                            &sender,
+                            &outcome.encrypted_response.unwrap(),
+                        )
+                        .unwrap()
+                        .plaintext;
+                        serde_json::from_slice(&plaintext).unwrap()
+                    };
+                    let pin =
+                        crate::runtime::terminal_pairings::public_key_thumbprint(&sender_public);
+                    reply(
+                        send(
+                            1,
+                            "join",
+                            LocalDaemonRequest::JoinTerminalPairingLink(
+                                crate::local::JoinTerminalPairingLinkRequest {
+                                    pairing_link: pairing.pairing_link.clone(),
+                                    terminal_id: Some(pairing.terminal_id.clone()),
+                                    terminal_type: Some(crate::local::TerminalType::Cli),
+                                    alias: None,
+                                    public_key_thumbprint: Some(pin),
+                                },
+                            ),
+                        )
+                        .await,
+                    );
+
+                    let listed = reply(
+                        send(
+                            2,
+                            "list",
+                            LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest),
+                        )
+                        .await,
+                    );
+                    assert!(
+                        listed.to_string().contains(&session_id),
+                        "the paired terminal must list the owner's session: {listed}"
+                    );
+                    let attached = reply(
+                        send(
+                            3,
+                            "attach",
+                            LocalDaemonRequest::AttachSessionView(
+                                crate::local::AttachSessionViewRequest {
+                                    session_id: session_id.clone(),
+                                    client_id: pairing.terminal_id.clone(),
+                                    capability_level:
+                                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                                    preferred_agent_id: None,
+                                    latest_prompt_count: None,
+                                },
+                            ),
+                        )
+                        .await,
+                    );
+                    assert!(attached.get("SessionViewAttached").is_some(), "{attached}");
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
