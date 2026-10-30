@@ -4,7 +4,9 @@
 # kernel as the systemd --user unit chariox-kernel.service and starts it. The
 # kernel then installs, updates and runs Apps itself.
 #
-#   install-user.sh install --kernel PATH   the chariox-kernel binary to run
+#   install-user.sh install --kernel PATH   the chariox-kernel binary to run; the
+#                                           chariox-app-wasm-worker beside it is
+#                                           installed beside the installed kernel
 #   install-user.sh uninstall               stop and remove the unit; ~/.chariox is kept
 #
 # Every change is printed; a repeated install with the same binary changes nothing
@@ -14,6 +16,8 @@ umask 077
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 KERNEL=$HOME/.local/bin/chariox-kernel
+# The kernel opens its worker only beside itself and trusts it only when it is not writable by its owner.
+WORKER=$HOME/.local/bin/chariox-app-wasm-worker
 START=$HOME/.local/lib/chariox/start-kernel.sh
 UNIT=$HOME/.config/systemd/user/chariox-kernel.service
 SERVICE=chariox-kernel.service
@@ -47,6 +51,8 @@ case "$command" in
     [[ -n "$kernel" ]] || { usage >&2; exit 2; }
     kernel=$(realpath -e -- "$kernel") || die "no file $kernel"
     [[ -f "$kernel" && -x "$kernel" ]] || die "$kernel is not an executable file"
+    worker=$(dirname -- "$kernel")/chariox-app-wasm-worker
+    [[ -f "$worker" && -x "$worker" ]] || die "$worker is missing; an installed kernel cannot run any App without the worker built with it"
     # The root step must have enrolled exactly this unit's App subtree.
     python3 - "$(id -u)" <<'PY' || die "ask an administrator to run: install-root.sh install --user $(id -un) ..."
 import json, sys
@@ -62,6 +68,7 @@ if not any(owner["uid"] == uid and owner["cgroup_root"] == expected for owner in
 PY
     restart=0
     install -d -m 0700 "$HOME/.chariox" "$HOME/.chariox/logs" "$HOME/.config/chariox"
+    put "$worker" "$WORKER" 0555 && restart=1
     put "$kernel" "$KERNEL" 0755 && restart=1
     put "$here/start-kernel.sh" "$START" 0755 && restart=1
     if put "$here/chariox-kernel.service" "$UNIT" 0644; then
@@ -88,7 +95,7 @@ PY
       say "stop and disable $SERVICE"
       systemctl --user disable --now --quiet "$SERVICE"
     fi
-    for path in "$UNIT" "$START" "$KERNEL"; do
+    for path in "$UNIT" "$START" "$KERNEL" "$WORKER"; do
       if [[ -e "$path" ]]; then say "remove $path"; rm -f -- "$path"; fi
     done
     systemctl --user daemon-reload

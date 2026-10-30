@@ -26,7 +26,7 @@ async function put(path, contents, mode = 0o644) {
 // Built executables, the repository files a bundle carries and a release key.
 async function bundleInputs(root, target) {
   const executables = join(root, 'executables');
-  for (const name of ['chariox', 'chariox-kernel', 'chariox-relay', 'chariox-app-package'])
+  for (const name of ['chariox', 'chariox-kernel', 'chariox-relay', 'chariox-app-package', 'chariox-app-wasm-worker'])
     await put(join(executables, 'bin', name), `#!/bin/sh\necho ${name}\n`, 0o755);
   const libexec = target === 'linux-x64' ? ['chariox-app-storage', 'chariox-app-runtime-install'] : ['chariox-app-runtime-install'];
   for (const name of libexec) await put(join(executables, 'libexec', name), `#!/bin/sh\necho ${name}\n`, 0o755);
@@ -81,7 +81,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   assert.deepEqual(manifest.runtime, { inventorySha256: sha256(await readFile(join(options.runtime, 'runtime-inventory.json'))), publicKeyHex: keyHex(runtimeKey) });
   assert.equal(manifest.macosSigning, null);
   assert.deepEqual(manifest.files.map(file => file.path), [
-    'LICENSE', 'bin/chariox', 'bin/chariox-app-package', 'bin/chariox-kernel', 'bin/chariox-relay',
+    'LICENSE', 'bin/chariox', 'bin/chariox-app-package', 'bin/chariox-app-wasm-worker', 'bin/chariox-kernel', 'bin/chariox-relay',
     'deploy/local-linux/chariox-app-bwrap.apparmor', 'deploy/local-linux/chariox-kernel.service', 'deploy/local-linux/install-browser-dependencies.sh', 'deploy/local-linux/install-root.sh',
     'deploy/local-linux/install-user.sh', 'deploy/local-linux/start-kernel.sh', 'deploy/managed-kernel/chariox-app-storage.service',
     'install.sh', 'libexec/chariox-app-runtime-install', 'libexec/chariox-app-storage',
@@ -143,6 +143,10 @@ test('assembly refuses inputs that are not the release it names', async (context
   await writeFile(executable('bin/chariox-shell'), 'x');
   await refused({}, /does not ship: bin\/chariox-shell/);
   await rm(executable('bin/chariox-shell'));
+  // A release kernel opens the worker only beside itself: a bundle without it cannot run any installed App.
+  await rm(executable('bin/chariox-app-wasm-worker'));
+  await refused({}, /bin\/chariox-app-wasm-worker is missing/);
+  await put(executable('bin/chariox-app-wasm-worker'), '#!/bin/sh\necho chariox-app-wasm-worker\n', 0o755);
   await rm(executable('libexec/chariox-app-storage'));
   await symlink(executable('bin/chariox-relay'), executable('libexec/chariox-app-storage'));
   await refused({}, /libexec\/chariox-app-storage must be a regular file/);
@@ -157,7 +161,7 @@ test('a macOS bundle carries only executables the signing receipt codesigned and
   const { root, options, releaseKeyPath, releasePublic } = await fixture(context, { target: 'darwin-arm64' });
   await assert.rejects(assemble(options), /needs --macos-signing-receipt/);
   const files = [];
-  for (const path of ['bin/chariox', 'bin/chariox-app-package', 'bin/chariox-kernel', 'bin/chariox-relay', 'libexec/chariox-app-runtime-install'])
+  for (const path of ['bin/chariox', 'bin/chariox-app-package', 'bin/chariox-app-wasm-worker', 'bin/chariox-kernel', 'bin/chariox-relay', 'libexec/chariox-app-runtime-install'])
     files.push({ path, role: 'executable', sha256: sha256(await readFile(join(options.executables, path))) });
   const receipt = { schema: 'chariox.macos-release-signing.v1', identity: 'Developer ID Application: Example (TEAM123456)', teamId: 'TEAM123456',
     files, notarization: { submissionId: 'submission-1', status: 'Accepted' } };

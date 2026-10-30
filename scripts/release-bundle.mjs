@@ -44,7 +44,8 @@ export const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux
 const SLICE_SUPPORT_ROOTS = ['apps/browser-session-import'];
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const rustBinaries = ['chariox-kernel', 'chariox-relay', 'chariox-app-package'];
+// A release kernel opens its WASM App worker only beside itself (WasmRuntime::beside_kernel).
+const rustBinaries = ['chariox-kernel', 'chariox-relay', 'chariox-app-package', 'chariox-app-wasm-worker'];
 export const PLATFORMS = {
   'linux-x64': {
     bin: ['chariox', ...rustBinaries],

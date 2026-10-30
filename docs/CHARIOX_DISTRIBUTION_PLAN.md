@@ -26,6 +26,7 @@ codesigned runtime inventory (#681).
 | Relay | `apps/relay` (`chariox-relay`) | `bin/chariox-relay` |
 | CLI/TUI | `apps/cli`, compiled with Bun `--compile` | `bin/chariox` |
 | App developer tool | `packages/app-package` (`chariox-app-package`) | `bin/chariox-app-package` |
+| WASM App worker (kernel-side, one per kernel) | `packages/app-wasm-worker` (`chariox-app-wasm-worker`) | `bin/chariox-app-wasm-worker`, beside the kernel |
 | Runtime installer | `packages/app-runtime` (`chariox-app-runtime-install`) | `libexec/chariox-app-runtime-install` |
 | App storage helper (Linux only) | `packages/app-runtime` (`chariox-app-storage`) | `libexec/chariox-app-storage` |
 | Signed App runtime | native artifact, launcher, sandbox, SDK bundle | `runtime/` |
@@ -55,7 +56,7 @@ application because OpenTUI already requires Bun (`bun:ffi`).
 chariox-<version>-<platform>/
   manifest.json        schema chariox.release-bundle.v1
   manifest.sig         Ed25519 signature over manifest.json (128 hex)
-  bin/                 chariox, chariox-kernel, chariox-relay, chariox-app-package
+  bin/                 chariox, chariox-kernel, chariox-relay, chariox-app-package, chariox-app-wasm-worker
   libexec/             chariox-app-runtime-install, chariox-app-storage (Linux)
   runtime/             the signed App runtime release, unchanged
   share/chariox/slice-build-context/  committed inputs used to build slice images
@@ -121,7 +122,8 @@ slice acceptance. The real released TUI/kernel `/slice create … --headed` and
 2. As root: `sudo ./install.sh --user NAME --release-key <published key>`. It checks
    the bundle, runs `install-root.sh` with the runtime key and digest from the signed
    manifest, and installs `chariox` and `chariox-app-package` to `/usr/local/bin`.
-3. As that user: `deploy/local-linux/install-user.sh install --kernel bin/chariox-kernel`.
+3. As that user: `deploy/local-linux/install-user.sh install --kernel bin/chariox-kernel`. It also
+   installs the `chariox-app-wasm-worker` beside that kernel (a kernel opens it only there).
 
 ## Signing and key custody
 
