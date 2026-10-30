@@ -2072,7 +2072,7 @@ mod mp11_delivery_http_tests {
                             }
                             std::thread::sleep(Duration::from_millis(delay.load(Ordering::SeqCst)));
                             if refuse
-                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
                                 })
                                 .is_ok()
