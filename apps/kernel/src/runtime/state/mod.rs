@@ -217,6 +217,9 @@ pub(crate) struct KernelRuntimeState {
     owned: KernelRuntimeOwnedState,
 }
 
+/// (task, worker kernel, lease) of a leased task whose worker did not answer, with when that began.
+type UncertainLeasedTasks = Arc<std::sync::Mutex<BTreeMap<(String, String, String), u64>>>;
+
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
@@ -264,7 +267,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
-    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeMap<(String, String, String), u64>>>,
+    uncertain_leased_tasks: UncertainLeasedTasks,
     /// Running provider runs whose working directory the sweep has seen as a git worktree.
     git_workspaces_seen: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,

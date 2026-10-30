@@ -334,7 +334,7 @@ async fn killed_worker_provider_wakes_the_delegator_with_the_exit_status() {
     let leased = binding(&fixture, &child).await.leased_agent_id;
     let (backing_session, worker_run) = {
         let mut worker = fixture.worker.app.lock().await;
-        let mut leases = crate::app::RemoteLeaseRuntime::new(&mut *worker);
+        let leases = crate::app::RemoteLeaseRuntime::new(&mut worker);
         let (backing_session, _) = leases
             .leased_agent_backing(&leased)
             .expect("worker backing agent");
