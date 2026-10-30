@@ -69,14 +69,6 @@ impl KernelRuntimeState {
     /// The live window bound to `run`'s current turn. The provider bearer never
     /// changes: each use resolves the exact agent, running turn and window.
     pub(super) fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
-        self.sudo_for_run_checked(run_id, true)
-    }
-
-    fn sudo_for_run_checked(
-        &self,
-        run_id: &str,
-        sweep: bool,
-    ) -> Result<KernelSudoTurn, DaemonError> {
         let denied = || error("this provider turn has no sudo authority");
         let (session_id, agent) = match self.leased_agent_for_projected_run(run_id) {
             // A10: a leased turn is the home agent's current worker run.
@@ -101,9 +93,7 @@ impl KernelRuntimeState {
             }
         };
         let agent = agent.as_str();
-        if sweep {
-            self.sweep_sudo();
-        }
+        self.sweep_sudo();
         let session = self.owned.session_store.get_session(&session_id)?;
         if self
             .owned
@@ -133,16 +123,6 @@ impl KernelRuntimeState {
         turn.prompt_id = Some(prompt);
         turn.provider_run_id = Some(run_id.into());
         Ok(turn)
-    }
-
-    /// MP-11: recheck the original turn without sweeping inside browser input authority.
-    pub(crate) fn sudo_turn_live(&self, original: &KernelSudoTurn) -> bool {
-        let (Some(run), Some(prompt)) = (&original.provider_run_id, &original.prompt_id) else {
-            return false;
-        };
-        self.sudo_for_run_checked(run, false).is_ok_and(|current| {
-            current.entry_id == original.entry_id && current.prompt_id.as_ref() == Some(prompt)
-        })
     }
 
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {

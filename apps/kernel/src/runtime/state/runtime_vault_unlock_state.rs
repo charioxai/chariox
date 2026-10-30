@@ -525,24 +525,12 @@ impl KernelRuntimeState {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         };
         let passphrase = vault_passphrase_from_resolution(resolution, operation)?;
+        // The passphrase sheet is the only question: a TTL unlock takes the default lease.
         let choice_id = if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::Ttl
         ) {
-            let Some(resolution) = self
-                .await_vault_unlock_interaction(
-                    session_id,
-                    vault_unlock_lease_interaction(session_id, agent_id, &vault_config),
-                    operation,
-                    &vault_path,
-                    &mut unlocks,
-                    !force_prompt,
-                )
-                .await?
-            else {
-                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
-            };
-            vault_lease_choice_from_resolution(resolution, operation)?
+            "unlock_default_ttl".to_string()
         } else if matches!(
             vault_config.unlock_policy,
             crate::config::CredentialVaultUnlockPolicy::KernelInit
@@ -793,59 +781,6 @@ fn vault_passphrase_interaction(
     )
 }
 
-fn vault_unlock_lease_interaction(
-    session_id: &str,
-    agent_id: &str,
-    config: &crate::config::UserCredentialVaultConfig,
-) -> crate::session::RuntimeInteraction {
-    crate::session::RuntimeInteraction::new(
-        format!("vault-unlock-lease-{}-{}", agent_id, rand::random::<u64>()),
-        agent_id,
-        crate::session::RuntimeInteractionKind::Choice,
-        crate::session::RuntimeInteractionLevel::Critical,
-        Some("Choose Vault Unlock Duration".to_string()),
-        format!("Choose how long to keep the Chariox Vault unlocked for session `{session_id}`."),
-        vec![
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_operation",
-                "This operation",
-                "operation",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_default_ttl",
-                format!(
-                    "{} minutes",
-                    config.default_ttl_minutes.min(config.max_ttl_minutes)
-                ),
-                "ttl_default",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Primary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_60m",
-                "1 hour",
-                "ttl_60",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "unlock_kernel",
-                "Until kernel shutdown",
-                "kernel_shutdown",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
-            ),
-            crate::session::RuntimeInteractionChoice::new(
-                "cancel",
-                "Cancel",
-                "cancel",
-                Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
-            ),
-        ],
-        None,
-        Some(60),
-        None,
-    )
-}
-
 fn vault_passphrase_from_resolution(
     resolution: super::PendingInteractionResolution,
     operation: &'static str,
@@ -893,34 +828,6 @@ fn vault_secret_from_resolution(
         Some(_) => Err(DaemonError::LocalTransport {
             operation,
             message: format!("Chariox vault {action} resolved without a passphrase"),
-        }),
-    }
-}
-
-fn vault_lease_choice_from_resolution(
-    resolution: super::PendingInteractionResolution,
-    operation: &'static str,
-) -> Result<String, DaemonError> {
-    if resolution.status == "timed_out" {
-        return Err(DaemonError::LocalTransport {
-            operation,
-            message:
-                "Chariox vault unlock duration selection timed out. Retry to unlock the vault."
-                    .to_string(),
-        });
-    }
-    match resolution.choice_id.as_deref() {
-        None | Some("cancel") => Err(DaemonError::LocalTransport {
-            operation,
-            message: "Chariox vault unlock was cancelled. Retry to unlock the vault.".to_string(),
-        }),
-        Some(
-            choice_id
-            @ ("unlock_operation" | "unlock_default_ttl" | "unlock_60m" | "unlock_kernel"),
-        ) => Ok(choice_id.to_string()),
-        Some(_) => Err(DaemonError::LocalTransport {
-            operation,
-            message: "Chariox vault unlock resolved with an invalid duration".to_string(),
         }),
     }
 }
@@ -1298,38 +1205,16 @@ mod tests {
     }
 
     #[test]
-    fn vault_duration_prompt_is_a_separate_non_secret_interaction() {
+    fn ttl_unlock_takes_the_default_lease_without_a_second_question() {
         let config = crate::config::UserCredentialVaultConfig::default();
-        let interaction = vault_unlock_lease_interaction("session-1", "agent-1", &config);
-
-        assert!(interaction.custom_choice().is_none());
-        assert_eq!(
-            interaction
-                .choices()
-                .iter()
-                .map(|choice| choice.id())
-                .collect::<Vec<_>>(),
-            vec![
-                "unlock_operation",
-                "unlock_default_ttl",
-                "unlock_60m",
-                "unlock_kernel",
-                "cancel",
-            ]
-        );
-        assert_eq!(
-            vault_lease_choice_from_resolution(
-                resolution(Some("unlock_60m"), Some("ttl_60")),
-                "test",
-            )
-            .expect("known duration should resolve"),
-            "unlock_60m"
-        );
-        assert!(vault_lease_choice_from_resolution(
-            resolution(Some("passphrase"), Some("secret")),
-            "test",
-        )
-        .is_err());
+        let (lease, lock_after_operation) =
+            unlock_lease_for_choice("unlock_default_ttl", &config, false);
+        assert!(matches!(
+            lease,
+            crate::secret::VaultUnlockLease::TtlMinutes(minutes)
+                if minutes == config.default_ttl_minutes.min(config.max_ttl_minutes).max(1)
+        ));
+        assert!(!lock_after_operation);
     }
 
     #[tokio::test]
