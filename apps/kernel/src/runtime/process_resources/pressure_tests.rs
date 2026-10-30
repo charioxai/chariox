@@ -60,14 +60,25 @@ impl Workload {
         // The test's own children: reap one that ended so it reads as gone.
         let mut status = 0;
         unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .is_ok_and(|stat| !stat.contains(") Z "))
+        crate::test_support::process_alive(pid)
     }
     fn root_alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
-    fn notice(&self, name: &str) -> String {
-        std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default()
+    /// The stopped command was told why on its own error stream. Only Linux
+    /// can reopen another process's stream; elsewhere the stop is silent.
+    fn assert_told(&self, name: &str, reason: &str) {
+        #[cfg(target_os = "linux")]
+        {
+            let notice =
+                std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default();
+            assert!(
+                notice.contains(reason),
+                "{name} was not told why: {notice:?}"
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (name, reason);
     }
 }
 impl Drop for Workload {
@@ -188,12 +199,7 @@ fn slow_growth_stops_the_owner_furthest_above_share(cgroup: bool) {
         !a.alive("big"),
         "the command furthest above its share kept running"
     );
-    assert!(
-        a.notice("big")
-            .contains("stopped this command under memory pressure"),
-        "the stopped command was not told why: {:?}",
-        a.notice("big")
-    );
+    a.assert_told("big", "stopped this command under memory pressure");
     assert!(
         a.root_alive() && a.alive("idle"),
         "more than one command of A was stopped"
@@ -220,12 +226,7 @@ fn runaway_is_stopped_first(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
     assert!(!b.alive("grow"), "the fast runaway kept running");
-    assert!(
-        b.notice("grow")
-            .contains("stopped this command under memory pressure"),
-        "the runaway was not told why: {:?}",
-        b.notice("grow")
-    );
+    b.assert_told("grow", "stopped this command under memory pressure");
     assert!(
         b.root_alive() && b.alive("idle"),
         "the runaway's owner lost more than the command"
@@ -270,12 +271,9 @@ fn owner_cap(cgroup: bool) {
         !capped.alive("grow"),
         "the command over the owner's cap kept running"
     );
-    assert!(
-        capped
-            .notice("grow")
-            .contains("stopped this command at its owner-set memory cap of 128 MiB"),
-        "{:?}",
-        capped.notice("grow")
+    capped.assert_told(
+        "grow",
+        "stopped this command at its owner-set memory cap of 128 MiB",
     );
     assert!(
         capped.root_alive() && capped.alive("idle"),
