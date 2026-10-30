@@ -5,10 +5,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+#[cfg(test)]
+pub(crate) use control::stop_released;
 use control::WatchCommand;
-pub(crate) use control::{
-    end_owner, outside_ended_for_key, stop_for_key, stop_released, stop_released_of_agent,
-};
+pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released_of_agent};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 mod projection;
 mod sampling;
