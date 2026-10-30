@@ -1,3 +1,4 @@
+import './local-storage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachWorkbook } from '../view/actions.mjs';
@@ -29,7 +30,7 @@ function editor() {
     getFormula: () => ({ onCalculationResultApplied: async () => {} }),
   };
   const bridge = {
-    view: { state() {}, changed() {} }, action: (_, handler) => input => handler(input, bridge),
+    view: { state() {}, changed() {}, beforeUpdate() {} }, action: (_, handler) => input => handler(input, bridge),
     async call(name) {
       if (name === 'load_workbook') return { text: null, version: null };
       if (name === 'read_file') return { text: source, done: true };

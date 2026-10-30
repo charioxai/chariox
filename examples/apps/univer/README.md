@@ -50,6 +50,9 @@ confirmation is disabled by the App sandbox. A failed or conflicting save retain
 export it before reopening another client's saved copy. Opening a file replaces
 the open workbook and marks it unsaved until Save workbook succeeds. Edits made
 while an import is reading cause that import to refuse before replacement.
+When an update reloads the view, unsaved edits are kept in the view's web storage
+and restored by the new page (still unsaved), unless the saved workbook changed
+meanwhile: the old page can no longer call the App once the update is active.
 
 ## Build and checks
 

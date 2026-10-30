@@ -1,3 +1,4 @@
+import './local-storage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachWorkbook } from '../view/actions.mjs';

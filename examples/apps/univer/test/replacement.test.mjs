@@ -1,3 +1,4 @@
+import './local-storage.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { attachWorkbook } from '../view/actions.mjs';
@@ -25,7 +26,7 @@ test('an editor failure while opening a validated file restores the previous wor
     getFormula: () => ({ onCalculationResultApplied: async () => {} }),
   };
   const bridge = {
-    view: { state() {}, changed() {} }, action: (_, handler) => input => handler(input, bridge),
+    view: { state() {}, changed() {}, beforeUpdate() {} }, action: (_, handler) => input => handler(input, bridge),
     async call(name) {
       if (name === 'load_workbook') return { text: JSON.stringify(original), version: '7', done: true };
       if (name === 'read_file') return { text: workbookFile(broken), done: true };

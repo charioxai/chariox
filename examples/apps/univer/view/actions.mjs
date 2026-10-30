@@ -3,6 +3,8 @@ import declarations from '../schemas/ui-actions.json' with { type: 'json' };
 import { MAX_ROWS, MAX_COLUMNS, encodeCsv } from './csv.mjs';
 import { emptyWorkbook, validateWorkbook, workbookFromCsv, workbookFile, parseWorkbookFile, usedBounds } from './workbook.mjs';
 
+const DRAFT = 'chariox.univer.draft';
+
 export async function attachWorkbook(api, bridge) {
   const transfer = fileTransfer(bridge);
   const saveName = `save-${crypto.randomUUID()}.univer.json`;
@@ -155,8 +157,17 @@ export async function attachWorkbook(api, bridge) {
 
   const loaded = await transfer.load();
   version = loaded.version;
-  replace(loaded.text ? JSON.parse(loaded.text) : emptyWorkbook());
-  await calculated(); dirty = false;
+  // An update reloads this view after the kernel switched generations, so the old
+  // page can no longer save through the App: its unsaved edits wait in web
+  // storage for the new page, unless the App saved a newer workbook meanwhile.
+  const draft = (() => {
+    const raw = localStorage.getItem(DRAFT);
+    localStorage.removeItem(DRAFT);
+    try { const saved = JSON.parse(raw); return saved?.base === version ? saved.workbook : null; } catch { return null; }
+  })();
+  replace(draft ?? (loaded.text ? JSON.parse(loaded.text) : emptyWorkbook()));
+  await calculated(); dirty = draft !== null;
+  bridge.view.beforeUpdate(() => { if (dirty) localStorage.setItem(DRAFT, JSON.stringify({ base: version, workbook: book().save() })); });
   bridge.view.state(summary);
   // Human menu callbacks and agent calls share the same workbook operations.
   let pending = Promise.resolve();
