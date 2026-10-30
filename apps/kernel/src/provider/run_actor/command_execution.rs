@@ -369,6 +369,12 @@ pub(super) fn execute_output_poll_command(
         return Ok(None);
     }
     if run.adapter_key() == "codex" {
+        // A hot reload hands the turn over with only the text history has:
+        // output taken now could no longer reach it.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_codex_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),

@@ -1,10 +1,10 @@
 # A Codex app-server shaped like the real one (codex-cli 0.159.3) where a hot
 # reload meets it: a running turn keeps running while no client is connected,
 # `thread/resume` on a new connection rejoins it, and what was streamed
-# meanwhile is not replayed. The turn streams 400 parts; it pauses after 200
-# until its client connection drops, streams 30 parts with no client (or, with
-# CHARIOX_FAKE_CODEX_FINISH_IN_GAP, the rest of the turn), and continues once a
-# connection resumes the thread.
+# meanwhile is not replayed. The turn streams 400 parts and keeps streaming
+# while the kernel prepares the swap; once its client connection drops it
+# streams 30 parts with no client (or, with CHARIOX_FAKE_CODEX_FINISH_IN_GAP,
+# the rest of the turn), and continues once a connection resumes the thread.
 import base64, hashlib, json, os, socket, struct, sys, threading, time
 
 record = os.environ.get("CHARIOX_FAKE_CODEX_RECORD", "/dev/null/none")
@@ -84,24 +84,30 @@ def stream(n):
     turn["text"] += delta
     notify("item/agentMessage/delta", {"threadId": THREAD, "turnId": TURN, "itemId": ITEM, "delta": delta})
     note("parts", f"part {n}")
-    time.sleep(0.01)
+    time.sleep(0.005)
 
 
 def run_turn():
     global dropped
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
-    for n in range(1, 201):
+    n = 0
+    while not dropped:
+        n += 1
+        if n == 400:
+            # Not dropped in time: hold the last part until it is.
+            with lock:
+                lock.wait_for(lambda: dropped)
         stream(n)
-    with lock:
-        lock.wait_for(lambda: dropped)
-    gap = 400 if finish_in_gap else 230
-    for n in range(201, gap + 1):
+    gap = 400 if finish_in_gap else min(n + 30, 400)
+    while n < gap:
+        n += 1
         stream(n)
     if not finish_in_gap:
         with lock:
             lock.wait_for(lambda: subscriber is not None)
-        for n in range(gap + 1, 401):
+        while n < 400:
+            n += 1
             stream(n)
     notify("item/completed", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": turn["text"]}})
     turn["status"] = "completed"

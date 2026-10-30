@@ -992,10 +992,10 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
         )
         .await;
 
-        // Upgrade while the turn streams: the fake waits after part 200 until
-        // its client connection drops.
+        // Upgrade while the turn streams: the fake keeps streaming until its
+        // client connection drops.
         let deadline = Instant::now() + Duration::from_secs(60);
-        while lines(&record.join("parts")).len() < 200 {
+        while lines(&record.join("parts")).len() < 100 {
             assert!(
                 Instant::now() < deadline,
                 "the turn did not start streaming"
