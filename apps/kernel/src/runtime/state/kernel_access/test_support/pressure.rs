@@ -128,7 +128,11 @@ async fn an_until_exit_grant_survives_a_failure_to_read_its_live_holder() {
         let _covered = fault::inject(covered.pid, errno);
         state.sweep_kernel_access_at(Instant::now());
         let kept = live(&state, "until-exit").unwrap_or_else(|| panic!("ended by errno {errno}"));
-        assert_eq!(kept.covered, [covered.clone()], "errno {errno}");
+        assert_eq!(
+            kept.covered,
+            std::slice::from_ref(&covered),
+            "errno {errno}"
+        );
         assert!(
             state.owned.kernel_access.lock().unwrap().ended.is_empty(),
             "errno {errno}"
