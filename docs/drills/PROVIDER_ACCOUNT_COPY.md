@@ -29,7 +29,10 @@ enrolled peers with pinned keys and `provider_account_copy_pull_v1`. They are
 separate from the receiving kernel's selectable local profile inventory. The relay metadata
 uses an explicit `copyable` flag; native authentication type retains its meaning.
 Already installed copies are excluded. Removal makes the source available for
-a new explicit copy operation. 
+a new explicit copy operation. A kernel publishes its provider accounts to the
+relay directory again as soon as they change, not only at token renewal, so a
+login stored on the source is offered at once.
+
 A receiver whose Vault is locked or was never created asks for the passphrase
 after consent through the ordinary Vault unlock interaction of the session the
 copy was started from (`session_id` and `agent_id` on the request), then

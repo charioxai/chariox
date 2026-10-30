@@ -248,6 +248,38 @@ where
     }
 }
 
+/// What the relay directory last learned about this kernel's provider accounts.
+/// A heartbeat only repeats the registration at token renewal, so a login stored,
+/// copied or removed in between is published here, or other machines would keep
+/// offering and hiding it until the next renewal.
+struct PublishedProviderAccounts {
+    change_sequence: u64,
+    accounts: Vec<chariox_relay::protocol::RelayProviderAccountSummary>,
+}
+
+async fn changed_provider_accounts_registration<F, Fut>(
+    change_sequence: u64,
+    published: &mut PublishedProviderAccounts,
+    active_relay_token: &str,
+    registration: F,
+) -> Option<chariox_relay::protocol::DaemonRegistration>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = chariox_relay::protocol::DaemonRegistration>,
+{
+    if published.change_sequence == change_sequence {
+        return None;
+    }
+    published.change_sequence = change_sequence;
+    let mut registration = registration().await;
+    if registration.provider_accounts == published.accounts {
+        return None;
+    }
+    published.accounts = registration.provider_accounts.clone();
+    registration.auth_token = active_relay_token.to_string();
+    Some(registration)
+}
+
 /// A burst of inbound chunks may briefly outrun the writer; wait for it rather
 /// than dropping a socket that is carrying a long transfer.
 async fn queue_transport_receipt(tx: &mpsc::Sender<String>, receipt: String) -> bool {
@@ -781,7 +813,12 @@ async fn run_daemon_relay_connector_inner(
                 let subscription_tasks: RelaySubscriptionTasks =
                     Arc::new(Mutex::new(BTreeMap::new()));
                 let daemon_id = router.relay_daemon_id();
+                let account_change_sequence = router.waiting_room_change_sequence();
                 let mut registration = router.relay_registration().await;
+                let mut published_accounts = PublishedProviderAccounts {
+                    change_sequence: account_change_sequence,
+                    accounts: registration.provider_accounts.clone(),
+                };
                 if static_relay.is_some() {
                     registration.auth_token = active_relay_token.clone();
                 }
@@ -1092,6 +1129,16 @@ async fn run_daemon_relay_connector_inner(
                                         // Keep heartbeats flowing while in-flight work drains.
                                         let _ = reconnect_gate.request_reconnect(&outgoing_tx, reason);
                                     }
+                                }
+                                if heartbeat_registration.is_none() {
+                                    heartbeat_registration =
+                                        changed_provider_accounts_registration(
+                                            router.waiting_room_change_sequence(),
+                                            &mut published_accounts,
+                                            &active_relay_token,
+                                            || router.relay_registration(),
+                                        )
+                                        .await;
                                 }
                                 if heartbeat_registration.is_some() {
                                     crate::logging::info_with_fields(
