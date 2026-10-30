@@ -497,6 +497,22 @@ plan_home_migration() {
     "$chariox_uid" "$chariox_gid"
 }
 
+# A planned upgrade replaces the kernel program in place (`systemctl reload`:
+# the kernel hands its running work to the new program) when nothing around
+# the kernel changes: no home migration, and the same systemd units, among
+# them the Path-1 runtime services a restart would stop and start again.
+plan_activation() {
+  if node -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).required === false ? 1 : 0)' \
+    "$pending_transaction/home-migration.json"; then
+    printf '%s\n' restart
+  elif diff -r -q --no-dereference "$current_link/etc/systemd/system" \
+    "$published_release/etc/systemd/system" > /dev/null; then
+    printf '%s\n' reload
+  else
+    printf '%s\n' restart
+  fi
+}
+
 resume_home_migration() {
   if [ ! -f "$transaction_root/home-migration.json" ]; then
     if path_exists "$legacy_home"; then
@@ -1097,6 +1113,8 @@ process.stdout.write(["1", id, from, target, ...identity].join("\n") + "\n")
 NODE
 fi
 plan_home_migration
+plan_activation > "$pending_transaction/activation"
+activation=$(read_single_line "$pending_transaction/activation")
 chmod 0600 "$pending_transaction"/*
 node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
 node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
@@ -1104,7 +1122,9 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
 pending_transaction=
 transaction_active=1
 
-if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
+if [ "$activation" = reload ]; then
+  : # The kernel keeps running until it replaces itself with the new release.
+elif ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
     echo "managed kernel or Path-1 storage services could not be stopped; restored previous managed kernel release" >&2
   else
@@ -1164,7 +1184,18 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
   exit 1
 fi
 write_phase activated
-if ! systemctl daemon-reload \
+if [ "$activation" = reload ]; then
+  if ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
+    || ! systemctl reload "$service_name" \
+    || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
+    if rollback_transaction; then
+      echo "managed kernel did not replace itself with the new release; restored previous managed kernel release" >&2
+    else
+      echo "managed kernel did not replace itself with the new release; rollback remains pending" >&2
+    fi
+    exit 1
+  fi
+elif ! systemctl daemon-reload \
   || ! assert_path1_units_have_no_dropins \
   || ! start_path1_runtime_services \
   || ! start_managed_app_storage \
