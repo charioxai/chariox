@@ -282,7 +282,12 @@ pub(super) async fn run(
                     if operation.review.is_none() {
                         return Ok(());
                     }
-                    lifecycle.stop_blocking(&key.0, &operation.token.installation_id)
+                    lifecycle.cancel_install_blocking(
+                        &key.0,
+                        &operation.token.installation_id,
+                        &key.1,
+                        operation.token.base_generation > 0,
+                    )
                 } else {
                     if cancelled.load(Ordering::Acquire) {
                         return Ok(());

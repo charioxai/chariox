@@ -190,6 +190,38 @@ fn an_update_drains_the_old_worker_and_commits_only_a_healthy_new_generation() {
     control.lifecycle().shutdown_blocking().unwrap();
 }
 
+#[test]
+fn a_declined_update_leaves_the_installed_worker_running() {
+    use crate::durable_state::app_worker_lifecycle::StartGate;
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let (control, _observations, id) = installed(&store, &runtime);
+    stage_update(&store, &id, "declined_update", "1.0.2", 0);
+    let operation = store
+        .cancel_first_app_install(
+            "alice",
+            "declined_update",
+            AppOperationBudget::from_supervisor(|| false),
+        )
+        .unwrap();
+    control
+        .lifecycle()
+        .cancel_install_blocking("alice", &id, &operation.request_id, true)
+        .unwrap();
+    let worker = store.app_worker_status("alice", &id).unwrap().unwrap();
+    assert!(
+        worker.desired_running,
+        "a declined update is not a user stop"
+    );
+    assert!(matches!(
+        store.app_worker_start_gate("alice", &id).unwrap(),
+        StartGate::Allowed
+    ));
+    assert!(control.active_app_lease("alice", &id).is_some());
+    control.lifecycle().shutdown_blocking().unwrap();
+}
+
 /// The installation's structured state as the kernel stored it.
 pub(super) fn state_value(store: &DurableKernelStateStore, key: &str) -> Option<String> {
     use rusqlite::OptionalExtension;
