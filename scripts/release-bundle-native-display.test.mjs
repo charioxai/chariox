@@ -44,3 +44,11 @@ test('the macOS release job starts the signed worker under the hardened runtime'
   assert.ok(signed > workflow.indexOf('node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/executables"'));
   assert.ok(signed < workflow.indexOf('- name: Assemble, sign and verify the bundle', workflow.indexOf('  macos:')));
 });
+
+// bun writes the executable's linked source maps beside it, and assemble refuses any file in bin/ that a bundle does not ship.
+test('the release build moves the CLI source maps out of the executables', () => {
+  const compile = workflow.indexOf('bun apps/cli/scripts/compile.mjs --target');
+  const maps = workflow.indexOf('mv unsigned/bin/*.map "$RUNNER_TEMP/sourcemaps/"');
+  assert.ok(maps > compile, 'the maps are moved after the compile');
+  assert.ok(maps < workflow.indexOf('tar -czf unsigned-'), 'the maps are moved before the executables are archived');
+});
