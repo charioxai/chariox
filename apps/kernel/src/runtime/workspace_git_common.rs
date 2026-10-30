@@ -167,10 +167,22 @@ pub(crate) fn canonical_workspace_path(
     workspace_path: &str,
     worktree_path: &str,
 ) -> Option<String> {
+    canonical_workspace_path_after_placement(workspace_path, worktree_path, false)
+}
+
+/// With `placed`, `worktree_path` is the base of a linked worktree that is about to be created, so
+/// it names its repository's main checkout as a linked worktree would. A bare repository has no
+/// main checkout and the new worktree's own path is the answer, which is unknown before placement.
+pub(crate) fn canonical_workspace_path_after_placement(
+    workspace_path: &str,
+    worktree_path: &str,
+    placed: bool,
+) -> Option<String> {
     [workspace_path, worktree_path]
         .into_iter()
         .filter(|path| !path.trim().is_empty() && Path::new(path).is_dir())
         .find_map(|git_path| {
+            let placed = placed && git_path == worktree_path && git_path != workspace_path;
             let git_dir = PathBuf::from(git_command_output(
                 git_path,
                 &["rev-parse", "--path-format=absolute", "--git-dir"],
@@ -179,7 +191,7 @@ pub(crate) fn canonical_workspace_path(
                 git_path,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"],
             )?);
-            if same_fs_path_buf(&git_dir, &common_dir) {
+            if !placed && same_fs_path_buf(&git_dir, &common_dir) {
                 return (git_path == workspace_path).then(|| workspace_path.to_string());
             }
             // MP-08 / MP-10 / MP-11: a bare mirror has no main checkout.
@@ -188,7 +200,7 @@ pub(crate) fn canonical_workspace_path(
                 .as_deref()
                 == Some("true")
             {
-                return Some(git_path.to_string());
+                return (!placed).then(|| git_path.to_string());
             }
             let workspace = common_dir.parent()?.to_path_buf();
             Some(workspace.display().to_string())

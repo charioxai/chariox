@@ -16,6 +16,8 @@ pub(crate) struct Input {
     pub workspace: String,
     /// The session's worktree, which can move the effective workspace to another repository.
     pub worktree: Option<String>,
+    /// The worktree is the base of a linked worktree that the session creates.
+    pub worktree_placed: bool,
     pub create: bool,
     pub selected: Option<Candidate>,
     pub defaults: Vec<Candidate>,
@@ -146,8 +148,12 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
     .map_err(|_| Failure::WorkspaceUnavailable)?;
     let path = admitted.canonical_path.to_string_lossy().into_owned();
     let worktree = input.worktree.as_deref().unwrap_or(&path);
-    let canonical = crate::runtime::workspace_git_common::canonical_workspace_path(&path, worktree)
-        .unwrap_or(path);
+    let canonical = crate::runtime::workspace_git_common::canonical_workspace_path_after_placement(
+        &path,
+        worktree,
+        input.worktree_placed,
+    )
+    .unwrap_or(path);
     crate::git_worktree_placement::preflight_existing_absolute_directory(
         &canonical,
         "workspace_id",

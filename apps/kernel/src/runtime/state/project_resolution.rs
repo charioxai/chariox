@@ -70,6 +70,7 @@ impl KernelRuntimeState {
         let input = Input {
             workspace: request.workspace_id.clone(),
             worktree: None,
+            worktree_placed: false,
             create: request.create_if_missing,
             selected: selected.as_ref().map(|project| Candidate {
                 id: project.id().into(),
@@ -142,9 +143,7 @@ impl KernelRuntimeState {
                     kernel_ref,
                 )
             });
-        // The lane rewrites the worktree of a placement request, so it cannot be measured here.
         if request.hidden
-            || request.worktree_placement.is_some()
             || !local_placement
             || !matches!(
                 request.project_selection,
@@ -161,6 +160,7 @@ impl KernelRuntimeState {
             .measure_project_workspace(Input {
                 workspace: request.workspace_id.clone(),
                 worktree: Some(request.worktree_id.clone()),
+                worktree_placed: request.worktree_placement.is_some(),
                 create: true,
                 selected: None,
                 defaults: saved.clone(),
@@ -1100,5 +1100,135 @@ mod tests {
             error.to_string().contains("Project folder changed"),
             "an identity measured for another worktree must not commit: {error}"
         );
+    }
+    fn placement_into(
+        target: &std::path::Path,
+        branch: &str,
+    ) -> crate::agent::GitWorktreePlacement {
+        crate::agent::GitWorktreePlacement {
+            target_directory: Some(target.to_str().unwrap().into()),
+            branch: Some(branch.into()),
+            from_ref: None,
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: a session that creates a linked worktree still joins the
+    // saved Default Project that was restored under a symlink to the repository.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r12_environment_create_session_with_worktree_placement_keeps_symlinked_project() {
+        let root = crate::test_support::TestWorktree::new("r12-placement-symlink");
+        let repository = root.path().join("repository");
+        let alias = root.path().join("alias");
+        std::fs::create_dir(&repository).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "tests@example.invalid"],
+            vec!["config", "user.name", "Chariox Tests"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+        ] {
+            crate::runtime::workspace_git_common::run_git(&repository, &args).unwrap();
+        }
+        std::os::unix::fs::symlink(&repository, &alias).unwrap();
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let mut saved = crate::session::RuntimeProject::new(
+            "saved-alias",
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            alias.to_str().unwrap(),
+            "saved-alias",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        saved.set_environment_definition(crate::session::ProjectEnvironmentDefinition {
+            schema_version: 1,
+            origin: crate::session::ProjectEnvironmentDefinitionOrigin::UserAuthored,
+            source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
+            target_platform: "linux-x86_64".into(),
+            source_path: None,
+            inputs: vec![],
+            path_entries: vec![],
+            setup_steps: vec![],
+            validation_commands: vec![],
+        });
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![saved.clone()]);
+        let request = crate::session::CreateSessionRequest::new(
+            alias.to_str().unwrap(),
+            alias.to_str().unwrap(),
+        )
+        .with_worktree_placement(placement_into(&root.path().join("placed"), "feature/r12"));
+        let LocalDaemonResponse::SessionCreated { session, .. } = r4_dispatch(
+            &router,
+            "r12-create-placed-alias",
+            crate::local::LocalDaemonRequest::CreateSession(request),
+        )
+        .await
+        .unwrap()
+        .expect("the session must be created") else {
+            panic!("Session expected")
+        };
+        let projects = state
+            .list_projects(crate::session::DEFAULT_LOCAL_USER_ID, true)
+            .await;
+        state.delete_session_id(session.id()).await.unwrap();
+        assert_eq!(
+            (session.project_id(), session.workspace_id()),
+            (saved.id(), saved.workspace_id()),
+            "a new worktree in the saved repository must keep the saved Project"
+        );
+        assert_eq!(
+            projects.len(),
+            1,
+            "no other Project may be allocated: {projects:?}"
+        );
+        assert_eq!(
+            projects[0].environment_definition(),
+            saved.environment_definition()
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11: a non-Git folder with a placement based on repository B resolves to
+    // B, because the new worktree is a linked worktree of B.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r12_environment_prepared_placement_follows_the_base_repository() {
+        let fixture = linked_worktree_fixture("r12-placement-base");
+        let state = fixture.router.runtime_state();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let request = crate::session::CreateSessionRequest::new(
+            fixture.plain.to_str().unwrap(),
+            fixture._root.path().join("repository").to_str().unwrap(),
+        )
+        .with_worktree_placement(placement_into(
+            &fixture._root.path().join("placed-base"),
+            "feature/r12-base",
+        ))
+        .with_owner_user_id(owner);
+        assert!(
+            state
+                .prepare_session_workspace(&request, owner)
+                .await
+                .unwrap()
+                .is_some(),
+            "a placement request must be prepared against its base repository"
+        );
+        let LocalDaemonResponse::SessionCreated { session, .. } = r4_dispatch(
+            &fixture.router,
+            "r12-create-placed-base",
+            crate::local::LocalDaemonRequest::CreateSession(request),
+        )
+        .await
+        .unwrap()
+        .expect("the session must be created") else {
+            panic!("Session expected")
+        };
+        state.delete_session_id(session.id()).await.unwrap();
+        assert_eq!(session.project_id(), fixture.repository_project.id());
     }
 }
