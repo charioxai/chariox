@@ -61,10 +61,12 @@ pub(crate) enum KernelBrowserDisplayRequest {
         subscription_id: String,
         generation: u64,
     },
+    /// `watch` is the kernel pump's pause of an unwatched display; a client's own park is cleared by the Tab's commit.
     Park {
         subscription_id: String,
         generation: u64,
         parked: bool,
+        watch: bool,
     },
     Resume {
         subscription_id: String,
@@ -256,6 +258,7 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 parked,
+                watch: false,
             },
             // MP-08/MP-10: acknowledgements belong to a relay display
             // subscription's push pump; no other transport owns one.
@@ -630,8 +633,9 @@ impl KernelRuntimeState {
                 subscription_id,
                 generation,
                 parked,
+                watch,
             } => {
-                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked})
+                serde_json::json!({"op":"display_park","subscription_id":subscription_id,"generation":generation,"parked":parked,"watch":watch})
             }
             KernelBrowserDisplayRequest::Capture { tab_id, generation } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true})

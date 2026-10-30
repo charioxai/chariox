@@ -599,6 +599,7 @@ async fn park_host(route: &PumpRoute, generation: u64, parked: bool) -> Result<(
                 subscription_id: route.display_id.clone(),
                 generation,
                 parked,
+                watch: true,
             },
         )
         .await
