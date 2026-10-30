@@ -32,7 +32,9 @@ pub(super) async fn run(
         .saturating_sub(crate::session::unix_epoch_ms());
     let expiry = sleep(Duration::from_millis(expiry_ms));
     tokio::pin!(expiry);
-    let mut ping = tokio::time::interval(PING_INTERVAL);
+    // The upgrade just proved the connection live: the first keepalive is one interval out.
+    let mut ping =
+        tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
     ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut last_read = Instant::now();
     crate::logging::info_with_fields(
