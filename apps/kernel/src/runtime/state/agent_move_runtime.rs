@@ -99,7 +99,7 @@ impl KernelRuntimeState {
                 .defer_agent_move(session_id, agent.id(), target_ref)
                 .await;
         }
-        self.run_agent_move(session_id, agent, target_ref, false)
+        self.run_agent_move(session_id, agent, target_ref, None)
             .await
     }
 
@@ -154,11 +154,11 @@ impl KernelRuntimeState {
             {
                 tokio::time::sleep(AGENT_TURN_POLL).await;
             }
-            if !wait.finish() {
+            if wait.cancelled() {
                 return Ok(());
             }
             let agent = self.owned.agent_store.get_agent(agent_id)?;
-            self.run_agent_move(session_id, agent, target_ref, true)
+            self.run_agent_move(session_id, agent, target_ref, Some(wait))
                 .await
                 .map(drop)
         }
@@ -172,15 +172,17 @@ impl KernelRuntimeState {
         }
     }
 
-    /// `deferred`: no request waits for the result, so a failure is published as the agent's status.
+    /// A deferred Move passes its `wait`: no request waits for the result, so a failure is published as
+    /// the agent's status, and the wait keeps the agent fenced until the Move claims it.
     async fn run_agent_move(
         &self,
         session_id: &str,
         agent: crate::agent::AgentInstance,
         target_ref: Option<String>,
-        deferred: bool,
+        wait: Option<MoveWait>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent_id = agent.id().to_string();
+        let deferred = wait.is_some();
         self.publish_agent_move_status(
             &agent_id,
             Some(AgentMoveStatus::new(
@@ -192,7 +194,7 @@ impl KernelRuntimeState {
         // Publishing waited for the app; a revoked caller must not continue into the peers.
         let result = match self.authorize_current_external_command() {
             Ok(()) => {
-                self.move_agent_transaction_inner(session_id, agent, target_ref.clone())
+                self.move_agent_transaction_inner(session_id, agent, target_ref.clone(), wait)
                     .await
             }
             Err(error) => Err(error),
@@ -231,6 +233,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent: crate::agent::AgentInstance,
         target_ref: Option<String>,
+        wait: Option<MoveWait>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let _operation = self
             .owned
@@ -268,6 +271,10 @@ impl KernelRuntimeState {
             if pending.target_ref != target_ref {
                 return Err(move_error("This agent already has a pending move to another destination. Finish or roll back that operation first"));
             }
+            // The pending operation fences the agent from here on.
+            if !wait.is_none_or(|wait| wait.finish()) {
+                return Ok(agent);
+            }
             pending
         } else {
             if target_ref.is_some() == agent.remote_execution().is_some() {
@@ -278,10 +285,16 @@ impl KernelRuntimeState {
                 }));
             }
             let session = self.owned.session_store.get_session(session_id)?;
-            let _claim = self
+            let claim = self
                 .owned
                 .prompt_state_owner
-                .claim_idle_agent_move_transition(&session, agent.id())?;
+                .claim_idle_agent_move_transition(&session, agent.id());
+            // The wait fenced the agent until now; ending it first would leave a gap before the claim.
+            // False: the Move was cancelled while it waited for the claim.
+            if !wait.is_none_or(|wait| wait.finish()) {
+                return Ok(agent);
+            }
+            let _claim = claim?;
             let config = self.owned.config_projection.snapshot();
             let (target_kernel_id, target_public_key) = if let Some(reference) = &target_ref {
                 let (target, _) = self

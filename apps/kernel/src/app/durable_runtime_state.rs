@@ -1825,11 +1825,10 @@ mod tests {
 
     #[test]
     fn semantic_session_activity_replays_across_restart_and_stale_metadata() {
-        let path = std::env::temp_dir().join(format!(
-            "session-activity-{}-{}.db",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        ));
+        // The state file's directory is the kernel's private state root, never a
+        // shared directory such as TMPDIR itself.
+        let root = crate::test_support::TestWorktree::new("session-activity");
+        let path = root.path().join("state.db");
         let mut config = crate::config::DaemonConfig::for_tests();
         config.user_config.state.path = Some(path.display().to_string());
         let session_id;
@@ -1879,7 +1878,6 @@ mod tests {
                 timestamp
             );
         }
-        let _ = std::fs::remove_file(path);
     }
 
     #[test]

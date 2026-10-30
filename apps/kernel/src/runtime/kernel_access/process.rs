@@ -41,7 +41,13 @@ pub(crate) fn ancestry(peer: &ProcessIdentity) -> io::Result<Vec<ProcessIdentity
         if parent <= 1 || parent == current.pid {
             break;
         }
-        current = inspect(parent)?.0;
+        current = match inspect(parent) {
+            Ok((parent, _)) => parent,
+            // A user's kernel can't inspect another user's process (an sshd or login
+            // above the user's shell): the chain the kernel's user owns ends there.
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => break,
+            Err(error) => return Err(error),
+        };
     }
     // Recheck the whole chain so PID reuse/reparenting during traversal fails closed.
     for pair in chain.windows(2) {
@@ -89,7 +95,16 @@ pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
         .parse()
         .map_err(|_| invalid())?;
     let uid = std::fs::metadata(&path)?.uid();
-    let executable = std::fs::read_link(format!("{path}/exe"))?
+    // Only another user's process may answer PermissionDenied; the kernel user's own
+    // unreadable process is an identity the kernel can't confirm.
+    let executable = std::fs::read_link(format!("{path}/exe"))
+        .map_err(|error| {
+            if uid == unsafe { libc::geteuid() } {
+                invalid()
+            } else {
+                error
+            }
+        })?
         .to_string_lossy()
         .into_owned();
     let after = std::fs::read_to_string(format!("{path}/stat"))?;
@@ -287,5 +302,14 @@ mod tests {
         different_exec.version = different_exec.version.wrapping_add(1);
         assert!(!different_exec.alive());
         assert!(holder(&identity, u32::MAX).is_err());
+    }
+
+    #[test]
+    fn ancestry_ends_below_another_users_process() {
+        // A user's kernel started from an SSH or login session runs below a root-owned
+        // process it can't inspect; the chain ends there instead of failing.
+        let me = inspect(std::process::id()).unwrap().0;
+        let chain = ancestry(&me).unwrap();
+        assert_eq!(chain[0], me);
     }
 }

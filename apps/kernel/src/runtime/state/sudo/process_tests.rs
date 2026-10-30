@@ -75,7 +75,21 @@ fn root(f: &super::tests::Fixture) -> ProcessIdentity {
 async fn sudo_shell_process_identity_rejects_pid_reuse_and_shared_provider() {
     let f = fixture_with_provider(Some("while :; do sleep 1; done"));
     let turn = running(&f);
-    let identity = root(&f);
+    let launched = root(&f);
+    // Launch may capture the PTY wrapper shell; a socket peer is inspected live, once
+    // the wrapper has exec'd the provider program.
+    let program = std::fs::canonicalize("/bin/bash").unwrap();
+    let identity = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let current = inspect(launched.pid).unwrap().0;
+            if Path::new(&current.executable) == program {
+                break current;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         unsafe { libc::getsid(identity.pid as i32) },
         identity.pid as i32
