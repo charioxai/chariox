@@ -512,6 +512,18 @@ test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-conten
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
+// mirrorfid (dashboard.stripe.com/login after another site): the 3.6 MB cross-origin sheet's body had left the network
+// buffer and the document's resource tree did not list it, so the viewer kept an empty sheet. The document's own frame
+// still has the content.
+test('a cross-origin stylesheet missing from the network buffer and the resource tree is read from its document frame',async()=>{
+ const body='body{color:green}',asked=[];
+ const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
+ assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
+ assert.deepEqual(asked,[['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
+});
+
 // mirrorfix F2 (Amazon search mirrored unstyled): every Amazon sheet href ends in `#<revision>`, which CDP never reports.
 test('a cross-origin stylesheet whose href has a fragment is read by its request URL',async()=>{
  const body=Buffer.from('body{color:green}'),asked=[];

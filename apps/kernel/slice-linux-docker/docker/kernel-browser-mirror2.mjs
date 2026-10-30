@@ -873,7 +873,8 @@ export class Mirror2 {
       const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       if (text === undefined) {
-        const frameId = (await frames()).get(requested); if (!frameId) return false;
+        // A document's own sheet can be missing from its resource tree (Stripe's 3.6 MB login sheet); its frame still has it.
+        const frameId = (await frames()).get(requested) ?? world.frame?.id; if (!frameId) return false;
         const reply = await world.connection.send('Page.getResourceContent', { frameId, url: requested }, world.sessionId);
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
