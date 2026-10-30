@@ -72,8 +72,18 @@ impl KernelRuntimeOwnedState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
+        self.public_agent_task_answer_after(task, None)
+    }
+
+    /// `failure` is the outcome of the turn that just ended the task, when the
+    /// caller settled it.
+    pub(super) fn public_agent_task_answer_after(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
         if task.state == ExecutionState::Cancelled {
-            return self.failed_task_answer(task);
+            return self.failed_task_answer(task, failure);
         }
         if task.state != ExecutionState::Done {
             return Ok(None);
@@ -112,19 +122,28 @@ impl KernelRuntimeOwnedState {
     fn failed_task_answer(
         &self,
         task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
-        let Some(settlement) = self
-            .operational_history_store
-            .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
-        else {
-            return Ok(None);
+        // The settlement in hand wins; otherwise the turn's history has it. The
+        // history append can trail the settlement by a moment.
+        let recorded = if failure.is_some() {
+            None
+        } else {
+            self.operational_history_store
+                .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+                .and_then(|settlement| {
+                    settlement
+                        .metadata
+                        .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+                        .and_then(|outcome| {
+                            serde_json::from_value::<crate::provider::TurnOutcome>(outcome.clone())
+                                .ok()
+                        })
+                })
         };
-        let Some(outcome) = settlement
-            .metadata
-            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
-            .and_then(|outcome| {
-                serde_json::from_value::<crate::provider::TurnOutcome>(outcome.clone()).ok()
-            })
+        let Some(outcome) = failure
+            .cloned()
+            .or(recorded)
             .filter(crate::provider::TurnOutcome::is_error)
         else {
             return Ok(None);

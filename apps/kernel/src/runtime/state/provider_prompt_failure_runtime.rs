@@ -323,13 +323,18 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 Some(active_prompt.id()),
                 provider_termination,
-                failure,
+                failure.clone(),
             )?
         };
         if completion.is_none() {
             return Ok(false);
         }
-        Box::pin(self.finish_agent_task_settlement(task_settlement, &active_prompt)).await?;
+        Box::pin(self.finish_failed_agent_task_settlement(
+            task_settlement,
+            &active_prompt,
+            Some(&failure),
+        ))
+        .await?;
         // Recorded before any queued prompt or substitute is started, so the
         // agent's next turn carries the note.
         owned.record_failed_request(

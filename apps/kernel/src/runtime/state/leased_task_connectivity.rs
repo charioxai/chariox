@@ -189,9 +189,11 @@ fn classify_probe(
         }
         Ok(Err(DaemonError::LocalTransport { operation, message }))
             if slice_hosted
-                && (*operation == "connect temporary relay peer socket"
-                    || (*operation == "send relay peer request"
-                        && message == "relay is not connected")) =>
+                && (matches!(
+                    *operation,
+                    "connect relay metadata socket" | "connect temporary relay peer socket"
+                ) || (*operation == "send relay peer request"
+                    && message == "relay is not connected")) =>
         {
             Probe::WorkerOffline
         }
@@ -222,16 +224,28 @@ fn active_binding(
 mod tests {
     use super::*;
 
-    fn refused() -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
+    fn refused_at(
+        operation: &'static str,
+    ) -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
         Ok(Err(DaemonError::LocalTransport {
-            operation: "connect temporary relay peer socket",
+            operation,
             message: "IO error: Connection refused (os error 111)".into(),
         }))
+    }
+
+    fn refused() -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
+        refused_at("connect temporary relay peer socket")
     }
 
     #[test]
     fn a_slice_whose_own_relay_refuses_the_connection_is_offline() {
         assert!(classify_probe(&refused(), true) == Probe::WorkerOffline);
+        // The first thing a ping to a stopped slice does is the relay metadata
+        // discovery, which is where a stopped container is refused.
+        assert!(
+            classify_probe(&refused_at("connect relay metadata socket"), true)
+                == Probe::WorkerOffline
+        );
     }
 
     #[test]

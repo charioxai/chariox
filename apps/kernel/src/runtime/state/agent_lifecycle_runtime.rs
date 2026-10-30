@@ -691,6 +691,16 @@ impl KernelRuntimeState {
         settlement: Option<(AgentTaskExecution, bool)>,
         source: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
+        self.finish_failed_agent_task_settlement(settlement, source, None)
+            .await
+    }
+    /// `failure` is why the turn behind a task that ends cancelled failed.
+    pub(super) async fn finish_failed_agent_task_settlement(
+        &self,
+        settlement: Option<(AgentTaskExecution, bool)>,
+        source: &crate::session::PromptQueueItem,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<(), DaemonError> {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
@@ -710,9 +720,10 @@ impl KernelRuntimeState {
                 message,
             );
         }
-        let public_answer = self.owned.public_agent_task_answer(&task)?;
+        let public_answer = self.owned.public_agent_task_answer_after(&task, failure)?;
         if task.state == ExecutionState::Cancelled {
-            Box::pin(self.cancel_agent_task_resources(&task)).await?;
+            Box::pin(self.cancel_agent_task_resources_answering(&task, public_answer.clone()))
+                .await?;
         }
         let resources_unsettled = self.owned.agent_task_resources_unsettled(&task)?;
         if correction {
