@@ -808,8 +808,8 @@ export class KernelBrowserHost {
       if(typeof command.parked!=='boolean')throw new UserDomainRefusal('stale_reference','display_retired');
       // The kernel pump parks an unwatched display (`watch`): no capture, source paused, and each park renews the host
       // binding's 60 s expiry. A viewer's own park (DOM mirror painting) is the Tab's next commit to clear.
-      // The owned desktop has no source to pause: it only keeps its binding.
-      if(stream.source_kind!=='desktop')stream.park(command.parked,command.watch===true);
+      if(stream.source_kind==='desktop')await this.desktopDisplay.park(stream,command.parked);
+      else stream.park(command.parked,command.watch===true);
       stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
       return {generation:this.generation,parked:Boolean(stream.parked)};
     }
