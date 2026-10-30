@@ -1185,6 +1185,23 @@ test("MP-10: linked lossy CSS read as source keeps the rules after an escaped qu
     assert(css.includes("after-quote-marker"), `MP-10: rules after the escaped quote reach the viewer: ${css.slice(-300)}`);
   }, { "/gh.css": { type: "text/css", body: "@layer utilities{.before\\:content-\\[\\'\\'\\]:before{content:''}.b{border:var(--w) solid;border-color:red}.b{--after-quote-marker:1}}" } }));
 
+// MIRROR-FIDELITY-GUARD: a stylesheet copy with fewer rules than the page's own is never published as the page.
+test("MP-10: a stylesheet the mirror cannot copy whole selects the whole-page video", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="tail">fixture</p>', async ({ next, evaluate, host, subscription_id }) => {
+    assert.equal((await next()).fallback, undefined, "MP-10: the complete sheet is mirrored");
+    // Fault injection in the observer's world: one rule serializes as nothing; a page edit makes the observer copy the sheet again.
+    await host.mirror.v2.evaluate(host.mirror.streams.get(subscription_id).world, `(()=>{
+      let prototype=CSSStyleRule.prototype,descriptor;
+      while(prototype&&!descriptor){descriptor=Object.getOwnPropertyDescriptor(prototype,'cssText');prototype=Object.getPrototypeOf(prototype)}
+      Object.defineProperty(CSSStyleRule.prototype,'cssText',{configurable:true,enumerable:descriptor.enumerable,get(){return this.selectorText==='.tail'?'':descriptor.get.call(this)}});
+      return true;
+    })()`);
+    await evaluate("document.styleSheets[0].insertRule('b{color:green}', 0), true");
+    const packets = [];
+    for (let i = 0; i < 6 && !packets.at(-1)?.fallback; i++) packets.push(await next(500));
+    assert.equal(packets.at(-1).fallback, "css_incomplete", `MP-10: an incomplete copy selects the video: ${JSON.stringify(packets.map(p => [p.sequence, p.reset, p.fallback ?? null, p.ops?.map(o => o.op).join()]))}`);
+  }, { "/gh.css": { type: "text/css", body: "p{color:red}.tail{color:blue}" } }));
+
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
     const first = [await next()];

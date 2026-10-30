@@ -264,10 +264,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
     const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
+    // A copy that parses to fewer rules than the page's sheet (imports are inlined, unknown namespaces dropped) would
+    // render a different page: a linked sheet is then read as source text through the kernel, an inline one is its own text.
+    const wholeCopy = (sheet, text) => {
+      let own = 0; for (const rule of sheet.cssRules) if (rule.type !== 3 && rule.type !== 10) own++;
+      const copy = new CSSStyleSheet(); copy.replaceSync(text); return copy.cssRules.length >= own;
+    };
     const css = (sheet, base) => {
       const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), null, Boolean(sheet.href));
-      if (!LOSSY.test(text)) return text;
-      if (sheet.href) throw new Error('lossy CSSOM serialization');
+      if (!LOSSY.test(text) && wholeCopy(sheet, text)) return text;
+      if (sheet.href) throw new Error('incomplete CSSOM serialization');
       // An inline <style>: its own source text is not lossy.
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
       return source ? sanitizeMirrorCss(source, base, resource) : text;
