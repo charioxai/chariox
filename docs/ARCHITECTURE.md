@@ -300,6 +300,11 @@ Current architectural interpretation:
 - relay-visible machine metadata remains plain routing/liveness metadata; trust decisions and aliases are local home-kernel state, not relay authority
 - relay health endpoints expose transport-level backpressure counters such as target queue saturation and slow subscription closures; these metrics are for operations and scale drills only and do not require inspecting encrypted runtime payloads
 
+#### 3.4.1 Relay byte metering
+
+The relay counts bytes, never content. For every authenticated connection it adds the size of each frame it receives (`bytes_in`) and each frame it writes (`bytes_out`, chunk frames included; WebSocket, TLS and TCP framing excluded) to a counter keyed by realm and stream scope. The scope is the label a client gave when it subscribed (`session` when it gave none, for example `kernel_browser_display`, `waiting_room_inventory`); requests, replies and presence are `control`; the Selkies display tunnel is `display_tunnel`. A label outside `[a-z0-9_.-]{1,48}` or beyond 16 scopes per realm is counted as `other`, and the table holds at most 8192 keys, so memory stays bounded. The relay knows nothing about what a stream carries.
+
+Reporting is opt-in: set `CHARIOX_RELAY_USAGE_URL` (Cloud API origin), `CHARIOX_RELAY_ID`, `CHARIOX_RELAY_USAGE_SPOOL` (a file on disk the relay user can write) and the shared `CHARIOX_RELAY_SCOPED_HMAC_SECRET`; `CHARIOX_RELAY_USAGE_INTERVAL_SECS` defaults to 60. Each round drains the counters into one batch with a random id, writes it to the spool file, `POST`s it to `/relay/usage` and deletes the file once Cloud answered. A failed send is retried as the same batch, a restart resumes the spooled batch, and Cloud counts a batch id once. Only what was still in memory when the process died (at most one interval) is lost; a stopping relay sends a last report. Cloud stores the totals per account, scope and UTC hour and lets an account owner or admin read them (`GET /relay/usage`). Nothing is limited or enforced.
 
 ### Docker Remote-Machine Lab
 
