@@ -96,6 +96,14 @@ async fn source_request(
     router: &CommandRouter,
     request: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    request_as(router, request, |_| {}).await
+}
+/// The same request from a caller other than the owner's own client.
+async fn request_as(
+    router: &CommandRouter,
+    request: serde_json::Value,
+    shape: impl FnOnce(&mut crate::runtime::command::KernelCaller),
+) -> Result<serde_json::Value, DaemonError> {
     let request: LocalDaemonRequest =
         serde_json::from_value(request).expect("public account copy must parse");
     let mut command = KernelCommand::from_local_request(
@@ -110,6 +118,7 @@ async fn source_request(
             "account-copy-test",
         )
         .await;
+    shape(&mut command.caller);
     router
         .dispatch(command, request)
         .await
@@ -281,6 +290,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         });
         source.relay_url = Some(url.clone());
         target.relay_url = Some(url.clone());
+        if scenario == CopyScenario::Recipient {
+            target.user_config.credential_vault.unlock_policy =
+                crate::config::CredentialVaultUnlockPolicy::Always;
+        }
         let source_app = Arc::new(Mutex::new(DaemonApp::bootstrap(source.clone()).unwrap()));
         let target_app = Arc::new(Mutex::new(DaemonApp::bootstrap(target.clone()).unwrap()));
         let source_state = source_app.lock().await.relay_client_state();
@@ -518,17 +531,50 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         .all(|p| !p.profile_id.starts_with("copy-")));
                 }
             }
-            let receive = serde_json::json!({"CopyProviderAccountFromKernel":{
-                "provider":"claude", "account_profile":profile.profile_id, "operation_id":"receive-1",
-                "source_kernel_id":source.daemon_id,
-                "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
-                "replace":false
-            }});
-            for accept in [false, true] {
+            // The owner's own client choosing the offer is the consent; any
+            // other caller still gets the kernel decision.
+            #[derive(Clone, Copy, PartialEq, Eq)]
+            enum Asker {
+                KernelAgent,
+                Metaagent,
+                OwnerClient,
+            }
+            for (round, (asker, accept)) in [
+                (Asker::KernelAgent, false),
+                (Asker::Metaagent, true),
+                (Asker::OwnerClient, true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &target_vault,
+                    "fixture-pass",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+                let receive = serde_json::json!({"CopyProviderAccountFromKernel":{
+                    "provider":"claude", "account_profile":profile.profile_id, "operation_id":format!("receive-{round}"),
+                    "source_kernel_id":source.daemon_id,
+                    "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+                    "replace":false
+                }});
                 let router = target_router.clone();
                 let request = receive.clone();
-                let pending = tokio::spawn(async move { source_request(&router, request).await });
-                let interaction = tokio::time::timeout(Duration::from_secs(5), async {
+                let pending = tokio::spawn(async move {
+                    request_as(&router, request, |caller| match asker {
+                        Asker::KernelAgent => {
+                            caller.connection_class =
+                                Some(crate::local::KernelConnectionClass::KernelAgent)
+                        }
+                        Asker::Metaagent => {
+                            caller.metaagent_id = Some("copy-test-metaagent".into())
+                        }
+                        Asker::OwnerClient => {}
+                    })
+                    .await
+                });
+                let decisions = async {
                     loop {
                         let response = source_request(
                             &target_router,
@@ -545,23 +591,33 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         }
                         sleep(Duration::from_millis(10)).await;
                     }
-                })
-                .await
-                .expect("copy needs the existing kernel-owned consent");
-                assert!(!interaction.to_string().contains(canary));
-                assert!(target_profiles
-                    .list("local", Some("claude"))
-                    .unwrap()
-                    .iter()
-                    .all(|p| !p.profile_id.starts_with("copy-")));
-                let answer = serde_json::json!({"AnswerUserDomainInteraction":{
-                    "interaction_id":interaction["id"], "choice_id":if accept {"copy"} else {"cancel"}
-                }});
-                source_request(&target_router, answer).await.unwrap();
-                let result = tokio::time::timeout(Duration::from_secs(10), pending)
-                    .await
-                    .unwrap()
-                    .unwrap();
+                };
+                let result = if asker == Asker::OwnerClient {
+                    tokio::select! {
+                        interaction = decisions => panic!("the owner's own copy raised a decision: {interaction}"),
+                        result = tokio::time::timeout(Duration::from_secs(10), pending) => {
+                            result.expect("the owner's copy waits for no decision").unwrap()
+                        }
+                    }
+                } else {
+                    let interaction = tokio::time::timeout(Duration::from_secs(5), decisions)
+                        .await
+                        .expect("a copy asked by an agent needs the kernel-owned consent");
+                    assert!(!interaction.to_string().contains(canary));
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                    let answer = serde_json::json!({"AnswerUserDomainInteraction":{
+                        "interaction_id":interaction["id"], "choice_id":if accept {"copy"} else {"cancel"}
+                    }});
+                    source_request(&target_router, answer).await.unwrap();
+                    tokio::time::timeout(Duration::from_secs(10), pending)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                };
                 if !accept {
                     assert_code(result, "provider_account_copy_cancelled", canary);
                     assert!(target_profiles
@@ -571,6 +627,13 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                         .all(|p| !p.profile_id.starts_with("copy-")));
                 } else {
                     let copied = result.unwrap();
+                    // "Ask every time": the install used the owner's unlock once.
+                    assert!(
+                        !crate::secret::chariox_encrypted_vault_status(&target_vault)
+                            .unwrap()
+                            .unlocked,
+                        "the Vault is locked again after the copy"
+                    );
                     let installed = copied["ProviderAccountCopied"]["receipt"]["account_profile"]
                         .as_str()
                         .unwrap();
