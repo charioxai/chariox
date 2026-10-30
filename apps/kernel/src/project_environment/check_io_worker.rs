@@ -241,6 +241,7 @@ pub(super) fn run_at_root(
         "CHARIOX_SETUP_PUBLIC_STALL_MARKER",
         "CHARIOX_SETUP_SOURCE_STALL_MARKER",
         "CHARIOX_WORKSPACE_METADATA_STALL_MARKER",
+        "CHARIOX_PROJECT_PREPARATION_STALL_PATH",
     ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);

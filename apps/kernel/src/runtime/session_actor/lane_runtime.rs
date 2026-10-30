@@ -38,7 +38,7 @@ struct SessionCommandEnvelope {
     /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
     sudo_binding: Option<(String, String)>,
     request: LocalDaemonRequest,
-    project_resolution: Option<crate::runtime::state::PreparedProjectResolution>,
+    project_resolution: Option<crate::runtime::state::PreparedProjectEntry>,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 

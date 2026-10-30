@@ -473,7 +473,7 @@ pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
 mod project_resolution;
-pub(crate) use project_resolution::PreparedProjectResolution;
+pub(crate) use project_resolution::{PreparedProjectEntry, PreparedSessionWorkspace};
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;

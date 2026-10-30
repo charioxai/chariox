@@ -1,6 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: durable, session-free Project entry on the selected kernel.
 use super::*;
-use crate::runtime::project_resolution_preparation::{Candidate, Input, Metadata};
+use crate::runtime::project_resolution_preparation::{Candidate, Failure, Input, Metadata};
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -13,6 +13,19 @@ pub(crate) struct PreparedProjectResolution {
     name: Option<String>,
     matched: Option<String>,
     deadline: Instant,
+}
+/// The saved Default Project spelling of the requested session folder, measured before lane
+/// admission and valid only while the caller's saved Default Projects are unchanged.
+#[derive(Debug)]
+pub(crate) struct PreparedSessionWorkspace {
+    caller: String,
+    saved: Vec<Candidate>,
+    workspace: String,
+}
+#[derive(Debug)]
+pub(crate) enum PreparedProjectEntry {
+    Resolution(Box<PreparedProjectResolution>),
+    SessionWorkspace(PreparedSessionWorkspace),
 }
 fn defaults(projects: &[crate::session::RuntimeProject]) -> Vec<Candidate> {
     let mut candidates: Vec<_> = projects
@@ -67,7 +80,7 @@ impl KernelRuntimeState {
             workspace,
             name,
             project_id: matched,
-        } = metadata;
+        } = metadata.map_err(Failure::error)?;
         Ok(PreparedProjectResolution {
             request,
             caller: caller.into(),
@@ -82,7 +95,7 @@ impl KernelRuntimeState {
     async fn measure_project_workspace(
         &self,
         input: Input,
-    ) -> Result<(Metadata, Instant), DaemonError> {
+    ) -> Result<(Result<Metadata, Failure>, Instant), DaemonError> {
         let budget = Duration::from_secs(10);
         #[cfg(test)]
         let budget = std::env::var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS")
@@ -109,39 +122,35 @@ impl KernelRuntimeState {
                 "Project folder preparation returned invalid metadata; retry",
             ));
         };
-        Ok((metadata.map_err(|failure| failure.error())?, deadline))
+        Ok((metadata, deadline))
     }
     // Ordinary session creation reuses the saved Default Project's folder spelling, so a Project
-    // restored under a symlink keeps its identity and Environment.
+    // restored under a symlink keeps its identity and Environment. The folder check runs before
+    // lane admission, like ResolveProject, and is revalidated when the session is committed.
     pub(crate) async fn prepare_session_workspace(
         &self,
-        mut request: crate::session::CreateSessionRequest,
-    ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+        request: &crate::session::CreateSessionRequest,
+        caller: &str,
+    ) -> Result<Option<PreparedSessionWorkspace>, DaemonError> {
+        let local_placement = request.slice_ref.is_none()
+            && request.kernel_ref.as_deref().is_none_or(|kernel_ref| {
+                super::session_lifecycle_runtime_state::kernel_ref_matches_local_config(
+                    &self.owned.config_projection.snapshot(),
+                    kernel_ref,
+                )
+            });
         if request.hidden
+            || !local_placement
             || !matches!(
                 request.project_selection,
                 crate::session::SessionProjectSelection::Default
             )
         {
-            return Ok(request);
+            return Ok(None);
         }
-        let saved = defaults(
-            &self
-                .owned
-                .session_store
-                .list_projects(&request.owner_user_id, true),
-        );
-        if saved.is_empty()
-            || saved.iter().any(|candidate| {
-                candidate.workspaces.iter().any(|path| {
-                    crate::session::RuntimeProject::workspace_paths_match(
-                        path,
-                        &request.workspace_id,
-                    )
-                })
-            })
-        {
-            return Ok(request);
+        let saved = defaults(&self.owned.session_store.list_projects(caller, true));
+        if saved.is_empty() {
+            return Ok(None);
         }
         let (metadata, _) = self
             .measure_project_workspace(Input {
@@ -151,21 +160,42 @@ impl KernelRuntimeState {
                 defaults: saved.clone(),
             })
             .await?;
-        if metadata.project_id.is_none() {
+        // An unusable requested folder is reported by session creation itself.
+        let Ok(Metadata {
+            workspace,
+            project_id: Some(_),
+            ..
+        }) = metadata
+        else {
+            return Ok(None);
+        };
+        Ok(Some(PreparedSessionWorkspace {
+            caller: caller.into(),
+            saved,
+            workspace,
+        }))
+    }
+    pub(super) fn apply_prepared_session_workspace(
+        &self,
+        mut request: crate::session::CreateSessionRequest,
+        prepared: Option<PreparedSessionWorkspace>,
+    ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
+        let Some(prepared) = prepared else {
             return Ok(request);
-        }
-        if defaults(
-            &self
-                .owned
-                .session_store
-                .list_projects(&request.owner_user_id, true),
-        ) != saved
+        };
+        if prepared.caller != request.owner_user_id
+            || defaults(
+                &self
+                    .owned
+                    .session_store
+                    .list_projects(&request.owner_user_id, true),
+            ) != prepared.saved
         {
             return Err(resolution_error(
                 "Project changed while its folder was checked; refresh and retry",
             ));
         }
-        request.workspace_id = metadata.workspace;
+        request.workspace_id = prepared.workspace;
         Ok(request)
     }
     pub(crate) fn resolve_prepared_project(
@@ -647,68 +677,18 @@ mod tests {
         state.delete_session_id(existing.id()).await.unwrap();
     }
 
-    // MP-08 / MP-10 / MP-11: interpose realpath to model an unavailable saved mount.
-    #[cfg(target_os = "linux")]
+    // MP-08 / MP-10 / MP-11: an existing saved folder whose metadata lookup never answers
+    // (an unavailable mount) is stalled inside the bounded worker.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn r6_environment_create_session_ignores_unrelated_stalled_saved_workspace() {
-        if std::env::var_os("CHARIOX_R6_REALPATH_CHILD").is_none() {
-            let root = crate::test_support::TestWorktree::new("r6-saved-mount");
-            let source = root.path().join("stall.c");
-            let library = root.path().join("stall.so");
-            std::fs::write(
-                &source,
-                r#"
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-char *realpath(const char *path, char *resolved) {
-    const char *blocked=getenv("CHARIOX_R6_SAVED_WORKSPACE");
-    if (blocked && !strcmp(path,blocked)) usleep(2000000);
-    char *(*next)(const char *, char *)=dlsym(RTLD_NEXT,"realpath");
-    return next(path,resolved);
-}
-"#,
-            )
-            .unwrap();
-            assert!(std::process::Command::new("cc")
-                .args(["-shared", "-fPIC", "-o"])
-                .arg(&library)
-                .arg(source)
-                .arg("-ldl")
-                .status()
-                .unwrap()
-                .success());
-            let test_name = std::thread::current().name().unwrap().to_owned();
-            let result = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    test_name.as_str(),
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env("CHARIOX_R6_REALPATH_CHILD", "1")
-                .env(
-                    "CHARIOX_R6_SAVED_WORKSPACE",
-                    root.path().join("unavailable"),
-                )
-                .env("LD_PRELOAD", library)
-                .output()
-                .unwrap();
-            assert!(
-                result.status.success(),
-                "ordinary CreateSession traversed unrelated saved storage: {}",
-                String::from_utf8_lossy(&result.stdout)
-            );
-            assert!(
-                String::from_utf8_lossy(&result.stdout).contains("1 passed;"),
-                "the prepared-workspace regression must actually run"
-            );
-            return;
-        }
-        let root = crate::test_support::TestWorktree::new("r6-healthy-session");
-        let blocked = std::env::var("CHARIOX_R6_SAVED_WORKSPACE").unwrap();
+    async fn r10_environment_create_session_ignores_unresponsive_saved_folder_and_keeps_lane_live()
+    {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new("r10-healthy-session");
+        let other = crate::test_support::TestWorktree::new("r10-other-session");
+        let saved = crate::test_support::TestWorktree::new("r10-unresponsive-saved");
+        std::env::set_var("CHARIOX_PROJECT_PREPARATION_STALL_PATH", saved.path());
+        std::env::set_var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS", "3000");
         let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
             Arc::new(Mutex::new(app)),
@@ -719,31 +699,115 @@ char *realpath(const char *path, char *resolved) {
             .owned
             .session_store
             .restore_projects(vec![crate::session::RuntimeProject::new(
-                "saved-unavailable",
+                "saved-unresponsive",
                 crate::session::DEFAULT_LOCAL_USER_ID,
-                blocked,
-                "Unavailable",
+                saved.path().to_string_lossy(),
+                "Unresponsive",
                 crate::session::RuntimeProjectKind::Default,
             )]);
         let began = std::time::Instant::now();
-        let response = r4_dispatch(
+        let healthy = r4_dispatch(
             &router,
-            "r6-create-healthy-folder",
+            "r10-create-healthy-folder",
             crate::local::LocalDaemonRequest::CreateSession(root.session_request()),
+        );
+        let second = r4_dispatch(
+            &router,
+            "r10-create-other-folder",
+            crate::local::LocalDaemonRequest::CreateSession(other.session_request()),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let listed = std::time::Instant::now();
+        let projects = r4_dispatch(
+            &router,
+            "r10-list-projects",
+            crate::local::LocalDaemonRequest::ListProjects(crate::local::ListProjectsRequest {
+                include_archived: true,
+            }),
         )
         .await
         .unwrap();
+        let listing = listed.elapsed();
+        let healthy = healthy.await.unwrap();
+        let second = second.await.unwrap();
         let elapsed = began.elapsed();
-        if let Ok(LocalDaemonResponse::SessionCreated { session, .. }) = &response {
-            state.delete_session_id(session.id()).await.unwrap();
+        for response in [&healthy, &second] {
+            if let Ok(LocalDaemonResponse::SessionCreated { session, .. }) = response {
+                state.delete_session_id(session.id()).await.unwrap();
+            }
         }
+        std::env::remove_var("CHARIOX_PROJECT_PREPARATION_STALL_PATH");
+        std::env::remove_var("CHARIOX_PROJECT_RESOLUTION_BUDGET_MS");
         assert!(
-            matches!(response, Ok(LocalDaemonResponse::SessionCreated { .. })),
-            "healthy local session must be created: {response:?}"
+            matches!(healthy, Ok(LocalDaemonResponse::SessionCreated { .. }))
+                && matches!(second, Ok(LocalDaemonResponse::SessionCreated { .. })),
+            "healthy sessions must be created despite an unresponsive saved folder: {healthy:?} {second:?}"
+        );
+        assert!(projects.is_ok());
+        assert!(
+            listing < std::time::Duration::from_millis(500),
+            "ListProjects waited {listing:?} behind session creation"
         );
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "unrelated saved workspace blocked ordinary CreateSession for {elapsed:?}"
+            elapsed < std::time::Duration::from_millis(2500),
+            "unresponsive saved folder delayed healthy creation for {elapsed:?}"
+        );
+    }
+
+    // MP-08 / MP-10 / MP-11: the prepared folder identity is valid only for the Projects it saw.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r10_environment_prepared_session_folder_is_revalidated_at_commit() {
+        let root = crate::test_support::TestWorktree::new("r10-revalidate-session");
+        let folder = root.path().join("source");
+        std::fs::create_dir(&folder).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&folder, &alias).unwrap();
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let saved = crate::session::RuntimeProject::new(
+            "restored-alias",
+            owner,
+            alias.to_str().unwrap(),
+            "Saved",
+            crate::session::RuntimeProjectKind::Default,
+        );
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![saved.clone()]);
+        let request = crate::session::CreateSessionRequest::new(
+            folder.to_str().unwrap(),
+            folder.to_str().unwrap(),
+        )
+        .with_owner_user_id(owner);
+        let prepared = state
+            .prepare_session_workspace(&request, owner)
+            .await
+            .unwrap()
+            .expect("the saved symlink spelling must be prepared");
+        state
+            .owned
+            .session_store
+            .restore_projects(vec![crate::session::RuntimeProject::new(
+                "added-meanwhile",
+                owner,
+                root.path().join("elsewhere").to_str().unwrap(),
+                "Added",
+                crate::session::RuntimeProjectKind::Default,
+            )]);
+        let error = state
+            .create_prepared_session_response(request, Some(prepared))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Project changed"),
+            "a stale prepared identity must not commit: {error}"
         );
     }
 

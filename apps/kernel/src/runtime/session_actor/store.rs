@@ -603,13 +603,20 @@ impl SessionRuntimeStore {
         &self,
         request: CreateSessionRequest,
         caller_user_id: String,
+        prepared: Option<crate::runtime::state::PreparedProjectEntry>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        let prepared = match prepared {
+            Some(crate::runtime::state::PreparedProjectEntry::SessionWorkspace(prepared)) => {
+                Some(prepared)
+            }
+            _ => None,
+        };
         let result = self
             .state
-            .create_session_response(request.with_owner_user_id(caller_user_id))
+            .create_prepared_session_response(request.with_owner_user_id(caller_user_id), prepared)
             .await;
         self.with_session_projection_action_result(result).await
     }

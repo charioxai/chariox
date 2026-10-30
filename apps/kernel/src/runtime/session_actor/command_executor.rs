@@ -90,7 +90,7 @@ impl SessionRuntimeCommandExecutor {
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
-        project_resolution: Option<crate::runtime::state::PreparedProjectResolution>,
+        project_resolution: Option<crate::runtime::state::PreparedProjectEntry>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let Some(actor) = caller_metaagent_id.as_deref() {
             self.store.authorize_room_agent_request(actor, &request)?;
@@ -200,12 +200,14 @@ impl SessionRuntimeCommandExecutor {
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
-        project_resolution: Option<crate::runtime::state::PreparedProjectResolution>,
+        project_resolution: Option<crate::runtime::state::PreparedProjectEntry>,
     ) -> StoreRequestFuture<'_> {
         match request {
-            LocalDaemonRequest::CreateSession(request) => {
-                Box::pin(async move { self.store.create_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CreateSession(request) => Box::pin(async move {
+                self.store
+                    .create_session(request, caller_user_id, project_resolution)
+                    .await
+            }),
             LocalDaemonRequest::ResolveProject(request) => Box::pin(async move {
                 (
                     self.store

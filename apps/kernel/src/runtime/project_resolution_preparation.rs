@@ -1,6 +1,10 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: filesystem and Git preparation in the owned metadata worker.
 use crate::session::RuntimeProject;
 use serde::{Deserialize, Serialize};
+use std::cell::OnceCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Candidate {
@@ -36,7 +40,60 @@ impl Failure {
         }
     }
 }
-fn matching_workspace<'a>(candidate: &'a Candidate, workspace: &str) -> Option<&'a str> {
+// A saved folder that does not answer within this bound cannot be proven to be the requested one.
+const SAVED_FOLDER_PROBE: Duration = Duration::from_secs(1);
+
+// Real paths of the saved folders, probed together on first use: an unresponsive mount costs one
+// bound and never decides the outcome for the others. Stuck probes end with this worker process.
+struct SavedFolders<'a> {
+    input: &'a Input,
+    resolved: OnceCell<HashMap<String, PathBuf>>,
+}
+impl<'a> SavedFolders<'a> {
+    fn new(input: &'a Input) -> Self {
+        Self {
+            input,
+            resolved: OnceCell::new(),
+        }
+    }
+    fn resolved(&self) -> &HashMap<String, PathBuf> {
+        self.resolved.get_or_init(|| {
+            let (answers, received) = std::sync::mpsc::channel();
+            let saved = self.input.selected.iter().chain(&self.input.defaults);
+            for path in saved.flat_map(|candidate| candidate.workspaces.iter().cloned()) {
+                let answers = answers.clone();
+                std::thread::spawn(move || {
+                    #[cfg(test)]
+                    if std::env::var_os("CHARIOX_PROJECT_PREPARATION_STALL_PATH")
+                        .is_some_and(|stalled| stalled == path.as_str())
+                    {
+                        std::thread::sleep(Duration::from_secs(30));
+                    }
+                    // A saved folder that is gone cannot be this folder.
+                    if std::fs::symlink_metadata(&path).is_ok() {
+                        if let Ok(real) = std::fs::canonicalize(&path) {
+                            let _ = answers.send((path, real));
+                        }
+                    }
+                });
+            }
+            drop(answers);
+            let deadline = Instant::now() + SAVED_FOLDER_PROBE;
+            let mut resolved = HashMap::new();
+            while let Ok((path, real)) =
+                received.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                resolved.insert(path, real);
+            }
+            resolved
+        })
+    }
+}
+fn matching_workspace<'a>(
+    candidate: &'a Candidate,
+    workspace: &str,
+    folders: &SavedFolders,
+) -> Option<&'a str> {
     candidate
         .workspaces
         .iter()
@@ -49,20 +106,21 @@ fn matching_workspace<'a>(candidate: &'a Candidate, workspace: &str) -> Option<&
         })
         .or_else(|| {
             let canonical = std::fs::canonicalize(workspace).ok()?;
-            // A saved folder that is gone cannot be this folder; do not resolve it.
-            candidate.workspaces.iter().find(|path| {
-                std::fs::symlink_metadata(path).is_ok()
-                    && std::fs::canonicalize(path).ok().as_ref() == Some(&canonical)
-            })
+            candidate
+                .workspaces
+                .iter()
+                .find(|path| folders.resolved().get(path.as_str()) == Some(&canonical))
         })
         .map(String::as_str)
 }
 pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
+    let folders = SavedFolders::new(&input);
     let selected_binding = input
         .selected
         .as_ref()
         .map(|candidate| {
-            matching_workspace(candidate, &input.workspace).ok_or(Failure::WorkspaceMismatch)
+            matching_workspace(candidate, &input.workspace, &folders)
+                .ok_or(Failure::WorkspaceMismatch)
         })
         .transpose()?;
     // Detached, already saved Projects remain readable without a filesystem preflight.
@@ -109,7 +167,7 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
         })
         .or_else(|| {
             input.defaults.iter().find_map(|candidate| {
-                matching_workspace(candidate, &canonical).map(|path| (candidate, path))
+                matching_workspace(candidate, &canonical, &folders).map(|path| (candidate, path))
             })
         });
     if let Some((candidate, binding)) = matched {

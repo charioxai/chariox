@@ -13,7 +13,15 @@ pub(crate) struct AgentOutputSeenAck {
 impl KernelRuntimeState {
     pub(crate) async fn create_session_response(
         &self,
+        request: crate::session::CreateSessionRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.create_prepared_session_response(request, None).await
+    }
+
+    pub(crate) async fn create_prepared_session_response(
+        &self,
         mut request: crate::session::CreateSessionRequest,
+        prepared_workspace: Option<crate::runtime::state::PreparedSessionWorkspace>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         // Every session-create path (local, sliced, remote) starts from here:
         // the first agent gets a real provider, never the `default` placeholder.
@@ -57,7 +65,7 @@ impl KernelRuntimeState {
         }
         request = canonicalize_session_workspace(request);
         if slice_ref.is_none() && kernel_ref.is_none() {
-            request = self.prepare_session_workspace(request).await?;
+            request = self.apply_prepared_session_workspace(request, prepared_workspace)?;
         }
         let existing_project_ids = self
             .owned
@@ -1445,7 +1453,10 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
 }
 
-fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+pub(super) fn kernel_ref_matches_local_config(
+    config: &crate::config::DaemonConfig,
+    kernel_ref: &str,
+) -> bool {
     let kernel_ref = kernel_ref.trim();
     !kernel_ref.is_empty()
         && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))
