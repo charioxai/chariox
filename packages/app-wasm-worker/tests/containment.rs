@@ -55,10 +55,7 @@ fn main() {
         "unsigned-code",
         "installation-files",
     ] {
-        if matches!(
-            scenario,
-            "memory" | "without-landlock" | "icache" | "installation-files"
-        ) && cfg!(target_os = "macos")
+        if matches!(scenario, "memory" | "without-landlock" | "icache") && cfg!(target_os = "macos")
         {
             println!("NATIVE {scenario}: NOT RUN (Linux-only native probe)");
             continue;
@@ -176,12 +173,14 @@ fn child(scenario: &str, mode: &str) {
         None
     };
     let green = mode == "green";
-    // An installed App's data directory, created before the boundary as the
-    // kernel does; it must be the only native file authority left.
+    // An installed App's data and tmp directories, created before the boundary
+    // as the kernel does; they must be the only native file authority left.
     let data = std::path::Path::new(&outside).with_file_name(format!("data-{mode}"));
+    let tmp = data.with_file_name(format!("tmp-{mode}"));
     let files = if scenario == "installation-files" {
         fs::create_dir(&data).unwrap();
-        vec![data.clone()]
+        fs::create_dir(&tmp).unwrap();
+        vec![data.clone(), tmp.clone()]
     } else {
         vec![]
     };
@@ -477,14 +476,40 @@ fn child(scenario: &str, mode: &str) {
             fs::rename(data.join("note"), data.join("nested/note")).unwrap();
             assert_eq!(fs::read(data.join("nested/note")).unwrap(), b"App file");
             fs::remove_file(data.join("nested/note")).unwrap();
+            fs::write(tmp.join("scratch"), b"App tmp").unwrap();
+            assert_eq!(fs::read(tmp.join("scratch")).unwrap(), b"App tmp");
+            fs::remove_file(tmp.join("scratch")).unwrap();
             let read = fs::read(&outside);
             assert_eq!(read.is_err(), green, "file outside the installation");
             let written = fs::write(data.with_file_name("escape"), b"x");
             assert_eq!(written.is_err(), green, "write outside the installation");
+            // A link the App makes inside its own files cannot reach outside.
+            std::os::unix::fs::symlink(&outside, data.join("link")).unwrap();
+            let linked = fs::read(data.join("link"));
+            assert_eq!(linked.is_err(), green, "symlink out of the installation");
             if green {
-                assert_eq!(read.unwrap_err().raw_os_error(), Some(libc::EACCES));
-                let socket = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-                assert!(socket < 0, "file grants must not admit sockets");
+                // Landlock answers EACCES; Seatbelt answers EPERM.
+                for (operation, result) in [
+                    ("read", read),
+                    ("write", written.map(|()| Vec::new())),
+                    ("symlink", linked),
+                ] {
+                    let errno = result.unwrap_err().raw_os_error();
+                    let refused = if cfg!(target_os = "linux") {
+                        errno == Some(libc::EACCES)
+                    } else {
+                        matches!(errno, Some(libc::EPERM) | Some(libc::EACCES))
+                    };
+                    assert!(refused, "{operation} outside the installation: {errno:?}");
+                }
+                // Seatbelt mediates use of a socket, not its allocation.
+                if cfg!(target_os = "linux") {
+                    let socket = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+                    assert!(socket < 0, "file grants must not admit sockets");
+                }
+                let connected =
+                    std::net::TcpStream::connect(std::env::var("PROBE_LISTENER").unwrap());
+                assert!(connected.is_err(), "file grants must not admit network");
                 let spawned = Command::new(&executable).arg("--spawn-probe").status();
                 assert!(spawned.is_err(), "file grants must not admit exec");
             }

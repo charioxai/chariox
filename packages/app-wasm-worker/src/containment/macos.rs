@@ -1,7 +1,9 @@
-//! Reuses the v1 worker's parameter-free Seatbelt entry and signed JIT policy.
+//! Reuses the v1 worker's Seatbelt entry and signed JIT policy; `seatbelt.rs`
+//! adds an installed App's data/tmp grants as profile parameters.
 use std::{
-    ffi::{c_char, c_int, c_void, CString},
+    ffi::{c_char, c_int, c_void},
     io,
+    path::PathBuf,
 };
 
 #[link(name = "sandbox")]
@@ -42,7 +44,7 @@ unsafe extern "C" {
     fn csops(pid: libc::pid_t, operation: u32, address: *mut c_void, size: usize) -> c_int;
 }
 
-pub(super) fn enter() -> io::Result<()> {
+pub(super) fn enter(files: &[PathBuf]) -> io::Result<()> {
     close_extra_descriptors()?;
     let mut flags: u32 = 0;
     if unsafe {
@@ -63,11 +65,21 @@ pub(super) fn enter() -> io::Result<()> {
     }
     signing_policy()?;
     super::ceilings()?;
-    let profile = CString::new(include_str!("macos.sb")).expect("static profile");
+    // Seatbelt matches resolved paths (for example /var is /private/var).
+    let files = files
+        .iter()
+        .map(std::fs::canonicalize)
+        .collect::<io::Result<Vec<_>>>()?;
+    let profile = super::seatbelt::profile(&files)?;
     let mut error = std::ptr::null_mut();
-    let parameters = [std::ptr::null()];
+    let parameters: Vec<*const c_char> = profile
+        .parameters
+        .iter()
+        .map(|value| value.as_ptr())
+        .chain([std::ptr::null()])
+        .collect();
     let result = unsafe {
-        sandbox_init_with_parameters(profile.as_ptr(), 0, parameters.as_ptr(), &mut error)
+        sandbox_init_with_parameters(profile.text.as_ptr(), 0, parameters.as_ptr(), &mut error)
     };
     let failure = (result != 0).then(|| super::syscall_error("sandbox_init_with_parameters"));
     if !error.is_null() {
