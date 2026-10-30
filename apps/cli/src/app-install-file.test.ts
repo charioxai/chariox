@@ -31,6 +31,12 @@ test("an untrusted native App worker points at the installation, not the disk", 
   assert.match(formatInstallFailure("app_wasm_runtime"), /must belong to root, or be read-only to your user/)
   assert.doesNotMatch(formatInstallFailure("app_wasm_runtime"), /disk space/)
 })
+test("a worker that cannot be contained says what the host needs, not a kernel code", () => {
+  const text = formatInstallFailure("app_wasm_containment")
+  assert.match(text, /cannot isolate the App worker/)
+  assert.match(text, /Landlock/)
+  assert.doesNotMatch(text, /Kernel failure|app_wasm_containment/)
+})
 test("migration checkpoint failures explain storage recovery", () => {
   assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /Free disk space and check storage permissions/)
   assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /retry the update/)

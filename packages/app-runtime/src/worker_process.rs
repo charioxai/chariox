@@ -265,6 +265,9 @@ pub enum WorkerError {
     LogLimit,
     #[error("app_worker_exited_before_ready")]
     EarlyExit,
+    /// The worker could not enter its OS containment and refused to start.
+    #[error("app_worker_containment")]
+    Containment,
     #[error("app_worker_cancelled")]
     Cancelled,
     #[error("app_worker_supervisor")]

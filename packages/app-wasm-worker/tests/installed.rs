@@ -471,3 +471,44 @@ async fn supervised_installation_root_preopens_only_its_data_and_tmp() {
     assert_eq!(read, written);
     println!("DRILL native supervised preopens data/tmp persist across restart: PASS");
 }
+
+/// R5 fails closed on the installed path: on a host without Landlock (an
+/// inherited seccomp filter answers ENOSYS) the worker refuses with a typed
+/// containment error before ready, and no App code runs.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires real source App; use install-drill.sh"]
+fn installed_worker_without_landlock_refuses_containment() {
+    let installed = Installed::new();
+    let prepared = installed.prepare(worker()).unwrap();
+    // The filter binds only this thread and the worker it spawns.
+    let error = std::thread::spawn(move || {
+        let instruction = |code, k, jt, jf| libc::sock_filter { code, k, jt, jf };
+        let mut filter = [
+            instruction(0x20, 0, 0, 0),
+            instruction(0x15, libc::SYS_landlock_create_ruleset as u32, 0, 1),
+            instruction(0x06, 0x00050000 | libc::ENOSYS as u32, 0, 0),
+            instruction(0x06, 0x7fff0000, 0, 0),
+        ];
+        let program = libc::sock_fprog {
+            len: filter.len() as u16,
+            filter: filter.as_mut_ptr(),
+        };
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+            0
+        );
+        assert_eq!(
+            unsafe { libc::syscall(libc::SYS_seccomp, 1, 0, &program) },
+            0
+        );
+        WorkerProcess::spawn_blocking(prepared, WorkerLimits::default()).err()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        error,
+        Some(chariox_app_runtime::worker_process::WorkerError::Containment)
+    );
+    println!("DRILL installed worker without Landlock refuses containment before ready: PASS");
+}

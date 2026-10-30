@@ -255,6 +255,7 @@ fn native_abi_and_process_lifecycle() {
         ("normal", true, false, WorkerError::ResourceDomain),
         ("normal", false, true, WorkerError::Supervisor),
         ("early", false, false, WorkerError::EarlyExit),
+        ("uncontained", false, false, WorkerError::Containment),
         ("timeout", false, false, WorkerError::StartupTimeout),
     ] {
         let (prepared, observed, marker) = fixture.prepare(mode, reject, panic_verify);

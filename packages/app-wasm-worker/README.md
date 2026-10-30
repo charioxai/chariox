@@ -103,7 +103,9 @@ On macOS the Seatbelt profile grants the same two directories (read, create,
 write and remove beneath them) plus metadata of their exact parent directories,
 which reopening a preopen resolves; the paths are profile parameters, not text.
 Inherited descriptors are closed before that boundary.
-Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
+Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready: the
+worker sends `CXAWC001` instead of its ready record and exits, and the kernel
+reports `app_wasm_containment`; the OS reason stays in the worker's log.
 On aarch64 Linux only, seccomp admits the private code-cache membarrier commands
 32/64 with zero flags for Wasmtime publication; other commands remain denied.
 

@@ -1,6 +1,9 @@
 use super::WorkerError;
 
 pub(super) const CONTINUE: &[u8; 8] = b"CXAWGO01";
+/// Sent instead of the ready record by a worker that cannot enter its OS
+/// containment; it exits without running App code.
+pub(super) const UNCONTAINED: &[u8; 8] = b"CXAWC001";
 
 pub(super) enum PreparedLaunch {
     Node(LaunchRecord),

@@ -65,13 +65,12 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     // Every supervisor input is read and the installation's directories are
     // resolved; nothing runs as the App before R5's boundary, including the
     // engine's threads, registration and the ready reply.
-    crate::containment::enter(
+    cli::contain(
         &directories
             .as_ref()
             .map(crate::wasi::InstallationDirectories::files)
             .unwrap_or_default(),
-    )
-    .map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
+    )?;
     wasmtime::ensure!(
         format!("sha256:{:x}", Sha256::digest(&bytes)) == launch.cache_key.component_digest,
         "trusted component digest mismatch"

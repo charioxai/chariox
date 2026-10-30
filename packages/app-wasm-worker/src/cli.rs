@@ -52,6 +52,19 @@ pub(crate) fn inherited_stream(
     }
     Ok(stream)
 }
+/// Enter R5 containment, or tell the supervisor this worker cannot be contained
+/// (in place of its ready record) and fail. The kernel reports the typed
+/// refusal; the OS reason stays in this worker's log.
+pub(crate) fn contain(files: &[std::path::PathBuf]) -> wasmtime::Result<()> {
+    crate::containment::enter(files).map_err(|error| {
+        // If even the refusal cannot be sent, the supervisor still sees an
+        // exit before ready; the App does not start either way.
+        if let Ok(mut stream) = inherited_stream(4) {
+            let _ = stream.write_all(b"CXAWC001");
+        }
+        wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}"))
+    })
+}
 pub(crate) fn ready(
     generation_text: &str,
     installation_id: &str,
@@ -147,7 +160,7 @@ fn run() -> wasmtime::Result<()> {
             // Neither compilation, registration nor the ready reply can precede
             // containment. R4 uses this same entry for its verified AOT bytes.
             let files=directories.as_ref().map(crate::wasi::InstallationDirectories::files).unwrap_or_default();
-            crate::containment::enter(&files).map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
+            contain(&files)?;
             ready(&launch.generation, &launch.installation_id, &launch.release_digest)?;
             let engine=WorkerEngine::new()?;
             let component=engine.compile(&bytes,&launch.manifest.world)?;
