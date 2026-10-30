@@ -11,6 +11,15 @@ if (!chariox?.action || !chariox?.view || !chariox?.call) throw new Error('Open 
 let api, storage, actions, timer, previousScene;
 let actionQueue = Promise.resolve();
 const loaded = await chariox.call('load_scene', {});
+// An update reloads this view after the kernel switched generations, so the old
+// page can no longer save through the App: its pending edit waits here for the
+// new page, unless the App saved a newer scene meanwhile.
+const DRAFT = 'chariox.excalidraw.draft';
+const draft = (() => {
+  const raw = localStorage.getItem(DRAFT);
+  localStorage.removeItem(DRAFT);
+  try { const saved = JSON.parse(raw); return saved?.base === loaded.version ? saved.scene : null; } catch { return null; }
+})();
 let automaticSaveError;
 const report = error => {
   const message = error.message ?? String(error);
@@ -28,6 +37,10 @@ const ready = next => {
   if (api) return;
   api = next;
   storage = persistence(chariox, api, loaded);
+  chariox.view.beforeUpdate(() => {
+    clearTimeout(timer);
+    localStorage.setItem(DRAFT, JSON.stringify({ base: storage.version(), scene: JSON.parse(sceneJSON(api)) }));
+  });
   actions = Object.fromEntries(declarations.uiActions.map(declaration => [declaration.name,
     chariox.action(declaration, (input, caller) => {
       const result = actionQueue.then(() => {
@@ -70,7 +83,7 @@ document.addEventListener('paste', event => {
 }, true);
 
 createRoot(document.getElementById('root')).render(
-  <Excalidraw excalidrawAPI={ready} initialData={loaded.scene ?? { appState: { currentItemFontFamily: 1 } }}
+  <Excalidraw excalidrawAPI={ready} initialData={draft ?? loaded.scene ?? { appState: { currentItemFontFamily: 1 } }}
     UIOptions={{ canvasActions: { export: false, saveAsImage: false }, tools: { image: false } }}
     onPaste={data => {
       if (!data.elements?.some(element => element.type === 'image') && !data.files && !data.mixedContent?.some(item => item.type === 'imageUrl')) return true;

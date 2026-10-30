@@ -42,6 +42,7 @@ export function persistence(chariox, api, loaded) {
   const filename = (name = 'diagram', extension = '.excalidraw') => name.endsWith(extension) ? name : name + extension;
   return {
     save,
+    version: () => version,
     status: () => ({ saved: !failure, error: failure?.message ?? null }),
     async save_file({ name } = {}, caller) {
       // A private copy must remain possible after a concurrent-view conflict.

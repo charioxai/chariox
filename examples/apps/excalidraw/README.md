@@ -79,6 +79,10 @@ does not repeat an active notice; another edit after dismissal or an explicit
 action can report it again. Use Save a copy and keep the offered file before
 reloading, then Open it to recover edits.
 Reloading clears the automatic-save error and loads the latest durable scene.
+When an update reloads the view, an edit still waiting for its automatic save is
+kept in the view's web storage and restored by the new page, unless another
+view saved a newer scene meanwhile (the old page can no longer call the App
+once the update is active).
 
 The component file-cleanup regression uses the built backend and a real WASI
 `data` directory, with a fixture file broker. After building `app.wasm`, run:

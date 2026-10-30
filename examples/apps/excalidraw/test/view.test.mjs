@@ -173,3 +173,59 @@ test('canvas, declarations, persistence, native shortcuts and three exports roun
     }
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
 });
+
+// An update reloads the view after the kernel has switched generations, so the
+// old page can no longer call the App: its pending edit must wait in the view's
+// own web storage and come back with the new page.
+async function updateTest(name, body) {
+  test(name, { timeout: 60_000 }, async () => {
+    const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
+    const server = createServer(async (req, res) => {
+      try {
+        const file = resolve(output, 'ui', '.' + new URL(req.url, 'http://localhost').pathname);
+        if (!file.startsWith(resolve(output, 'ui') + '/')) throw Error('invalid path');
+        res.setHeader('Content-Type', types[extname(file)] ?? 'application/octet-stream');
+        res.end(await readFile(file));
+      } catch { res.statusCode = 404; res.end(); }
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const browser = await chromium.launch({ executablePath: process.env.CHARIOX_TEST_CHROME ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    try {
+      const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
+      const backend = { scene: null, version: '1' };
+      await page.exposeFunction('broker', async (call, input) => {
+        if (call === 'load_scene') return { scene: backend.scene, version: backend.version };
+        if (call === 'save_scene') { backend.scene = input.scene; backend.version = String(Number(backend.version) + 1); return { version: backend.version }; }
+        throw Error('unknown backend tool: ' + call);
+      });
+      // A slow save: the App's 300 ms automatic save timer does not fire during the test.
+      await page.addInitScript(`const sdk = (${createViewActions.toString()})((...args) => window.broker(...args)); window.chariox = { action: sdk.action, view: sdk.view, call: (...args) => window.broker(...args) }; window.__charioxViewAgent = sdk.agent;
+        const setTimer = window.setTimeout.bind(window); window.setTimeout = (fn, ms, ...rest) => setTimer(fn, ms === 300 && /\\.save\\(\\)/.test(String(fn)) ? 600000 : ms, ...rest);`);
+      const url = `http://127.0.0.1:${server.address().port}/index.html`;
+      const open = async () => {
+        await page.goto(url);
+        await page.waitForFunction(() => window.__charioxViewAgent.registrations().length === 10);
+        await page.waitForSelector('.excalidraw__canvas.interactive');
+      };
+      const total = () => page.evaluate(() => window.__charioxViewAgent.state().then(r => r.value.total));
+      await open();
+      await page.mouse.click(300, 600);
+      await page.keyboard.press('r');
+      await page.mouse.move(380, 260); await page.mouse.down(); await page.mouse.move(600, 380, { steps: 10 }); await page.waitForTimeout(100); await page.mouse.up();
+      await page.waitForFunction(() => window.__charioxViewAgent.state().then(r => r.value?.total > 0));
+      await page.evaluate(() => window.__charioxViewAgent.prepareUpdate());
+      await body({ open, total, backend });
+    } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+  });
+}
+
+await updateTest('an edit still waiting for its automatic save comes back after the update reloads the view', async ({ open, total }) => {
+  await open();
+  assert.equal(await total(), 1, 'the drawn rectangle must survive the reload');
+});
+
+await updateTest('a saved draft is dropped when the App saved a newer scene meanwhile', async ({ open, total, backend }) => {
+  backend.version = '7';
+  await open();
+  assert.equal(await total(), 0, 'a draft based on an older version must not overwrite the newer scene');
+});
