@@ -81,7 +81,7 @@ struct Bound {
 enum Command {
     /// The sockets to read and send from from now on.
     Sockets(Vec<Arc<UdpSocket>>),
-    Peer(NewPeer),
+    Peer(Box<NewPeer>),
 }
 
 /// Binding requests in flight, by transaction id; the socket readers hand
@@ -144,11 +144,11 @@ impl RtcEndpoint {
             .map_err(|_| invalid_offer("WebRTC offer has no usable data channel"))?;
         bound
             .commands
-            .send(Command::Peer(NewPeer {
+            .send(Command::Peer(Box::new(NewPeer {
                 rtc,
                 grant: grant.to_owned(),
                 direct,
-            }))
+            })))
             .map_err(|_| unavailable("direct WebRTC endpoint is shutting down"))?;
         Ok((answer.to_sdp_string(), bound.epoch))
     }
