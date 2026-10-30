@@ -121,7 +121,8 @@ fn bounded_result(content: Option<&Value>) -> String {
     output
 }
 
-#[derive(Default)]
+// A hot reload hands a turn's pending tool calls to the next kernel program.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct ClaudeToolTranscript {
     pending: BTreeMap<String, PendingTool>,
     pending_bytes: usize,
@@ -130,6 +131,7 @@ pub(super) struct ClaudeToolTranscript {
     unsupported_results: Vec<Value>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingTool {
     name: String,
     // Retain bounded encoded input, not an expanded JSON tree per pending call.

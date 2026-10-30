@@ -86,6 +86,31 @@ pub(crate) const KILLABLE_SHELL_PREFIX: &str = concat!(
     "case \"$chariox_oom_score_adj\" in -*) printf '0\\n' > /proc/self/oom_score_adj;; esac;"
 );
 
+/// Replaces this program with `command`, keeping the PID, with `inherited`
+/// left open. On Linux it runs on the spawn owner thread: parent-death signals
+/// follow the spawning thread, and only the calling thread survives `exec`.
+/// Returns only when `exec` failed.
+#[cfg(unix)]
+pub(crate) fn exec_in_place(mut command: Command, inherited: Vec<i32>) -> io::Error {
+    use std::os::unix::process::CommandExt;
+    let result = on_owner(
+        move || {
+            for fd in &inherited {
+                crate::hot_reload::set_close_on_exec(*fd, false);
+            }
+            let error = command.exec();
+            for fd in &inherited {
+                crate::hot_reload::set_close_on_exec(*fd, true);
+            }
+            Err::<(), _>(error)
+        },
+        |()| {},
+    );
+    result
+        .err()
+        .unwrap_or_else(|| io::Error::other("exec returned"))
+}
+
 pub(crate) fn spawn_pty(
     slave: Box<dyn SlavePty + Send>,
     mut command: CommandBuilder,

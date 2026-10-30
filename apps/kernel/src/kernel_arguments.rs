@@ -6,6 +6,7 @@ pub enum Command {
     Help,
     Version,
     ProtocolVersion,
+    HandoverFormat,
     PrepareProtectedSliceIdentity(u16),
     OwnerManagedEnroll,
     OwnerManagedReady,
@@ -20,6 +21,7 @@ CHARIOX_KERNEL_HOST, CHARIOX_KERNEL_PORT and the Chariox configuration.
   -h, --help                            Print usage and exit
   --version                             Print the package version and exit
   --print-local-daemon-protocol-version  Print the shared protocol version and exit
+  --handover-format                     Print the hot-reload handover format and exit
   --prepare-protected-slice-identity PORT
                                         Prepare a protected slice identity";
 
@@ -35,6 +37,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ("--help" | "-h", 1) => Ok(Command::Help),
         ("--version", 1) => Ok(Command::Version),
         ("--print-local-daemon-protocol-version", 1) => Ok(Command::ProtocolVersion),
+        ("--handover-format", 1) => Ok(Command::HandoverFormat),
         ("--owner-managed-enroll-stdin", 1) => Ok(Command::OwnerManagedEnroll),
         ("--owner-managed-ready", 1) => Ok(Command::OwnerManagedReady),
         ("--owner-managed-self-enroll-stdin", 1) => Ok(Command::OwnerManagedSelfEnroll),
@@ -50,9 +53,14 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ("--prepare-protected-slice-identity", _) => {
             Err("--prepare-protected-slice-identity requires exactly one PORT argument".into())
         }
-        ("--help" | "-h" | "--version" | "--print-local-daemon-protocol-version", _) => {
-            Err(format!("{first} does not accept additional arguments"))
-        }
+        (
+            "--help"
+            | "-h"
+            | "--version"
+            | "--print-local-daemon-protocol-version"
+            | "--handover-format",
+            _,
+        ) => Err(format!("{first} does not accept additional arguments")),
         _ => Err(format!("unknown argument {first}")),
     }
 }

@@ -68,6 +68,26 @@ impl PreparedDomain {
         Self::with_limit(limit)
     }
 
+    /// For a child the previous kernel program started (hot reload): it stays
+    /// in the memory domain it joined then, or is watched by resident memory
+    /// when it had none.
+    pub(crate) fn adopted(cgroup: Option<std::path::PathBuf>, pid: u32) -> std::io::Result<Self> {
+        let limit = configured_limit(
+            std::env::var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB")
+                .ok()
+                .as_deref(),
+        )?;
+        #[cfg(not(target_os = "linux"))]
+        let _ = (cgroup, pid);
+        Ok(Self {
+            limit,
+            #[cfg(target_os = "linux")]
+            cgroup: cgroup
+                .and_then(|path| cgroup::Domain::adopt(path, limit, pid))
+                .map(Arc::new),
+        })
+    }
+
     fn with_limit(limit: u64) -> std::io::Result<Self> {
         if limit < 16 * MIB {
             return Err(std::io::Error::other(
@@ -266,6 +286,14 @@ impl ProcessDomain {
             .unwrap_or_else(|e| e.into_inner())
             .memory_limit_bytes
     }
+    /// The memory domain a hot reload hands over with the process.
+    pub(crate) fn cgroup_path(&self) -> Option<std::path::PathBuf> {
+        #[cfg(target_os = "linux")]
+        return self.cgroup.as_ref().map(|group| group.path().to_path_buf());
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
     pub(crate) fn bind_key(&self, key: &str) {
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
         registry.retain(|_, state| state.strong_count() > 0);

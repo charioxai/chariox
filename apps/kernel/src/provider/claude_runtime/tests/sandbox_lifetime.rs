@@ -24,7 +24,11 @@ fn claude_sandbox_survives_launching_thread_exit() {
             structured_endpoint: None,
         });
         let binding = initialize_claude_runtime(&run).expect("sandbox should launch");
-        let ready = binding.state.receiver.recv_timeout(Duration::from_secs(5));
+        let ready = binding
+            .state
+            .output
+            .receiver
+            .recv_timeout(Duration::from_secs(5));
         assert!(
             matches!(ready, Ok(ClaudeRuntimeMessage::Stdout(value)) if value == json!({"ready": true})),
             "sandbox must be ready before retiring its launching thread"
@@ -37,7 +41,11 @@ fn claude_sandbox_survives_launching_thread_exit() {
         &mut binding.state.stdin,
         &json!({"ping": "after-thread-exit"}),
     );
-    let response = binding.state.receiver.recv_timeout(Duration::from_secs(5));
+    let response = binding
+        .state
+        .output
+        .receiver
+        .recv_timeout(Duration::from_secs(5));
     // Drop owns kill/wait, including on the failing baseline.
     drop(binding);
     assert!(

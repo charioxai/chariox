@@ -31,8 +31,13 @@ use crate::pty::{PtyManager, PtySpawnRequest};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
+#[cfg(unix)]
+mod handover;
 mod outside_events;
 mod pump_task;
+
+#[cfg(unix)]
+pub use handover::TerminalHandover;
 
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -123,12 +128,26 @@ impl RoomTerminalService {
             .collect()
     }
     /// Terminals that ran when the kernel last stopped come back as ended by
-    /// the restart, scrollback kept.
+    /// the restart, scrollback kept; a hot reload's running terminals go on.
     pub fn new(store_root: PathBuf) -> Result<Self, DaemonError> {
         let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
         let store = TerminalStore::new(store_root)?;
+        #[cfg(unix)]
+        let terminals = {
+            let handovers: BTreeMap<_, _> = crate::hot_reload::take_terminals()
+                .into_iter()
+                .map(|handover| (handover.terminal_id.clone(), handover))
+                .collect();
+            let records = store.recover(&handovers.keys().cloned().collect())?;
+            let (terminals, unadopted) = Self::adopt(records, handovers);
+            for record in &unadopted {
+                store.save(record)?;
+            }
+            terminals
+        };
+        #[cfg(not(unix))]
         let terminals = store
-            .recover()?
+            .recover(&Default::default())?
             .into_iter()
             .map(|record| {
                 (
@@ -140,7 +159,7 @@ impl RoomTerminalService {
                 )
             })
             .collect();
-        Ok(Self {
+        let service = Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
                     terminals,
@@ -154,7 +173,13 @@ impl RoomTerminalService {
                 managed: ManagedWork::default(),
                 pump_runtime: OnceLock::new(),
             }),
-        })
+        };
+        for owner in service.owners() {
+            if owner.lock().terminal.is_running() {
+                service.start_pump(&owner);
+            }
+        }
+        Ok(service)
     }
 
     /// Where fired watches go. Bound by the event core, which owns them: the service holds the

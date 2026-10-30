@@ -291,6 +291,35 @@ pub(super) fn execute_terminate_command(
     {
         return Ok(());
     }
+    #[cfg(unix)]
+    if run.adapter_key() == "claude" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_claude_runtime(&run_id)?;
+        match crate::provider::hand_over_claude_runtime(state) {
+            Ok(handover) => {
+                crate::hot_reload::hand_over_claude(&run, handover);
+                return Ok(());
+            }
+            Err(state) => {
+                *slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*state);
+            }
+        }
+    }
+    #[cfg(unix)]
+    if run.adapter_key() == "codex" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_codex_runtime(&run_id)?;
+        // Dropping the state closes only this program's connection: the
+        // app-server keeps running the turn for the next program.
+        if crate::provider::codex_turn_handover(&state)
+            .is_some_and(|turn| crate::hot_reload::hand_over_codex(&run, turn).is_ok())
+        {
+            return Ok(());
+        }
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+    }
     if run.adapter_key() == "opencode"
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
@@ -340,6 +369,12 @@ pub(super) fn execute_output_poll_command(
         return Ok(None);
     }
     if run.adapter_key() == "codex" {
+        // A hot reload hands the turn over with only the text history has:
+        // output taken now could no longer reach it.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_codex_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),
@@ -410,6 +445,12 @@ pub(super) fn execute_output_poll_command(
         }));
     }
     if run.adapter_key() == "claude" {
+        // A hot reload hands the unapplied output over with the turn: output
+        // taken now could no longer reach history.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_claude_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),

@@ -69,6 +69,14 @@ pub fn drain_codex_events(
             account_rate_limits.push(rate_limits);
             continue;
         }
+        #[cfg(unix)]
+        if state
+            .resumed_turn
+            .as_mut()
+            .is_some_and(|resumed| resumed.skips(&notification))
+        {
+            continue;
+        }
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -158,6 +166,10 @@ pub fn drain_codex_events(
         );
     }
 
+    #[cfg(unix)]
+    if state.active_turn_id.is_none() {
+        state.resumed_turn = None;
+    }
     let chunks = state.tool_snapshots.coalesce(
         chunks,
         prompt_completed || terminal_failure.is_some(),

@@ -56,6 +56,12 @@ pub struct CodexRuntimeState {
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
     pub(super) tool_snapshots: super::tool_snapshots::ToolSnapshots,
     pub(super) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
+    // A turn the previous kernel program handed over, until its prompt is
+    // submitted here; then the items it was streaming.
+    #[cfg(unix)]
+    pub(super) adopted_turn: Option<super::handover::CodexHandover>,
+    #[cfg(unix)]
+    pub(super) resumed_turn: Option<super::handover::ResumedTurn>,
 }
 
 impl std::fmt::Debug for CodexRuntimeState {
@@ -126,6 +132,10 @@ impl CodexRuntimeState {
             tool_items: BTreeMap::new(),
             tool_snapshots: Default::default(),
             output_notifier: Default::default(),
+            #[cfg(unix)]
+            adopted_turn: None,
+            #[cfg(unix)]
+            resumed_turn: None,
         }
     }
 
@@ -156,6 +166,10 @@ impl CodexRuntimeState {
             tool_items: BTreeMap::new(),
             tool_snapshots: Default::default(),
             output_notifier: Default::default(),
+            #[cfg(unix)]
+            adopted_turn: None,
+            #[cfg(unix)]
+            resumed_turn: None,
         }
     }
 

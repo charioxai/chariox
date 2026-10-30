@@ -59,6 +59,9 @@ impl RoomTerminalService {
             if state.removed || state.shutdown {
                 return None;
             }
+            if state.handed_over {
+                return Some(PUMP_INTERVAL);
+            }
             let TerminalState {
                 pty,
                 terminal,
@@ -172,12 +175,18 @@ impl RoomTerminalService {
                     continue;
                 }
                 state.shutdown = true;
+                let handed_over = state.handed_over;
                 let TerminalState {
                     pty,
                     terminal,
                     waiters,
                     ..
                 } = &mut *state;
+                waiters.clear();
+                // A hot reload saved it running; the next program adopts its PTY.
+                if handed_over {
+                    continue;
+                }
                 if let Some(run_id) = &terminal.run_id {
                     if let Some(sweep) = &terminal.session_sweep {
                         sweep.stop();
@@ -191,7 +200,6 @@ impl RoomTerminalService {
                     }
                     terminal.end(RoomTerminalOutcome::KernelRestarted);
                 }
-                waiters.clear();
                 terminal.unsaved_since = None;
                 // Enqueue under the owner's lock so close cannot enqueue a
                 // deletion before this final save and then be resurrected.

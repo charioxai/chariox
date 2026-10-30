@@ -161,15 +161,17 @@ impl DaemonApp {
                 &request.provider,
                 &profile.profile_id,
             )?;
-            let provider_credential_env =
-                crate::provider::resolve_provider_account_credentials_for_launch(
+            let provider_credential_env = match handed_over_credentials(&request) {
+                Some(credentials) => credentials,
+                None => crate::provider::resolve_provider_account_credentials_for_launch(
                     &self.config,
                     &self.provider_account_profiles,
                     &account_owner_user_id,
                     &request.provider,
                     &profile.profile_id,
                     request.client_interface,
-                )?;
+                )?,
+            };
             // MP-08 / MP-10 / MP-11: activation refreshes account credentials without
             // dropping the Project bindings already resolved by the runtime.
             let mut launch_environment = std::mem::take(&mut request.provider_credential_env);
@@ -310,6 +312,19 @@ impl DaemonApp {
             request,
         )
     }
+}
+
+/// A turn handed over by a hot reload already runs with its credentials.
+pub(crate) fn handed_over_credentials(
+    request: &crate::provider::LaunchProviderRequest,
+) -> Option<crate::provider::ProviderCredentialEnvironment> {
+    #[cfg(unix)]
+    return crate::hot_reload::handed_over_credentials(
+        &request.session_id,
+        request.agent_id.as_deref(),
+    );
+    #[cfg(not(unix))]
+    None
 }
 
 #[cfg(test)]

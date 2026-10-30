@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin};
-use std::sync::mpsc::Receiver;
+use std::process::ChildStdin;
 
 use serde_json::Value;
 
-use super::process::{stop_child, ClaudeRuntimeMessage};
+use super::handover::AdoptedTurn;
+use super::process::{stop_child, ClaudeChild, ClaudeOutput};
 use super::watchdog::ClaudeTurnWatchdog;
 use super::{AgentExecutionMode, AgentPermissionLevel};
 use crate::provider::claude::ClaudeMcpConfigFile;
@@ -33,12 +33,12 @@ pub struct ClaudeRuntimeState {
     pub(super) usage_file: Option<PathBuf>,
     pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
-    pub(super) child: Child,
+    pub(super) child: ClaudeChild,
     pub(super) resources: Option<crate::runtime::process_resources::ProcessDomain>,
     // Shared with the actor registry while the runtime state is leased for I/O.
     pub(super) process_identity: crate::runtime::kernel_access::process::ProcessIdentitySlot,
     pub(super) stdin: ChildStdin,
-    pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
+    pub(super) output: ClaudeOutput,
     pub(in crate::provider) output_notifier: crate::provider::output_ready::ProviderEventNotifier,
     pub(super) active_model: String,
     pub(super) active_variant: Option<String>,
@@ -61,6 +61,8 @@ pub struct ClaudeRuntimeState {
     pub(super) tool_transcript: super::tool_transcript::ClaudeToolTranscript,
     pub(super) completed_text_blocks: BTreeSet<String>,
     pub(super) exit_reported: bool,
+    // Set when this program adopted a turn from the previous one (hot reload).
+    pub(super) adopted_turn: Option<AdoptedTurn>,
 }
 
 impl std::fmt::Debug for ClaudeRuntimeState {

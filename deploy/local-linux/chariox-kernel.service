@@ -22,6 +22,9 @@ ExecStart=%h/.local/lib/chariox/start-kernel.sh %h/.local/bin/chariox-kernel
 # Stop signals the kernel only: its shutdown stops Apps as stopped, so they come
 # back after a restart. systemd then kills whatever the kernel left behind.
 KillMode=mixed
+# A planned upgrade replaces the kernel program in place (same main PID):
+# running terminals and their commands go on. See hot_reload.rs.
+ExecReload=/bin/kill -USR2 $MAINPID
 TimeoutStopSec=60s
 # Restart after a crash (owner decision, 2026-09-30); a clean stop stays stopped.
 # Apps and pending work recover through the kernel's own startup recovery.

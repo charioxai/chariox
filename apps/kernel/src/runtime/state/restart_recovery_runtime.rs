@@ -135,6 +135,27 @@ impl KernelRuntimeState {
         window: std::time::Duration,
         retry_delay: std::time::Duration,
     ) -> DurableRestartRecoverySummary {
+        let summary = self
+            .drive_durable_restart_recovery_passes(
+                recovery_targets,
+                queued_recovery_targets,
+                window,
+                retry_delay,
+            )
+            .await;
+        // Recovered prompts claimed their handed-over turns by now.
+        #[cfg(unix)]
+        crate::hot_reload::end_unclaimed_providers();
+        summary
+    }
+
+    async fn drive_durable_restart_recovery_passes(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        window: std::time::Duration,
+        retry_delay: std::time::Duration,
+    ) -> DurableRestartRecoverySummary {
         // The interrupted turns' commands may still be running: end them before any provider
         // resumes, or the resumed turn runs the same command beside them.
         match tokio::task::spawn_blocking(crate::app::stop_processes_left_by_dead_kernels).await {
@@ -972,7 +993,12 @@ impl KernelRuntimeState {
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
         let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
-        if adapter_key == "dev-stub" {
+        // A hot reload handed the running turn over: the same prompt continues it.
+        #[cfg(unix)]
+        let handed_over = crate::hot_reload::provider_handed_over(session_id, agent.id());
+        #[cfg(not(unix))]
+        let handed_over = false;
+        if adapter_key == "dev-stub" || handed_over {
             self.redispatch_local_prompt(session_id, agent.id(), &prompt)
                 .await?;
             return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);

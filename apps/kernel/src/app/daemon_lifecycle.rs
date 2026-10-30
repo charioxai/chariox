@@ -52,6 +52,26 @@ impl DaemonApp {
         Ok(())
     }
 
+    /// While the kernel stops for a hot reload, the session's Codex
+    /// app-servers stay up for their running turns to be handed over.
+    fn offer_provider_ptys_for_hot_reload(&self, session_id: &str) -> Vec<String> {
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return self
+                .providers
+                .list_runs()
+                .into_iter()
+                .filter(|run| run.session_id() == session_id && run.adapter_key() == "codex")
+                .filter_map(|run| {
+                    let pty = self.pty.handover(run.id()).ok()?;
+                    crate::hot_reload::offer_provider_pty(run.id(), pty);
+                    Some(run.id().to_string())
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
     fn shutdown_cleanup_session_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
         let removed_attachments = self.attachments.remove_session_attachments(session_id);
         for attachment in &removed_attachments {
@@ -65,6 +85,7 @@ impl DaemonApp {
             }
         }
 
+        let offered_ptys = self.offer_provider_ptys_for_hot_reload(session_id);
         let terminated_runs = self
             .providers
             .terminate_session_runs_provider_only(session_id)?;
@@ -84,7 +105,11 @@ impl DaemonApp {
                 self.sessions.set_active_provider_run(session_id, None)?;
             }
             self.update_provider_run_projection(run.clone());
-            provider_runtime::ProviderProcessTracker::new(self).remove_run(run.id())?;
+            // A PTY offered to a hot reload ends before the swap unless its
+            // turn is handed over.
+            if !offered_ptys.iter().any(|run_id| run_id == run.id()) {
+                provider_runtime::ProviderProcessTracker::new(self).remove_run(run.id())?;
+            }
         }
 
         for run in self.providers.list_runs() {
@@ -146,6 +171,13 @@ impl DaemonApp {
         let history_migration_owner = self.config.daemon_id.clone();
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        #[cfg(unix)]
+        let hot_reload = crate::hot_reload::requested(
+            self.room_terminals(),
+            self.config
+                .private_runtime_state_root()
+                .join("handover.json"),
+        );
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -225,6 +257,14 @@ impl DaemonApp {
         // must not mutate kernel-owned active prompt state.
 
         let shutdown = async {
+            // A hot reload stops like a planned restart, except that running
+            // terminals are handed over; main then replaces the program.
+            #[cfg(unix)]
+            tokio::select! {
+                () = wait_for_shutdown_signal() => {}
+                () = hot_reload => {}
+            }
+            #[cfg(not(unix))]
             wait_for_shutdown_signal().await;
             runtime_state.finish_outside_waits_on_shutdown().await;
             let _ = shutdown_tx.send(true);
