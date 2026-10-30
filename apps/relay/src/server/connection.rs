@@ -330,9 +330,11 @@ pub(crate) async fn handle_connection(
             crate::transport_timing::record("relay_read", crate::transport_timing::message_signature(&message));
             last_read_at = Instant::now();
             // Binary replies enter exactly the same authenticated pending-route ledger as JSON replies.
+            let mut counted = false;
             let message = match message {
                 Message::Binary(bytes) if bytes.starts_with(b"CXR2") => {
                     connection_meter.record(Direction::In, CONTROL_SCOPE, bytes.len());
+                    counted = true;
                     if !binary_events || registered_daemon_key.is_none() {
                         send_close(&outgoing_tx,"binary responses require a negotiated daemon connection".into());
                         break;
@@ -373,11 +375,13 @@ pub(crate) async fn handle_connection(
                         }
                         _ => None,
                     };
-                    connection_meter.record(
-                        Direction::In,
-                        scope.as_deref().unwrap_or(CONTROL_SCOPE),
-                        text.len(),
-                    );
+                    if !counted {
+                        connection_meter.record(
+                            Direction::In,
+                            scope.as_deref().unwrap_or(CONTROL_SCOPE),
+                            text.len(),
+                        );
+                    }
                     match envelope {
                         RelayEnvelope::DaemonRegister { registration } => {
                             let identity = verify_relay_token(

@@ -97,6 +97,7 @@ fn control(message: &Message) -> bool {
 }
 struct Transfer {
     id: u32,
+    scope: Arc<str>,
     key: Option<String>,
     small: bool,
     text: String,
@@ -252,8 +253,9 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
     }
     Some(message)
 }
-/// Counts what the writer takes from the connection's queue, by the scope of
-/// the subscription the frame belongs to (control when it belongs to none).
+/// Counts what the writer puts on the socket, by the scope of the stream the
+/// frame belongs to (control when it belongs to none). Chunk frames count as
+/// sent, so the totals are the payload bytes the peer receives.
 pub(super) struct WriterUsage {
     meter: ConnectionMeter,
     scope_of: Box<dyn Fn(&str) -> Option<Arc<str>> + Send>,
@@ -273,32 +275,36 @@ impl WriterUsage {
             scope_of: Box::new(scope_of),
         }
     }
-    fn record(&self, message: &Message, stream: Option<&Stream>) {
-        if !matches!(message, Message::Text(_) | Message::Binary(_)) {
-            return;
-        }
-        let scope = match stream {
+    fn scope(&self, stream: Option<&Stream>) -> Arc<str> {
+        match stream {
             Some(Stream::Subscription(id)) => (self.scope_of)(id),
             Some(Stream::DisplayTunnel) => Some(Arc::from(DISPLAY_TUNNEL_SCOPE)),
             None => None,
-        };
-        self.meter.record(
-            Direction::Out,
-            scope.as_deref().unwrap_or(CONTROL_SCOPE),
-            message.len(),
-        );
+        }
+        .unwrap_or_else(|| Arc::from(CONTROL_SCOPE))
+    }
+    fn sent(&self, scope: &str, message: &Message) {
+        if matches!(message, Message::Text(_) | Message::Binary(_)) {
+            self.meter.record(Direction::Out, scope, message.len());
+        }
     }
 }
 struct Queued {
     message: Message,
     lane: Lane,
     key: Option<String>,
+    scope: Arc<str>,
 }
 impl Queued {
     fn new(message: Message, display_route: &impl Fn(&str) -> bool, usage: &WriterUsage) -> Self {
-        let (lane, key, subscription) = lane(&message, display_route);
-        usage.record(&message, subscription.as_ref());
-        Self { message, lane, key }
+        let (lane, key, stream) = lane(&message, display_route);
+        let scope = usage.scope(stream.as_ref());
+        Self {
+            message,
+            lane,
+            key,
+            scope,
+        }
     }
     // A single-chunk message: interactive frames, never bulk.
     fn small(&self) -> bool {
@@ -401,6 +407,7 @@ where
                     upgrade(&mut writer).await;
                     return "unchunked_oversize";
                 }
+                usage.sent(&queued.scope, &message);
                 if !write(&mut writer, message).await {
                     return "write_failed";
                 }
@@ -430,6 +437,7 @@ where
                 let queued = pending.remove(index).unwrap();
                 let class = queued.lane;
                 let key = queued.key.clone();
+                let scope = queued.scope.clone();
                 let small = queued.small();
                 let message = queued.message;
                 if message.len() > MAX_MESSAGE_BYTES {
@@ -449,6 +457,7 @@ where
                 };
                 let transfer = Transfer {
                     id,
+                    scope,
                     key,
                     small,
                     text,
@@ -523,12 +532,15 @@ where
                         } else {
                             None
                         };
+                        let scope = transfer.scope.clone();
                         active.push_back(transfer);
                         if let Some(binary) = binary {
+                            usage.sent(&scope, &binary);
                             if !write(&mut writer, binary).await {
                                 return "write_failed";
                             }
                         }
+                        usage.sent(&scope, &message);
                         if !write(&mut writer, message).await {
                             return "write_failed";
                         }
@@ -692,6 +704,7 @@ mod tests {
         let mut active = VecDeque::from([
             Transfer {
                 id: 1,
+                scope: CONTROL_SCOPE.into(),
                 key: None,
                 small: true,
                 text: "x".into(),
@@ -702,6 +715,7 @@ mod tests {
             },
             Transfer {
                 id: 2,
+                scope: CONTROL_SCOPE.into(),
                 key: None,
                 small: true,
                 text: "y".into(),
