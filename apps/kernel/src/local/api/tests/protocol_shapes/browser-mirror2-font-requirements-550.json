@@ -4,7 +4,7 @@
     "MP-10",
     "MP-11"
   ],
-  "local_protocol": 710,
+  "local_protocol": 711,
   "peer_protocol": 274,
   "allocation": "coordinator-authorized additive unreleased539/147",
   "reset": {

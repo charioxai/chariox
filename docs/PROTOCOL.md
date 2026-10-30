@@ -3,7 +3,7 @@
 MP-08 / MP-09 / MP-10 / MP-11: Chariox is in development; backward compatibility
 with older kernels is not a goal. The managed-upgrade policy admits only the
 current release and the previous release (636 and 629 today), plus the new
-protocol 710 candidate. Older kernels are
+protocol 711 candidate. Older kernels are
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
@@ -5657,7 +5657,10 @@ Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
 same-owner recipient's kernel identity and key. It reuses the independent
 Vault-backed account transfer and `ProviderAccountCopyReceipt`; it does not
 create a worker lease or enable synchronization. `CopyProviderAccountFromKernel`
-takes optional `session_id` and `agent_id`: when the receiving kernel's Vault is
-locked or was never created, the kernel asks for it with the usual Vault
-interaction in that session after the owner consents, then continues the same
-copy. See [provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).
+takes optional `session_id` and `agent_id` (local protocol 711; a kernel below
+711 rejects them, so clients send them only to a kernel known to be at 711 or
+newer): when the receiving kernel's Vault is locked or was never created and a
+session is given, the kernel asks for it with the usual Vault interaction in
+that session after the owner consents, then continues the same copy. An
+already open Vault needs neither a session nor a prompt, whatever its unlock
+policy. See [provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).

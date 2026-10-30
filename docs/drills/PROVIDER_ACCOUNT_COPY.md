@@ -35,9 +35,12 @@ login stored on the source is offered at once.
 
 A receiver whose Vault is locked or was never created asks for the passphrase
 after consent through the ordinary Vault unlock interaction of the session the
-copy was started from (`session_id` and `agent_id` on the request), then
-finishes the same operation. Without a session the copy fails with the Vault
-message and can be retried.
+copy was started from (`session_id` and `agent_id` on the request, local protocol 711), then
+finishes the same operation. An open Vault needs no session and no prompt, also
+under the `always` unlock policy, so a copy started in a browser waiting room
+works. Without a session a locked or never-created Vault fails the copy with the
+retryable `provider_account_copy_vault_locked` error (unlock the Vault, then retry
+the same operation); a prompt without a session is the owner's open decision.
 
 The receiving kernel binds an existing detached `RuntimeInteraction` to the
 source profile and key, destination key, operation ID and replacement choice.

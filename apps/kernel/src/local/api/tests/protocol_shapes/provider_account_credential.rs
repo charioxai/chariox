@@ -194,12 +194,23 @@ fn account_copy_recipient_offer_requests_are_admitted() {
 }
 
 #[test]
-fn account_copy_recipient_protocol_710_peer_274_snapshot_and_hash() {
+fn account_copy_recipient_protocol_711_peer_274_snapshot_and_hash() {
+    assert!(
+        LOCAL_DAEMON_PROTOCOL_VERSION >= 711,
+        "the session_id/agent_id on CopyProviderAccountFromKernel are protocol 711"
+    );
     let list: LocalDaemonRequest =
         serde_json::from_value(serde_json::json!({"ListProviderAccountCopyOffers":{}})).unwrap();
     let receive: LocalDaemonRequest =
         serde_json::from_value(serde_json::json!({"CopyProviderAccountFromKernel":{
             "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}))
+        .unwrap();
+    let scoped: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"CopyProviderAccountFromKernel":{
+            "session_id":"session", "agent_id":"agent",
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-2",
             "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
         }}))
         .unwrap();
@@ -243,12 +254,12 @@ fn account_copy_recipient_protocol_710_peer_274_snapshot_and_hash() {
         .get("copyable")
         .is_none());
     metadata.copyable = true;
-    let snapshot = serde_json::json!([list, receive, peer, offers, metadata]);
+    let snapshot = serde_json::json!([list, receive, scoped, peer, offers, metadata]);
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "aaf1b20efdf3c356c5cb04ed0fff7f5955d467eb83abd4bb4a4075a67f268ab9"
+        "77431d2ab46f1608599ac6b2f2e9db738307f09d6140da81b9fc79cb1ff28e51"
     );
 }

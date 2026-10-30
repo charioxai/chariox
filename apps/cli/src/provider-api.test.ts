@@ -103,17 +103,32 @@ test("setup-token run names protocol411 when the daemon lacks its run field", as
   )
 })
 
-test("a login copy names the session that shows the Vault prompt", async () => {
+const copyOffer = { source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }
+async function sentCopyRequest(kernelProtocol: number | undefined): Promise<Record<string, any>> {
   const sent: Array<Record<string, any>> = []
-  const client = { send: async (request: Record<string, any>) => {
-    sent.push(request)
-    return request.RelayStatus === null
-      ? { RelayStatus: { status: { daemon_id: "b" } } }
-      : { ProviderAccountCopied: { receipt: { operation_id: "op", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" } } }
-  } } as unknown as LocalIpcClient
-  const offer = { source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }
-  await copyProviderAccountFromKernel(client, offer, "op", { sessionId: "s1", agentId: "agent-1" })
-  const request = sent.find(item => item.CopyProviderAccountFromKernel)!.CopyProviderAccountFromKernel
+  const client = {
+    kernelProtocolVersion: async () => kernelProtocol,
+    send: async (request: Record<string, any>) => {
+      sent.push(request)
+      return request.RelayStatus === null
+        ? { RelayStatus: { status: { daemon_id: "b" } } }
+        : { ProviderAccountCopied: { receipt: { operation_id: "op", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" } } }
+    },
+  } as unknown as LocalIpcClient
+  await copyProviderAccountFromKernel(client, copyOffer, "op", { sessionId: "s1", agentId: "agent-1" })
+  return sent.find(item => item.CopyProviderAccountFromKernel)!.CopyProviderAccountFromKernel
+}
+
+test("a login copy names the session that shows the Vault prompt", async () => {
+  const request = await sentCopyRequest(711)
   assert.equal(request.session_id, "s1")
   assert.equal(request.agent_id, "agent-1")
 })
+
+// A 710 kernel rejects the unknown session_id/agent_id before consent; so does a kernel of unknown version.
+for (const [name, kernelProtocol] of [["710", 710], ["unknown", undefined]] as const) {
+  test(`a login copy sends the 710 request to a ${name} kernel`, async () => {
+    const request = await sentCopyRequest(kernelProtocol)
+    assert.deepEqual(Object.keys(request).sort(), ["account_profile", "operation_id", "provider", "replace", "source_kernel_id", "source_key_thumbprint"])
+  })
+}
