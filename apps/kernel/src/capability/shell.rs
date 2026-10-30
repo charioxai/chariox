@@ -143,6 +143,8 @@ mod platform {
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
 
+    use crate::runtime::owned_process_signals::OwnedProcessSignals;
+
     pub(super) trait Pipe: AsRawFd {}
     impl<T: AsRawFd> Pipe for T {}
 
@@ -152,13 +154,35 @@ mod platform {
 
     pub(super) struct Process {
         pub(super) child: Child,
+        owned: OwnedProcessSignals,
+        reaped: bool,
     }
 
     impl Process {
         pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
-            command.process_group(0);
+            // The command leads its own session, so everything it starts is
+            // provably its own while its leader is still unreaped.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn()?;
+            let owned = match OwnedProcessSignals::for_session_child(&child) {
+                Ok(owned) => owned,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
             let process = Self {
-                child: command.spawn()?,
+                child,
+                owned,
+                reaped: false,
             };
             for fd in [
                 process.child.stdout.as_ref().unwrap().as_raw_fd(),
@@ -173,17 +197,53 @@ mod platform {
             }
             Ok(process)
         }
+
+        /// Whether the leader has exited. It stays unreaped, so its PID and
+        /// group id remain ours until `finish`.
+        pub(super) fn exited(&self) -> io::Result<bool> {
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let id = libc::id_t::from(self.child.id());
+            if unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    id,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(unsafe { info.assume_init().si_pid() } != 0)
+        }
+
+        /// Ends everything the command started, then reaps its leader.
+        pub(super) fn finish(&mut self) -> io::Result<std::process::ExitStatus> {
+            self.end_session();
+            let status = self.child.wait();
+            self.reaped = true;
+            status
+        }
+
+        fn end_session(&mut self) {
+            if self.owned.refresh().is_ok() {
+                let _ = self.owned.kill_group();
+                let _ = self.owned.kill_owned_processes();
+            }
+        }
     }
 
     impl Drop for Process {
         fn drop(&mut self) {
-            // MP-08/MP-10/MP-11: the child group and both pipe readers have
-            // one lifetime on success, timeout, read error and wait error.
-            unsafe {
-                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+            // MP-08/MP-10/MP-11: the command's session and both pipe readers
+            // have one lifetime on success, timeout, read error and wait
+            // error. Signals only go out while the leader is unreaped (or by
+            // recorded start identity), never to a PID that may be reused.
+            if !self.reaped {
+                self.end_session();
+                let _ = self.child.kill();
+                let _ = self.child.wait();
             }
-            let _ = self.child.kill();
-            let _ = self.child.wait();
         }
     }
 }
@@ -191,6 +251,7 @@ mod platform {
 fn capture_output(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
     let mut process = platform::Process::spawn(&mut command)?;
     let started = Instant::now();
+    #[cfg(windows)]
     let mut status = None;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -199,10 +260,20 @@ fn capture_output(mut command: Command, timeout: Duration) -> Result<Output, Cap
         // threads. A flooding stream cannot starve the other or the deadline.
         let stdout_closed = drain_output(process.child.stdout.as_mut().unwrap(), &mut stdout)?;
         let stderr_closed = drain_output(process.child.stderr.as_mut().unwrap(), &mut stderr)?;
-        if status.is_none() {
-            status = process.child.try_wait()?;
-        }
-        if let Some(status) = status.filter(|_| stdout_closed && stderr_closed) {
+        #[cfg(unix)]
+        let exited = process.exited()?;
+        #[cfg(windows)]
+        let exited = {
+            if status.is_none() {
+                status = process.child.try_wait()?;
+            }
+            status.is_some()
+        };
+        if exited && stdout_closed && stderr_closed {
+            #[cfg(unix)]
+            let status = process.finish()?;
+            #[cfg(windows)]
+            let status = status.expect("an exited command has a status");
             return Ok(Output {
                 status,
                 stdout,

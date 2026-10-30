@@ -212,6 +212,9 @@ impl Terminal {
 
     pub(super) fn end(&mut self, outcome: RoomTerminalOutcome) {
         self.run_id = None;
+        // The shell's PID is free for reuse from here on; a later sweep of
+        // "its session" would hit whoever holds that number.
+        self.session_sweep = None;
         self.record.ended = Some(outcome);
         self.unsaved_since = Some(Instant::now());
     }

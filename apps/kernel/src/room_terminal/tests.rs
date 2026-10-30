@@ -506,6 +506,29 @@ async fn shell_exit_ends_the_terminal_and_keeps_its_screen() {
 }
 
 #[tokio::test]
+async fn an_ended_terminal_keeps_no_session_to_sweep() {
+    // Once the shell exits its PID, and with it the session id, is free for
+    // reuse; archiving the agent hours later must not SIGKILL whichever
+    // session leader holds that number by then.
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    type_as(&service, &id, &TerminalActor::User, "exit\r").await;
+    until("the shell to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    assert!(
+        service.lock().terminals[&id].session_sweep.is_none(),
+        "an ended terminal still holds the old shell's session for a later sweep"
+    );
+}
+
+#[tokio::test]
 async fn a_restart_ends_terminals_and_keeps_scrollback() {
     let root = TempDir::new();
     let first = service(root.path());

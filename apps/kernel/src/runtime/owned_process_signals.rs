@@ -27,6 +27,12 @@ impl OwnedProcessSignals {
         Self::capture(child, true)
     }
 
+    /// A process this kernel did not just spawn (an orphan found by scanning).
+    /// Its identity is only as good as the moment of this snapshot.
+    pub(crate) fn for_pid(pid: u32) -> io::Result<Self> {
+        Self::capture_pid(pid, false)
+    }
+
     fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
         Self::capture_pid(child.id(), launched_exclusive_session)
     }
@@ -195,34 +201,61 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        let text = match std::fs::read_to_string(entry.path().join("stat")) {
-            Ok(text) => text,
-            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
-                continue
-            }
-            Err(error) => return Err(error),
-        };
-        let Some((_, tail)) = text.rsplit_once(") ") else {
-            return Err(io::Error::other("invalid process identity"));
-        };
-        let fields: Vec<_> = tail.split_whitespace().collect();
-        if fields.len() < 20 {
-            return Err(io::Error::other("short process identity"));
+        if let Some(row) = linux_row(pid, std::fs::read(entry.path().join("stat")))? {
+            rows.push(row);
         }
-        let parse = |field: &str| {
-            field
-                .parse()
-                .map_err(|_| io::Error::other("invalid process ID"))
-        };
-        rows.push(ProcessIdentity {
-            pid,
-            parent: parse(fields[1])?,
-            group: parse(fields[2])?,
-            session: parse(fields[3])?,
-            start: fields[19].into(),
-        });
     }
     Ok(rows)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessIdentity>> {
+    let bytes = match stat {
+        Ok(bytes) => bytes,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            return Ok(None)
+        }
+        // hidepid or another user's process: its group and session stay
+        // visible, its start identity does not, so it is never ours.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => {
+            return Ok(unreadable_row(pid))
+        }
+        Err(error) => return Err(error),
+    };
+    // The process name is arbitrary bytes; the numbers follow its last ')'.
+    let Some(end) = bytes.iter().rposition(|byte| *byte == b')') else {
+        return Err(io::Error::other("invalid process identity"));
+    };
+    let tail = std::str::from_utf8(&bytes[end + 1..]).map_err(io::Error::other)?;
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    if fields.len() < 20 {
+        return Err(io::Error::other("short process identity"));
+    }
+    let parse = |field: &str| {
+        field
+            .parse()
+            .map_err(|_| io::Error::other("invalid process ID"))
+    };
+    Ok(Some(ProcessIdentity {
+        pid,
+        parent: parse(fields[1])?,
+        group: parse(fields[2])?,
+        session: parse(fields[3])?,
+        start: fields[19].into(),
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn unreadable_row(pid: u32) -> Option<ProcessIdentity> {
+    let id = i32::try_from(pid).ok()?;
+    let (group, session) = unsafe { (libc::getpgid(id), libc::getsid(id)) };
+    (group > 0 && session > 0).then(|| ProcessIdentity {
+        pid,
+        parent: 0,
+        group: group as u32,
+        session: session as u32,
+        start: String::new(),
+    })
 }
 #[cfg(target_os = "macos")]
 fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
@@ -339,6 +372,64 @@ mod tests {
             start: start.into(),
         }
     }
+    /// A process can only rename itself, so a shell does it and then waits.
+    #[cfg(target_os = "linux")]
+    fn spawn_shell_named_invalidly() -> std::process::Child {
+        use std::process::Stdio;
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"printf '\377\376' > /proc/$$/comm; read line; true"#,
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stat = format!("/proc/{}/stat", child.id());
+        while !std::fs::read(&stat).unwrap().contains(&0xff) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_foreign_process_with_a_non_utf8_name_does_not_block_a_witness() {
+        let mut foreign = spawn_shell_named_invalidly();
+        let mut own = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let witness = OwnedProcessSignals::for_child(&own);
+        let seen = snapshot();
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = own.kill();
+        let _ = own.wait();
+        assert!(witness.is_ok(), "witness failed: {:?}", witness.err());
+        assert!(seen.unwrap().iter().any(|row| row.pid == foreign.id()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_unreadable_process_still_counts_as_a_group_member_but_is_never_owned() {
+        let denied = || Err(io::Error::from_raw_os_error(libc::EACCES));
+        let own = std::process::id();
+        let hidden = linux_row(own, denied())
+            .unwrap()
+            .expect("row for a live process");
+        assert!(hidden.start.is_empty());
+        assert_eq!(hidden.group, unsafe { libc::getpgrp() } as u32);
+        let mut guard = OwnedProcessSignals {
+            root: hidden.group,
+            exclusive_session: None,
+            owned: BTreeMap::from([(hidden.group, "root".into())]),
+        };
+        let leader = row(hidden.group, 1, hidden.group, "root");
+        assert!(guard
+            .group_with(&[leader, hidden], |_| panic!("unreadable member signalled"))
+            .is_err());
+    }
+
     #[test]
     fn mp11_review_macos_session_witness_admits_fast_reparented_child() {
         assert_eq!(

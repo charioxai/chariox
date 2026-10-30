@@ -1422,6 +1422,11 @@ fn terminate_child(
 }
 
 fn kill_child(child: &mut Child) {
+    // A reaped child's PID may already belong to someone else, and the group
+    // is anchored to the PID's identity; only an unreaped child is pinned.
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
     let mut group = owned_process_group::OwnedProcessGroup::new(child.id());
     kill_owned_child(child, &mut group);
 }
