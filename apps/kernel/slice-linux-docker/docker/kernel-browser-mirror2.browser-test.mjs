@@ -111,6 +111,17 @@ test("MP-10: an input whose type is re-set to the same value keeps its node; a n
     assert(children(await next(600)) > 0, "MP-10: a new input type still re-serializes the control");
   }));
 
+test("MP-10: a reset carries the page's document mode, so the viewer frame lays out as the page does", async () => {
+  const table = "<table><tr><td>Hacker News</td></tr></table>";
+  for (const [doctype, mode] of [["", "quirks"], ['<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">', "quirks"],
+    ['<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">', "limited-quirks"],
+    ['<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">', "limited-quirks"], ["<!doctype html>", undefined]])
+    await mirrored("", async ({ next }) => {
+      const packet = await next();
+      assert.equal(packet.reset, true); assert.equal(packet.document_mode, mode, doctype || "no doctype");
+      assert.equal((await next(300)).document_mode, undefined, "a delta keeps the reset's mode");
+    }, { "/": { type: "text/html", body: doctype + table } });
+});
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");

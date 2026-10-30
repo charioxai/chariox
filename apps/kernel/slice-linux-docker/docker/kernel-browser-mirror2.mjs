@@ -614,7 +614,7 @@ export class Mirror2 {
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
     if (tiles.length) packet.tiles = tiles;
     if (fallback) packet.fallback = fallback;
-    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
+    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; if (['quirks', 'limited-quirks'].includes(source.document_mode)) packet.document_mode = source.document_mode; }
     else packet.ops = [...source.ops, ...sheets];
     // Morphed nodes (a new page node under a viewer id) count as changed targets.
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);
