@@ -9,7 +9,7 @@ const providerAuthControl = await readFile(
 
 test("terminal provider login uses the shared managed account launch boundary", () => {
   const start = providerAuthControl.indexOf("async fn start_terminal_provider_auth(")
-  const end = providerAuthControl.indexOf("\nfn terminal_provider_auth_args(", start)
+  const end = providerAuthControl.indexOf("\npub(super) fn terminal_provider_auth_args(", start)
   assert.notEqual(start, -1)
   assert.notEqual(end, -1)
   const implementation = providerAuthControl.slice(start, end)
@@ -33,7 +33,7 @@ test("terminal provider login uses the shared managed account launch boundary", 
 
 test("terminal provider login prepares isolation before recording a running login", () => {
   const start = providerAuthControl.indexOf("async fn start_terminal_provider_auth(")
-  const end = providerAuthControl.indexOf("\nfn terminal_provider_auth_args(", start)
+  const end = providerAuthControl.indexOf("\npub(super) fn terminal_provider_auth_args(", start)
   assert.notEqual(start, -1)
   assert.notEqual(end, -1)
   const implementation = providerAuthControl.slice(start, end)
