@@ -2,7 +2,8 @@
 //! looks inside a payload, and a scope is just the label a client chose when it
 //! subscribed. Memory is bounded by a fixed number of scopes per realm and
 //! a fixed number of keys overall; whatever does not fit is counted under
-//! `other`, never dropped.
+//! `other` of its own realm, never dropped and never moved to another realm:
+//! Cloud credits bytes to the account that owns the realm.
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +17,6 @@ pub const SESSION_SCOPE: &str = "session";
 pub const DISPLAY_TUNNEL_SCOPE: &str = "display_tunnel";
 /// Scopes that do not fit the label rules or the per-realm limit.
 pub const OTHER_SCOPE: &str = "other";
-const OVERFLOW_REALM: &str = "_overflow";
 const MAX_SCOPE_LEN: usize = 48;
 const MAX_SCOPES_PER_REALM: usize = 16;
 const MAX_KEYS: usize = 8192;
@@ -87,10 +87,12 @@ impl UsageMeter {
         let mut all = self.counters.lock().unwrap_or_else(|e| e.into_inner());
         let scope = bounded_scope(&all, realm, scope);
         let key = (realm.to_string(), scope.to_string());
+        // Past the key limit a realm keeps one `other` key, so the keys grow
+        // with the realms that talk to the relay and no further.
         let key = if all.contains_key(&key) || all.len() < MAX_KEYS {
             key
         } else {
-            (OVERFLOW_REALM.to_string(), OTHER_SCOPE.to_string())
+            (realm.to_string(), OTHER_SCOPE.to_string())
         };
         all.entry(key).or_default().merge(counters);
     }
@@ -227,13 +229,32 @@ mod tests {
     }
 
     #[test]
-    fn total_keys_are_bounded_and_overflow_is_still_counted() {
+    fn past_the_key_limit_a_realm_adds_one_other_key_and_every_byte_is_counted() {
         let meter = UsageMeter::default();
-        for index in 0..MAX_KEYS + 50 {
+        for index in 0..MAX_KEYS {
             meter.record(&format!("realm-{index}"), CONTROL_SCOPE, Direction::Out, 1);
         }
-        assert!(meter.snapshot().len() <= MAX_KEYS + 1);
-        assert_eq!(total(&meter), (MAX_KEYS + 50) as u64);
+        for index in 0..40 {
+            meter.record("realm-0", &format!("scope-{index}"), Direction::Out, 1);
+        }
+        assert_eq!(meter.snapshot().len(), MAX_KEYS + 1, "one `other` key");
+        assert_eq!(total(&meter), (MAX_KEYS + 40) as u64);
+    }
+
+    #[test]
+    fn traffic_past_the_key_limit_still_reaches_its_realm() {
+        let meter = UsageMeter::default();
+        for index in 0..MAX_KEYS {
+            meter.record(&format!("realm-{index}"), CONTROL_SCOPE, Direction::Out, 1);
+        }
+        meter.record("late-realm", "session", Direction::In, 5);
+        let late: u64 = meter
+            .snapshot()
+            .iter()
+            .filter(|((realm, _), _)| realm == "late-realm")
+            .map(|(_, counters)| counters.bytes_in)
+            .sum();
+        assert_eq!(late, 5, "Cloud credits bytes by realm, so the realm stays");
     }
 
     #[test]
