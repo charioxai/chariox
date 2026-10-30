@@ -216,8 +216,7 @@ export class BrowserCdpClient {
       // browser connection is re-established): it drops out of this
       // reconcile; a live Tab whose session went stale is attached again.
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
-      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
-        || this.layoutMetrics(target.targetId, viewport);
+      const metricsFor = (target) => this.targetMetrics(target.targetId, viewport);
       const projectedPages = pages.filter(target => !appTargets.get(target.targetId)?.background);
       // Window mode changes the available content area. Measure only after
       // Chromium has applied it, and retire page metrics when that mode changes.
@@ -512,6 +511,13 @@ export class BrowserCdpClient {
   layoutViewport(targetId, viewport) {
     const layout = this.viewportByTarget.get(targetId)?.metrics ?? this.layoutByTarget.get(targetId);
     return layout ? { ...viewport, css_width: layout.width, css_height: layout.height } : viewport;
+  }
+
+  // What the Tab's page is configured with: beside the panel for an App Tab,
+  // the viewer layout for any other.
+  targetMetrics(targetId, viewport) {
+    const app = [...(this.appTabs?.apps?.values() ?? [])].find((open) => open.targetId === targetId);
+    return (app && this.appMetrics(app.page)) || this.layoutMetrics(targetId, viewport);
   }
 
   layoutMetrics(targetId, viewport) {
@@ -1161,7 +1167,7 @@ export class BrowserCdpClient {
       if (request.browser_generation !== generation) throw new BrowserControllerError("stale_browser_generation", "Browser artifact needs the observed browser generation");
       const canonical = canonicalViewport(request.viewport);
       const viewport = this.layoutViewport(targetId, canonical);
-      const metricsKey = JSON.stringify(this.layoutMetrics(targetId, canonical));
+      const metricsKey = JSON.stringify(this.targetMetrics(targetId, canonical));
       const assertBound = async () => {
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
