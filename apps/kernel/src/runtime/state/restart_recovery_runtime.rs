@@ -135,6 +135,27 @@ impl KernelRuntimeState {
         window: std::time::Duration,
         retry_delay: std::time::Duration,
     ) -> DurableRestartRecoverySummary {
+        let summary = self
+            .drive_durable_restart_recovery_passes(
+                recovery_targets,
+                queued_recovery_targets,
+                window,
+                retry_delay,
+            )
+            .await;
+        // Recovered prompts claimed their handed-over turns by now.
+        #[cfg(unix)]
+        crate::hot_reload::end_unclaimed_providers();
+        summary
+    }
+
+    async fn drive_durable_restart_recovery_passes(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+        window: std::time::Duration,
+        retry_delay: std::time::Duration,
+    ) -> DurableRestartRecoverySummary {
         // The interrupted turns' commands may still be running: end them before any provider
         // resumes, or the resumed turn runs the same command beside them.
         match tokio::task::spawn_blocking(crate::app::stop_processes_left_by_dead_kernels).await {
@@ -163,9 +184,6 @@ impl KernelRuntimeState {
                     queued_recovery_targets,
                 )
                 .await;
-            // Recovered prompts claimed their handed-over turns in this pass.
-            #[cfg(unix)]
-            crate::hot_reload::end_unclaimed_providers();
             if summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0 {
                 return summary;
             }

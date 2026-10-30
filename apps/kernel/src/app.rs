@@ -30,6 +30,7 @@ mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
+pub(crate) use provider_launch_request::handed_over_credentials;
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_output_claude_native;

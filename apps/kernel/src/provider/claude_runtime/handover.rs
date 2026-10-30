@@ -145,6 +145,9 @@ pub(crate) struct ClaudeHandover {
     settings_file: Option<PathBuf>,
     usage_file: Option<PathBuf>,
     turn: ClaudeTurn,
+    // Passed through memory, never through the handover file.
+    #[serde(skip)]
+    credentials: crate::provider::ProviderCredentialEnvironment,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -181,6 +184,18 @@ impl ClaudeHandover {
 
     pub(crate) fn fds(&self) -> [RawFd; 3] {
         [self.stdin, self.stdout, self.stderr]
+    }
+
+    /// The launch credentials the process runs with, to restart it later.
+    pub(crate) fn credentials(&self) -> &crate::provider::ProviderCredentialEnvironment {
+        &self.credentials
+    }
+
+    pub(crate) fn set_credentials(
+        &mut self,
+        credentials: crate::provider::ProviderCredentialEnvironment,
+    ) {
+        self.credentials = credentials;
     }
 }
 
@@ -250,6 +265,7 @@ pub(super) fn hand_over(
             observed_context_model: state.observed_context_model.clone(),
             main_stream_has_context: state.main_stream_has_context,
         },
+        credentials: state.provider_credential_env.clone(),
     };
     // Nothing of this program may stop the process or close its pipes: the
     // readers stay held and the `exec` replaces this program.

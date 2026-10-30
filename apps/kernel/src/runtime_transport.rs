@@ -1942,11 +1942,14 @@ pub struct KernelBootListener {
 
 impl KernelBootListener {
     pub fn bind(host: &str, port: u16) -> Result<Self, DaemonError> {
-        let listener =
-            StdTcpListener::bind((host, port)).map_err(|error| DaemonError::LocalTransport {
-                operation: "bind booting kernel websocket",
-                message: error.to_string(),
-            })?;
+        #[cfg(unix)]
+        let listener = crate::hot_reload::tcp_listener("kernel", host, port);
+        #[cfg(not(unix))]
+        let listener = StdTcpListener::bind((host, port));
+        let listener = listener.map_err(|error| DaemonError::LocalTransport {
+            operation: "bind booting kernel websocket",
+            message: error.to_string(),
+        })?;
         let boot_listener = listener
             .try_clone()
             .map_err(|error| DaemonError::LocalTransport {

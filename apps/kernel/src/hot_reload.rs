@@ -27,6 +27,9 @@ struct Handover {
     format: u32,
     terminals: Vec<TerminalHandover>,
     providers: Vec<ProviderHandover>,
+    // A pipe holding the providers' launch credentials: they stay in memory.
+    credentials_fd: Option<i32>,
+    listeners: BTreeMap<String, i32>,
 }
 
 /// A provider run whose turn was running: the next program adopts it as the
@@ -137,6 +140,14 @@ pub fn receive() {
             set_close_on_exec(fd, true);
         }
     }
+    let mut handover = handover;
+    if let Some(fd) = handover.credentials_fd {
+        receive_credentials(fd, &mut handover.providers);
+    }
+    for fd in handover.listeners.values() {
+        set_close_on_exec(*fd, true);
+    }
+    *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -151,6 +162,114 @@ pub fn receive() {
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
     std::mem::take(&mut *lock(&RECEIVED_TERMINALS))
+}
+
+// Listening sockets stay open across the swap: a connection that arrives
+// meanwhile waits in the backlog for the new program instead of being refused.
+static LISTENERS: Mutex<BTreeMap<String, i32>> = Mutex::new(BTreeMap::new());
+static INHERITED_LISTENERS: Mutex<BTreeMap<String, i32>> = Mutex::new(BTreeMap::new());
+
+/// The listener named `name`: the one the previous program listened on when
+/// it has the same address, else a new one.
+pub(crate) fn tcp_listener(
+    name: &str,
+    host: &str,
+    port: u16,
+) -> std::io::Result<std::net::TcpListener> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let same = |listener: &std::net::TcpListener| {
+        listener.local_addr().is_ok_and(|address| {
+            address.port() == port
+                && host
+                    .parse::<std::net::IpAddr>()
+                    .map_or(true, |ip| ip == address.ip())
+        })
+    };
+    // The kept copy holds the port, so binding it again here would fail.
+    let kept = lock(&LISTENERS).get(name).and_then(|fd| {
+        let copy = unsafe { libc::fcntl(*fd, libc::F_DUPFD_CLOEXEC, 3) };
+        // SAFETY: a new descriptor of the kept listener, owned here.
+        (copy >= 0).then(|| unsafe { std::net::TcpListener::from_raw_fd(copy) })
+    });
+    let inherited = || {
+        lock(&INHERITED_LISTENERS).remove(name).map(|fd| {
+            // SAFETY: the previous program named this fd for this listener alone.
+            unsafe { std::net::TcpListener::from_raw_fd(fd) }
+        })
+    };
+    let listener = match kept.filter(same).or_else(|| inherited().filter(same)) {
+        Some(listener) => listener,
+        None => std::net::TcpListener::bind((host, port))?,
+    };
+    let kept = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+    if kept >= 0 {
+        if let Some(previous) = lock(&LISTENERS).insert(name.to_string(), kept) {
+            unsafe { libc::close(previous) };
+        }
+    }
+    Ok(listener)
+}
+
+fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    // SAFETY: the previous program named this pipe for this handover alone.
+    let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut body = zeroize::Zeroizing::new(Vec::new());
+    if pipe.read_to_end(&mut body).is_err() {
+        return;
+    }
+    let Ok(mut runs) = serde_json::from_slice::<BTreeMap<String, BTreeMap<String, String>>>(&body)
+    else {
+        return;
+    };
+    for provider in providers {
+        let mut credentials = crate::provider::ProviderCredentialEnvironment::default();
+        for (name, value) in runs.remove(&provider.run_id).unwrap_or_default() {
+            credentials.insert(name, zeroize::Zeroizing::new(value));
+        }
+        provider.claude.set_credentials(credentials);
+    }
+}
+
+/// Writes the providers' credentials into a pipe the next program inherits.
+fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i32>> {
+    use std::io::Write;
+    use std::os::fd::{FromRawFd, IntoRawFd};
+    if providers.is_empty() {
+        return Ok(None);
+    }
+    let runs: BTreeMap<&str, BTreeMap<&str, &str>> = providers
+        .iter()
+        .map(|p| (p.run_id.as_str(), p.claude.credentials().iter().collect()))
+        .collect();
+    let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both ends were just created here. The body fits the pipe buffer.
+    let (read, mut write) = unsafe {
+        (
+            std::fs::File::from_raw_fd(fds[0]),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    };
+    write.write_all(&body)?;
+    drop(write);
+    Ok(Some(read.into_raw_fd()))
+}
+
+/// The launch credentials of the agent's handed-over turn: its launch needs no
+/// Vault, which may be locked in this program.
+pub(crate) fn handed_over_credentials(
+    session_id: &str,
+    agent_id: Option<&str>,
+) -> Option<crate::provider::ProviderCredentialEnvironment> {
+    lock(&RECEIVED_PROVIDERS)
+        .iter()
+        .find(|p| p.session_id == session_id && p.agent_id.as_deref() == agent_id)
+        .map(|p| p.claude.credentials().clone())
 }
 
 /// Whether the agent's turn kept running across the hot reload.
@@ -294,6 +413,8 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             format: HANDOVER_FORMAT,
             terminals,
             providers: Vec::new(),
+            credentials_fd: None,
+            listeners: lock(&LISTENERS).clone(),
         }),
         Ok(Err(error)) => {
             terminals.release_handover();
@@ -310,8 +431,12 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
 /// with the installed one, handing over the terminals. Returns `None` when no
 /// hot reload was prepared, or why the new program could not start.
 pub fn finish() -> Option<String> {
-    let prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     let start = START.get()?;
+    match send_credentials(&prepared.handover.providers) {
+        Ok(fd) => prepared.handover.credentials_fd = fd,
+        Err(error) => return Some(format!("the credentials could not be handed over: {error}")),
+    }
     if let Err(error) = write_private(&prepared.path, &prepared.handover) {
         return Some(format!("the handover could not be written: {error}"));
     }
@@ -327,6 +452,8 @@ pub fn finish() -> Option<String> {
                 .iter()
                 .flat_map(ProviderHandover::fds),
         )
+        .chain(prepared.handover.credentials_fd)
+        .chain(prepared.handover.listeners.values().copied())
         .collect();
     crate::logging::info_with_fields(
         "hot_reload",

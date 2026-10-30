@@ -563,6 +563,46 @@ fn an_adopted_terminal_keeps_its_memory_domain() {
     }
 }
 
+#[test]
+fn connections_during_a_hot_reload_are_not_refused() {
+    let scratch = std::env::temp_dir().join(format!("hr-listen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let socket = connect(&kernel, Duration::from_secs(60)).await;
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        // Connect without pause through the swap (it takes well under 4 s).
+        let swap = tokio::spawn(closed_by_the_old_program(socket));
+        let mut refused = 0;
+        let mut attempts = 0;
+        let until = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < until {
+            attempts += 1;
+            if let Err(error) = TcpStream::connect(("127.0.0.1", kernel.port)).await {
+                assert_eq!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused,
+                    "{error}"
+                );
+                refused += 1;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        swap.await.unwrap();
+        connect(&kernel, Duration::from_secs(60)).await;
+        assert_eq!(
+            refused, 0,
+            "{refused} of {attempts} connections were refused"
+        );
+    });
+}
+
 /// Claude Code as the kernel drives it (stream-json on stdin/stdout): each
 /// prompt is a turn that streams 16 parts over 8 s. It records every start
 /// and every prompt it receives.
@@ -572,9 +612,13 @@ if [[ "$1" == "auth" && "$2" == "status" ]]; then
     printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","email":"fixture@example.test","subscriptionType":"pro"}'
     exit 0
 fi
+if [[ "$*" == *CHARIOX_AUTH_OK* ]]; then
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"result":"CHARIOX_AUTH_OK","usage":{"output_tokens":3}}'
+    exit 0
+fi
 [[ " $* " == *" stream-json "* ]] || exit 0
 record="$CHARIOX_FAKE_CLAUDE_RECORD"
-echo "start $$" >> "$record/starts"
+echo "start $$ token=${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> "$record/starts"
 session=11111111-2222-4333-8444-555555555555
 turn=0
 while IFS= read -r line; do
@@ -602,31 +646,62 @@ fn lines(path: &Path) -> Vec<String> {
 
 #[test]
 fn a_hot_reload_keeps_a_running_claude_turn() {
-    let scratch = std::env::temp_dir().join(format!("hr-claude-{}", std::process::id()));
+    claude_turn_across_a_hot_reload(Login::Native);
+}
+
+/// The new program's Vault may be locked or, here, empty: the turn keeps the
+/// login it runs with.
+#[test]
+fn a_hot_reload_keeps_a_claude_turn_whose_login_is_in_the_vault() {
+    claude_turn_across_a_hot_reload(Login::Vault);
+}
+
+#[derive(PartialEq)]
+enum Login {
+    Native,
+    Vault,
+}
+
+fn claude_turn_across_a_hot_reload(login: Login) {
+    let scratch = std::env::temp_dir().join(format!(
+        "hr-claude-{}-{}",
+        std::process::id(),
+        login == Login::Vault
+    ));
     let _ = std::fs::remove_dir_all(&scratch);
     let record = scratch.join("record");
     std::fs::create_dir_all(&record).unwrap();
     let claude = scratch.join("claude");
     std::fs::write(&claude, FAKE_CLAUDE).unwrap();
     std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    // A signed-in default account, as the kernel checks it before a launch.
     std::fs::create_dir_all(scratch.join("claude-config")).unwrap();
-    std::fs::write(
-        scratch.join("claude-config/.credentials.json"),
-        r#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture"}}"#,
-    )
-    .unwrap();
-    let kernel = start_kernel_with(
-        &scratch,
-        &[
-            ("CHARIOX_CLAUDE_BIN", claude.clone()),
-            ("CHARIOX_FAKE_CLAUDE_RECORD", record.clone()),
-            ("CLAUDE_CONFIG_DIR", scratch.join("claude-config")),
-            ("XDG_CONFIG_HOME", scratch.join("config")),
-            ("XDG_STATE_HOME", scratch.join("state")),
-            ("XDG_CACHE_HOME", scratch.join("cache")),
-        ],
-    );
+    let mut env = vec![
+        ("CHARIOX_CLAUDE_BIN", claude.clone()),
+        ("CHARIOX_FAKE_CLAUDE_RECORD", record.clone()),
+        ("CLAUDE_CONFIG_DIR", scratch.join("claude-config")),
+        ("XDG_CONFIG_HOME", scratch.join("config")),
+        ("XDG_STATE_HOME", scratch.join("state")),
+        ("XDG_CACHE_HOME", scratch.join("cache")),
+    ];
+    match login {
+        // A signed-in default account, as the kernel checks it before a launch.
+        Login::Native => std::fs::write(
+            scratch.join("claude-config/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture"}}"#,
+        )
+        .unwrap(),
+        // A Vault that lives in the kernel's memory only.
+        Login::Vault => {
+            std::fs::create_dir_all(scratch.join("home/.chariox")).unwrap();
+            std::fs::write(
+                scratch.join("home/.chariox/config.toml"),
+                "[credential_vault]\nbackend = \"process_memory\"\n",
+            )
+            .unwrap();
+            env.push(("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1".into()));
+        }
+    }
+    let kernel = start_kernel_with(&scratch, &env);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -644,6 +719,15 @@ fn a_hot_reload_keeps_a_running_claude_turn() {
             .as_str()
             .unwrap()
             .to_string();
+        if login == Login::Vault {
+            request(
+                &mut socket,
+                json!({"SetProviderAccountCredential": {"provider": "claude",
+                    "account_profile": "default", "value": "fixture-token",
+                    "run": false, "overwrite": true}}),
+            )
+            .await;
+        }
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
@@ -738,6 +822,9 @@ fn a_hot_reload_keeps_a_running_claude_turn() {
         "Claude Code was restarted"
     );
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
+    if login == Login::Vault {
+        assert!(lines(&record.join("starts"))[0].ends_with("token=set"));
+    }
     assert_eq!(
         std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
         scratch.join("bin/chariox-kernel")
