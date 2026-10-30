@@ -803,18 +803,32 @@ fn a_hot_reload_keeps_a_claude_turn_whose_login_is_in_the_vault() {
     claude_turn_across_a_hot_reload(Login::Vault);
 }
 
-#[derive(PartialEq)]
+/// Launch credentials larger than a pipe holds still reach the next program.
+#[test]
+fn a_hot_reload_keeps_a_claude_turn_with_launch_credentials_larger_than_a_pipe() {
+    claude_turn_across_a_hot_reload(Login::LargeVault);
+}
+
+#[derive(Debug, PartialEq)]
 enum Login {
     Native,
     Vault,
+    LargeVault,
+}
+
+impl Login {
+    fn vault_token(&self) -> Option<String> {
+        match self {
+            Login::Native => None,
+            Login::Vault => Some("fixture-token".into()),
+            // More than a pipe holds (64 KiB), less than one exec string (128 KiB).
+            Login::LargeVault => Some("t".repeat(100 << 10)),
+        }
+    }
 }
 
 fn claude_turn_across_a_hot_reload(login: Login) {
-    let scratch = std::env::temp_dir().join(format!(
-        "hr-claude-{}-{}",
-        std::process::id(),
-        login == Login::Vault
-    ));
+    let scratch = std::env::temp_dir().join(format!("hr-claude-{}-{login:?}", std::process::id(),));
     let _ = std::fs::remove_dir_all(&scratch);
     let record = scratch.join("record");
     std::fs::create_dir_all(&record).unwrap();
@@ -838,7 +852,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         )
         .unwrap(),
         // A Vault that lives in the kernel's memory only.
-        Login::Vault => {
+        Login::Vault | Login::LargeVault => {
             std::fs::create_dir_all(scratch.join("home/.chariox")).unwrap();
             std::fs::write(
                 scratch.join("home/.chariox/config.toml"),
@@ -866,11 +880,11 @@ fn claude_turn_across_a_hot_reload(login: Login) {
             .as_str()
             .unwrap()
             .to_string();
-        if login == Login::Vault {
+        if let Some(token) = login.vault_token() {
             request(
                 &mut socket,
                 json!({"SetProviderAccountCredential": {"provider": "claude",
-                    "account_profile": "default", "value": "fixture-token",
+                    "account_profile": "default", "value": token,
                     "run": false, "overwrite": true}}),
             )
             .await;
@@ -972,7 +986,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         "Claude Code was restarted"
     );
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
-    if login == Login::Vault {
+    if login.vault_token().is_some() {
         assert!(lines(&record.join("starts"))[0].ends_with("token=set"));
     }
     assert_eq!(
