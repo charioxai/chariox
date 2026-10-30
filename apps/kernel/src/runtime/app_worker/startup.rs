@@ -270,16 +270,29 @@ impl Broker for StartupBroker {
         if request.method == "migration.failed" {
             // The worker's own bootstrap says why the migration stopped; the
             // App is not running yet and can no longer reach the broker.
-            let migrating = self.admission.migrating.load(std::sync::atomic::Ordering::Acquire)
-                && self.admission.phase.lock().is_ok_and(|phase| *phase == Phase::Starting);
+            let migrating = self
+                .admission
+                .migrating
+                .load(std::sync::atomic::Ordering::Acquire)
+                && self
+                    .admission
+                    .phase
+                    .lock()
+                    .is_ok_and(|phase| *phase == Phase::Starting);
             let report = self.report.lock().ok().and_then(|mut report| report.take());
             let admission = self.admission.clone();
             return Box::pin(async move {
                 let (true, Some(report)) = (migrating, report) else {
                     return Err(remote("APP_NOT_READY"));
                 };
-                let code = request.params.get("code").and_then(Value::as_str).unwrap_or("");
-                let _ = report.send(Err(AppWorkerError::Migration(MigrationFailure::from_worker(code))));
+                let code = request
+                    .params
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let _ = report.send(Err(AppWorkerError::Migration(
+                    MigrationFailure::from_worker(code),
+                )));
                 admission.stop();
                 Ok(Value::Null)
             });

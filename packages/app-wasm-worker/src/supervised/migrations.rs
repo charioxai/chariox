@@ -55,10 +55,17 @@ pub(super) async fn run(
                 tokio::time::Instant::now() + Duration::from_secs(2),
             );
             let _ = ipc
-                .call(&report, "migration.failed", serde_json::json!({"code": failure.code}))
+                .call(
+                    &report,
+                    "migration.failed",
+                    serde_json::json!({"code": failure.code}),
+                )
                 .await;
             report.finish();
-            return Err(wasmtime::Error::msg(format!("migration failed: {}", failure.code)));
+            return Err(wasmtime::Error::msg(format!(
+                "migration failed: {}",
+                failure.code
+            )));
         }
         let journal = Scope::new(format!("migration-step-{}", step.to), deadline);
         ipc.call(

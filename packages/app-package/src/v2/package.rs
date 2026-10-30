@@ -316,8 +316,12 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
         chariox_app_wit::check_component(files[entry], world).map_err(|error| {
             // A forbidden import and an unreadable file need different fixes.
             let code = match error {
-                chariox_app_wit::ComponentError::ImportNotAllowed { .. } => ErrorCode::ImportNotAllowed,
-                chariox_app_wit::ComponentError::InvalidComponent { .. } => ErrorCode::InvalidComponent,
+                chariox_app_wit::ComponentError::ImportNotAllowed { .. } => {
+                    ErrorCode::ImportNotAllowed
+                }
+                chariox_app_wit::ComponentError::InvalidComponent { .. } => {
+                    ErrorCode::InvalidComponent
+                }
                 _ => ErrorCode::IncompatibleContract,
             };
             PackageError::new(code, format!("component `{entry}`: {error}"))
