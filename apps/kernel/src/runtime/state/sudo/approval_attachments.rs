@@ -85,4 +85,36 @@ mod tests {
         );
         assert!(consent.message.contains("note.json"), "{}", consent.message);
     }
+
+    #[tokio::test]
+    async fn a_long_quotation_does_not_hide_the_comment_or_the_complete_note() {
+        let mut f = fixture_with_options(None, true);
+        let quote = format!("{} END-OF-QUOTE", "selected words ".repeat(80));
+        let note = base64::engine::general_purpose::STANDARD.encode(
+            serde_json::json!({"quote": quote, "comment": "make this change"}).to_string(),
+        );
+        f.request.attachments = vec![crate::session::PromptAttachment::new(
+            "inline:note",
+            crate::prompt_notes::NOTE_ATTACHMENT_MIME,
+            Some("note.json".into()),
+        )
+        .with_contents_base64(note)];
+        let state = f.state.clone();
+        let request = f.request.clone();
+        let starting = tokio::spawn(async move {
+            state
+                .submit_sudo_prompt(request, "local", "sudo-terminal")
+                .await
+        });
+        let consent = popup(&f.state).await;
+        starting.abort();
+        assert!(
+            consent.message.contains("Comment: make this change"),
+            "{}",
+            consent.message
+        );
+        let task = consent.sudo_request.expect("sudo presentation").task;
+        assert!(task.contains("END-OF-QUOTE"), "{task}");
+        assert!(task.contains("make this change"), "{task}");
+    }
 }
