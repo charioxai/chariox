@@ -442,7 +442,8 @@ async function secureFillElement(connection, sessionId, objectId, action, inputT
     throw new BrowserActionError("browser_action_failed", "App input caller unavailable; reopen the App");
   }
   try { await fillSecret(connection, sessionId, objectId, action); }
-  finally { await bridge("clearVaultFill"); }
+  // A page that navigated away has no armed fill left to clear.
+  finally { await bridge("clearVaultFill").catch(() => {}); }
 }
 
 async function fillSecret(connection, sessionId, objectId, action) {
