@@ -22,6 +22,9 @@ const APP_HOST = /^app\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.invalid$/;
 const MAX_ASSETS = 256;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PENDING_CALLS = 64;
+// A busy answer is retried this many times, 500 ms longer each time (about 10 s).
+const APP_BUSY_RETRIES = 5;
+const APP_BUSY_BACKOFF_MS = 500;
 // The bounded host text plus its JSON envelope must fit a view call.
 const MAX_CALL_BYTES = 512 * 1024;
 const MAX_ANSWERABLE_CALLS = 1024;
@@ -72,15 +75,21 @@ const BRIDGE_SOURCE = `(() => {
   // answer still in flight for the old document must not match a new call.
   const documentNonce = crypto.randomUUID();
   let next = 0;
-  const request = (method, params, token) => new Promise((resolve, reject) => {
+  // APP_BUSY is answered before the call is dispatched, so sending it again
+  // cannot run it twice. Back off with jitter so a burst does not return in step.
+  const send = (method, params, token, attempt, resolve, reject) => {
     const id = (token === undefined ? "" : "invocation:" + token + ":") + documentNonce + ":" + ++next;
-    pending.set(id, { resolve, reject });
+    pending.set(id, { resolve, reject, retry: attempt < ${APP_BUSY_RETRIES} ? () => setTimeout(
+      () => send(method, params, token, attempt + 1, resolve, reject),
+      ${APP_BUSY_BACKOFF_MS} * (attempt + 1) + Math.random() * ${APP_BUSY_BACKOFF_MS}) : undefined });
     call(JSON.stringify({ id, method, params }));
-  });
+  };
+  const request = (method, params, token) => new Promise((resolve, reject) => send(method, params, token, 0, resolve, reject));
   Object.defineProperty(globalThis, "__charioxAppResolve", { value(id, ok, value) {
     const entry = pending.get(id);
     if (!entry) return;
     pending.delete(id);
+    if (!ok && value?.code === "APP_BUSY" && entry.retry) return entry.retry();
     ok ? entry.resolve(value) : entry.reject(Object.assign(new Error(value?.message ?? "App call failed"), { code: value?.code }));
   } });
   const inputCallers = (${createInputCallers.toString()})();

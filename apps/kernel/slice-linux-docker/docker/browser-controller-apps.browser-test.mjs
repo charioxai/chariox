@@ -57,7 +57,7 @@ async function openApp(label, assets) {
       ...(claimed ? { _app_view_tab: tabId } : {}),
       action: { kind: 'fill', text: 'app-vault-fixture', append: false, submit: false, expected_document_url: await evaluate('location.href') } } });
   };
-  return { until, agentClick, agentFill, evaluate };
+  return { until, agentClick, agentFill, evaluate, target };
 }
 
 test('MP-08/MP-11 #1001 P1: ambient calls stay human when an App rewrites its bridge serializer', async () => {
@@ -111,4 +111,27 @@ test('MP-08/MP-11: a Tab no agent drove runs every call as the person', async ()
     setTimeout(() => chariox.call('timer'), 300);`)]);
   assert.deepEqual(await app.until('load'), [null]);
   assert.deepEqual(await app.until('timer'), [null]);
+});
+
+// The kernel admits a limited number of view calls at once and answers the
+// rest APP_BUSY before dispatching them; the page's own call must still finish.
+test('a burst of 64 page calls completes when the App admits only 13 at a time', async () => {
+  const app = await openApp('busy-burst', [page(), asset('app.js', 'text/javascript', `
+    Promise.all(Array.from({ length: 64 }, () => chariox.call('burst').then(() => 'ok', error => error.code)))
+      .then(results => { window.burst = results.join(','); });`)]);
+  const tabs = host.browser.appTabs;
+  let refused = 0;
+  const deadline = Date.now() + 20000;
+  while (await app.evaluate('window.burst === undefined') && Date.now() < deadline) {
+    const calls = (await tabs.takeCalls()).calls.filter(call => call.target_id === app.target);
+    for (const [i, call] of calls.entries()) {
+      const busy = i >= 13;
+      refused += busy ? 1 : 0;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id,
+        ...(busy ? { error: { code: 'APP_BUSY', message: 'app_worker_busy; retry after 500 ms' } } : { result: {} }) });
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.ok(refused > 0, 'the App must have refused some first attempts');
+  assert.equal(await app.evaluate('window.burst'), Array(64).fill('ok').join(','));
 });

@@ -226,7 +226,7 @@ test("queues bridge calls bound to the installation and resolves responses", asy
 });
 
 for (const counts of [[80, 0, 0, 0], [20, 20, 20, 20]]) {
-test(`an 80-call backlog (${counts.join("/")}) across four views settles every promise or returns retryable APP_BUSY`, async () => {
+test(`an 80-call backlog (${counts.join("/")}) across four views refuses the overflow and completes it on retry`, async () => {
   const { browser, connection } = fakeBrowser();
   const tabs = new AppTabs(browser);
   const contexts = new Map();
@@ -240,7 +240,8 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
     const { target_id } = await tabs.open({ origin_label: `app-${i}`, installation_id: `inst-${i}`,
       assets: [asset("index.html", "<p>backlog</p>")] });
     const sessionId = await browser.ensureTargetSession(connection, target_id);
-    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, __charioxAppCall: (payload) => {
+    const context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+      setTimeout: (fn) => setTimeout(fn, 0), __charioxAppCall: (payload) => {
       bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
         params: { name: "__charioxAppCall", payload } }));
     } });
@@ -260,29 +261,117 @@ test(`an 80-call backlog (${counts.join("/")}) across four views settles every p
   const batch = await tabs.takeCalls();
   assert.equal(batch.calls.length, 64);
   assert.equal(batch.open_targets.length, 4);
-  for (const call of batch.calls) {
-    await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id, result: { usage: 1 } });
-  }
-  let timer;
-  try {
-    const results = (await Promise.race([Promise.all(outcomes), new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error("view backlog timed out")), 1000);
-    })])).flat();
-    assert.equal(results.length, 80);
-    assert.equal(results.filter((r) => r.ok).length, 64);
-    const busy = results.filter((r) => !r.ok);
-    assert.equal(busy.length, 16);
-    for (const error of busy) {
-      assert.equal(error.code, "APP_BUSY");
-      assert.match(error.message, /queue.*64.*retry after 500 ms/i);
+  // The refused overflow retries once the poll freed capacity.
+  let answered = 0;
+  let settled = false;
+  Promise.all(outcomes).then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  let calls = batch.calls;
+  while (!settled && Date.now() < deadline) {
+    for (const call of calls) {
+      answered++;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id, result: { usage: 1 } });
     }
-    // A later request can use the capacity freed by the poll.
-    vm.runInContext("chariox.call('usage')", [...contexts.values()][0]);
-    await Promise.all(bindings);
-    assert.equal((await tabs.takeCalls()).calls.length, 1);
-  } finally { clearTimeout(timer); }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await Promise.all(bindings.splice(0));
+    calls = (await tabs.takeCalls()).calls;
+  }
+  assert.ok(settled, "view backlog timed out");
+  const results = (await Promise.all(outcomes)).flat();
+  assert.equal(results.length, 80);
+  assert.ok(results.every((r) => r.ok), "every call completes after its retry");
+  assert.equal(answered, 80);
 });
 }
+
+test("64 simultaneous view calls all complete when the App admits only 13 at a time", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const { target_id } = await tabs.open({ origin_label: "app-1", installation_id: "inst-1",
+    assets: [asset("index.html", "<p>burst</p>")] });
+  const sessionId = await browser.ensureTargetSession(connection, target_id);
+  const bindings = [];
+  const delays = [];
+  const send = connection.send.bind(connection);
+  let context;
+  connection.send = async (method, params, session) => {
+    if (method === "Runtime.evaluate") vm.runInContext(params.expression, context);
+    return send(method, params, session);
+  };
+  context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+    setTimeout: (fn, ms) => { delays.push(ms); return setTimeout(fn, 0); },
+    __charioxAppCall: (payload) => {
+      bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
+        params: { name: "__charioxAppCall", payload } }));
+    } });
+  vm.runInContext(connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument"
+    && m.sessionId === sessionId).params.source, context);
+  const outcomes = vm.runInContext(`
+    Promise.all(Array.from({length:64}, () => chariox.call("usage").then(
+      value => ({ok:true,value}), error => ({ok:false,code:error.code}))))`, context);
+  let admitted = 0;
+  let busy = 0;
+  let settled = false;
+  outcomes.then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  while (!settled && Date.now() < deadline) {
+    await Promise.all(bindings.splice(0));
+    for (const [i, call] of (await tabs.takeCalls()).calls.entries()) {
+      const full = i >= 13;
+      busy += full ? 1 : 0;
+      admitted += full ? 0 : 1;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id,
+        ...(full ? { error: { code: "APP_BUSY", message: "app_worker_busy; retry after 500 ms" } } : { result: { usage: 1 } }) });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(settled, "the burst never settled");
+  const results = await outcomes;
+  assert.equal(results.length, 64);
+  assert.ok(results.every((r) => r.ok), `refused: ${[...new Set(results.filter((r) => !r.ok).map((r) => r.code))]}`);
+  assert.ok(busy > 0 && admitted === 64, "the App must have refused some first attempts");
+  assert.ok(delays.every((ms) => ms >= 500), "retries back off by at least 500 ms");
+});
+
+test("a call that stays busy gives up with APP_BUSY after bounded retries", async () => {
+  const { browser, connection } = fakeBrowser();
+  const tabs = new AppTabs(browser);
+  const { target_id } = await tabs.open({ origin_label: "app-1", installation_id: "inst-1",
+    assets: [asset("index.html", "<p>busy</p>")] });
+  const sessionId = await browser.ensureTargetSession(connection, target_id);
+  const bindings = [];
+  const send = connection.send.bind(connection);
+  let context;
+  connection.send = async (method, params, session) => {
+    if (method === "Runtime.evaluate") vm.runInContext(params.expression, context);
+    return send(method, params, session);
+  };
+  context = vm.createContext({ addEventListener() {}, crypto: globalThis.crypto, Math,
+    setTimeout: (fn) => setTimeout(fn, 0),
+    __charioxAppCall: (payload) => {
+      bindings.push(tabs.handle(connection, { method: "Runtime.bindingCalled", sessionId,
+        params: { name: "__charioxAppCall", payload } }));
+    } });
+  vm.runInContext(connection.sent.find((m) => m.method === "Page.addScriptToEvaluateOnNewDocument"
+    && m.sessionId === sessionId).params.source, context);
+  const outcome = vm.runInContext(`chariox.call("usage").then(v => ({ok:true}), e => ({ok:false,code:e.code}))`, context);
+  let attempts = 0;
+  let settled = false;
+  outcome.then(() => { settled = true; });
+  const deadline = Date.now() + 5000;
+  while (!settled && Date.now() < deadline) {
+    await Promise.all(bindings.splice(0));
+    for (const call of (await tabs.takeCalls()).calls) {
+      attempts++;
+      await tabs.respond({ target_id: call.target_id, document_id: call.document_id, call_id: call.call_id,
+        error: { code: "APP_BUSY", message: "app_worker_busy; retry after 500 ms" } });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  const { ok, code } = await outcome;
+  assert.ok(!ok && code === "APP_BUSY");
+  assert.equal(attempts, 6, "one call and five retries");
+});
 
 test("a saturated App call queue refuses kernel-owned panel requests with retryable busy", async () => {
   const { tabs, connection } = await opened();
