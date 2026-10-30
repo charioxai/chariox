@@ -245,8 +245,11 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
         .collect();
     let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
     let mut fds = [0; 2];
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error());
+    }
+    for fd in fds {
+        set_close_on_exec(fd, true);
     }
     // SAFETY: both ends were just created here. The body fits the pipe buffer.
     let (read, mut write) = unsafe {
