@@ -94,7 +94,7 @@ impl KernelRuntimeState {
             .owned
             .agent_moves
             .waiting
-            .begin(agent_move_wait_key(session_id, agent_id))
+            .begin(crate::agent_move::wait_key(session_id, agent_id))
             .ok_or_else(|| move_error("This agent already has a Move waiting for its turn to end. Cancel it before requesting another"))?;
         let waiting = self
             .publish_agent_move_status(
@@ -686,8 +686,4 @@ impl KernelRuntimeState {
             };
         }
     }
-}
-
-pub(super) fn agent_move_wait_key(session_id: &str, agent_id: &str) -> String {
-    format!("{session_id}:{agent_id}")
 }

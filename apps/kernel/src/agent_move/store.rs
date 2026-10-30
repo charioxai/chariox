@@ -320,7 +320,14 @@ impl AgentMoveStore {
         Ok(())
     }
 
+    /// A Move that waits for the agent's turn already reserves the queue behind that turn.
     pub(crate) fn dispatch_fenced(&self, session: &str, agent: &str) -> bool {
+        if self
+            .waiting
+            .contains(&super::waiting::wait_key(session, agent))
+        {
+            return true;
+        }
         let records = self.lock();
         records.homes.values().any(|operation| {
             operation.identity.home_session_id == session

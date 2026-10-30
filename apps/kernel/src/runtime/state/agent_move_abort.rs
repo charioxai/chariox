@@ -22,11 +22,10 @@ impl KernelRuntimeState {
             .owned
             .agent_moves
             .waiting
-            .cancel(&super::agent_move_runtime::agent_move_wait_key(
-                session_id,
-                agent.id(),
-            ))
+            .cancel(&crate::agent_move::wait_key(session_id, agent.id()))
         {
+            // The wait held back the queue behind the turn; release it.
+            self.spawn_agent_move_queue_promotion(session_id, agent.id())?;
             return self.publish_agent_move_status(agent.id(), None).await;
         }
         let _operation = self

@@ -21,7 +21,7 @@ pub use artifacts::AgentMoveArtifactKind;
 pub(crate) use artifacts::MOVE_CHUNK_BYTES;
 pub use status::{AgentMoveStage, AgentMoveStatus};
 pub(crate) use store::AgentMoveStore;
-pub(crate) use waiting::MoveWait;
+pub(crate) use waiting::{wait_key, MoveWait};
 
 pub(crate) fn error(message: impl Into<String>) -> crate::error::DaemonError {
     crate::error::DaemonError::LocalTransport {
