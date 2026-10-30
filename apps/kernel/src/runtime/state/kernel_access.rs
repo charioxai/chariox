@@ -483,6 +483,8 @@ impl KernelRuntimeState {
         })
     }
 
+    /// Whether the grant still serves a delivery to `peer`. A peer the OS can't read
+    /// just now still does: the next confirmed answer decides.
     pub(crate) fn access_grant_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
         self.sweep_kernel_access();
         self.owned
@@ -492,8 +494,11 @@ impl KernelRuntimeState {
             .grants
             .get(id)
             .is_some_and(|grant| {
-                grant.holder.contains(peer)
-                    || grant.covered.iter().any(|process| process.contains(peer))
+                grant.holder.may_contain(peer)
+                    || grant
+                        .covered
+                        .iter()
+                        .any(|process| process.may_contain(peer))
             })
     }
 

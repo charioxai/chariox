@@ -377,3 +377,33 @@ async fn every_grant_end_is_logged_and_audited_with_its_reason() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_delivery_to_a_holder_the_host_cannot_read_stays_live() {
+    let state = state();
+    let root = crate::test_support::TestWorktree::new("pressure-delivery");
+    let holder = sleeper(root.path(), "holder");
+    let stranger = sleeper(root.path(), "stranger");
+    insert(
+        &state,
+        grant(
+            "until-exit",
+            KernelAccessTerm::UntilHolderExits,
+            None,
+            &holder,
+            Vec::new(),
+        ),
+    );
+    assert!(state.access_grant_live("until-exit", &holder));
+    assert!(!state.access_grant_live("until-exit", &stranger));
+    {
+        let _fault = fault::inject(holder.pid, libc::EMFILE);
+        assert!(
+            state.access_grant_live("until-exit", &holder),
+            "an event stream is not closed for a failed read"
+        );
+    }
+    stop(&holder);
+    assert!(!state.access_grant_live("until-exit", &holder));
+    stop(&stranger);
+}

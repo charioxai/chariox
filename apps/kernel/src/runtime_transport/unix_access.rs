@@ -391,7 +391,7 @@ pub(super) fn delivery_live(
     bound: &std::sync::Mutex<Option<String>>,
 ) -> bool {
     peer.is_none_or(|peer| {
-        peer.alive()
+        !peer.gone()
             && bound
                 .lock()
                 .expect("bound grant poisoned")

@@ -68,6 +68,18 @@ impl ProcessIdentity {
     pub(crate) fn contains(&self, peer: &Self) -> bool {
         self.alive() && peer.alive() && ancestry(peer).is_ok_and(|chain| chain.contains(self))
     }
+
+    /// `contains`, except that a check the OS could not answer keeps the answer "yes".
+    /// For ending something already admitted (a delivery), never for allowing something.
+    pub(crate) fn may_contain(&self, peer: &Self) -> bool {
+        if self.gone() || peer.gone() {
+            return false;
+        }
+        match ancestry(peer) {
+            Ok(chain) => chain.contains(self),
+            Err(error) => error.kind() != io::ErrorKind::NotFound,
+        }
+    }
 }
 
 pub(crate) fn ancestry(peer: &ProcessIdentity) -> io::Result<Vec<ProcessIdentity>> {
