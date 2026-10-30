@@ -625,11 +625,6 @@ impl PtyManager {
         if !keep_input_echo {
             disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
         }
-        let input_terminal =
-            clone_input_terminal(pair.master.as_ref()).map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
 
         let prepared =
             crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
@@ -711,7 +706,6 @@ impl PtyManager {
             pair.master,
             child,
             resources,
-            input_terminal,
             output_filter,
         )
     }
@@ -724,9 +718,19 @@ impl PtyManager {
         master: Box<dyn MasterPty + Send>,
         mut child: Box<dyn Child + Send + Sync>,
         resources: crate::runtime::process_resources::ProcessDomain,
-        input_terminal: Option<std::fs::File>,
         mut output_filter: Option<PtyOutputFilter>,
     ) -> Result<(), DaemonError> {
+        let input_terminal = match clone_input_terminal(master.as_ref()) {
+            Ok(input_terminal) => input_terminal,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DaemonError::PtySpawn {
+                    provider_run_id,
+                    message: error.to_string(),
+                });
+            }
+        };
         let mut reader =
             PtyOutputSource::new(master.as_ref()).map_err(|error| DaemonError::PtySpawn {
                 provider_run_id: provider_run_id.clone(),
@@ -835,7 +839,7 @@ impl PtyManager {
                 discovery_config: None,
                 child,
                 resources,
-                master: master,
+                master,
                 process_group,
                 input_writer,
                 output_rx,
@@ -941,7 +945,6 @@ impl PtyManager {
         };
         // The handover named this fd for this PTY alone.
         let master = unsafe { AdoptedMaster::from_raw(handover.master_fd) };
-        let input_terminal = clone_input_terminal(&master).map_err(|e| failed(e.to_string()))?;
         let resources = crate::runtime::process_resources::PreparedDomain::watchdog()
             .and_then(|domain| domain.start(handover.pid))
             .map_err(|e| failed(e.to_string()))?;
@@ -952,7 +955,6 @@ impl PtyManager {
             Box::new(master),
             Box::new(AdoptedChild::new(handover.pid)),
             resources,
-            input_terminal,
             None,
         )
     }

@@ -215,9 +215,13 @@ pub fn finish() -> Option<String> {
 /// PID, so the kernel ends and reaps those children itself.
 fn end_children_except(kept: &[u32]) {
     let own = std::process::id();
-    let listed = Command::new("ps")
+    let lister = Command::new("ps")
         .args(["-A", "-o", "pid=", "-o", "ppid="])
-        .output();
+        .stdout(std::process::Stdio::piped())
+        .spawn();
+    // `ps` lists itself as a child too.
+    let lister_pid = lister.as_ref().map_or(0, std::process::Child::id);
+    let listed = lister.and_then(std::process::Child::wait_with_output);
     let Ok(listed) = listed else {
         crate::logging::warn_with_fields(
             "hot_reload",
@@ -232,7 +236,7 @@ fn end_children_except(kept: &[u32]) {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?.parse::<u32>().ok()?;
             let parent = fields.next()?.parse::<u32>().ok()?;
-            (parent == own && pid > 1 && !kept.contains(&pid)).then_some(pid)
+            (parent == own && pid > 1 && pid != lister_pid && !kept.contains(&pid)).then_some(pid)
         })
         .collect();
     for pid in &children {
