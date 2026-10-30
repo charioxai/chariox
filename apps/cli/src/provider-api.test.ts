@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import type { LocalIpcClient } from "./ipc.js"
-import { getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
+import { copyProviderAccountFromKernel, getProviderCatalog, getProviderCommandCatalogs, runProviderSetupToken } from "./provider-api.js"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
@@ -101,4 +101,19 @@ test("setup-token run names protocol411 when the daemon lacks its run field", as
     runProviderSetupToken(clientRejecting(new Error("unknown field `run`")), "work", false),
     /Claude setup token capture requires kernel protocol 411 or newer/,
   )
+})
+
+test("a login copy names the session that shows the Vault prompt", async () => {
+  const sent: Array<Record<string, any>> = []
+  const client = { send: async (request: Record<string, any>) => {
+    sent.push(request)
+    return request.RelayStatus === null
+      ? { RelayStatus: { status: { daemon_id: "b" } } }
+      : { ProviderAccountCopied: { receipt: { operation_id: "op", provider: "claude", source_profile_id: "work", target_kernel_id: "b", account_profile: "copied" } } }
+  } } as unknown as LocalIpcClient
+  const offer = { source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }
+  await copyProviderAccountFromKernel(client, offer, "op", { sessionId: "s1", agentId: "agent-1" })
+  const request = sent.find(item => item.CopyProviderAccountFromKernel)!.CopyProviderAccountFromKernel
+  assert.equal(request.session_id, "s1")
+  assert.equal(request.agent_id, "agent-1")
 })
