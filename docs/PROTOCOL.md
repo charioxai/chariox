@@ -5918,3 +5918,25 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### Session-less Vault unlock — local 912 / relay peer 363
+
+`UnlockCredentialVault { passphrase }` answers `CredentialVaultUnlocked { status, action }`
+with `action` one of `unlocked`, `already_unlocked` or `not_required` (a plain backend). It
+needs no session or agent: it is about the kernel's Vault, like `GetCredentialVaultStatus` and
+`LockCredentialVault`, and only the owner's own clients send it. It is refused to
+kernel-access grant holders and to sudo agents, and no agent tool carries it. The passphrase
+is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
+request unlocks an existing Vault only; a missing Vault file is refused and never created.
+The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
+`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+
+Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
+`vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing` and
+`vault_locked`. A session-less operation that needs the Vault while it is locked answers
+`vault_locked`, so a client unlocks and repeats the same operation. Wrong passphrases are
+counted per owner in kernel memory (5 free, then 30 s doubling to 15 min, one check at a
+time), shared by this request, the passkey check and the unlock prompt an agent's run raises.
+Clients need kernel protocol >=912 (`credentialVaultUnlockMinimumProtocolVersion` in the
+web). The managed-upgrade list is [629, 636, 912]. Focused checks:
+`cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.

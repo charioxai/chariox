@@ -259,6 +259,7 @@ pub enum LocalDaemonResponse {
     CredentialSecretDeleted { key: String, },
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
+    CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },

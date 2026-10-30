@@ -69,6 +69,16 @@ pub(crate) async fn execute_user_config_request(
         LocalDaemonRequest::LockCredentialVault(request) => {
             execute_lock_credential_vault_request(config_projection, request).await
         }
+        LocalDaemonRequest::UnlockCredentialVault(request) => {
+            let owner = command_caller_user_id(command);
+            let (status, action) = runtime_state
+                .unlock_credential_vault_for_owner(&owner, request)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialVaultUnlocked {
+                status,
+                action: action.to_string(),
+            })
+        }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             execute_manage_credential_vault_request(runtime_state, request).await
         }

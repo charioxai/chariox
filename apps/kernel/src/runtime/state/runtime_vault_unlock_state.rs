@@ -433,12 +433,7 @@ impl KernelRuntimeState {
         }
         let session_id = session_id
             .or(command.session_id.as_deref())
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation,
-                message:
-                    "encrypted Chariox vault access requires a session_id so the unlock popup can be shown"
-                        .to_string(),
-            })?;
+            .ok_or_else(super::vault_unlock_request::vault_locked_error)?;
         let agent_id = self
             .vault_prompt_agent(
                 session_id,
@@ -547,13 +542,15 @@ impl KernelRuntimeState {
         if !force_prompt && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
         }
-        let status =
-            crate::secret::unlock_chariox_encrypted_vault(&vault_path, passphrase.as_str(), lease)?;
-        if let Err(error) = self.pin_critical_approval_verifier_after_unlock(&vault_path) {
-            crate::secret::lock_chariox_encrypted_vault(&vault_path)?;
-            crate::secret::clear_vault_secret_process_cache()?;
-            return Err(error);
-        }
+        let owner = self
+            .owned
+            .session_store
+            .get_session(session_id)?
+            .owner_user_id()
+            .to_owned();
+        let status = self
+            .unlock_vault_counted(&owner, &vault_path, passphrase.as_str(), lease, true)
+            .await?;
         crate::logging::info_with_fields(
             "credential_vault",
             "Chariox vault unlocked",
@@ -1463,7 +1460,7 @@ mod mp11_always_tests {
             let refused = refusals.iter().all(|(_, result)| {
                 result
                     .as_ref()
-                    .is_err_and(|error| error.contains("requires a session_id"))
+                    .is_err_and(|error| error == "The Vault is locked. Unlock it, then try again.")
             });
             crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
             drop(state);

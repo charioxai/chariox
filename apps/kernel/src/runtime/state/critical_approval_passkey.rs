@@ -95,7 +95,7 @@ struct OwnerPresence {
 pub(super) struct CriticalApprovalPasskeys {
     owners: Arc<std::sync::Mutex<BTreeMap<String, OwnerPresence>>>,
     /// One verification at a time, so parallel guesses cannot outrun the limit.
-    verifying: Arc<tokio::sync::Mutex<()>>,
+    pub(super) verifying: Arc<tokio::sync::Mutex<()>>,
     /// The encrypted vault named by the boot configuration; a pin is only
     /// ever taken from it.
     boot_vault: Option<PathBuf>,
@@ -349,7 +349,7 @@ impl CriticalApprovalPasskeys {
         })
     }
 
-    fn locked_for(&self, owner: &str, now: Instant) -> Option<Duration> {
+    pub(super) fn locked_for(&self, owner: &str, now: Instant) -> Option<Duration> {
         self.with_owner(owner, |presence| {
             presence
                 .locked_until
@@ -358,7 +358,7 @@ impl CriticalApprovalPasskeys {
         })
     }
 
-    fn record_failure(&self, owner: &str, now: Instant) {
+    pub(super) fn record_failure(&self, owner: &str, now: Instant) {
         self.with_owner(owner, |presence| {
             presence.failures = presence.failures.saturating_add(1);
             if let Some(extra) = presence.failures.checked_sub(FREE_FAILURES) {
@@ -368,7 +368,7 @@ impl CriticalApprovalPasskeys {
         });
     }
 
-    fn record_success(&self, owner: &str, now: Instant, remember_minutes: Option<u32>) {
+    pub(super) fn record_success(&self, owner: &str, now: Instant, remember_minutes: Option<u32>) {
         self.with_owner(owner, |presence| {
             presence.failures = 0;
             presence.locked_until = None;

@@ -1079,6 +1079,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ProviderAccountCopy {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
+        DaemonError::VaultUnlock {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::ExternalRequestFailed { code, retryable } => {
             kernel_error(code, error, *retryable)
         }
