@@ -122,6 +122,20 @@ test("MP-10: a reset carries the page's document mode, so the viewer frame lays 
       assert.equal((await next(300)).document_mode, undefined, "a delta keeps the reset's mode");
     }, { "/": { type: "text/html", body: doctype + table } });
 });
+test("MP-08/MP-10: the kernel reports the cursor the page shows at a point (for a page shown as video)", () => mirrored(
+  `<body style="margin:0;font:16px/20px sans-serif"><a href="/x" style="position:absolute;left:0;top:0;width:200px;height:20px;display:block">link</a>
+   <p style="position:absolute;left:0;top:40px;margin:0">plain text</p>
+   <input style="position:absolute;left:0;top:80px;width:200px;height:20px">
+   <button style="position:absolute;left:0;top:120px;width:200px;height:20px;cursor:not-allowed">no</button>
+   <div style="position:absolute;left:0;top:160px;width:200px;height:20px;cursor:url(/c.png) 2 2,move"></div>
+   <p style="position:absolute;left:0;top:200px;margin:0;user-select:none">unselectable</p>
+   <div style="position:absolute;left:0;top:240px;width:200px;height:20px;cursor:ew-resize"><iframe srcdoc="<html style='cursor:zoom-in'><body style='margin:0'>" style="border:0;width:100px;height:20px"></iframe></div></body>`,
+  async ({ host, tab_id, generation }) => {
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    assert.deepEqual([await at(10, 10), await at(10, 50), await at(10, 90), await at(10, 130), await at(10, 170), await at(10, 210), await at(10, 250), await at(150, 250), await at(600, 600)],
+      ["pointer", "text", "text", "not-allowed", "move", "default", "zoom-in", "ew-resize", "default"]);
+    await assert.rejects(host.request({ op: "pointer_cursor", tab_id, generation, x: 100000, y: 0 }), /outside the page/);
+  }));
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
@@ -1196,6 +1210,16 @@ test("MP-10: linked lossy CSS read as source keeps the rules after an escaped qu
     assert(css.includes("after-quote-marker"), `MP-10: rules after the escaped quote reach the viewer: ${css.slice(-300)}`);
   }, { "/gh.css": { type: "text/css", body: "@layer utilities{.before\\:content-\\[\\'\\'\\]:before{content:''}.b{border:var(--w) solid;border-color:red}.b{--after-quote-marker:1}}" } }));
 
+// A `{` inside a string in an at-rule's prelude (`@supports (content:"{")`) does not open the block.
+test("MP-10: linked lossy CSS read as source keeps an at-rule whose prelude has a brace in a string", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    assert.equal(packets.find(packet => packet.fallback)?.fallback, undefined, "MP-10: the whole sheet is copied, no video");
+    const css = mirroredCss(packets) + "\n" + packets.flatMap(packet => Object.values(packet.sheets ?? {})).join("\n");
+    assert(css.includes("supports-marker"), `MP-10: the rules inside the at-rule reach the viewer: ${css.slice(-300)}`);
+  }, { "/gh.css": { type: "text/css", body: '@supports (content:"{"){.b{border:var(--w) solid;border-color:red}.b{--supports-marker:1}}' } }));
+
 // MIRROR-FIDELITY-GUARD: a stylesheet copy with fewer rules than the page's own is never published as the page.
 test("MP-10: a stylesheet the mirror cannot copy whole selects the whole-page video", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><p class="tail">fixture</p>', async ({ next, evaluate, host, subscription_id }) => {
@@ -1212,6 +1236,18 @@ test("MP-10: a stylesheet the mirror cannot copy whole selects the whole-page vi
     for (let i = 0; i < 6 && !packets.at(-1)?.fallback; i++) packets.push(await next(500));
     assert.equal(packets.at(-1).fallback, "css_incomplete", `MP-10: an incomplete copy selects the video: ${JSON.stringify(packets.map(p => [p.sequence, p.reset, p.fallback ?? null, p.ops?.map(o => o.op).join()]))}`);
   }, { "/gh.css": { type: "text/css", body: "p{color:red}.tail{color:blue}" } }));
+
+// The guard's live probe: an unquoted url() with a `}` is valid CSS, but the source-text copy splits the rule there.
+// At the top level the copy loses rules; inside a block it moves a rule out of it. Either way the page shows as video.
+test("MP-10: a source-text copy whose rules differ from the page's own selects the whole-page video", async () => {
+  for (const body of ["p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}",
+    "p{border:var(--w) solid;border-color:red}@media (min-width:1px){.b{background:url(/a}b.png)}.b{--after:1}}"])
+    await mirrored('<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+      const packets = [await next()];
+      for (let i = 0; i < 5 && !packets.at(-1).fallback; i++) packets.push(await next(500));
+      assert.equal(packets.at(-1).fallback, "css_incomplete", body);
+    }, { "/gh.css": { type: "text/css", body } });
+});
 
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
