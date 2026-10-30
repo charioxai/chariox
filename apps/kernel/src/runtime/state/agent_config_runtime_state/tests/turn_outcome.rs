@@ -29,6 +29,8 @@ fn follow(turn: &FailingTurn) {
 
 /// The agent events the follower holds, as they go over the wire.
 fn followed_agent_events(turn: &FailingTurn) -> Vec<Value> {
+    // Run states are queued to the writer without waiting; read what it committed.
+    turn.runtime.outside_store().outside_settled().unwrap();
     turn.runtime
         .outside_store()
         .outside_list("follower", None, 100)
