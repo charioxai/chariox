@@ -280,7 +280,9 @@ These Rust types have no serde implementation. The coordinator/display lane
 owns the new serialized public adapter and protocol allocation; this lane must
 not take an unallocated version. The existing protocol-417 screenshot/stream
 adapter keeps its original shape and caller-scoped human observation receipts.
-The App seam and ordinary screenshot/subscribe/poll/input methods stay stable.
+The App seam and ordinary screenshot/input methods stay stable. Provider agents read with
+state, snapshot and screenshot and never open a live stream (`subscribe`, `poll` and `unsubscribe`
+are refused to them): a stream runs only while a person watches.
 
 A bound capture checks the document before and after capture. Raw asynchronous
 CDP screencast pixels cannot prove document identity, so a bound subscription
