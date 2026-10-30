@@ -139,12 +139,13 @@ exit 0
                 agent_id: None,
             },
         );
-        let command = KernelCommand::from_local_request(
+        let mut command = KernelCommand::from_local_request(
             format!("setup-{mode}-{replace}"),
             None,
             None,
             &request,
         );
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
         let response = router.dispatch(command, request).await;
         if stored && !replace {
             assert!(
