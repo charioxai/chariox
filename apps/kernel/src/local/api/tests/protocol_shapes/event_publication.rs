@@ -374,8 +374,8 @@ fn workflow_turn_context_shape_is_versioned() {
 #[test]
 fn local_daemon_protocol_received_event_shape_is_versioned() {
     // Received events arrive in the landing union local 911 / peer 362.
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 911);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 362);
+    const { assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 911) };
+    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 362) };
     let event = serde_json::json!({
         "delivery_id": "delivery-1",
         "event_type": "pull_request.synchronize",
