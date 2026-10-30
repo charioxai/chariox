@@ -92,9 +92,12 @@ pub(super) fn validate_typed_requirement(r: &Requirement) -> Result<(), DaemonEr
             probe: p,
             health_expectation,
             target_binding,
-            ..
+            depends_on,
         } => {
             text(identity)?;
+            for dependency in depends_on {
+                text(dependency)?;
+            }
             if let Some(p) = p {
                 probe(p)?;
             }
@@ -106,6 +109,7 @@ pub(super) fn validate_typed_requirement(r: &Requirement) -> Result<(), DaemonEr
             if let Some(t) = target_binding {
                 text(&t.machine_id)?;
                 text(&t.target_instance_generation)?;
+                optional(&t.slice_ref)?;
             }
         }
         RequirementSpec::Accounts {

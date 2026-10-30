@@ -3,7 +3,7 @@ import { projectEnvironmentOperationRequest, relayStatusRequest, cloudRelayStatu
 // MP-08 / MP-10: Project read-only navigation, independent of session selection.
 import { environmentReadFailureMessage } from "./project-environment-read-errors.js"
 import { getProjectEnvironmentRequest, projectEnvironmentLines, type ProjectEnvironment } from "@chariox/kernel-client"
-import { createEnvironmentViewCache, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, environmentSnapshotDiff, type EnvironmentRevisionDiff } from "@chariox/kernel-client"
+import { createEnvironmentViewCache, environmentOriginLabel, environmentRevisionDraft, saveEnvironmentRevisionRequest, environmentDiffLines, environmentSnapshotDiff, type EnvironmentRevisionDiff, checkEnvironmentRequest, environmentObservationExpiry } from "@chariox/kernel-client"
 
 // MP-08 / MP-10 / MP-11: show only actions this release really supports.
 const environmentReadIntroduction = [
@@ -64,16 +64,18 @@ export function createProjectEnvironmentReadController(deps: {
   let webLink: string | null = null
   let savingGeneration: number | null = null
   let detectionGeneration: number | null = null
+  let checkingGeneration: number | null = null
+  let expiryTimer: ReturnType<typeof setTimeout> | undefined
   const controller = {
     isOpen: () => open,
     visibleLines: () => displayLines().slice(offset, offset + Math.max(1, deps.pageSize())),
-    close() { open = false; generation++; deps.render() },
+    close() { clearTimeout(expiryTimer); open = false; generation++; deps.render() },
     async open(projectId: string) {
       const requestGeneration = ++generation
       const prior = cache.peek(scope, projectId)
       if (current?.local_project_id !== projectId) diff = null
       open = true; refreshing = true; showingDiff = false; webLink = null; current = cache.peek(scope, projectId); proposalIndex = 0; offset = 0
-      lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines(current)] : ["Loading Environment…"]; deps.render()
+      lines = current ? ["Refreshing Environment… · last kernel snapshot", ...viewLines({...current,observations:(current.observations??[]).map(o=>({...o,stale:true}))})] : ["Loading Environment…"]; deps.render()
       try {
         const response = await deps.send(getProjectEnvironmentRequest(projectId)) as { ProjectEnvironment?: { environment: ProjectEnvironment } }
         const environment = response.ProjectEnvironment?.environment
@@ -90,8 +92,41 @@ export function createProjectEnvironmentReadController(deps: {
       if (requestGeneration === generation) refreshing = false
       deps.render()
     },
+    async check() {
+      if (!current || refreshing || savingGeneration === generation || detectionGeneration === generation || checkingGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("check")) return
+      const g = generation, projectId = current.local_project_id
+      checkingGeneration = g
+      lines = ["Checking this machine… · no repair", ...viewLines(current)]; deps.render()
+      try {
+        const response = await deps.send(relayStatusRequest()) as {RelayStatus?: {status?: {machine_id:string;daemon_id:string}}}
+        const status=response.RelayStatus?.status
+        if(g!==generation)return
+        if (!status) throw new Error("Kernel identity unavailable")
+        const request=checkEnvironmentRequest(current,{machine_id:status.machine_id,target_instance_generation:status.daemon_id,slice_ref:null},`check-${crypto.randomUUID()}`)
+        const ack=await deps.send(request) as {EnvironmentOperation?: {operation?: {operation_id:string;phase:string}}}
+        if(g!==generation)return
+        if (!ack.EnvironmentOperation?.operation)throw new Error("Check unavailable")
+        for (let i=0;i<400 && g===generation;i++) {
+          const value=await deps.send(getProjectEnvironmentRequest(projectId)) as {ProjectEnvironment?:{environment:ProjectEnvironment}}
+          const snapshot=value.ProjectEnvironment?.environment
+          if (!snapshot || snapshot.local_project_id!==projectId) throw new Error("Check unavailable for this Project")
+          if(g!==generation)return
+          cache.remember(scope,snapshot); current=snapshot; lines=viewLines(snapshot); deps.render()
+          // MP-08 / MP-10 / MP-11: another client can replace the aggregate
+          // projection; retained acknowledgements use the shared kernel lookup.
+          const op=snapshot.operations.find(o=>o.operation_id===request.CheckProjectEnvironment.operationId)
+            ?? (await deps.send(projectEnvironmentOperationRequest("GetEnvironmentOperation",{projectId,operationId:request.CheckProjectEnvironment.operationId})) as {EnvironmentOperation?:{operation?:ProjectEnvironment["operations"][number]}}).EnvironmentOperation?.operation
+          if(g!==generation)return
+          if(!op || op.operation_id!==request.CheckProjectEnvironment.operationId)throw new Error("Check operation unavailable")
+          if(op && ["ready","failed","cancelled"].includes(op.phase))return
+          await new Promise(resolve=>setTimeout(resolve,250))
+        }
+        if(g===generation)throw new Error("Check polling deadline exceeded")
+      } catch {if(g===generation)lines=["Check unavailable · refresh and try again",...viewLines(current!)]}
+      finally {if(checkingGeneration===g)checkingGeneration=null;if(g===generation)deps.render()}
+    },
     async detect() {
-      if (!current || refreshing || detectionGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("detect")) return
+      if (!current || refreshing || detectionGeneration === generation || checkingGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("detect")) return
       const requestGeneration = generation
       const projectId = current.local_project_id
       detectionGeneration = requestGeneration
@@ -131,7 +166,7 @@ export function createProjectEnvironmentReadController(deps: {
       if (g === generation) deps.render()
     },
     async review(decision: "accept" | "exclude") {
-      if (!current || refreshing || savingGeneration === generation || detectionGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("save")) return
+      if (!current || refreshing || savingGeneration === generation || detectionGeneration === generation || checkingGeneration === generation || !current.delivered_capabilities.enabled_environment_operations.includes("save")) return
       const proposal = current.proposals[proposalIndex]
       if (!proposal) return
       const requestGeneration = generation
@@ -172,6 +207,7 @@ export function createProjectEnvironmentReadController(deps: {
         proposalIndex = Math.max(0, Math.min(current.proposals.length - 1, proposalIndex + (event.name === "n" ? 1 : -1)))
         lines = viewLines(current); offset = 0; deps.render(); return true
       }
+      if (event.name === "c") { void controller.check(); return true }
       if (event.name === "d") { void controller.detect(); return true }
       if (event.name === "escape") { controller.close(); return true }
       const amount = event.name === "down" ? 1 : event.name === "up" ? -1 : event.name === "pagedown" ? deps.pageSize() : event.name === "pageup" ? -deps.pageSize() : 0
@@ -181,8 +217,18 @@ export function createProjectEnvironmentReadController(deps: {
     },
   }
   function viewLines(environment: ProjectEnvironment): string[] {
+    clearTimeout(expiryTimer)
+    const deadline = environmentObservationExpiry(environment)
+    if (deadline != null) {
+      expiryTimer = setTimeout(() => {
+        if (open && current === environment && !refreshing && !showingDiff && savingGeneration !== generation && detectionGeneration !== generation && checkingGeneration !== generation) {
+          lines = viewLines(environment); deps.render()
+        }
+      }, Math.max(0, deadline - Date.now()))
+      expiryTimer.unref?.()
+    }
     const selected = environment.proposals[proposalIndex]
-    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${proposalIndex + 1}/${environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : ["No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...projectEnvironmentLines(environment)]
+    return [`Revision ${environment.revision ?? 0} · r Refresh`, ...(environment.delivered_capabilities.enabled_environment_operations.includes("check") ? ["c · Check this machine (read-only)", ...environment.operations.filter(o=>o.kind==="check").slice(-1).map(o=>`Check · ${o.phase} · ${o.operation_id}`)] : ["Check is unavailable on this kernel"]), ...(environment.delivered_capabilities.enabled_environment_operations.includes("save") ? ["n/p · Next/previous proposal; a · Accept; x · Exclude", ...(environment.proposals[proposalIndex] ? [`Review ${proposalIndex + 1}/${environment.proposals.length} · ${selected!.requirement.title}`, selected!.requirement.spec.kind === "software" ? `Version constraint: ${selected!.requirement.spec.version_constraint ?? "Not specified"}` : `Kind: ${selected!.requirement.spec.kind}`, ...selected!.requirement.origins.map(environmentOriginLabel), "Field editing is available in the Project’s Web Environment."] : ["No pending proposals"])] : []), ...(environment.delivered_capabilities.enabled_environment_operations.includes("detect") ? ["d · Detect requirements (read-only)", "File names and types from code-manifest folders are sent to your provider.", "Other folders use deterministic detection; model opt-in is available in Web."] : []), "←/→ · Project/folder navigation; v · Revision diff", "Typed field editing is temporarily Web-first · w · Copy Web Environment link", ...(webLink ? [webLink] : []), `Content · ${environment.content_digest ?? "Initial"} · Parent · ${environment.parent_revision_digest ?? "Initial revision"}`, ...projectEnvironmentLines(environment)]
   }
   return controller
 }

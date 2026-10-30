@@ -263,7 +263,12 @@ impl ProjectEnvironmentStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return Err(environment_error("remove revision history failed")),
         }
-        for extension in ["detect.json", "detect-model.json"] {
+        for extension in [
+            "detect.json",
+            "detect-model.json",
+            "checks.json",
+            "checks.wal",
+        ] {
             match fs::remove_file(self.path(project).with_extension(extension)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -314,6 +319,14 @@ impl ProjectEnvironmentStore {
         project: &str,
     ) -> Result<ProjectEnvironmentLock, DaemonError> {
         self.acquire_lock(project, false, "identity.lock")
+    }
+    // MP-08 / MP-10 / MP-11: readers wait only for Check publication,
+    // independently of a Project lock held throughout a provider Detect.
+    pub(super) fn check_journal_lock(
+        &self,
+        project: &str,
+    ) -> Result<ProjectEnvironmentLock, DaemonError> {
+        self.acquire_lock(project, false, "checks.lock")
     }
     /// Saves and mutation snapshots queue behind each other for a bounded time,
     /// while a longer Detect, export or adjustment holder reports busy.

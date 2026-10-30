@@ -175,6 +175,20 @@ pub(crate) fn verify_manual_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
 ) -> Result<(), DaemonError> {
+    verify_files(current, draft, true)
+}
+// MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
+pub(super) fn verify_check_files(
+    current: &ProjectEnvironment,
+    draft: &mut EnvironmentRevisionDraft,
+) -> Result<(), DaemonError> {
+    verify_files(current, draft, false)
+}
+fn verify_files(
+    current: &ProjectEnvironment,
+    draft: &mut EnvironmentRevisionDraft,
+    git_metadata: bool,
+) -> Result<(), DaemonError> {
     let mut total_bytes = 0;
     let mut total_count = 0;
     for requirement in draft
@@ -277,7 +291,9 @@ pub(crate) fn verify_manual_files(
             let bytes = selection.bytes - total_bytes;
             total_bytes = selection.bytes;
             total_count = selection.count;
-            entry.git_ignored = ignored(path, &entry.relative_path);
+            if git_metadata {
+                entry.git_ignored = ignored(path, &entry.relative_path);
+            }
             entry.secret_looking = selection.protected;
             if selection.protected {
                 entry.content_digest = None;
