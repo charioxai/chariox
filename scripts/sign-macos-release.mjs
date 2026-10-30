@@ -16,12 +16,14 @@ export const WORKER_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)),
 export const CLI_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)), 'macos-cli.entitlements');
 const JIT_ENTITLEMENT = 'com.apple.security.cs.allow-jit';
 const LIBRARY_ENTITLEMENT = 'com.apple.security.cs.disable-library-validation';
-// V8 in the App worker and Bun's JavaScriptCore in the compiled CLI/TUI are the only JITs. The CLI also loads the
+// V8 in the App worker, the kernel's WASM App worker (its Seatbelt entry refuses anything but hardened runtime
+// with allow-jit alone) and Bun's JavaScriptCore in the compiled CLI/TUI are the only JITs. The CLI also loads the
 // OpenTUI renderer, which Bun extracts unsigned at run time, so it needs library validation off. Every other artifact
 // runs without entitlements.
 const ENTITLED = new Map([
   ['chariox-setup', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
   ['chariox-app-worker', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
+  ['chariox-app-wasm-worker', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
   ['chariox', { role: 'cli-executable', file: CLI_ENTITLEMENTS, keys: [JIT_ENTITLEMENT, LIBRARY_ENTITLEMENT] }],
 ]);
 // A Chariox inventory signed before platform signing describes the wrong bytes.
