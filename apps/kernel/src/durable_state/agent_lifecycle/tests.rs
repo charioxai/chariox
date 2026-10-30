@@ -3551,3 +3551,124 @@ fn deleted_child_settles_reply_without_an_admitted_receiver_task() {
     );
     assert!(!f.store.agent_registrations("p").unwrap()[0].live);
 }
+
+#[test]
+fn requested_reply_fails_when_recipient_is_removed_before_or_after_admission() {
+    for admitted in ["pending", "accepted", "running"] {
+        let f = Fixture::new();
+        f.begin("p");
+        let mut request = occurrence(
+            "room",
+            "child",
+            "parent",
+            "request",
+            "message",
+            serde_json::json!({"message": "return the result"}),
+        );
+        request.reply_requested = true;
+        let Outcome::Event(event) = f.apply(Operation::Send {
+            task: "p".into(),
+            prompt: "p".into(),
+            event: request,
+        }) else {
+            panic!()
+        };
+        if admitted != "pending" {
+            let prompt = format!("agent-event-child-{}", event.sequence);
+            f.apply(Operation::Attempt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: event.sequence,
+                prompt: prompt.clone(),
+                target: None,
+                run: None,
+                now: 2,
+                work: None,
+            });
+            f.apply(Operation::Receipt {
+                room: "room".into(),
+                agent: "child".into(),
+                sequence: event.sequence,
+                state: "accepted".into(),
+                now: 3,
+            });
+            if admitted == "running" {
+                f.apply(Operation::Begin {
+                    owner: "owner".into(),
+                    room: "room".into(),
+                    agent: "child".into(),
+                    prompt,
+                    run: Some("child-run".into()),
+                    now: 4,
+                });
+            }
+        }
+        for now in [5, 6] {
+            f.apply(Operation::RetireWakes {
+                room: "room".into(),
+                agent: Some("child".into()),
+                now,
+            });
+        }
+        let reply = f
+            .task()
+            .obligations
+            .into_iter()
+            .find(|o| o.kind == "reply")
+            .unwrap();
+        assert_eq!(reply.status, "failed", "admitted={admitted}");
+        let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+        assert_eq!(inbox.len(), 1, "retirement must publish one failure");
+        assert_eq!(inbox[0].kind, "source_lost");
+        assert_eq!(
+            inbox[0].source_id,
+            format!("agent-event-child-{}", event.sequence)
+        );
+    }
+}
+
+#[test]
+fn removed_recipient_preserves_an_already_completed_requested_reply() {
+    let f = Fixture::new();
+    f.begin("p");
+    let mut request = occurrence(
+        "room",
+        "child",
+        "parent",
+        "request",
+        "message",
+        serde_json::json!({"message": "answer"}),
+    );
+    request.reply_requested = true;
+    let Outcome::Event(event) = f.apply(Operation::Send {
+        task: "p".into(),
+        prompt: "p".into(),
+        event: request,
+    }) else {
+        panic!()
+    };
+    let source = format!("agent-event-child-{}", event.sequence);
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source,
+        occurrence: "completed".into(),
+        success: true,
+        public_answer: Some(serde_json::json!({"excerpt": "answer"})),
+        now: 2,
+    });
+    f.apply(Operation::RetireWakes {
+        room: "room".into(),
+        agent: Some("child".into()),
+        now: 3,
+    });
+    let reply = f
+        .task()
+        .obligations
+        .into_iter()
+        .find(|o| o.kind == "reply")
+        .unwrap();
+    assert_eq!(reply.status, "settling");
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "source_completed");
+}

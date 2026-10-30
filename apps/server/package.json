@@ -4,19 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --workspace-root run build:kernel-client && pnpm --filter @chariox/transcript-view run build && tsc -p tsconfig.json && node scripts/build-agent-trigger-view.mjs",
+    "build": "pnpm --workspace-root run build:kernel-client && pnpm --filter @chariox/transcript-view run build && pnpm --filter @chariox/agent-trigger-gateway run build && tsc -p tsconfig.json",
     "lint": "pnpm --workspace-root run build:kernel-client && tsc -p tsconfig.json --noEmit",
     "drill:live-publication-traces": "pnpm run build && node scripts/live-publication-trace-drill.mjs",
-    "test": "pnpm run build && node --test dist/index.test.js dist/agent-trigger-client.test.js dist/agent-trigger-live.test.js dist/agent-trigger-server.test.js dist/agent-trigger-assets.test.js"
+    "test": "pnpm run build && node --test dist/index.test.js dist/agent-trigger-client.test.js dist/agent-trigger-live.test.js dist/agent-trigger-server.test.js dist/agent-trigger-assets.test.js dist/hosted-agent-trigger-server.test.js"
   },
   "dependencies": {
     "@chariox/kernel-client": "workspace:*",
     "fastify": "^5.1.0",
-    "@chariox/transcript-view": "workspace:*"
+    "@chariox/transcript-view": "workspace:*",
+    "@chariox/agent-trigger-gateway": "workspace:*"
   },
   "bin": {
     "chariox-workflow-gateway": "dist/index.js",
-    "chariox-workflow-call": "dist/workflow-call.js"
+    "chariox-workflow-call": "dist/workflow-call.js",
+    "chariox-hosted-agent-trigger": "dist/hosted-agent-trigger-main.js"
   },
   "devDependencies": {
     "esbuild": "0.28.0"
