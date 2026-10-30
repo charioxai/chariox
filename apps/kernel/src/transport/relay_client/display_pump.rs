@@ -588,11 +588,9 @@ fn seal(
 
 /// An unwatched display reads nothing back from its source and keeps its host binding alive without a capture.
 async fn park_host(route: &PumpRoute, generation: u64, parked: bool) -> Result<(), DaemonError> {
-    let state = route.router.runtime_state();
-    if state.is_room_display(&route.display_id) {
-        return Ok(());
-    }
-    state
+    route
+        .router
+        .runtime_state()
         .kernel_browser_display_request(
             &route.caller,
             KernelBrowserDisplayRequest::Park {

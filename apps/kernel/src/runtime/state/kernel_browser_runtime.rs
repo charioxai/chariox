@@ -553,6 +553,18 @@ impl KernelRuntimeState {
                 *generation,
                 crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
             )),
+            // A parked Room display captures nothing; its home and worker leases and the producer binding
+            // still expire after 60 s, so each park renews them with a capture-free attach.
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked: true,
+                ..
+            } => Some((
+                subscription_id,
+                *generation,
+                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
+            )),
             _ => None,
         };
         if let Some((id, generation, command)) = room_control {
@@ -560,6 +572,18 @@ impl KernelRuntimeState {
                 return self
                     .room_display_control(&caller.caller, id, generation, command)
                     .await;
+            }
+        }
+        // Unparking a Room display needs nothing: the next capture goes straight to the producer.
+        if let KernelBrowserDisplayRequest::Park {
+            subscription_id,
+            generation,
+            parked: false,
+            ..
+        } = &request
+        {
+            if self.is_room_display(subscription_id) {
+                return Ok(serde_json::json!({"generation":generation,"parked":false}));
             }
         }
         use crate::session::{EnvironmentActor, EnvironmentActorKind};
