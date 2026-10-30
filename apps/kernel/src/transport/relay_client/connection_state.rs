@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, RwLock};
 use tokio::time::timeout;
 
 use crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT;
@@ -32,6 +32,8 @@ const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 #[derive(Debug, Default)]
 pub struct RelayClientState {
     pub(super) connected: bool,
+    /// Wakes whoever publishes `connected` elsewhere as soon as it changes.
+    connection_changes: watch::Sender<bool>,
     pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
@@ -152,6 +154,15 @@ impl RelayClientState {
 
     pub fn connected(&self) -> bool {
         self.connected
+    }
+
+    pub(crate) fn connection_changes(&self) -> watch::Receiver<bool> {
+        self.connection_changes.subscribe()
+    }
+
+    fn set_connection(&mut self, connected: bool) {
+        self.connected = connected;
+        self.connection_changes.send_replace(connected);
     }
 
     pub(crate) fn outgoing_sender(&self) -> Option<RelayOutgoingSender> {
@@ -499,7 +510,7 @@ impl RelayClientState {
         outgoing_tx: RelayOutgoingSender,
         relay_url: impl Into<String>,
     ) {
-        self.connected = true;
+        self.set_connection(true);
         self.connected_relay_url = Some(relay_url.into());
         self.outgoing_tx = Some(outgoing_tx);
     }
@@ -695,7 +706,7 @@ pub(super) async fn set_connected(
 ) -> Result<usize, String> {
     let registrations = {
         let mut guard = state.write().await;
-        guard.connected = true;
+        guard.set_connection(true);
         guard.connected_relay_url = Some(relay_url);
         guard.outgoing_tx = Some(outgoing_tx.clone());
         guard.prune_managed_slice_relay_activations(Instant::now());
@@ -803,7 +814,7 @@ pub(super) async fn publish_offline_and_set_disconnected(
 pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
     let (pending_peer, pending_display_tunnels) = {
         let mut guard = state.write().await;
-        guard.connected = false;
+        guard.set_connection(false);
         guard.connected_relay_url = None;
         guard.outgoing_tx = None;
         guard.peer_public_keys.clear();
