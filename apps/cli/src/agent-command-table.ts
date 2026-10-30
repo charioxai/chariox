@@ -34,7 +34,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "request",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
-    summary: "send the one JSON request on stdin; prints the JSON response",
+    summary: "send the one JSON request on stdin; prints the JSON response. --timeout SECONDS (default 30) is how long to wait: a RunShellCommand with timeout_ms needs timeout_ms/1000 + 30",
   },
   {
     name: "watch",
@@ -106,6 +106,7 @@ const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "ke
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },
+  { exit: 1, meaning: "request failed: the kernel answered with its own error code (session_not_found, file_not_found, ledger_unavailable, ...); read code and message", codes: [] },
   { exit: 2, meaning: "usage error", codes: ["usage", "file_path_invalid"] },
   { exit: 3, meaning: "refused: the user, the grant or the file permissions do not allow it", codes: [...REFUSED, "file_permission_denied", "subscription_ended"] },
   { exit: 4, meaning: "kernel unavailable", codes: KERNEL_UNAVAILABLE },
@@ -202,8 +203,7 @@ export function guideText(): string {
     "",
     "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment).",
     "None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
-    "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id.",
-    "On kernel_outcome_unknown read the state first; never retry blindly.",
+    "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id. On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")
 }

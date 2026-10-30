@@ -160,12 +160,36 @@ impl KernelGateway {
         kernel: &str,
         status: Result<(), GatewayError>,
     ) -> Result<(), crate::error::DaemonError> {
+        self.event_health_at(origin, kernel, status, Instant::now())
+    }
+    pub(super) fn event_health_at(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        status: Result<(), GatewayError>,
+        now: Instant,
+    ) -> Result<(), crate::error::DaemonError> {
+        let key = (origin.grant_id.clone(), kernel.to_string());
+        {
+            let mut timing_out = self
+                .event_parts
+                .timing_out_since
+                .lock()
+                .expect("event timeouts poisoned");
+            if matches!(status, Err(GatewayError::RequestTimeout { .. })) {
+                let since = *timing_out.entry(key.clone()).or_insert(now);
+                if now.saturating_duration_since(since) < BUSY_GRACE {
+                    return Ok(());
+                }
+            } else {
+                timing_out.remove(&key);
+            }
+        }
         let mut health = self
             .event_parts
             .health
             .lock()
             .expect("event health poisoned");
-        let key = (origin.grant_id.clone(), kernel.into());
         // Following a kernel again clears its durable baseline. The status cache
         // alone cannot tell whether this subscription still observed it.
         let previous = self
@@ -223,7 +247,7 @@ impl KernelGateway {
                 &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                     targets: targets.to_vec(),
                 }),
-                Duration::from_secs(1),
+                PULL_DEADLINE,
             )
             .await?;
             *subscribed = targets.to_vec();
@@ -249,7 +273,8 @@ impl KernelGateway {
                     events,
                 })
                 .map_err(|_| part_error(kernel, "could not commit the merged event inbox"))?;
-            if next_cursor > 0 {
+            // Only a cursor that moved needs saying: an ack is a write on the target.
+            if next_cursor > since {
                 self.forward(
                     kernel,
                     origin,
@@ -257,7 +282,7 @@ impl KernelGateway {
                     &LocalDaemonRequest::AckEvents(AckEventsRequest {
                         cursor: next_cursor,
                     }),
-                    Duration::from_secs(1),
+                    PULL_DEADLINE,
                 )
                 .await?;
             }
@@ -283,7 +308,7 @@ impl KernelGateway {
                     since: Some(since),
                     limit: 1000,
                 }),
-                Duration::from_secs(1),
+                PULL_DEADLINE,
             )
             .await?;
         serde_json::from_value(response)
