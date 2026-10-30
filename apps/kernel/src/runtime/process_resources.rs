@@ -274,7 +274,10 @@ impl PreparedDomain {
                             watched
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .memory_limit_bytes = Some(limit_bytes);
+                                .memory_stop = Some(MemoryStop {
+                                limit_bytes,
+                                notice,
+                            });
                             #[cfg(target_os = "linux")]
                             if let Some(group) = &self.cgroup {
                                 group.terminate();
@@ -364,6 +367,12 @@ fn announce(pid: u32, notice: &str) {
     let _ = (pid, notice);
 }
 
+/// Why the workload's own process was stopped for memory.
+struct MemoryStop {
+    limit_bytes: u64,
+    notice: String,
+}
+
 #[derive(Default)]
 struct Observation {
     /// The accounting unit the workload belongs to (its agent, or itself).
@@ -374,7 +383,7 @@ struct Observation {
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
-    memory_limit_bytes: Option<u64>,
+    memory_stop: Option<MemoryStop>,
     /// Who Health lists the processes under when no run or terminal does.
     listed: Option<projection::Listing>,
     /// Set once the workload's own process ended: what it left running is
@@ -430,10 +439,13 @@ impl ProcessDomain {
     }
     /// Set once the workload itself was the command stopped for memory.
     pub(crate) fn memory_limit_bytes(&self) -> Option<u64> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .memory_limit_bytes
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.memory_stop.as_ref().map(|stop| stop.limit_bytes)
+    }
+    /// What an owner without a typed outcome tells its reader about that stop.
+    pub(crate) fn memory_stop_notice(&self) -> Option<String> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.memory_stop.as_ref().map(|stop| stop.notice.clone())
     }
     /// Lists the processes in Health under `owner` (a process the agent
     /// started through a runtime tool rather than its provider run).

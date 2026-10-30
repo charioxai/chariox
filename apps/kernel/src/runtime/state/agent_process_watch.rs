@@ -494,6 +494,15 @@ impl KernelRuntimeState {
             for reader in readers {
                 let _ = reader.join();
             }
+            // The stopped command may have been the root itself, which the
+            // controller cannot tell through its own stream.
+            if let Some(notice) = owned
+                .lock()
+                .ok()
+                .and_then(|child| child.resources.as_ref()?.memory_stop_notice())
+            {
+                output.push(notice.trim_end().to_owned());
+            }
             let _ = sender.send(match code {
                 Some(code) => Signal::Exited(code, output.text()),
                 None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
@@ -1137,6 +1146,120 @@ mod tests {
         assert_ne!(
             settled, "open",
             "MP-11 R3: physical exit releases the delegation"
+        );
+    }
+
+    /// A watched command the memory controller stops reaches the agent with
+    /// the reason, not as a bare exit 137.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
+        let worktree = crate::test_support::TestWorktree::new("memory-reason");
+        let mut app =
+            crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        let store = app.durable_state_store();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: room.owner_user_id().into(),
+                room: room.id().into(),
+                agent: agent.id().into(),
+                prompt: "memory-turn".into(),
+                run: Some("run".into()),
+                now,
+            })
+            .unwrap();
+        let grow =
+            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
+        let argv = vec!["python3".to_string(), "-c".into(), grow.into()];
+        let wake: AgentWake = serde_json::from_value(serde_json::json!({
+            "id":w(), "task_id":"memory-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"allocator", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+        })).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let state = router.runtime_state();
+        let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+            "run",
+            room.id().into(),
+            Some(agent.id().to_string()),
+            "codex".into(),
+        );
+        state
+            .start_agent_process(
+                wake.clone(),
+                wake.command.clone(),
+                worktree.path().to_path_buf(),
+                "memory-turn",
+                "memory-turn",
+                &run,
+            )
+            .await
+            .unwrap();
+        let store = &state.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: "memory-turn".into(),
+                prompt: "memory-turn".into(),
+                registrations: vec![wake.registration_id.clone()],
+                cursor: 0,
+                deadline: now + 60_000,
+                reason: "watch".into(),
+                now,
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Settle {
+                room: room.id().into(),
+                agent: agent.id().into(),
+                prompt: "memory-turn".into(),
+                run: "run".into(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let tail = loop {
+            let exited = store
+                .agent_inbox(room.id(), agent.id(), 0)
+                .unwrap()
+                .into_iter()
+                .find(|event| event.payload["public_answer"].get("output_tail").is_some());
+            if let Some(event) = exited {
+                break event.payload["public_answer"]["output_tail"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the allocator was never stopped: {:?} {:?}",
+                store
+                    .agent_wakes(Some(room.id()), Some(agent.id()))
+                    .unwrap()
+                    .into_iter()
+                    .map(|w| (w.state, w.exit_code))
+                    .collect::<Vec<_>>(),
+                store
+                    .agent_inbox(room.id(), agent.id(), 0)
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| e.kind)
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
+        assert!(
+            tail.contains("stopped this command at its owner-set memory cap of 64 MiB"),
+            "the agent was not told why: {tail:?}"
         );
     }
 
