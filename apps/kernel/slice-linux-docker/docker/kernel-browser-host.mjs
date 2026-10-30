@@ -5,7 +5,6 @@ import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageIn
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
-import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
 import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
@@ -34,7 +33,7 @@ import { inputHostTab } from "./kernel-browser-input.mjs";
 import { BusyInputQueue, lateInputAck, markDispatched } from "./kernel-browser-input-queue.mjs";
 import { BrowserPopupEvidence, popupActionId } from "./kernel-browser-popup-evidence.mjs";
 import { assertNotCancelled, BrowserActionError } from "./browser-controller-actions.mjs";
-import { captureProtectedDisplay, protectionDeclared, regionProtectionChanged } from "./kernel-browser-region-protection.mjs";
+import { captureProtectedDisplay } from "./kernel-browser-region-protection.mjs";
 
 import { MirrorService, MirrorInputEpochRefusal } from "./kernel-browser-mirror.mjs";
 import { VisitedLinks } from "./kernel-browser-visited-links.mjs";
@@ -69,7 +68,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 }
 const TAB_LIMIT = 128;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'subscribe', 'poll', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -113,7 +112,6 @@ export class KernelBrowserHost {
     this.observations = 0; this.observed = 0;
     this.tabs = new Map();
     this.popupEvidence = new BrowserPopupEvidence(TAB_LIMIT);
-    this.streams = new Map();
     this.displays = new Map();
     this.displaySessions = new DisplaySessions(this);
     this.scales = new Map();
@@ -157,10 +155,6 @@ export class KernelBrowserHost {
     await this.closeCompositors();
     for (const stream of this.displays.values()) stream.invalidate(true, 'protection');
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
-    // No frame captured before insertion/retirement can be returned afterward.
-    for (const stream of this.streams.values()) {
-      stream.latest = null;
-    }
     return {};
   }
   // MP-08/MP-10: concurrent reconciles (e.g. a native click that navigates)
@@ -231,8 +225,6 @@ export class KernelBrowserHost {
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
-    for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
-    this.streams.clear();
     this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -404,8 +396,7 @@ export class KernelBrowserHost {
     // MP-08/MP-10/MP-11: mirror capture/input never loads the video backend.
     const {LinuxCapture,selectNativeCapture} = await import('./kernel-browser-native.mjs');
     const {CompositorSource} = await import('./kernel-browser-compositor.mjs');
-    const scope=stream.codec==='png'?'png_codec':this.protection.unknown?'protection_policy':
-      [...this.streams.values()].some(s=>s.tabId===tab.tab_id)?'legacy_stream':null;
+    const scope=stream.codec==='png'?'png_codec':this.protection.unknown?'protection_policy':null;
     if(scope){this.nativeScope(scope);return null;}
     let entry=this.compositors.get(tab.tab_id);
     // MP-11: a refused attestation (animated page, caret) costs a lease and two
@@ -477,8 +468,6 @@ export class KernelBrowserHost {
     this.tabGroups?.close?.();this.tabGroups=null;
     await this.browser?.close();
     this.browser = null;
-    for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
-    this.streams.clear();
     this.timing.flush?.();
     return { state: "stopped", generation: this.generation, tabs: [] };
   }
@@ -623,7 +612,6 @@ export class KernelBrowserHost {
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const result = this.tabState();
-    for (const [id, stream] of this.streams) if (!this.tabs.has(stream.tabId)) await this.removeStream(id);
     if (!this.restoring) await this.save();
     return result;
   }
@@ -691,54 +679,6 @@ export class KernelBrowserHost {
   screenshot(tab, clip = null, protectedCapture = false, format = "png", optimizeForSpeed = true) {
     return capturePageScreenshot(this, tab, clip, protectedCapture, format, optimizeForSpeed);
   }
-  async subscribe(tab, boundFrames = false, owner = null) {
-    await this.closeCompositors(tab.tab_id);
-    if (this.streams.size >= 16) throw new Error("MD-2: frame subscription limit reached");
-    const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
-    const id = `host-stream-${randomUUID()}`;
-    const stream = { sessionId, tabId: tab.tab_id, boundFrames, owner, latest: null, sequence: 0, expires: Date.now() + 60_000 };
-    const captureProtected = () => {
-      if (stream.capturing || this.protection.unknown || Date.now() < (stream.nextCapture ?? 0)) return;
-      stream.capturing = true;
-      stream.nextCapture = Date.now() + 200;
-      const policy = this.protection, generation = this.generation,regionEpoch=stream.regionEpoch??0;
-      void this.displayScreenshot(tab).then(frame => {
-        if (this.protection === policy && this.generation === generation && this.streams.get(id) === stream&&(stream.regionEpoch??0)===regionEpoch) {
-          if (!stream.boundFrames) delete frame.document_id;
-          stream.latest = { ...frame, sequence: ++stream.sequence };
-        }
-      }).catch(() => {}).finally(() => { stream.capturing = false; });
-    };
-    stream.off = connection.subscribe(message => {
-      if(regionProtectionChanged(message,sessionId,stream.latest?.[displayMaskRegions]?.length!==0)){
-        if(protectionDeclared(message)){stream.regionEpoch=(stream.regionEpoch??0)+1;stream.latest=null;}
-        captureProtected();return;
-      }
-      if (message.method !== "Page.screencastFrame" || message.sessionId !== sessionId) return;
-      const data = message.params?.data;
-      if (typeof data === "string" && data.length <= 4 * 1024 * 1024 && Date.now() <= stream.expires) {
-        // MP-11: raw screencast timestamps cannot bind protected DOM layout.
-        // They wake the same masked capture path; no raw page bytes escape.
-        captureProtected();
-      }
-      // One CDP source per page; subscriber fan-out must not duplicate ACKs.
-      if ([...this.streams].find(([, current]) => current.sessionId === sessionId)?.[0] === id) {
-        void connection.send("Page.screencastFrameAck", { sessionId: message.params?.sessionId }, sessionId).catch(() => {});
-      }
-    });
-    const alreadyStreaming = [...this.streams.values()].some(current => current.sessionId === sessionId);
-    this.streams.set(id, stream);
-    this.armExpiry(id, stream);
-    try { if (!alreadyStreaming) await connection.send("Page.startScreencast", { format: "jpeg", quality: 80, maxWidth: geometry.width, maxHeight: geometry.height, everyNthFrame: 1 }, sessionId); }
-    catch (error) { clearTimeout(stream.timer); stream.off(); this.streams.delete(id); throw error; }
-    captureProtected();
-    return { generation: this.generation, subscription_id: id };
-  }
-  armExpiry(id, stream) {
-    clearTimeout(stream.timer);
-    stream.timer = setTimeout(() => { void this.removeStream(id); }, Math.max(1, stream.expires - Date.now()));
-    stream.timer.unref?.();
-  }
   armDisplayExpiry(stream) {
     clearTimeout(stream.timer);
     stream.timer = setTimeout(() => {
@@ -780,16 +720,6 @@ export class KernelBrowserHost {
     if(stream.resumeSourceIdentity?.key!==key||stream.resumeSourceIdentity?.source!==source)stream.resumeSourceIdentity={key,source};
     return stream.resumeSourceIdentity;
   }
-  async removeStream(id) {
-    const stream = this.streams.get(id);
-    if (!stream) return;
-    this.streams.delete(id);
-    clearTimeout(stream.timer);
-    stream.off();
-    if (![...this.streams.values()].some(other => other.sessionId === stream.sessionId)) {
-      await this.browser.connection?.send("Page.stopScreencast", {}, stream.sessionId).catch(() => {});
-    }
-  }
   // Protocol 552: input this observer has parked behind a busy renderer; the viewer holds its preview handover until it is admitted.
   parkedState(scope) {
     const state = this.observe(this.tabState(), null, scope), parked_input = this.busyInputs.parked(scope);
@@ -825,11 +755,10 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
-    for (const [id, stream] of this.streams) if (Date.now() > stream.expires) await this.removeStream(id);
     // A modal blocks renderer evaluation. Read and answer from the controller's
     // CDP event state, never from a reconciliation that waits on that renderer.
     if (command.op === "dialog") {
@@ -911,14 +840,7 @@ export class KernelBrowserHost {
       const {displayCredit, displayPushCredit} = await import('./kernel-browser-display-credit.mjs');
       return command.push ? displayPushCredit(this, stream, command, signal) : displayCredit(this, stream, command, signal);
     }
-    if (["poll", "unsubscribe"].includes(command.op)) {
-      if (command.generation !== this.generation || !this.streams.has(command.subscription_id)) throw new UserDomainRefusal("stale_reference", "display_retired");
-      const stream = this.streams.get(command.subscription_id);
-      stream.expires = Date.now() + 60_000;
-      this.armExpiry(command.subscription_id, stream);
-      if (command.op === "unsubscribe") { await this.removeStream(command.subscription_id); return { generation: this.generation, unsubscribed: true }; }
-      return { generation: this.generation, frame: stream.latest };
-    }
+    if (command.op === "unsubscribe") throw new UserDomainRefusal("stale_reference", "display_retired");
     // Explicit physical input already names an observed tab/document. Read
     // that live target directly; whole-tab discovery still runs afterward.
     // Per-dispatch document/cancellation and secret-focus checks remain below.
@@ -963,9 +885,6 @@ export class KernelBrowserHost {
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
-      for (const [id, stream] of this.streams) {
-        if (stream.tabId === tab.tab_id) await this.removeStream(id);
-      }
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
       const state = await this.reconcile();
@@ -1089,7 +1008,6 @@ export class KernelBrowserHost {
       if (!command.focused_agent && !command.bound_frames) delete frame.document_id;
       return this.observe(frame, tab, scope);
     }
-    if (command.op === "subscribe") return this.subscribe(tab, command.bound_frames === true, command._subscription_owner ?? null);
     throw new Error("MD-2: unsupported browser operation");
   }
   // MP-08/MP-11: an agent drives an App Tab as itself, only after the kernel
@@ -1109,10 +1027,8 @@ export class KernelBrowserHost {
       if (request.method === "shutdown") return { id: request.id, ok: true, result: await this.stop() };
       if (request.method === "host.protect") return { id: request.id, ok: true, result: await this.protect(request.params) };
       if (request.method === "host.revoke_subscriptions") {
-        const ids = new Set(request.params.subscription_ids ?? []);
         const owners = new Set(request.params.subscription_owners ?? []);
         for(const owner of owners){await this.nativeComputer.retire(owner);for(const observer of this.nativeAccessibility.observers.keys())if(observer.startsWith(owner+':'))this.nativeAccessibility.retire(observer);}
-        for (const [id, stream] of this.streams) if (ids.has(id) || owners.has(stream.owner)) await this.removeStream(id);
         return { id: request.id, ok: true, result: { revoked: true } };
       }
       if (request.method === "host.secret") {
@@ -1217,7 +1133,7 @@ export class KernelBrowserHost {
         else if (timestamp() - at > SLOW_OP_MS && /^[a-z_]{1,32}$/.test(request.params.op)) this.timing(`host_op_slow ${request.params.op}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
-        if (!["screenshot", "poll", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
+        if (!["screenshot", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
         return { id: request.id, ok: true, result };

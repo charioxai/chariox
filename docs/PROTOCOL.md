@@ -5918,3 +5918,22 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### MP-08 / MP-09 / MP-10 / MP-11: user-side browser frame stream removed — local 919 / peer 370
+
+The `KernelBrowser` ops `subscribe` and `poll` (the old PNG frame stream for a
+user-domain browser) and the display request `subscribe` no longer exist. A client
+that sends one now gets the "unsupported operation" refusal that any unknown op gets;
+`unsubscribe` stays for display streams. Viewers watch a kernel browser through the
+mirror and the display transport only. Relay peer 370 only pairs the embedded local
+request/response union with local 919. The managed-upgrade list is [629, 636, 919].
+
+The same pair adds the optional `paused: true` on `display_ack`: the viewer's display is
+not watched. The push pump captures and sends nothing (not even the stall reprobe) and
+forgets what is in flight; the acknowledgement still renews the 60 s delivery lease, so a
+viewer repeats it every 20 s while hidden. Only an acknowledgement with `lost: true`
+(watched again, independent frame wanted) resumes the pump; late plain acknowledgements
+of frames sent before the pause do nothing.
+
+Focused check: `cargo test -p chariox-kernel --lib protocol_shapes` (including
+`the_legacy_user_side_frame_stream_is_not_a_command`).

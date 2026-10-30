@@ -16,12 +16,6 @@ pub(crate) enum KernelBrowserDisplayRequest {
         frame_width: u32,
         frame_height: u32,
     },
-    // Keep the protected legacy native stream seam for display adapters.
-    #[allow(dead_code)]
-    Subscribe {
-        tab_id: String,
-        generation: u64,
-    },
     Input {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
         input: crate::local::KernelBrowserInput,
@@ -136,6 +130,11 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
     ) {
         return Err(host_error(
             "MD-DISPLAY: terminal display adapter required".into(),
+        ));
+    }
+    if matches!(&request.command, KernelBrowserCommand::Unsubscribe { .. }) {
+        return Err(host_error(
+            "MD-3: agents read the browser with state, snapshot and screenshot; a live stream is for a person watching".into(),
         ));
     }
     let input = matches!(&request.command, KernelBrowserCommand::Input { .. });
@@ -645,9 +644,6 @@ impl KernelRuntimeState {
             } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true,"_capture_viewport":{"width":frame_width,"height":frame_height}})
             }
-            KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
-                serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})
-            }
             KernelBrowserDisplayRequest::Input { binding, input } => {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
                     return Err(host_error("MD-3: observed document required".into()));
@@ -793,7 +789,7 @@ impl KernelRuntimeState {
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot","subscribe","poll","unsubscribe"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -1211,6 +1207,20 @@ mod document_tests {
         assert_eq!(params["focused_agent"], true);
         assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
+    }
+    #[test]
+    fn provider_tools_cannot_open_a_live_stream() {
+        // Agents read with state, snapshot and screenshot; a stream is only for a person watching.
+        for command in [
+            serde_json::json!({"op":"subscribe","tab_id":"host-tab-a","generation":1}),
+            serde_json::json!({"op":"poll","subscription_id":"stream","generation":1}),
+            serde_json::json!({"op":"unsubscribe","subscription_id":"stream","generation":1}),
+        ] {
+            assert!(
+                browser_tool_params(serde_json::json!({ "command": command })).is_err(),
+                "an agent opened a live stream: {command}"
+            );
+        }
     }
     #[test]
     fn mp11_provider_tools_cannot_suspend_or_resume_human_display_leases() {
