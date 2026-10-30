@@ -24,7 +24,11 @@ const MISSING: &str = "vault_missing";
 const LOCKED: &str = "vault_locked";
 const OWNER_ONLY: &str = "vault_unlock_owner_only";
 
-fn refusal(code: &'static str, message: impl Into<String>, retryable: bool) -> DaemonError {
+pub(super) fn refusal(
+    code: &'static str,
+    message: impl Into<String>,
+    retryable: bool,
+) -> DaemonError {
     DaemonError::VaultUnlock {
         code,
         message: message.into(),

@@ -479,3 +479,183 @@ async fn the_vault_menu_on_a_kernel_with_no_vault_still_makes_the_first_one() {
     assert!(f.vault.exists(), "the first-time prompt created the Vault");
     assert!(f.status().await.unlocked);
 }
+
+fn caller_of(class: Option<KernelConnectionClass>, user: Option<&str>) -> KernelCaller {
+    let source = match class {
+        Some(KernelConnectionClass::Terminal) if user.is_some() => KernelCommandSource::RelayClient,
+        Some(KernelConnectionClass::RelayPeer) => KernelCommandSource::RelayPeer,
+        _ => KernelCommandSource::LocalCli,
+    };
+    let mut caller = KernelCaller::for_source(&source);
+    if let Some(class) = class {
+        caller = caller.with_connection_class(class);
+    }
+    caller.user_id = user.map(str::to_owned);
+    caller
+}
+
+fn vault_changes() -> Vec<(&'static str, LocalDaemonRequest)> {
+    let credential = crate::config::UserCredentialConfig {
+        id: "login".into(),
+        description: None,
+        source: crate::config::UserCredentialSourceConfig::Vault {
+            key: "login".into(),
+        },
+        allowed_hosts: Vec::new(),
+        allowed_uses: Vec::new(),
+        injection: crate::config::UserCredentialInjectionConfig::Provider,
+        metadata: None,
+    };
+    vec![
+        (
+            "lock",
+            LocalDaemonRequest::LockCredentialVault(crate::local::LockCredentialVaultRequest),
+        ),
+        (
+            "set",
+            LocalDaemonRequest::SetCredentialSecret(crate::local::SetCredentialSecretRequest {
+                session_id: None,
+                agent_id: None,
+                key: "login".into(),
+                value: "value".into(),
+            }),
+        ),
+        (
+            "delete",
+            LocalDaemonRequest::DeleteCredentialSecret(
+                crate::local::DeleteCredentialSecretRequest {
+                    session_id: None,
+                    agent_id: None,
+                    key: "login".into(),
+                },
+            ),
+        ),
+        (
+            "upsert",
+            LocalDaemonRequest::UpsertCredential(crate::local::UpsertCredentialRequest {
+                credential,
+            }),
+        ),
+        (
+            "remove",
+            LocalDaemonRequest::RemoveCredential(crate::local::RemoveCredentialRequest {
+                id: "login".into(),
+            }),
+        ),
+        (
+            "register",
+            LocalDaemonRequest::RegisterCredential(crate::local::RegisterCredentialRequest {
+                source_path: "/nonexistent/credential.yaml".into(),
+            }),
+        ),
+        (
+            "sign-in",
+            LocalDaemonRequest::SetProviderAccountCredential(
+                crate::local::SetProviderAccountCredentialRequest {
+                    session_id: None,
+                    agent_id: None,
+                    provider: "claude".into(),
+                    account_profile: "none".into(),
+                    value: "value".into(),
+                    run: false,
+                    overwrite: false,
+                },
+            ),
+        ),
+    ]
+}
+
+/// The refusal is the first thing a caller meets, so it must not depend on
+/// what else is wrong with the request.
+fn refused_as_owner_only(result: Result<LocalDaemonResponse, DaemonError>) -> bool {
+    matches!(
+        result,
+        Err(DaemonError::VaultUnlock { code, .. }) if code.ends_with("owner_only") || code.ends_with("person_only")
+    )
+}
+
+#[tokio::test]
+async fn only_the_owner_may_lock_the_vault_or_change_what_it_stores() {
+    let f = Fixture::locked();
+    f.unlock(PASSPHRASE).await.unwrap();
+    let mut metaagent = caller_of(Some(KernelConnectionClass::Terminal), None);
+    metaagent.metaagent_id = Some("metaagent".into());
+    // Callers that are neither the owner's client nor an agent of the owner. A
+    // member is a person at a client, so signing in their own account is theirs.
+    let strangers = [
+        (
+            "member",
+            caller_of(
+                Some(KernelConnectionClass::Terminal),
+                Some("session-member"),
+            ),
+            "sign-in",
+        ),
+        (
+            "relay peer",
+            caller_of(
+                Some(KernelConnectionClass::RelayPeer),
+                Some("remote-kernel"),
+            ),
+            "",
+        ),
+        (
+            "unauthenticated",
+            caller_of(Some(KernelConnectionClass::Unauthenticated), None),
+            "",
+        ),
+    ];
+    for (who, caller, allowed) in strangers {
+        for (name, request) in vault_changes() {
+            let refused = refused_as_owner_only(f.send_as(caller.clone(), request).await);
+            assert_eq!(refused, name != allowed, "{who} {name}");
+        }
+    }
+    // Agents may do what their tools are for, and nothing else.
+    let agents = [
+        (
+            "kernel agent",
+            caller_of(Some(KernelConnectionClass::KernelAgent), None),
+        ),
+        ("metaagent", metaagent),
+    ];
+    for (who, caller) in agents {
+        for (name, request) in vault_changes() {
+            let refused = refused_as_owner_only(f.send_as(caller.clone(), request).await);
+            assert_eq!(refused, matches!(name, "lock" | "sign-in"), "{who} {name}");
+        }
+    }
+    // A local grant holder is stopped before the gate unless its grant is live.
+    let (_, lock) = vault_changes().remove(0);
+    let grant_holder = caller_of(Some(KernelConnectionClass::ExternalAgent), None);
+    assert!(f.send_as(grant_holder, lock).await.is_err());
+    assert!(
+        f.status().await.unlocked,
+        "no refused caller locked the Vault"
+    );
+    // The owner's own client is never refused.
+    for (name, request) in vault_changes() {
+        assert!(
+            !refused_as_owner_only(f.send(request).await),
+            "owner {name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_agent_still_reaches_the_vault_menu_and_its_own_secret_writes() {
+    let f = Fixture::locked();
+    f.unlock(PASSPHRASE).await.unwrap();
+    let agent = caller_of(Some(KernelConnectionClass::KernelAgent), None);
+    let (_, set) = vault_changes().remove(1);
+    f.send_as(agent.clone(), set).await.unwrap();
+    let manage =
+        LocalDaemonRequest::ManageCredentialVault(crate::local::ManageCredentialVaultRequest {
+            session_id: f.session.clone(),
+            agent_id: Some(f.agent.clone()),
+        });
+    // The menu waits for the owner's answer; it is not refused.
+    let answer =
+        tokio::time::timeout(std::time::Duration::from_secs(2), f.send_as(agent, manage)).await;
+    assert!(answer.is_err() || !refused_as_owner_only(answer.unwrap()));
+}
