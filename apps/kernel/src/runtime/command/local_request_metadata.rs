@@ -344,8 +344,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("agent_trigger.delete", Interactive)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::InvokeAgentTrigger(request) => {
+            LocalRequestMetadata::new("agent_trigger.invoke", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::ResendTriggerDelivery(request) => {
             LocalRequestMetadata::new("agent_trigger.resend_delivery", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => {
+            LocalRequestMetadata::new("agent_trigger.transcript", Background)
                 .session(&request.session_id)
         }
         LocalDaemonRequest::CancelActivePrompt(request) => {
@@ -1004,7 +1012,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateAgentTrigger(_) => "agent_trigger.create",
         LocalDaemonRequest::UpdateAgentTrigger(_) => "agent_trigger.update",
         LocalDaemonRequest::DeleteAgentTrigger(_) => "agent_trigger.delete",
+        LocalDaemonRequest::InvokeAgentTrigger(_) => "agent_trigger.invoke",
         LocalDaemonRequest::ResendTriggerDelivery(_) => "agent_trigger.resend_delivery",
+        LocalDaemonRequest::ReadAgentTriggerTranscript(_) => "agent_trigger.transcript",
         LocalDaemonRequest::UpdateSessionConfig(_) => "session.config.update",
         LocalDaemonRequest::UpdateAgentConfig(_) => "agent.config.update",
         LocalDaemonRequest::UpdateAgentSubstitutes(_) => "agent.substitutes.update",

@@ -504,6 +504,7 @@ async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
 async fn trigger_origins_cross_only_the_versioned_peer_boundary() {
     for origin in [
         crate::session::PromptOrigin::Schedule,
+        crate::session::PromptOrigin::Http,
         crate::session::PromptOrigin::Notification,
     ] {
         trigger_origin_peer_submission(

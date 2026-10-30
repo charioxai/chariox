@@ -359,6 +359,8 @@ pub enum LocalDaemonRequest {
     CreateAgentTrigger(CreateAgentTriggerRequest),
     UpdateAgentTrigger(UpdateAgentTriggerRequest),
     DeleteAgentTrigger(DeleteAgentTriggerRequest),
+    InvokeAgentTrigger(InvokeAgentTriggerRequest),
+    ReadAgentTriggerTranscript(ReadAgentTriggerTranscriptRequest),
     ResendTriggerDelivery(ResendTriggerDeliveryRequest),
     CompletePrompt(CompletePromptRequest),
     CancelActivePrompt(CancelActivePromptRequest),

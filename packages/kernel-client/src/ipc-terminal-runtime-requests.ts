@@ -457,3 +457,16 @@ export function requestNativeProviderInteractionRequest(
     },
   }
 }
+
+export function createAgentHttpTriggerRequest(options: { sessionId: string; agentId: string; busyPolicy: AgentTriggerBusyPolicy; prompt?: string | null }) {
+  return { CreateAgentTrigger: { session_id: options.sessionId, agent_id: options.agentId, source: { kind: "http" }, busy_policy: options.busyPolicy,
+    ...(options.prompt?.trim() ? { prompt: options.prompt.trim() } : {}) } }
+}
+
+export function invokeAgentTriggerRequest(sessionId: string, triggerId: string, payload: unknown) {
+  return { InvokeAgentTrigger: { session_id: sessionId, trigger_id: triggerId, payload } }
+}
+
+export function readAgentTriggerTranscriptRequest(sessionId: string, triggerId: string, cursor: { before_sequence: number } | null = null) {
+  return { ReadAgentTriggerTranscript: { session_id: sessionId, trigger_id: triggerId, cursor } }
+}

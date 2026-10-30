@@ -121,7 +121,7 @@ export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" 
 
 export type AgentTriggerBusyPolicy = "queue" | "steer"
 
-export type AgentTriggerSource = {
+export type AgentTriggerSource = { kind: "http"; ingress_id: string; port: number } | {
   kind: "schedule"
   interval_seconds: number
   repeat: "once" | "every"

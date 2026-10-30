@@ -378,4 +378,5 @@ pub use workspace::*;
 /// Allocated 900 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
 /// Allocated 901 adds trigger deliveries the person can resend and removes the `/wait` schedule shape;
 /// 900 is not admitted as a separate kernel.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 901;
+/// Allocated 902 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 902;

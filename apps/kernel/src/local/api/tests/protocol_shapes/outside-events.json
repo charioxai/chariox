@@ -1,6 +1,6 @@
 {
-  "local_protocol": 901,
-  "peer_protocol": 450,
+  "local_protocol": 902,
+  "peer_protocol": 451,
   "requests": [
     {
       "SubscribeEvents": {
