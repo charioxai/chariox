@@ -25,7 +25,7 @@ export function createViewActions(request, inputs) {
   const formHandlers = new WeakMap();
   // The view's policy refuses inline scripts without telling the page's author.
   let inlineScriptBlocked = false;
-  document.addEventListener('securitypolicyviolation', event => {
+  if (typeof document !== 'undefined') document.addEventListener('securitypolicyviolation', event => {
     if (event.blockedURI === 'inline' && /^script-src/.test(event.effectiveDirective)) inlineScriptBlocked = true;
   });
   let stateProvider = null;
