@@ -5,10 +5,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
-#[cfg(test)]
-pub(crate) use control::stop_released;
 use control::WatchCommand;
-pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released_of_agent};
+pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 mod projection;
 mod sampling;
@@ -321,7 +319,7 @@ impl ProcessDomain {
         opened_by: Option<String>,
     ) {
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-        if control::owner_ended(self.started, session_id, &owner) {
+        if control::owner_ended(self.started, session_id, &owner, opened_by.as_deref()) {
             return;
         }
         self.state

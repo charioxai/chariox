@@ -275,15 +275,12 @@ pub(super) async fn stop_released_agent_processes(
     session_id: &str,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let (session_id, agent_id) = (session_id.to_string(), agent_id.to_string());
-    tokio::task::spawn_blocking(move || {
-        crate::runtime::process_resources::stop_released_of_agent(&session_id, &agent_id)
-    })
+    agent_processes(
+        session_id,
+        agent_id,
+        crate::runtime::process_resources::stop_released,
+    )
     .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "stop released agent processes",
-        message: error.to_string(),
-    })
 }
 
 /// A deleted agent's jobs end, including those of a provider process removed later.
