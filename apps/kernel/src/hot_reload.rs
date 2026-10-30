@@ -18,7 +18,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 3;
+pub const HANDOVER_FORMAT: u32 = 4;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -79,7 +79,7 @@ impl ProviderHandover {
     fn fds(&self) -> Vec<i32> {
         match &self.process {
             HandedOverProcess::Claude(claude) => claude.fds().to_vec(),
-            HandedOverProcess::Codex { pty, .. } => vec![pty.master_fd],
+            HandedOverProcess::Codex { pty, turn } => vec![pty.master_fd, turn.connection()],
         }
     }
 
@@ -439,24 +439,29 @@ pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::PtyHandover) {
     }
 }
 
-/// Keeps a running Codex turn, with the app-server PTY offered for its run,
-/// for the next program. Gives the turn back when there is no such PTY.
+pub(crate) fn provider_pty_offered(run_id: &str) -> bool {
+    lock(&PREPARED)
+        .as_ref()
+        .is_some_and(|prepared| prepared.offered_ptys.contains_key(run_id))
+}
+
+/// Keeps a running Codex turn, with the app-server PTY offered for its run
+/// (`provider_pty_offered`), for the next program.
 pub(crate) fn hand_over_codex(
     run: &crate::provider::RuntimeProviderRun,
     turn: crate::provider::CodexHandover,
-) -> Result<(), crate::provider::CodexHandover> {
+) {
     let mut prepared = lock(&PREPARED);
     let Some(prepared) = prepared.as_mut() else {
-        return Err(turn);
+        return;
     };
     let Some(pty) = prepared.offered_ptys.remove(run.id()) else {
-        return Err(turn);
+        return;
     };
     prepared.handover.providers.push(provider_handover(
         run,
         HandedOverProcess::Codex { pty, turn },
     ));
-    Ok(())
 }
 
 fn provider_handover(

@@ -97,13 +97,15 @@ pub(crate) use codex::{
     ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
     shutdown_codex_account_endpoints,
 };
+#[cfg(test)]
+pub(crate) use codex_client::test_codex_connect;
 pub use codex_client::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
 #[cfg(unix)]
-pub(crate) use codex_runtime::{codex_turn_handover, CodexHandover};
+pub(crate) use codex_runtime::{hand_over_codex_turn, CodexHandover};
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,

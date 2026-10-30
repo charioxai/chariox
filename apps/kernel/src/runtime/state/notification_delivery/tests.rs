@@ -618,13 +618,14 @@ async fn notification_inject_structured_mailbox_acceptance_is_not_provider_ack()
 // MP-08 / MP-10: bound production Codex RPC rejection is not an acceptance.
 #[tokio::test]
 async fn notification_inject_bound_codex_requires_steer_acknowledgement() {
+    use crate::provider::test_codex_connect as connect;
     use crate::provider::{
         AgentEndpointMode, CodexRuntimeState, LaunchProviderRequest, ProviderLaunchResult,
         RuntimeProviderRun,
     };
     use serde_json::{json, Value};
     use std::{net::TcpListener, thread};
-    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+    use tokio_tungstenite::tungstenite::{accept, Message};
 
     for (app, reject, lose_reply, restart) in [
         (false, Some("turn/steer"), false, false),
