@@ -226,10 +226,14 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
             .as_str()
             .unwrap()
             .to_string();
-        // Prints for about eight seconds, so lines are produced before, during
-        // and after the swap.
-        let script =
-            "i=0; while [ $i -lt 80 ]; do echo tick-$i; i=$((i+1)); sleep 0.1; done; echo done";
+        // Prints before, during and after the swap: it waits after tick-9
+        // until the new program runs, however long the swap takes.
+        let go = scratch.join("go");
+        let script = format!(
+            "i=0; while [ $i -lt 80 ]; do echo tick-$i; i=$((i+1)); sleep 0.1; \
+             if [ $i -eq 10 ]; then while [ ! -e {} ]; do sleep 0.1; done; fi; done; echo done",
+            go.display()
+        );
         let opened = terminal(
             &mut socket,
             &session_id,
@@ -281,6 +285,7 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
             "the kernel runs the newly installed program"
         );
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        std::fs::write(&go, "").unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(60);
         let status = loop {
@@ -351,7 +356,7 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
             &mut socket,
             &session_id,
             json!({"operation": "open", "cols": 80, "rows": 24,
-                "command": ["/bin/sh", "-c", "sleep 3; echo still-here; exec sleep 60"]}),
+                "command": ["/bin/sh", "-c", "sleep 3; echo still-here"]}),
         )
         .await;
         let terminal_id = opened["terminal"]["terminal_id"].as_str().unwrap();
@@ -364,19 +369,24 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
         unsafe { libc::kill(pid, libc::SIGUSR2) };
-        let waited = terminal(
-            &mut socket,
-            &session_id,
-            json!({"operation": "wait", "terminal_id": terminal_id,
-                "watches": [{"kind": "output_contains", "text": "still-here"}],
-                "timeout_ms": 20000}),
-        )
-        .await;
-        // The kernel kept running and its connection open: the output arrived here.
-        assert_eq!(
-            waited["waited"]["fired"]["kind"], "output_matched",
-            "{waited}"
-        );
+        // The kernel kept running and its connection open: the output arrives here.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let page = terminal(
+                &mut socket,
+                &session_id,
+                json!({"operation": "read_output", "terminal_id": terminal_id,
+                    "after_offset": 0, "wait_ms": 500}),
+            )
+            .await;
+            let output = base64::engine::general_purpose::STANDARD
+                .decode(page["output"]["data_base64"].as_str().unwrap())
+                .unwrap();
+            if String::from_utf8_lossy(&output).contains("still-here") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{page}");
+        }
     });
 }
 
