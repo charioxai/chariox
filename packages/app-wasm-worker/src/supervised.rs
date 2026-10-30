@@ -104,10 +104,7 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
     }
     let stream = cli::inherited_stream(3)?;
     stream.set_nonblocking(true)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()?;
+    let runtime = cli::runtime()?;
     runtime.block_on(async move {
         let mut transport =
             crate::ipc::Ipc::start(tokio::net::UnixStream::from_std(stream)?, launch.generation)?;

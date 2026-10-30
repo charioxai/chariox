@@ -92,6 +92,9 @@ clone3-to-ENOSYS and self-query-only prlimit checks from
 `apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
 The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
 delegated cgroup or privileged host change is required for the WASM entry.
+The one socket call admitted is `socketpair` for an `AF_UNIX` stream pair: the
+async runtime opens one for its signal driver when another crate in the same
+build enables tokio's `signal` feature, as the kernel does.
 Without installation directories every path syscall is refused by seccomp and
 Landlock is not used. With them, Landlock (Linux 5.13+) grants file rights only
 beneath `data` and `tmp` (no execute, devices, sockets or FIFOs), and only then

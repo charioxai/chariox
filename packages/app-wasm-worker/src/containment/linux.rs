@@ -190,6 +190,37 @@ pub(super) fn enter(files: &[std::path::PathBuf]) -> io::Result<()> {
             ret(ALLOW),
         ],
     );
+    // An in-process stream pair: tokio's signal driver opens one when the build
+    // turns that feature on. It names nothing outside the process, and
+    // `socket` stays refused.
+    case(
+        &mut filter,
+        libc::SYS_socketpair,
+        &[
+            load(arg(0) + 4),
+            eq(0, 1, 0),
+            ret(DENY),
+            load(arg(0)),
+            eq(libc::AF_UNIX as u32, 1, 0),
+            ret(DENY),
+            load(arg(1) + 4),
+            eq(0, 1, 0),
+            ret(DENY),
+            load(arg(1)),
+            ins(
+                0x54,
+                !((libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK) as u32),
+                0,
+                0,
+            ),
+            eq(libc::SOCK_STREAM as u32, 1, 0),
+            ret(DENY),
+            load(arg(2)),
+            eq(0, 1, 0),
+            ret(DENY),
+            ret(ALLOW),
+        ],
+    );
     case(
         &mut filter,
         libc::SYS_setsockopt,

@@ -54,6 +54,7 @@ fn main() {
         "icache",
         "unsigned-code",
         "installation-files",
+        "runtime",
     ] {
         if matches!(scenario, "memory" | "without-landlock" | "icache") && cfg!(target_os = "macos")
         {
@@ -184,7 +185,9 @@ fn child(scenario: &str, mode: &str) {
     } else {
         vec![]
     };
-    if green {
+    if green && scenario == "runtime" {
+        chariox_app_wasm_worker::cli::contain(&files).unwrap();
+    } else if green {
         chariox_app_wasm_worker::containment::enter(&files).unwrap();
     }
     match scenario {
@@ -469,6 +472,20 @@ fn child(scenario: &str, mode: &str) {
                 42
             );
             println!("trusted precompiled code loads and executes after containment");
+        }
+        "runtime" => {
+            // The worker builds its runtime after containment; a socketpair for
+            // tokio's signal driver would be refused there.
+            let runtime = chariox_app_wasm_worker::cli::runtime().unwrap();
+            assert_eq!(
+                runtime.block_on(async { tokio::spawn(async { 42 }).await.unwrap() }),
+                42
+            );
+            let mut pair = [0; 2];
+            let datagrams =
+                unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, pair.as_mut_ptr()) };
+            assert_eq!(datagrams < 0, green, "datagram socketpair");
+            println!("async runtime starts and runs tasks after containment; datagram pairs stay refused");
         }
         "installation-files" => {
             fs::write(data.join("note"), b"App file").unwrap();
