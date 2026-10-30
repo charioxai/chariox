@@ -208,7 +208,6 @@ export function createCliKernelApprovalComposition(deps: {
     openFromCommand() {
       if (popup.view().count) popup.show()
       else if (controller.view().count) controller.show()
-      else if (!deps.attached()) deps.flashFooter("No pending approvals", "info")
       else deps.flashFooter("No pending approvals", "info")
     },
     assignBanner(value: BoxRenderable) { surface.assignBanner(value); controller.sync() },

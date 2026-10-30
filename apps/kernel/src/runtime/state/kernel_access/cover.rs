@@ -31,7 +31,14 @@ impl KernelRuntimeState {
                     Refusal::NotCovered.error()
                 }
             })?;
-        let (target, _) = process::inspect(request.pid).map_err(|_| Refusal::CoverGone.error())?;
+        let (target, _) = process::inspect(request.pid).map_err(|error| {
+            // Another user's process exists but is outside what any grant reaches.
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                Refusal::CoverOutside.error()
+            } else {
+                Refusal::CoverGone.error()
+            }
+        })?;
         if request.start.is_some_and(|start| start != target.start) {
             return Err(Refusal::CoverIdentityChanged.error());
         }

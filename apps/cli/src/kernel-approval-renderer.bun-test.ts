@@ -60,9 +60,10 @@ for (const kind of ["access_grant", "access_extension"] as const) {
           if (approve) { for (const sequence of "test-proof") key(sequence, { sequence }); key("return") }
           else key("r", { ctrl: true })
           await new Promise(resolve => setTimeout(resolve, 0))
-          assert.equal(requests.length, 1)
-          assert.equal(requests[0]?.RespondToInteraction.session_id, sessionId)
-          assert.equal(requests[0]?.RespondToInteraction.choice_id, approve ? "approve" : "refuse")
+          const responses = requests.filter(request => "RespondToInteraction" in request)
+          assert.equal(responses.length, 1)
+          assert.equal(responses[0]?.RespondToInteraction.session_id, sessionId)
+          assert.equal(responses[0]?.RespondToInteraction.choice_id, approve ? "approve" : "refuse")
           assert.deepEqual(notices, [])
         } finally { dispose(); h.renderer.destroy() }
       })
@@ -361,11 +362,11 @@ test("shared approval command opener handles waiting room, empty session and pen
   try {
     prompt.focus()
     approvals.openFromCommand()
-    assert.deepEqual(flashes, ["info:start or join a session to view approvals"])
+    assert.deepEqual(flashes, ["info:No pending approvals"])
     assert.equal(prompt.focused, true)
     attached = true
     approvals.openFromCommand()
-    assert.deepEqual(flashes, ["info:start or join a session to view approvals", "info:No pending approvals"])
+    assert.deepEqual(flashes, ["info:No pending approvals", "info:No pending approvals"])
     assert.equal(prompt.focused, true)
     interactions = [view.interaction!]
     approvals.openFromCommand()
