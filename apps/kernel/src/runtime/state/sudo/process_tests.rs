@@ -616,6 +616,38 @@ async fn sudo_shell_interrupt_and_rotation_drop_process_authority() {
     }
 }
 
+// A host out of memory or descriptors cannot read /proc for a moment. That must not
+// close an admitted sudo connection; only a confirmed exit or a lost turn does.
+#[tokio::test]
+async fn a_sudo_connection_survives_a_failure_to_read_its_peer() {
+    use crate::runtime::kernel_access::process::fault;
+    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+    let turn = running(&f);
+    let peer = root(&f);
+    assert!(f.state.sudo_peer_live(&turn.entry_id, &peer));
+    for errno in [libc::ENOMEM, libc::ENFILE, libc::EMFILE, libc::EIO] {
+        let _fault = fault::inject(peer.pid, errno);
+        assert!(
+            f.state.sudo_peer_live(&turn.entry_id, &peer),
+            "sudo connection closed by errno {errno}"
+        );
+        assert!(
+            f.state.sudo_for_peer(&peer).is_err(),
+            "a peer the host cannot read must not be admitted"
+        );
+    }
+    assert!(f.state.sudo_peer_live(&turn.entry_id, &peer));
+    assert!(!f.state.sudo_peer_live("sudo:another-turn", &peer));
+    let reused = ProcessIdentity {
+        start: peer.start + 1,
+        ..peer.clone()
+    };
+    assert!(
+        !f.state.sudo_peer_live(&turn.entry_id, &reused),
+        "a pid that names another process is a confirmed exit"
+    );
+}
+
 // MP-08/MP-10/MP-11 F1: Unix subscriptions share the window's owner/session fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sudo_review_shell_subscriptions_are_owner_session_bound() {
