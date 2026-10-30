@@ -9,6 +9,28 @@ pub(crate) struct ProviderPromptSubmitAcknowledgement {
     pub(crate) resume_state: ProviderResumeState,
 }
 
+/// What the provider is known to have done with a submitted prompt. Only
+/// `Rejected` proves the prompt was not taken; any other failure may follow a
+/// provider write and must not be replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderPromptSubmitReceipt {
+    Accepted,
+    Rejected,
+    Uncertain,
+}
+
+impl ProviderPromptSubmitReceipt {
+    pub(super) fn from_result(
+        result: &Result<ProviderPromptSubmitAcknowledgement, DaemonError>,
+    ) -> Self {
+        match result {
+            Ok(_) => Self::Accepted,
+            Err(DaemonError::ProviderPromptSteerRejected { .. }) => Self::Rejected,
+            Err(_) => Self::Uncertain,
+        }
+    }
+}
+
 pub(crate) struct FinishedProviderPromptSubmitJob {
     pub(crate) session_id: String,
     pub(crate) provider_run_id: String,

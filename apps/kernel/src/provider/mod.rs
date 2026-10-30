@@ -154,8 +154,8 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
-    ProviderRunOperationLanes,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
@@ -297,7 +297,8 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
             && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
-        || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (run.adapter_key() == "dev-stub"
+            && matches!(run.provider(), "slow-structured" | "lost-ack-structured"))
 }
 
 pub(crate) fn provider_run_requires_authoritative_turn_completion(

@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,38 @@ struct DurableRemoteQueuedSteerUncertainty {
 struct RemoteSteerReservation {
     id: Arc<AtomicU64>,
     uncertainty: Arc<Mutex<Option<DurableRemoteQueuedSteerUncertainty>>>,
+    /// Set and persisted before a local steer reaches the provider, so a
+    /// restart cannot turn a message the provider may hold into a fresh prompt.
+    delivery_fence: Arc<AtomicU8>,
+}
+
+/// A local steer the provider may already hold. Recovery settles what the
+/// steer stood for once; `Settled` records that it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalSteerFence {
+    InDoubt,
+    Settled,
+}
+
+impl LocalSteerFence {
+    const NONE: u8 = 0;
+
+    fn code(fence: Option<Self>) -> u8 {
+        match fence {
+            None => Self::NONE,
+            Some(Self::InDoubt) => 1,
+            Some(Self::Settled) => 2,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::InDoubt),
+            2 => Some(Self::Settled),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for RemoteSteerReservation {
@@ -163,8 +195,13 @@ static NEXT_REMOTE_STEER_RESERVATION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) agent_prompt_schedule_id: Option<String>,
+    /// Read from `agent_prompt_schedule_id` in state written before protocol 900.
+    #[serde(
+        default,
+        alias = "agent_prompt_schedule_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) agent_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,11 +235,13 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) recovery_phase: Option<DurablePromptDeliveryPhase>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote_steer_uncertainty: Option<DurableRemoteQueuedSteerUncertainty>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_steer_fence: Option<LocalSteerFence>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromptPrivateMetadata {
-    agent_prompt_schedule_id: Option<String>,
+    agent_trigger_id: Option<String>,
     source_client_id: Option<String>,
     source_user_id: Option<String>,
     owner_request: bool,
@@ -241,10 +280,14 @@ impl DurablePromptPrivateState {
             .as_deref()
             .cloned()
             .unwrap_or_default();
-        (prompt.private_metadata.is_some() || remote_steer_uncertainty.is_some()).then(|| Self {
+        let local_steer_fence = prompt.local_steer_fence();
+        (prompt.private_metadata.is_some()
+            || remote_steer_uncertainty.is_some()
+            || local_steer_fence.is_some())
+        .then(|| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
-            agent_prompt_schedule_id: metadata.agent_prompt_schedule_id,
+            agent_trigger_id: metadata.agent_trigger_id,
             source_client_id: metadata.source_client_id,
             source_user_id: metadata.source_user_id,
             owner_request: metadata.owner_request,
@@ -261,6 +304,7 @@ impl DurablePromptPrivateState {
             recovery_operation_id: metadata.recovery_operation_id,
             recovery_phase: metadata.recovery_phase,
             remote_steer_uncertainty,
+            local_steer_fence,
         })
     }
 }
@@ -408,7 +452,7 @@ impl PromptQueueItem {
             if let Some(metadata) = self.private_metadata.as_mut() {
                 metadata.hidden_system_context.clear();
                 if metadata.operation_id.is_none()
-                    && metadata.agent_prompt_schedule_id.is_none()
+                    && metadata.agent_trigger_id.is_none()
                     && metadata.delivery_phase.is_none()
                     && metadata.recovery_operation_id.is_none()
                     && metadata.source_client_id.is_none()
@@ -462,13 +506,13 @@ impl PromptQueueItem {
             .as_ref()
             .is_some_and(|metadata| metadata.owner_request)
             && self.workflow_run_id.is_none()
-            && self.agent_prompt_schedule_id().is_none()
+            && self.agent_trigger_id().is_none()
     }
 
-    pub(crate) fn with_agent_prompt_schedule(mut self, schedule_id: impl Into<String>) -> Self {
+    pub(crate) fn with_agent_trigger(mut self, trigger_id: impl Into<String>) -> Self {
         self.private_metadata
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
-            .agent_prompt_schedule_id = Some(schedule_id.into());
+            .agent_trigger_id = Some(trigger_id.into());
         self
     }
 
@@ -581,6 +625,66 @@ impl PromptQueueItem {
     pub(crate) fn remote_steer_reserved(&self) -> bool {
         self.remote_steer_reservation.id.load(Ordering::Acquire) != 0
             || self.remote_steer_outcome_uncertainty().is_some()
+            || self.local_steer_fenced()
+    }
+
+    /// Marks a local steer as possibly held by the provider. The caller
+    /// persists the queue entry before the provider write.
+    pub(crate) fn fence_local_steer(&self, reservation: u64) -> bool {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return false;
+        }
+        self.remote_steer_reservation.delivery_fence.store(
+            LocalSteerFence::code(Some(LocalSteerFence::InDoubt)),
+            Ordering::Release,
+        );
+        true
+    }
+
+    /// A definitive provider rejection: the message was not delivered, so
+    /// the entry may be replayed.
+    pub(crate) fn clear_local_steer_fence(&self, reservation: u64) -> bool {
+        if !self.remote_steer_reservation_matches(reservation) {
+            return false;
+        }
+        self.remote_steer_reservation
+            .delivery_fence
+            .store(LocalSteerFence::NONE, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn local_steer_fence(&self) -> Option<LocalSteerFence> {
+        LocalSteerFence::from_code(
+            self.remote_steer_reservation
+                .delivery_fence
+                .load(Ordering::Acquire),
+        )
+    }
+
+    pub(crate) fn local_steer_fenced(&self) -> bool {
+        self.local_steer_fence().is_some()
+    }
+
+    /// Claims the one settlement of an orphaned fence. True for the caller
+    /// that moved it from in doubt to settled, false for every later caller.
+    pub(crate) fn settle_orphaned_local_steer_fence(&self) -> bool {
+        self.remote_steer_reservation.id.load(Ordering::Acquire) == 0
+            && self
+                .remote_steer_reservation
+                .delivery_fence
+                .compare_exchange(
+                    LocalSteerFence::code(Some(LocalSteerFence::InDoubt)),
+                    LocalSteerFence::code(Some(LocalSteerFence::Settled)),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    /// A fence no in-flight steer owns: the kernel that wrote it is gone, so
+    /// the provider outcome can no longer be learned from a receipt.
+    pub(crate) fn local_steer_fence_orphaned(&self) -> bool {
+        self.local_steer_fenced() && self.remote_steer_reservation.id.load(Ordering::Acquire) == 0
     }
 
     pub(crate) fn remote_steer_reservation_matches(&self, reservation: u64) -> bool {
@@ -728,10 +832,10 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.source_client_id.as_deref())
     }
 
-    pub(crate) fn agent_prompt_schedule_id(&self) -> Option<&str> {
+    pub(crate) fn agent_trigger_id(&self) -> Option<&str> {
         self.private_metadata
             .as_ref()
-            .and_then(|metadata| metadata.agent_prompt_schedule_id.as_deref())
+            .and_then(|metadata| metadata.agent_trigger_id.as_deref())
     }
 
     pub(crate) fn source_user_id(&self) -> Option<&str> {
@@ -885,7 +989,7 @@ impl PromptQueueItem {
 
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
-            && private.agent_prompt_schedule_id.is_none()
+            && private.agent_trigger_id.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
             && !private.delivery_reconciliation_pending
@@ -897,10 +1001,11 @@ impl PromptQueueItem {
         {
             self.private_metadata = None;
             self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
+            self.restore_local_steer_fence(private.local_steer_fence);
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
-            agent_prompt_schedule_id: private.agent_prompt_schedule_id.clone(),
+            agent_trigger_id: private.agent_trigger_id.clone(),
             source_client_id: private.source_client_id.clone(),
             source_user_id: private.source_user_id.clone(),
             owner_request: private.owner_request,
@@ -918,6 +1023,15 @@ impl PromptQueueItem {
             recovery_phase: private.recovery_phase,
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
+        self.restore_local_steer_fence(private.local_steer_fence);
+    }
+
+    fn restore_local_steer_fence(&self, fence: Option<LocalSteerFence>) {
+        if fence.is_some() {
+            self.remote_steer_reservation
+                .delivery_fence
+                .store(LocalSteerFence::code(fence), Ordering::Release);
+        }
     }
 
     pub fn status(&self) -> PromptStatus {
@@ -1046,7 +1160,7 @@ mod tests {
             PromptStatus::Queued,
         )
         .with_source_attribution("client-private", "user-private")
-        .with_agent_prompt_schedule("schedule-private")
+        .with_agent_trigger("schedule-private")
         .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
         .with_durable_operation("operation-private", "fingerprint-private");
         item.set_durable_initially_queued(true);
@@ -1192,7 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_prompt_schedule_provenance_survives_private_state_and_queue_promotion() {
+    fn agent_trigger_provenance_survives_private_state_and_queue_promotion() {
         let prompt = PromptQueueItem::new(
             "scheduled-prompt",
             "attachment-1",
@@ -1200,7 +1314,7 @@ mod tests {
             "same text",
             PromptStatus::Queued,
         )
-        .with_agent_prompt_schedule("wait-1")
+        .with_agent_trigger("wait-1")
         .with_hidden_system_context("")
         .into_pending_queue_item("pending-1");
         let private = DurablePromptPrivateState::from_prompt("session-1", &prompt).unwrap();
@@ -1208,19 +1322,18 @@ mod tests {
             serde_json::from_value(serde_json::to_value(private).unwrap()).unwrap();
         let mut restored: PromptQueueItem =
             serde_json::from_value(serde_json::to_value(&prompt).unwrap()).unwrap();
-        assert_eq!(restored.agent_prompt_schedule_id(), None);
+        assert_eq!(restored.agent_trigger_id(), None);
         restored.restore_durable_private_state(&private);
         let promoted = restored.with_id("running-1");
-        assert_eq!(promoted.agent_prompt_schedule_id(), Some("wait-1"));
+        assert_eq!(promoted.agent_trigger_id(), Some("wait-1"));
         assert!(promoted.hidden_system_context().is_empty());
 
         let mut legacy = serde_json::to_value(private).unwrap();
-        legacy
-            .as_object_mut()
-            .unwrap()
-            .remove("agent_prompt_schedule_id");
+        let legacy_fields = legacy.as_object_mut().unwrap();
+        let trigger_id = legacy_fields.remove("agent_trigger_id").unwrap();
+        legacy_fields.insert("agent_prompt_schedule_id".to_string(), trigger_id);
         let legacy: DurablePromptPrivateState = serde_json::from_value(legacy).unwrap();
-        assert_eq!(legacy.agent_prompt_schedule_id, None);
+        assert_eq!(legacy.agent_trigger_id.as_deref(), Some("wait-1"));
     }
 
     #[test]

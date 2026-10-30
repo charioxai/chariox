@@ -327,6 +327,58 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
             }
         })
     );
+}
+
+/// Protocol 900: agent triggers; `/wait` schedules are schedule triggers and
+/// older clients keep reading them as `agent_prompt_schedules`.
+#[test]
+fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let create = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: "session-1".into(),
+        agent_id: "agent-1".into(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
+            interval_seconds: 300,
+            repeat: crate::session::AgentTriggerRepeat::Every,
+        },
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Steer,
+        prompt: Some("Check the build.".into()),
+    });
+    let update = LocalDaemonRequest::UpdateAgentTrigger(crate::local::UpdateAgentTriggerRequest {
+        session_id: "session-1".into(),
+        trigger_id: "trigger-1".into(),
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
+        prompt: None,
+        enabled: Some(false),
+    });
+    let delete = LocalDaemonRequest::DeleteAgentTrigger(crate::local::DeleteAgentTriggerRequest {
+        session_id: "session-1".into(),
+        trigger_id: "trigger-1".into(),
+    });
+    let requests = serde_json::json!([create, update, delete]);
+    assert_eq!(
+        requests,
+        serde_json::json!([
+            { "CreateAgentTrigger": {
+                "session_id": "session-1", "agent_id": "agent-1",
+                "source": { "kind": "schedule", "interval_seconds": 300, "repeat": "every" },
+                "busy_policy": "steer", "prompt": "Check the build.",
+            } },
+            { "UpdateAgentTrigger": {
+                "session_id": "session-1", "trigger_id": "trigger-1",
+                "busy_policy": "queue", "enabled": false,
+            } },
+            { "DeleteAgentTrigger": { "session_id": "session-1", "trigger_id": "trigger-1" } },
+        ])
+    );
+    let hash = Sha256::digest(serde_json::to_string(&requests).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7"
+    );
 
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
@@ -336,25 +388,39 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
         "machine-1",
         "daemon-1",
     );
-    let schedule = crate::session::AgentPromptSchedule::new(
-        "schedule-1",
+    let trigger = crate::session::AgentTrigger::schedule(
+        "trigger-1",
         "agent-1",
-        crate::session::AgentPromptScheduleKind::Once,
+        "user-1",
         60,
+        crate::session::AgentTriggerRepeat::Once,
+        crate::session::AgentTriggerBusyPolicy::Queue,
         "Continue from where you left off.",
         1_000,
     );
-    session.add_agent_prompt_schedule(schedule.clone());
-    let response = LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session };
-    let snapshot =
-        serde_json::to_value(response).expect("agent prompt schedule response should encode");
+    session.add_agent_trigger(trigger.clone());
+    let response = LocalDaemonResponse::AgentTriggerCreated { trigger, session };
+    let snapshot = serde_json::to_value(response).expect("agent trigger response should encode");
     assert_eq!(
-        snapshot.pointer("/AgentPromptScheduleCreated/schedule/next_run_at_ms"),
-        Some(&serde_json::json!(61_000))
+        snapshot.pointer("/AgentTriggerCreated/trigger"),
+        Some(&serde_json::json!({
+            "id": "trigger-1", "agent_id": "agent-1", "created_by_user_id": "user-1",
+            "source": { "kind": "schedule", "interval_seconds": 60, "repeat": "once", "next_run_at_ms": 61_000 },
+            "busy_policy": "queue", "prompt": "Continue from where you left off.",
+            "enabled": true, "created_at_ms": 1_000, "fired": 0, "coalesced": 0,
+        }))
     );
     assert_eq!(
-        snapshot.pointer("/AgentPromptScheduleCreated/session/agent_prompt_schedules/0/id"),
-        Some(&serde_json::json!("schedule-1"))
+        snapshot.pointer("/AgentTriggerCreated/session/agent_prompt_schedules"),
+        Some(&serde_json::json!([{
+            "id": "trigger-1", "agent_id": "agent-1", "kind": "once", "interval_seconds": 60,
+            "prompt": "Continue from where you left off.", "created_at_ms": 1_000,
+            "next_run_at_ms": 61_000, "runs_dispatched": 0,
+        }]))
+    );
+    assert_eq!(
+        snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),
+        Some(&serde_json::json!("trigger-1"))
     );
 }
 

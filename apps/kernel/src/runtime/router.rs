@@ -213,7 +213,7 @@ mod tests {
 
     mod agent_archive;
     mod agent_messaging;
-    mod agent_prompt_schedules;
+    mod agent_triggers;
     mod app_bindings;
     mod app_capability_grants;
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -231,6 +231,7 @@ mod tests {
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;
+    mod provider_steer_receipts;
     mod relay_leased_prompt_steer;
     mod relay_subscription_attachment;
     mod remote_agent_message_origin;

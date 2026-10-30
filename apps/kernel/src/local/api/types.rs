@@ -12,7 +12,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_deadline;
 mod agent_lifecycle;
-mod agent_prompt_schedule;
+mod agent_triggers;
 mod agent_utility;
 mod apps;
 mod browser_import;
@@ -62,7 +62,7 @@ mod workspace;
 
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
-pub use agent_prompt_schedule::*;
+pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
@@ -375,4 +375,5 @@ pub use workspace::*;
 /// Protocol 629 also includes protocol 627 attachment byte sizes in shared history.
 /// MP-08/MP-09/MP-10/MP-11: landing union 636 carries 630 (shared browser dialogs), 631 (grant-scoped kernel
 /// health events), 632 (binary Room exec) and 636 (archived-agent discovery); every earlier contract is retained.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 636;
+/// Allocated 900 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 900;

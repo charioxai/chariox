@@ -79,7 +79,30 @@ impl OwnedAgentPromptState {
     fn take_active_prompt(&mut self) -> Option<PromptQueueItem> {
         self.sudo_entry_id = None;
         self.sudo_process_cutoff = None;
-        self.active_prompt.take()
+        let taken = self.active_prompt.take();
+        if taken.is_some() {
+            self.resolve_orphaned_steer_fences();
+        }
+        taken
+    }
+
+    /// A steer fence written by a kernel that no longer awaits its receipt
+    /// ends with the turn that was active: the entry is dropped as "not
+    /// confirmed, not sent again" because the provider may already hold it.
+    fn resolve_orphaned_steer_fences(&mut self) {
+        if self.active_prompt.is_some() {
+            return;
+        }
+        self.queued_prompts.retain(|prompt| {
+            let orphaned = prompt.local_steer_fence_orphaned();
+            if orphaned {
+                tracing::warn!(
+                    prompt_id = prompt.id(),
+                    "queued steer was not confirmed before the kernel restarted; it is not sent again"
+                );
+            }
+            !orphaned
+        });
     }
 
     fn set_active_prompt(&mut self, prompt: Option<PromptQueueItem>) {
@@ -93,7 +116,7 @@ impl OwnedAgentPromptState {
     }
 
     fn from_session(session: &RuntimeSession, agent_id: &str) -> Self {
-        session
+        let mut restored = session
             .prompt_states()
             .get(agent_id)
             .map(|state| Self {
@@ -103,7 +126,9 @@ impl OwnedAgentPromptState {
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        restored.resolve_orphaned_steer_fences();
+        restored
     }
 }
 

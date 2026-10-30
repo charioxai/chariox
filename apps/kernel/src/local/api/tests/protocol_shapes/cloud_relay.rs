@@ -38,7 +38,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "room_exec_v1",
             "agent_deadline_v1",
             "outside_steer_events_v1",
-            "provider_account_copy_v1"
+            "provider_account_copy_v1",
+            "agent_triggers_v1"
         ])
     );
     assert_eq!(
@@ -46,7 +47,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "531d716378c65950736d69ea4d6bc83cd9a3816f23a67a9276177411c14294ad"
+        "c9f3a1321c793d5f21469c1524dae43024afe9859cef0561b32ac85a5914050b"
     );
 }
 

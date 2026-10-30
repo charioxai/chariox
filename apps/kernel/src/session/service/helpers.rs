@@ -535,12 +535,11 @@ impl SessionService {
         )
     }
 
-    pub(super) fn next_agent_prompt_schedule_id(&mut self) -> String {
-        self.next_agent_prompt_schedule_number =
-            self.next_agent_prompt_schedule_number.wrapping_add(1);
+    pub(super) fn next_agent_trigger_id(&mut self) -> String {
+        self.next_agent_trigger_number = self.next_agent_trigger_number.wrapping_add(1);
         format!(
-            "wait-{:016x}",
-            ordered_entity_id(unix_epoch_ms(), self.next_agent_prompt_schedule_number)
+            "trigger-{:016x}",
+            ordered_entity_id(unix_epoch_ms(), self.next_agent_trigger_number)
         )
     }
 }

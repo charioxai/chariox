@@ -434,7 +434,7 @@ mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
-mod agent_prompt_schedule_runtime_state;
+mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;

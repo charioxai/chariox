@@ -103,6 +103,15 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::CreateAgentTrigger(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::UpdateAgentTrigger(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::DeleteAgentTrigger(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::UpdateAgentConfig(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

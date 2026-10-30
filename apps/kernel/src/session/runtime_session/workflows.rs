@@ -707,6 +707,8 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
+        reconciliation.settled_trigger_steer_count =
+            self.settle_trigger_steers_in_doubt(crate::session::unix_epoch_ms());
         // Agent decisions wait on process-local responders. A restored popup
         // cannot answer the old provider or unlock request and must not block
         // a new one. Recovered turns request fresh permission; no approval is

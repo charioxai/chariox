@@ -3,6 +3,7 @@
 //! This module owns writing admitted prompts or cancellation signals to local provider runtimes,
 //! including structured prompt I/O and provider-runtime lane spawning.
 
+use super::structured_prompt_dispatch::SteerReceipt;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,9 +184,17 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
-    pub(super) async fn enqueue_prompt_dispatch_with_acceptance(
+    pub(super) fn enqueue_prompt_dispatch_with_acceptance<'a>(
+        &'a self,
+        dispatch: &'a crate::app::KernelPromptDispatch,
+    ) -> impl std::future::Future<Output = Result<bool, DaemonError>> + 'a {
+        self.enqueue_prompt_dispatch_with_receipt(dispatch, SteerReceipt::Awaited)
+    }
+
+    pub(super) async fn enqueue_prompt_dispatch_with_receipt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
+        receipt_policy: SteerReceipt,
     ) -> Result<bool, DaemonError> {
         {
             let owned = &self.owned;
@@ -214,7 +223,11 @@ impl KernelRuntimeState {
                 }
             }
             let result = self
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(dispatch, owned)
+                .enqueue_prompt_dispatch_after_liveness_with_receipt(
+                    dispatch,
+                    owned,
+                    receipt_policy,
+                )
                 .await;
             if result
                 .as_ref()
@@ -291,19 +304,34 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
-    pub(super) async fn enqueue_prompt_dispatch_after_liveness_with_acceptance(
+    pub(super) fn enqueue_prompt_dispatch_after_liveness_with_acceptance<'a>(
+        &'a self,
+        dispatch: &'a crate::app::KernelPromptDispatch,
+        owned: &'a KernelRuntimeOwnedState,
+    ) -> impl std::future::Future<Output = Result<PromptDispatchAcceptance, DaemonError>> + 'a {
+        self.enqueue_prompt_dispatch_after_liveness_with_receipt(
+            dispatch,
+            owned,
+            SteerReceipt::Awaited,
+        )
+    }
+
+    async fn enqueue_prompt_dispatch_after_liveness_with_receipt(
         &self,
         dispatch: &crate::app::KernelPromptDispatch,
         owned: &KernelRuntimeOwnedState,
+        receipt_policy: SteerReceipt,
     ) -> Result<PromptDispatchAcceptance, DaemonError> {
         self.authorize_current_external_command()?;
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
         if let Some(rerouted) = self.dispatch_off_finished_turn_substitute(dispatch).await? {
-            return Box::pin(
-                self.enqueue_prompt_dispatch_after_liveness_with_acceptance(&rerouted, owned),
-            )
+            return Box::pin(self.enqueue_prompt_dispatch_after_liveness_with_receipt(
+                &rerouted,
+                owned,
+                receipt_policy,
+            ))
             .await;
         }
         if !dispatch.steering {
@@ -401,6 +429,7 @@ impl KernelRuntimeState {
                     &provider_run,
                     handoff,
                     &hidden_system_context,
+                    receipt_policy,
                 )
                 .await
                 .map(|submitted| {

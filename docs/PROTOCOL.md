@@ -5039,6 +5039,23 @@ authority for its own sessions, agents, terminals and files.
   `kernel_join_refused`. The grant on the other kernel is revoked there; forgetting only drops it here.
 The Rust hash test `kernel_gateway_protocol_568_shapes_and_hash` pins the shapes.
 
+Allocated 900 (relay peer unchanged) adds agent triggers: prompts that fire into an agent's own
+conversation. `CreateAgentTrigger {session_id, agent_id, source, busy_policy, prompt?}`,
+`UpdateAgentTrigger {session_id, trigger_id, busy_policy?, prompt?, enabled?}` and
+`DeleteAgentTrigger {session_id, trigger_id}` answer `AgentTriggerCreated|Updated|Deleted {trigger,
+session}`. 900 has one source, `{"kind": "schedule", "interval_seconds", "repeat": "once"|"every"}`.
+`busy_policy` decides what a firing does while the agent runs a turn: `queue` waits in the prompt
+queue, `steer` is queued and then steered into the running turn exactly like the queued-prompt
+steer. A refused steer leaves the firing queued, records `last_error` and raises a notice. A
+schedule whose previous firing is still queued or running coalesces (`coalesced` counts it).
+Triggers are deleted with their agent. Whoever may prompt the agent may manage its triggers. The
+session lists them in `agent_triggers`. `/wait-in` and `/wait-every` are queue-policy schedule
+triggers: sessions stored before 900 have `agent_prompt_schedules` migrated on read with their ids
+kept. Older clients keep working: the session still carries `agent_prompt_schedules` (enabled
+schedule triggers in the old shape), and `CreateAgentPromptSchedule` / `CancelAgentPromptSchedule`
+still create and delete schedule triggers. The shape is pinned by
+`local_daemon_protocol_agent_trigger_shape_is_versioned`.
+
 MP-08 / MP-10 / MP-11: the same 560/168 allocation adds `mirror_subscribe.layout_width` and
 `layout_height` (both or neither, integers in CSS px): the size of the display that views the Tab.
 A viewer narrower than the canonical desktop (a phone) sends its page area; the kernel lays that
