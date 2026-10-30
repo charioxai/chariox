@@ -31,6 +31,10 @@ impl InstallationDirectories {
         }
         Ok(Self(root))
     }
+    /// The only paths native containment leaves reachable.
+    pub fn files(&self) -> Vec<PathBuf> {
+        ["data", "tmp"].map(|name| self.0.join(name)).into()
+    }
     fn configure(&self, builder: &mut WasiCtxBuilder) -> wasmtime::Result<()> {
         // Recheck at restart; never silently replace a missing installation.
         Self::open(&self.0)?;

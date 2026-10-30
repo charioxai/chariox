@@ -108,7 +108,7 @@ fn run() -> wasmtime::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [command] if command == "identity" => {
-            println!("{}", serde_json::to_string(&crate::engine::runtime_identity(&crate::engine::engine()?)?)?);
+            println!("{}", serde_json::to_string(&crate::engine::runtime_identity(&crate::engine::engine()?, crate::engine::worker_build()?)?)?);
         },
         [command] if command == "serve-supervised" => crate::supervised::serve()?,
         [command, world] if command == "precompile-stdio" => {
@@ -146,7 +146,8 @@ fn run() -> wasmtime::Result<()> {
             // All native inputs are read before filesystem authority is removed.
             // Neither compilation, registration nor the ready reply can precede
             // containment. R4 uses this same entry for its verified AOT bytes.
-            crate::containment::enter().map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
+            let files=directories.as_ref().map(crate::wasi::InstallationDirectories::files).unwrap_or_default();
+            crate::containment::enter(&files).map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
             ready(&launch.generation, &launch.installation_id, &launch.release_digest)?;
             let engine=WorkerEngine::new()?;
             let component=engine.compile(&bytes,&launch.manifest.world)?;

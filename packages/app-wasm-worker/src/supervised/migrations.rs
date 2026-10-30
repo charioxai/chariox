@@ -9,11 +9,11 @@ use crate::{
 };
 use chariox_app_runtime::worker_process::wasm_config::WasmMigration;
 use sha2::{Digest, Sha256};
-use std::{fs::File, io::Read, time::Duration};
+use std::{io::Read, time::Duration};
 
 pub(super) async fn run(
     ipc: &Ipc,
-    mut input: File,
+    mut input: impl Read,
     installation: &str,
     steps: Vec<WasmMigration>,
 ) -> wasmtime::Result<()> {

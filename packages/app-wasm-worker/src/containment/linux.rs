@@ -38,7 +38,7 @@ fn case(filter: &mut Vec<libc::sock_filter>, syscall: libc::c_long, body: &[libc
     filter.push(load(0));
 }
 
-pub(super) fn enter() -> io::Result<()> {
+pub(super) fn enter(files: &[std::path::PathBuf]) -> io::Result<()> {
     // Descriptor cleanup must precede threads sharing the descriptor table.
     // The epoch ticker and Tokio threads must all be born after this point.
     if std::fs::read_dir("/proc/self/task")?.count() != 1 {
@@ -63,6 +63,9 @@ pub(super) fn enter() -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     super::ceilings()?;
+    if !files.is_empty() {
+        super::landlock::restrict(files)?;
+    }
     let pid = unsafe { libc::getpid() };
     if pid <= 1 {
         return Err(io::Error::other("APP_SANDBOX_PID: invalid worker PID"));
@@ -280,6 +283,49 @@ pub(super) fn enter() -> io::Result<()> {
         libc::SYS_dup2,
     ] {
         case(&mut filter, syscall, &[ret(ALLOW)]);
+    }
+    // Landlock above confines these to the installation's data and tmp. Mode,
+    // owner and timestamp changes stay out: Landlock does not mediate them.
+    if !files.is_empty() {
+        for syscall in [
+            libc::SYS_openat,
+            libc::SYS_openat2,
+            libc::SYS_newfstatat,
+            libc::SYS_statx,
+            libc::SYS_faccessat,
+            libc::SYS_faccessat2,
+            libc::SYS_getdents64,
+            libc::SYS_readlinkat,
+            libc::SYS_mkdirat,
+            libc::SYS_unlinkat,
+            libc::SYS_renameat2,
+            libc::SYS_symlinkat,
+            libc::SYS_linkat,
+            libc::SYS_fstatfs,
+            libc::SYS_fallocate,
+            libc::SYS_flock,
+        ] {
+            case(&mut filter, syscall, &[ret(ALLOW)]);
+        }
+        #[cfg(target_arch = "x86_64")]
+        for syscall in [
+            libc::SYS_renameat,
+            libc::SYS_fadvise64,
+            libc::SYS_stat,
+            libc::SYS_lstat,
+            libc::SYS_access,
+            libc::SYS_readlink,
+            libc::SYS_mkdir,
+            libc::SYS_rmdir,
+            libc::SYS_unlink,
+            libc::SYS_rename,
+            libc::SYS_symlink,
+            libc::SYS_link,
+        ] {
+            case(&mut filter, syscall, &[ret(ALLOW)]);
+        }
+        #[cfg(target_arch = "aarch64")]
+        case(&mut filter, libc::SYS_fadvise64, &[ret(ALLOW)]);
     }
     filter.push(ret(DENY));
     let program = libc::sock_fprog {

@@ -1,7 +1,9 @@
 //! Native worker boundary, installed before the ready handshake or any threads.
 //! Files, network and subprocesses belong to kernel brokers, never native WASI.
-use std::io;
+use std::{io, path::PathBuf};
 
+#[cfg(target_os = "linux")]
+mod landlock;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -14,12 +16,24 @@ pub const FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const DESCRIPTORS: u64 = 64;
 
 /// Call once, on the initial native thread, after reading supervisor inputs.
-/// Failure is fatal: there is no uncontained execution mode.
-pub fn enter() -> io::Result<()> {
+/// `files` are an installed App's real `data` and `tmp` directories: the only
+/// paths the contained worker can reach. Failure is fatal: there is no
+/// uncontained execution mode.
+pub fn enter(files: &[PathBuf]) -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    linux::enter()?;
+    linux::enter(files)?;
     #[cfg(target_os = "macos")]
-    macos::enter()?;
+    {
+        // The Seatbelt profile has no App file grants yet; refusing keeps the
+        // boundary rather than running an installed App with ambient files.
+        if !files.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "APP_SANDBOX_FILES: macOS containment does not grant App data/tmp yet",
+            ));
+        }
+        macos::enter()?;
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     return Err(io::Error::new(
         io::ErrorKind::Unsupported,

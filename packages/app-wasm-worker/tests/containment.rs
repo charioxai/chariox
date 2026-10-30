@@ -53,8 +53,12 @@ fn main() {
         "cpu-budget",
         "icache",
         "unsigned-code",
+        "installation-files",
     ] {
-        if matches!(scenario, "memory" | "without-landlock" | "icache") && cfg!(target_os = "macos")
+        if matches!(
+            scenario,
+            "memory" | "without-landlock" | "icache" | "installation-files"
+        ) && cfg!(target_os = "macos")
         {
             println!("NATIVE {scenario}: NOT RUN (Linux-only native probe)");
             continue;
@@ -172,8 +176,17 @@ fn child(scenario: &str, mode: &str) {
         None
     };
     let green = mode == "green";
+    // An installed App's data directory, created before the boundary as the
+    // kernel does; it must be the only native file authority left.
+    let data = std::path::Path::new(&outside).with_file_name(format!("data-{mode}"));
+    let files = if scenario == "installation-files" {
+        fs::create_dir(&data).unwrap();
+        vec![data.clone()]
+    } else {
+        vec![]
+    };
     if green {
-        chariox_app_wasm_worker::containment::enter().unwrap();
+        chariox_app_wasm_worker::containment::enter(&files).unwrap();
     }
     match scenario {
         "authority" | "without-landlock" => {
@@ -457,6 +470,24 @@ fn child(scenario: &str, mode: &str) {
                 42
             );
             println!("trusted precompiled code loads and executes after containment");
+        }
+        "installation-files" => {
+            fs::write(data.join("note"), b"App file").unwrap();
+            fs::create_dir(data.join("nested")).unwrap();
+            fs::rename(data.join("note"), data.join("nested/note")).unwrap();
+            assert_eq!(fs::read(data.join("nested/note")).unwrap(), b"App file");
+            fs::remove_file(data.join("nested/note")).unwrap();
+            let read = fs::read(&outside);
+            assert_eq!(read.is_err(), green, "file outside the installation");
+            let written = fs::write(data.with_file_name("escape"), b"x");
+            assert_eq!(written.is_err(), green, "write outside the installation");
+            if green {
+                assert_eq!(read.unwrap_err().raw_os_error(), Some(libc::EACCES));
+                let socket = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+                assert!(socket < 0, "file grants must not admit sockets");
+                let spawned = Command::new(&executable).arg("--spawn-probe").status();
+                assert!(spawned.is_err(), "file grants must not admit exec");
+            }
         }
         _ => panic!("unknown native probe"),
     }

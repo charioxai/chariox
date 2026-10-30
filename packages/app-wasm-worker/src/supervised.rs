@@ -42,23 +42,47 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
         "backend requires App world"
     );
     let bytes = read(6, chariox_app_wit::MAX_COMPONENT_BYTES)?;
-    let migration_source = descriptor(9)?;
+    // Migration components are read in full: containment closes FD9.
+    wasmtime::ensure!(
+        launch
+            .migrations
+            .iter()
+            .all(|step| step.bytes <= chariox_app_wit::MAX_COMPONENT_BYTES),
+        "migration component exceeds limit"
+    );
+    let migration_source = read(9, launch.migrations.iter().map(|step| step.bytes).sum())?;
+    let artifact = VerifiedAot::from_supervisor_descriptor(
+        descriptor(7)?,
+        &launch.cache_key,
+        &launch.cache_public_key,
+    )?;
+    let build = crate::engine::worker_build()?;
+    let directories = launch
+        .installation_root
+        .as_deref()
+        .map(|root| crate::wasi::InstallationDirectories::open(std::path::Path::new(root)))
+        .transpose()?;
+    // Every supervisor input is read and the installation's directories are
+    // resolved; nothing runs as the App before R5's boundary, including the
+    // engine's threads, registration and the ready reply.
+    crate::containment::enter(
+        &directories
+            .as_ref()
+            .map(crate::wasi::InstallationDirectories::files)
+            .unwrap_or_default(),
+    )
+    .map_err(|error| wasmtime::Error::msg(format!("APP_SANDBOX_UNAVAILABLE: {error}")))?;
     wasmtime::ensure!(
         format!("sha256:{:x}", Sha256::digest(&bytes)) == launch.cache_key.component_digest,
         "trusted component digest mismatch"
     );
     chariox_app_wit::check_component(&bytes, &launch.manifest.world)?;
     let engine = WorkerEngine::new()?;
-    let identity = crate::engine::runtime_identity(engine.engine())?;
+    let identity = crate::engine::runtime_identity(engine.engine(), build)?;
     wasmtime::ensure!(
         identity.key(&launch.cache_key.component_digest) == launch.cache_key,
         "stale worker/engine AOT key"
     );
-    let artifact = VerifiedAot::from_supervisor_descriptor(
-        descriptor(7)?,
-        &launch.cache_key,
-        &launch.cache_public_key,
-    )?;
     cli::ready(
         &launch.generation,
         &launch.installation_id,
@@ -76,10 +100,8 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
         crate::limits::Limits::default(),
         RetryPolicy::from_manifest(&launch.manifest),
     )?;
-    if let Some(root) = &launch.installation_root {
-        worker = worker.with_directories(crate::wasi::InstallationDirectories::open(
-            std::path::Path::new(root),
-        )?);
+    if let Some(directories) = directories {
+        worker = worker.with_directories(directories);
     }
     let stream = cli::inherited_stream(3)?;
     stream.set_nonblocking(true)?;
@@ -92,7 +114,7 @@ pub(crate) fn serve() -> wasmtime::Result<()> {
             crate::ipc::Ipc::start(tokio::net::UnixStream::from_std(stream)?, launch.generation)?;
         migrations::run(
             &transport.ipc,
-            migration_source,
+            std::io::Cursor::new(migration_source),
             &launch.installation_id,
             launch.migrations,
         )

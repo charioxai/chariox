@@ -36,27 +36,10 @@ pub fn configuration_digest() -> String {
     format!("sha256:{:x}", digest.finalize())
 }
 
-pub fn runtime_identity(
-    engine: &Engine,
-) -> wasmtime::Result<chariox_app_runtime::release_store::aot_cache::AotRuntimeIdentity> {
+/// The exact executable build, read before containment removes file access.
+pub fn worker_build() -> std::io::Result<String> {
     use sha2::{Digest, Sha256};
-    use std::{
-        hash::{Hash, Hasher},
-        io::Read,
-    };
-    struct Compatibility(Sha256);
-    impl Hasher for Compatibility {
-        fn write(&mut self, bytes: &[u8]) {
-            self.0.update(bytes);
-        }
-        fn finish(&self) -> u64 {
-            u64::from_le_bytes(self.0.clone().finalize()[..8].try_into().unwrap())
-        }
-    }
-    let mut compatibility = Compatibility(Sha256::new());
-    engine
-        .precompile_compatibility_hash()
-        .hash(&mut compatibility);
+    use std::io::Read;
     #[cfg(target_os = "linux")]
     let mut executable = std::fs::File::open("/proc/self/exe")?;
     #[cfg(not(target_os = "linux"))]
@@ -70,10 +53,32 @@ pub fn runtime_identity(
         }
         build.update(&buffer[..size]);
     }
+    Ok(format!("sha256:{:x}", build.finalize()))
+}
+
+pub fn runtime_identity(
+    engine: &Engine,
+    worker_build: String,
+) -> wasmtime::Result<chariox_app_runtime::release_store::aot_cache::AotRuntimeIdentity> {
+    use sha2::{Digest, Sha256};
+    use std::hash::{Hash, Hasher};
+    struct Compatibility(Sha256);
+    impl Hasher for Compatibility {
+        fn write(&mut self, bytes: &[u8]) {
+            self.0.update(bytes);
+        }
+        fn finish(&self) -> u64 {
+            u64::from_le_bytes(self.0.clone().finalize()[..8].try_into().unwrap())
+        }
+    }
+    let mut compatibility = Compatibility(Sha256::new());
+    engine
+        .precompile_compatibility_hash()
+        .hash(&mut compatibility);
     Ok(
         chariox_app_runtime::release_store::aot_cache::AotRuntimeIdentity {
             wasmtime_version: "50.0.0".into(),
-            worker_build: format!("sha256:{:x}", build.finalize()),
+            worker_build,
             engine_config_digest: configuration_digest(),
             target_triple: env!("CHARIOX_WORKER_TARGET").into(),
             cpu_feature_policy: format!("native:sha256:{:x}", compatibility.0.finalize()),

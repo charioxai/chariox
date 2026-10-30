@@ -185,6 +185,8 @@ async fn invoke(prepared: PreparedWorker, portable: &str) -> Value {
         panic!("worker.ready required")
     };
     assert_eq!(method, "worker.ready");
+    #[cfg(target_os = "linux")]
+    assert_installed_worker_contained();
     let mut registered: Vec<_> = params["tools"]
         .as_array()
         .unwrap()
@@ -266,6 +268,31 @@ async fn invoke(prepared: PreparedWorker, portable: &str) -> Value {
         .unwrap();
     output
 }
+/// R5: the installed launch is a contained launch. Every live supervised child
+/// of this drill runs without new privileges under its seccomp filter.
+#[cfg(target_os = "linux")]
+fn assert_installed_worker_contained() {
+    let mut workers = 0;
+    for task in fs::read_dir("/proc/self/task").unwrap() {
+        let children = fs::read_to_string(task.unwrap().path().join("children")).unwrap();
+        for child in children.split_whitespace() {
+            let process = Path::new("/proc").join(child);
+            let supervised = fs::read(process.join("cmdline"))
+                .is_ok_and(|line| line.windows(16).any(|word| word == b"serve-supervised"));
+            if !supervised {
+                continue;
+            }
+            let status = fs::read_to_string(process.join("status")).unwrap();
+            assert!(
+                status.contains("\nNoNewPrivs:\t1\n") && status.contains("\nSeccomp:\t2\n"),
+                "installed worker {child} runs outside R5 containment:\n{status}"
+            );
+            workers += 1;
+        }
+    }
+    assert!(workers > 0, "no installed worker process found");
+}
+
 fn worker() -> &'static Path {
     static WORKER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     WORKER
