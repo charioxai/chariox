@@ -185,7 +185,7 @@ async fn invoke(prepared: PreparedWorker, portable: &str) -> Value {
         panic!("worker.ready required")
     };
     assert_eq!(method, "worker.ready");
-    assert_eq!(params["tools"].as_array().unwrap().len(), 13);
+    assert_eq!(params["tools"].as_array().unwrap().len(), 15);
     // Real kernel ordering: keep worker.ready pending while precommit health
     // runs. The ready response grants activation only after health succeeds.
     channel
