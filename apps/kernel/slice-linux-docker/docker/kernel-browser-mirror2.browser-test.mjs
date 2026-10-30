@@ -136,6 +136,17 @@ test("MP-08/MP-10: the kernel reports the cursor the page shows at a point (for 
       ["pointer", "text", "text", "not-allowed", "move", "default", "zoom-in", "ew-resize", "default"]);
     await assert.rejects(host.request({ op: "pointer_cursor", tab_id, generation, x: 100000, y: 0 }), /outside the page/);
   }));
+test("MP-08/MP-10: the cursor inside a cross-origin frame (and a frame it hosts) is the frame's own", () => mirrored(
+  `<body style="margin:0"><iframe src="http://localhost:PORT/outer" style="position:absolute;left:10px;top:300px;border:0;width:300px;height:120px"></iframe></body>`,
+  async ({ host, tab_id, generation }) => {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const at = async (x, y) => (await host.request({ op: "pointer_cursor", tab_id, generation, x, y })).cursor;
+    // Outer frame: a zoom-in band (0-40), a line of text (40-60), then a frame of its own (60-120) that asks for `help`.
+    assert.deepEqual([await at(20, 320), await at(20, 350), await at(20, 380), await at(20, 100)], ["zoom-in", "text", "help", "default"]);
+  }, {
+    "/outer": { type: "text/html", body: '<!doctype html><body style="margin:0;font:16px/20px sans-serif"><div style="height:40px;cursor:zoom-in"></div><p style="margin:0;height:20px">inner text</p><iframe src="http://127.0.0.1:PORT/deep" style="border:0;width:200px;height:60px;display:block"></iframe>' },
+    "/deep": { type: "text/html", body: '<!doctype html><html style="cursor:help"><body style="margin:0;height:60px">' },
+  }));
 test("MP-10: a node added and removed before the drain sends no children op", () => mirrored("<p>page</p>", async ({ next, evaluate }) => {
   assert.equal((await next()).reset, true);
   await evaluate("const t=document.createElement('div');document.body.append(t);t.remove();true");
