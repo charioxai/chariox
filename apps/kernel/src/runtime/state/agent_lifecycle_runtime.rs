@@ -691,16 +691,6 @@ impl KernelRuntimeState {
         settlement: Option<(AgentTaskExecution, bool)>,
         source: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
-        self.finish_agent_task_settlement_with_failure(settlement, source, None)
-            .await
-    }
-    /// `failure` is why the turn behind a task that ends cancelled failed.
-    pub(super) async fn finish_agent_task_settlement_with_failure(
-        &self,
-        settlement: Option<(AgentTaskExecution, bool)>,
-        source: &crate::session::PromptQueueItem,
-        failure: Option<&crate::provider::TurnOutcome>,
-    ) -> Result<(), DaemonError> {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
@@ -720,25 +710,7 @@ impl KernelRuntimeState {
                 message,
             );
         }
-        // A task that ends without finishing tells its waiters why, typed once
-        // as the turn outcome, so a failed helper never reads like a finished one.
-        let public_answer = match failure {
-            Some(outcome) if task.state == ExecutionState::Cancelled => {
-                let host = self
-                    .owned
-                    .agent_store
-                    .get_agent(&task.agent_id)
-                    .ok()
-                    .and_then(|agent| agent.remote_execution().cloned())
-                    .map(|binding| self.leased_host_name(&binding));
-                Some(super::agent_task_projection::failed_task_answer(
-                    &task,
-                    outcome,
-                    host.as_deref(),
-                ))
-            }
-            _ => self.owned.public_agent_task_answer(&task)?,
-        };
+        let public_answer = self.owned.public_agent_task_answer(&task)?;
         if task.state == ExecutionState::Cancelled {
             Box::pin(self.cancel_agent_task_resources(&task)).await?;
         }

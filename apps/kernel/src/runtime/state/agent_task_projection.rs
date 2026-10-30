@@ -72,6 +72,9 @@ impl KernelRuntimeOwnedState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
+        if task.state == ExecutionState::Cancelled {
+            return self.failed_task_answer(task);
+        }
         if task.state != ExecutionState::Done {
             return Ok(None);
         }
@@ -101,28 +104,60 @@ impl KernelRuntimeOwnedState {
         crate::secret_redaction::redact_json_secrets(&mut answer);
         Ok(Some(answer))
     }
-}
 
-/// What a waiter reads when a task ends because its turn failed: the typed
-/// outcome (the same one the turn's event, history and state carry) and what to
-/// do next. `public_agent_task_answer` is for tasks that finished.
-pub(super) fn failed_task_answer(
-    task: &AgentTaskExecution,
-    outcome: &crate::provider::TurnOutcome,
-    host: Option<&str>,
-) -> serde_json::Value {
-    let mut answer = serde_json::json!({
-        "agent_id": task.agent_id,
-        "task_id": task.task_id,
-        "prompt_id": task.prompt_id,
-        "outcome": outcome,
-        "recovery": outcome.notice(),
-    });
-    if let Some(host) = host {
-        answer["host"] = host.into();
+    /// What a waiter reads when a task ends because its turn failed: the typed
+    /// outcome the turn's history carries (so every settlement path reads the
+    /// same one), what to do next and, for a leased helper, where it ran. A
+    /// task the owner cancelled has no failed turn and no answer.
+    fn failed_task_answer(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        let Some(settlement) = self
+            .operational_history_store
+            .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+        else {
+            return Ok(None);
+        };
+        let Some(outcome) = settlement
+            .metadata
+            .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+            .and_then(|outcome| {
+                serde_json::from_value::<crate::provider::TurnOutcome>(outcome.clone()).ok()
+            })
+            .filter(crate::provider::TurnOutcome::is_error)
+        else {
+            return Ok(None);
+        };
+        let mut answer = serde_json::json!({
+            "agent_id": task.agent_id,
+            "task_id": task.task_id,
+            "prompt_id": task.prompt_id,
+            "outcome": outcome,
+            "recovery": outcome.notice(),
+        });
+        if let Some(binding) = self
+            .agent_store
+            .get_agent(&task.agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().cloned())
+        {
+            answer["host"] = self.leased_host_name(&binding).into();
+        }
+        crate::secret_redaction::redact_json_secrets(&mut answer);
+        Ok(Some(answer))
     }
-    crate::secret_redaction::redact_json_secrets(&mut answer);
-    answer
+
+    /// The slice or worker kernel that hosts a leased agent, as users read it.
+    pub(super) fn leased_host_name(&self, binding: &crate::agent::RemoteAgentBinding) -> String {
+        match self
+            .slice_store
+            .resolve_by_worker_kernel_ref(&binding.worker_kernel_id)
+        {
+            Some(slice) => format!("slice `{}`", slice.name),
+            None => format!("worker kernel `{}`", binding.worker_kernel_id),
+        }
+    }
 }
 
 /// Finished tasks a snapshot still carries; a long room must not grow every

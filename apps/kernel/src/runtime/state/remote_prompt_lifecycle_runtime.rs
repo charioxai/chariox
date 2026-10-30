@@ -562,7 +562,7 @@ impl KernelRuntimeState {
         let settled = match settlement {
             Ok(settlement) => {
                 Box::pin(
-                    self.finish_agent_task_settlement_with_failure(settlement, completed, failure),
+                    self.finish_agent_task_settlement(settlement, completed),
                 )
                 .await
             }

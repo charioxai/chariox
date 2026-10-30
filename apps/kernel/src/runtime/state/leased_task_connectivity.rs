@@ -51,15 +51,12 @@ impl KernelRuntimeState {
                     ).await,
                 }
             }).await;
-            let probe = match reply {
-                Ok(Ok(RelayPeerResponse::Pong { value, .. })) if value == PROBE => Probe::Connected,
-                Ok(Err(DaemonError::RelayTransport { code, .. }))
-                    if matches!(code.as_str(), "target_not_connected" | "target_disconnected") =>
-                {
-                    Probe::WorkerOffline
-                }
-                _ => Probe::Unreachable,
-            };
+            let slice_hosted = self
+                .owned
+                .slice_store
+                .resolve_by_worker_kernel_ref(&key.0)
+                .is_some();
+            let probe = classify_probe(&reply, slice_hosted);
             (key, probe)
         })).await.into_iter().collect::<BTreeMap<_, _>>();
 
@@ -136,18 +133,6 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// The slice or worker kernel that hosts a leased agent, as users read it.
-    pub(super) fn leased_host_name(&self, binding: &crate::agent::RemoteAgentBinding) -> String {
-        match self
-            .owned
-            .slice_store
-            .resolve_by_worker_kernel_ref(&binding.worker_kernel_id)
-        {
-            Some(slice) => format!("slice `{}`", slice.name),
-            None => format!("worker kernel `{}`", binding.worker_kernel_id),
-        }
-    }
-
     /// The worker is gone and with it the provider run it hosted. The turn ends
     /// failed, never replayed, so the helper's task is resolved and its waiters wake.
     async fn end_turn_on_lost_worker(
@@ -168,7 +153,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        let host = self.leased_host_name(binding);
+        let host = self.owned.leased_host_name(binding);
         let lost = format!(
             "The {host} hosting this turn has been offline for {} s",
             offline_ms / 1000
@@ -182,6 +167,35 @@ impl KernelRuntimeState {
             "the relay reports the worker kernel is not connected",
         )
         .await
+    }
+}
+
+/// What a ping tells about the worker. A home-managed slice carries its own
+/// relay, so there an unreachable relay is the slice that is gone; on a shared
+/// relay only the relay's own report that the worker is not connected counts.
+fn classify_probe(
+    reply: &Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed>,
+    slice_hosted: bool,
+) -> Probe {
+    match reply {
+        Ok(Ok(RelayPeerResponse::Pong { value, .. })) if value == PROBE => Probe::Connected,
+        Ok(Err(DaemonError::RelayTransport { code, .. }))
+            if matches!(
+                code.as_str(),
+                "target_not_connected" | "target_disconnected"
+            ) =>
+        {
+            Probe::WorkerOffline
+        }
+        Ok(Err(DaemonError::LocalTransport { operation, message }))
+            if slice_hosted
+                && (*operation == "connect temporary relay peer socket"
+                    || (*operation == "send relay peer request"
+                        && message == "relay is not connected")) =>
+        {
+            Probe::WorkerOffline
+        }
+        _ => Probe::Unreachable,
     }
 }
 
@@ -202,4 +216,40 @@ fn active_binding(
         .ok()?
         .remote_execution()
         .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused() -> Result<Result<RelayPeerResponse, DaemonError>, tokio::time::error::Elapsed> {
+        Ok(Err(DaemonError::LocalTransport {
+            operation: "connect temporary relay peer socket",
+            message: "IO error: Connection refused (os error 111)".into(),
+        }))
+    }
+
+    #[test]
+    fn a_slice_whose_own_relay_refuses_the_connection_is_offline() {
+        assert!(classify_probe(&refused(), true) == Probe::WorkerOffline);
+    }
+
+    #[test]
+    fn a_shared_relay_that_refuses_the_connection_says_nothing_about_the_worker() {
+        assert!(classify_probe(&refused(), false) == Probe::Unreachable);
+    }
+
+    #[test]
+    fn the_relay_reporting_the_worker_not_connected_is_offline_on_any_relay() {
+        let reply = || {
+            Ok(Err(DaemonError::RelayTransport {
+                operation: "peer request",
+                code: "target_not_connected".into(),
+                message: "target daemon is not connected to relay".into(),
+                retryable: true,
+            }))
+        };
+        assert!(classify_probe(&reply(), false) == Probe::WorkerOffline);
+        assert!(classify_probe(&reply(), true) == Probe::WorkerOffline);
+    }
 }
