@@ -463,6 +463,19 @@ test("MP-10: a click on a node below the native viewport (the viewer scrolled ah
     assert.deepEqual(await evaluate("hits"), ["b"]);
   }));
 
+// The viewer aims a wheel step at the node under its pointer; earlier steps may already have moved the native page past it.
+// The step goes to the page where it is now (a click reveals its node, a wheel would take the earlier steps back).
+test("MP-10: a wheel step aimed at a node the native page has scrolled past scrolls the page from where it is", () => mirrored(
+  '<div id="a" style="height:600px"></div><div style="height:6000px"></div>', async ({ next, evaluate, input }) => {
+    const snapshot = await next(), [node] = elements(snapshot).find(([, , attrs]) => attrs.id === "a");
+    await evaluate("scrollTo(0, 2000), true");
+    const started = Date.now();
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 100, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("scrollY") === 2000; i++) await settle(25);
+    assert.equal(await evaluate("scrollY"), 2300, "MP-10: the page scrolled on from where it was, not back to the node");
+    assert(Date.now() - started < 1000, "MP-10: the step is not held behind the offscreen retries");
+  }));
+
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
   '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
     const snapshot = await next();

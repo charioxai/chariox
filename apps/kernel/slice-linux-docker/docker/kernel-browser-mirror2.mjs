@@ -1036,7 +1036,7 @@ export class Mirror2 {
         const {width,height} = this.host.pageSize(tab.tab_id);
         if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height) throw new Error('MP-11: changed mirror input target');
       } else {
-        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y, ...(action.kind === 'scroll' ? { wheel: true } : {}) })})`);
         try { at = await retryOffscreen(pointAt); } catch (error) {
           // Still outside the native viewport: scroll the native page to the node the viewer showed (the echo is this viewer's own).
           if (error?.mirrorReason !== 'offscreen_node') throw error;
