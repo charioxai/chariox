@@ -1150,8 +1150,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      if (clipped(node, x, y)) throw new Error('mirror2 offscreen node');
+      // A wheel step aimed at a node the page has scrolled past goes to the page where it is: the viewer's earlier steps
+      // moved it, and showing the node again would take them back.
+      if (request.wheel !== true && clipped(node, x, y)) throw new Error('mirror2 offscreen node');
       const map = frameMap(node); x = map.tx + map.sx * x; y = map.ty + map.sy * y;
+      if (request.wheel === true) { x = Math.min(Math.max(x, 0), innerWidth - 1); y = Math.min(Math.max(y, 0), innerHeight - 1); }
       return { x: Math.floor(x), y: Math.floor(y) };
     };
     // The viewer is scrolled ahead of the native page: bring the node into the native viewport and say where the page now is.
