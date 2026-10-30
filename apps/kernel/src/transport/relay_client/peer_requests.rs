@@ -99,6 +99,34 @@ pub(super) async fn handle_daemon_peer_request(
             let _ = release.await;
         }
     }
+    if let RelayPeerRequest::RequestProviderAccountCopy { request } = request {
+        let result = match require_bound_managed_context_sender(
+            caller_identity.as_ref(),
+            &encrypted_request,
+        ) {
+            Ok(identity) => {
+                router
+                    .runtime_state()
+                    .send_requested_provider_account_copy(
+                        stable_peer_daemon_id(from_daemon_id),
+                        &requester_public_key,
+                        identity,
+                        request,
+                    )
+                    .await
+            }
+            Err(_) => Err(crate::provider_account_copy::failure(
+                "provider_account_copy_unauthorized",
+            )),
+        };
+        let response = match result {
+            Ok(receipt) => RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+            Err(error) => RelayPeerResponse::ProviderAccountCopyFailed {
+                code: map_relay_error(&error).code,
+            },
+        };
+        return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+    }
     if let RelayPeerRequest::InstallProviderAccountCopy {
         binding,
         credential,
@@ -685,7 +713,8 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::InstallProviderAccountCopy { .. } => {
+        RelayPeerRequest::InstallProviderAccountCopy { .. }
+        | RelayPeerRequest::RequestProviderAccountCopy { .. } => {
             unreachable!("account copy is admitted before generic peer dispatch")
         }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong {

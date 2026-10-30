@@ -83,6 +83,66 @@ async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
 }
 
 #[tokio::test]
+async fn changed_provider_accounts_are_published_on_the_next_heartbeat() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let registration = app.relay_registration();
+    let mut published = PublishedProviderAccounts {
+        change_sequence: 7,
+        accounts: registration.provider_accounts.clone(),
+    };
+
+    assert!(
+        changed_provider_accounts_registration(7, &mut published, "active", || async {
+            panic!("nothing changed, so the registration must not be rebuilt")
+        })
+        .await
+        .is_none()
+    );
+    assert!(
+        changed_provider_accounts_registration(8, &mut published, "active", || {
+            std::future::ready(registration.clone())
+        })
+        .await
+        .is_none(),
+        "a change that leaves the accounts as published sends nothing"
+    );
+
+    let mut with_login = registration.clone();
+    with_login
+        .provider_accounts
+        .push(chariox_relay::protocol::RelayProviderAccountSummary {
+            provider: "claude".into(),
+            state: "authenticated".into(),
+            copyable: true,
+            auth_type: None,
+            account_id: Some("claude-1".into()),
+            email: None,
+            organization_id: None,
+            organization_name: None,
+            subscription_type: None,
+            alias: Some("claude-1".into()),
+        });
+    let published_registration =
+        changed_provider_accounts_registration(9, &mut published, "active", || {
+            std::future::ready(with_login.clone())
+        })
+        .await
+        .expect("a new login must reach the relay directory without waiting for token renewal");
+    assert_eq!(published_registration.auth_token, "active");
+    assert_eq!(
+        published_registration.provider_accounts,
+        with_login.provider_accounts
+    );
+    assert!(
+        changed_provider_accounts_registration(9, &mut published, "active", || async {
+            panic!("the same change is published once")
+        })
+        .await
+        .is_none()
+    );
+}
+
+#[tokio::test]
 async fn token_rollover_during_registration_authenticates_snapshot_without_disconnect() {
     // MP-08/MP-10/MP-11: refreshing the config between the snapshot and
     // registration must not turn a harmless renewal race into a reconnect.

@@ -404,3 +404,25 @@ pub struct CopyProviderAccountToKernelRequest {
     #[serde(default)]
     pub replace: bool,
 }
+
+/// A receiving kernel discovers only metadata for eligible, independently owned copies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListProviderAccountCopyOffersRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyProviderAccountFromKernelRequest {
+    /// Where a Vault unlock or create prompt is shown when the copy needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub provider: String,
+    pub account_profile: String,
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+    #[serde(default)]
+    pub replace: bool,
+}

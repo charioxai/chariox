@@ -98,12 +98,18 @@ async fn source_request(
 ) -> Result<serde_json::Value, DaemonError> {
     let request: LocalDaemonRequest =
         serde_json::from_value(request).expect("public account copy must parse");
-    let command = KernelCommand::from_local_request(
+    let mut command = KernelCommand::from_local_request(
         format!("account-copy-test-{}", rand::random::<u64>()),
         None,
         None,
         &request,
     );
+    command.caller = router
+        .local_terminal_caller(
+            crate::runtime::command::KernelCommandSource::LocalIpc,
+            "account-copy-test",
+        )
+        .await;
     router
         .dispatch(command, request)
         .await
@@ -115,6 +121,48 @@ fn assert_code(result: Result<serde_json::Value, DaemonError>, code: &str, canar
     assert_eq!(public.code, code, "unexpected safe error: {error}");
     assert!(!format!("{error:?} {error} {public:?}").contains(canary));
 }
+/// Starts a copy, answers the kernel-owned consent and returns the outcome. It
+/// answers nothing else, so a Vault prompt makes the copy time out.
+async fn consented_copy(
+    router: &Arc<CommandRouter>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, DaemonError> {
+    let copying = router.clone();
+    let pending = tokio::spawn(async move { source_request(&copying, request).await });
+    let consent = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = source_request(
+                router,
+                serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+            )
+            .await
+            .unwrap();
+            if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                .as_array()
+                .unwrap()
+                .first()
+            {
+                break interaction.clone();
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("copy needs the existing kernel-owned consent");
+    source_request(
+        router,
+        serde_json::json!({"AnswerUserDomainInteraction":{
+            "interaction_id":consent["id"], "choice_id":"copy"
+        }}),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), pending)
+        .await
+        .expect("the copy finished without asking for the Vault")
+        .unwrap()
+}
+
 fn assert_native_files_clean(path: &Path, canary: &str) {
     if !path.exists() {
         return;
@@ -164,8 +212,15 @@ fn account_copy_bidirectional_encrypted_installs_do_not_hold_source_vaults() {
     run_account_copy_drill(CopyScenario::Bidirectional);
 }
 
+#[test]
+fn account_copy_recipient_consent_and_independent_removal() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::Recipient);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyScenario {
+    Recipient,
     Serial,
     RegistryAccess,
     ChangedProfile,
@@ -208,6 +263,11 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         std::env::set_var("CHARIOX_CLAUDE_BIN", &fake);
         let mut source = config(&root, "source");
         let mut target = config(&root, "target");
+        if scenario == CopyScenario::Recipient {
+            // The strictest policy: a browser copy still needs no prompt while the Vault is open.
+            target.user_config.credential_vault.unlock_policy =
+                crate::config::CredentialVaultUnlockPolicy::Always;
+        }
         let cloud = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let cloud_url = format!("http://{}", cloud.local_addr().unwrap());
         source.cloud_relay.as_mut().unwrap().api_url = cloud_url.clone();
@@ -282,6 +342,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .await
             .provider_account_profile_registry()
             .clone();
+        let workspace = crate::test_support::TestWorktree::new("account-copy-workspace");
+        let (target_session, target_agent) = {
+            let mut app = target_app.lock().await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            (session.id().to_owned(), agent.id().to_owned())
+        };
         let source_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
             source_app, 16,
         ));
@@ -398,6 +466,404 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             "provider":"claude", "account_profile":profile.profile_id, "operation_id":"copy-1",
             "target_kernel_id":target.daemon_id, "target_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&target.relay_public_key),"replace":false
         }});
+        if scenario == CopyScenario::Recipient {
+            // Static-token test connectors do not republish registration on heartbeats.
+            // Publish the same typed update used by the normal enrolled connector.
+            let registration = source_router.relay_registration().await;
+            assert!(registration.provider_accounts.iter().any(|account| account
+                .account_id
+                .as_deref()
+                == Some(profile.profile_id.as_str())
+                && account.copyable));
+            super::super::send_outgoing_envelope(
+                &source_state.read().await.outgoing_sender().unwrap(),
+                chariox_relay::protocol::RelayEnvelope::DaemonHeartbeat {
+                    daemon_id: source.daemon_id.clone(),
+                    registration: Some(registration),
+                },
+            )
+            .unwrap();
+            let offers = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let response = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    let offers = response["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .clone();
+                    if !offers.is_empty() {
+                        break offers;
+                    }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await
+            .expect("authenticated source metadata must become visible");
+            assert!(!serde_json::to_string(&offers).unwrap().contains(canary));
+            assert!(offers
+                .iter()
+                .all(|offer| offer["target_kernel_id"] == target.daemon_id
+                    && offer["source_kernel_id"] == source.daemon_id));
+            for kind in [RelaySubjectKind::Kernel, RelaySubjectKind::Machine] {
+                for case in [
+                    "owner",
+                    "realm",
+                    "target-key",
+                    "target-id",
+                    "unbound",
+                    "expired",
+                    "unenrolled",
+                ] {
+                    let mut request = crate::local::CopyProviderAccountToKernelRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                        operation_id: "invalid-recipient".into(),
+                        target_kernel_id: target.daemon_id.clone(),
+                        target_key_thumbprint:
+                            crate::runtime::terminal_pairings::public_key_thumbprint(
+                                &target.relay_public_key,
+                            ),
+                        replace: false,
+                    };
+                    let mut identity = chariox_relay::protocol::RelayCallerIdentity {
+                        realm_id: "copy-realm".into(),
+                        subject: target.daemon_id.clone(),
+                        subject_kind: kind,
+                        expires_at_ms: crate::session::unix_epoch_ms() + 3_600_000,
+                        token_id: Some("fixture".into()),
+                        user_id: Some("copy-owner".into()),
+                        public_key_thumbprint: Some(request.target_key_thumbprint.clone()),
+                    };
+                    match case {
+                        "owner" => identity.user_id = Some("another-owner".into()),
+                        "realm" => identity.realm_id = "another-realm".into(),
+                        "target-key" => request.target_key_thumbprint = "c".repeat(64),
+                        "target-id" => request.target_kernel_id = "another-target".into(),
+                        "unbound" => identity.public_key_thumbprint = None,
+                        "expired" => identity.expires_at_ms = 1,
+                        "unenrolled" => {
+                            omit_target.store(true, std::sync::atomic::Ordering::SeqCst)
+                        }
+                        _ => unreachable!(),
+                    }
+                    let (outgoing, _priority, _events) = RelayOutgoingSender::channel(8);
+                    let result = crate::transport::relay_client::peer_requests::send_authenticated_peer_request_for_test(
+                        &source_router, &Arc::new(RwLock::new(RelayClientState::default())), &outgoing,
+                        &target.daemon_id, identity, &target.relay_private_key, &source.relay_public_key,
+                        RelayPeerRequest::RequestProviderAccountCopy { request },
+                    ).await;
+                    omit_target.store(false, std::sync::atomic::Ordering::SeqCst);
+                    let public = match result {
+                        Ok(response) => serde_json::to_value(response).unwrap(),
+                        Err(error) => serde_json::to_value(error).unwrap(),
+                    };
+                    assert!(
+                        public.to_string().contains("unauthorized"),
+                        "{kind:?} {case}: {public}"
+                    );
+                    assert!(!public.to_string().contains(canary));
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                }
+            }
+            let receive = serde_json::json!({"CopyProviderAccountFromKernel":{
+                "provider":"claude", "account_profile":profile.profile_id, "operation_id":"receive-1",
+                "source_kernel_id":source.daemon_id,
+                "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+                "replace":false
+            }});
+            for accept in [false, true] {
+                let router = target_router.clone();
+                let request = receive.clone();
+                let pending = tokio::spawn(async move { source_request(&router, request).await });
+                let interaction = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let response = source_request(
+                            &target_router,
+                            serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+                        )
+                        .await
+                        .unwrap();
+                        if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                            .as_array()
+                            .unwrap()
+                            .first()
+                        {
+                            break interaction.clone();
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("copy needs the existing kernel-owned consent");
+                assert!(!interaction.to_string().contains(canary));
+                assert!(target_profiles
+                    .list("local", Some("claude"))
+                    .unwrap()
+                    .iter()
+                    .all(|p| !p.profile_id.starts_with("copy-")));
+                let answer = serde_json::json!({"AnswerUserDomainInteraction":{
+                    "interaction_id":interaction["id"], "choice_id":if accept {"copy"} else {"cancel"}
+                }});
+                source_request(&target_router, answer).await.unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(10), pending)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if !accept {
+                    assert_code(result, "provider_account_copy_cancelled", canary);
+                    assert!(target_profiles
+                        .list("local", Some("claude"))
+                        .unwrap()
+                        .iter()
+                        .all(|p| !p.profile_id.starts_with("copy-")));
+                } else {
+                    let copied = result.unwrap();
+                    let installed = copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                        .as_str()
+                        .unwrap();
+                    assert_eq!(
+                        target_profiles
+                            .get("local", "claude", installed)
+                            .unwrap()
+                            .auth_state,
+                        crate::account_profile::ProviderAccountAuthState::Authenticated
+                    );
+                    let remaining = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(remaining["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .all(|offer| offer["account_profile"] != profile.profile_id));
+                    source_request(
+                        &target_router,
+                        serde_json::json!({"RemoveProviderAccountProfile":{
+                            "provider":"claude", "account_profile":installed
+                        }}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(target_profiles.get("local", "claude", installed).is_err());
+                    let available = source_request(
+                        &target_router,
+                        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(available["ProviderAccountCopyOffers"]["offers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|offer| offer["account_profile"] == profile.profile_id));
+                    assert_eq!(
+                        std::fs::read(source.account_profile_registry_path()).unwrap(),
+                        source_before
+                    );
+                    assert!(crate::provider::resolve_provider_account_credentials(
+                        &source,
+                        "local",
+                        "claude",
+                        &profile.profile_id
+                    )
+                    .is_ok());
+                    assert_native_files_clean(&root.join("native-home"), canary);
+                }
+            }
+            // An open Vault needs no session and no prompt, also with a session.
+            let mut scoped = receive.clone();
+            scoped["CopyProviderAccountFromKernel"]["operation_id"] = "receive-open-session".into();
+            scoped["CopyProviderAccountFromKernel"]["session_id"] = target_session.clone().into();
+            scoped["CopyProviderAccountFromKernel"]["agent_id"] = target_agent.clone().into();
+            let copied = consented_copy(&target_router, scoped).await.unwrap();
+            source_request(
+                &target_router,
+                serde_json::json!({"RemoveProviderAccountProfile":{
+                    "provider":"claude",
+                    "account_profile":copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                }}),
+            )
+            .await
+            .unwrap();
+            // Without a session a locked Vault cannot be asked for: the copy ends with a
+            // retryable error that names the Vault.
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            let mut sessionless = receive.clone();
+            sessionless["CopyProviderAccountFromKernel"]["operation_id"] =
+                "receive-locked-no-session".into();
+            let locked = consented_copy(&target_router, sessionless).await;
+            assert_code(locked, "provider_account_copy_vault_locked", canary);
+            assert!(target_profiles
+                .list("local", Some("claude"))
+                .unwrap()
+                .iter()
+                .all(|p| !p.profile_id.starts_with("copy-")));
+            // A receiver whose Vault is locked, or was never created, asks for it
+            // in the requesting session and then finishes the same copy.
+            for (operation, first_use) in [("receive-locked", false), ("receive-first-use", true)] {
+                crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+                if first_use {
+                    std::fs::remove_file(&target_vault).unwrap();
+                }
+                let mut request = receive.clone();
+                request["CopyProviderAccountFromKernel"]["operation_id"] = operation.into();
+                request["CopyProviderAccountFromKernel"]["session_id"] =
+                    target_session.clone().into();
+                request["CopyProviderAccountFromKernel"]["agent_id"] = target_agent.clone().into();
+                let router = target_router.clone();
+                let pending = tokio::spawn(async move { source_request(&router, request).await });
+                let consent = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let response = source_request(
+                            &target_router,
+                            serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+                        )
+                        .await
+                        .unwrap();
+                        if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                            .as_array()
+                            .unwrap()
+                            .first()
+                        {
+                            break interaction.clone();
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("copy needs the existing kernel-owned consent");
+                source_request(
+                    &target_router,
+                    serde_json::json!({"AnswerUserDomainInteraction":{
+                        "interaction_id":consent["id"], "choice_id":"copy"
+                    }}),
+                )
+                .await
+                .unwrap();
+                let mut asked = Vec::new();
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while !pending.is_finished() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{operation}: the copy neither asked for the Vault nor finished"
+                    );
+                    let state = source_request(
+                        &target_router,
+                        serde_json::json!({"GetSessionState":{"session_id":target_session}}),
+                    )
+                    .await
+                    .unwrap();
+                    let card = state["SessionState"]["session"]["active_interactions"]
+                        .as_array()
+                        .and_then(|cards| {
+                            cards.iter().find(|card| {
+                                card["id"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with("vault-unlock"))
+                            })
+                        })
+                        .cloned();
+                    if let Some(card) = card {
+                        let (choice, reply) = if card["custom_choice"].is_null() {
+                            ("unlock_operation", serde_json::Value::Null)
+                        } else {
+                            ("passphrase", "fixture-pass".into())
+                        };
+                        asked.push(choice);
+                        source_request(
+                            &target_router,
+                            serde_json::json!({"RespondToInteraction":{
+                                "session_id":target_session, "interaction_id":card["id"],
+                                "choice_id":choice, "custom_reply":reply
+                            }}),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(
+                    asked.first(),
+                    Some(&"passphrase"),
+                    "{operation}: Vault prompt"
+                );
+                let copied = tokio::time::timeout(Duration::from_secs(10), pending)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{operation}: {error}"));
+                let installed = copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    crate::provider::resolve_provider_account_credentials(
+                        &target, "local", "claude", installed
+                    )
+                    .is_err(),
+                    "{operation}: an operation-scoped unlock locks the Vault again"
+                );
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &target_vault,
+                    "fixture-pass",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+                assert!(
+                    crate::provider::resolve_provider_account_credentials(
+                        &target, "local", "claude", installed
+                    )
+                    .is_ok(),
+                    "{operation}: the copied login is in the Vault"
+                );
+                source_request(
+                    &target_router,
+                    serde_json::json!({"RemoveProviderAccountProfile":{
+                        "provider":"claude", "account_profile":installed
+                    }}),
+                )
+                .await
+                .unwrap();
+            }
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            std::fs::remove_file(&target_vault).unwrap();
+            let mut first_use = receive.clone();
+            first_use["CopyProviderAccountFromKernel"]["operation_id"] =
+                "receive-first-use-no-session".into();
+            let created = consented_copy(&target_router, first_use).await;
+            assert_code(created, "provider_account_copy_vault_locked", canary);
+            assert!(
+                !target_vault.exists(),
+                "no session: the Vault was not created"
+            );
+            let _ = stop_target.send(true);
+            let _ = stop_source.send(true);
+            tokio::time::timeout(Duration::from_secs(5), target_task)
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(5), source_task)
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = stop_cloud.send(true);
+            cloud_task.await.unwrap();
+            let _ = stop_relay.send(());
+            relay_task.await.unwrap();
+            crate::secret::lock_chariox_encrypted_vault(&source_vault).unwrap();
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            return;
+        }
         if matches!(
             scenario,
             CopyScenario::RegistryAccess | CopyScenario::ChangedProfile

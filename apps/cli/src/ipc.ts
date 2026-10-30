@@ -59,6 +59,11 @@ export class LocalIpcClient extends KernelClient {
     super.destroy()
   }
 
+  /** The attached kernel's local protocol, when its presence advertises one (not over Unix sockets or relays). */
+  async kernelProtocolVersion(): Promise<number | undefined> {
+    return (await this.kernelProtocol()).version
+  }
+
   private clearAdvertisedProtocol(): void {
     this.advertisedProtocol = undefined
     this.protocolLookup = undefined

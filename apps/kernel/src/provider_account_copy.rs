@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+pub const PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY: &str = "provider_account_copy_pull_v1";
+
 pub const PROVIDER_ACCOUNT_COPY_CAPABILITY: &str = "provider_account_copy_v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,15 +42,13 @@ impl ProviderAccountCopyBinding {
     }
 
     pub(crate) fn target_profile_id(&self) -> String {
-        let digest = Sha256::digest(format!(
-            "{}\0{}\0{}\0{}\0{}",
-            self.source_kernel_id,
-            self.source_key_thumbprint,
-            self.provider,
-            self.source_profile_id,
-            self.target_kernel_id
-        ));
-        format!("copy-{digest:x}")[..45].to_string()
+        copy_profile_id(
+            &self.source_kernel_id,
+            &self.source_key_thumbprint,
+            &self.provider,
+            &self.source_profile_id,
+            &self.target_kernel_id,
+        )
     }
 }
 
@@ -125,6 +125,7 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
         "provider_account_copy_unavailable" => "The target kernel is unavailable; reconnect it and retry the same operation.",
         "provider_account_copy_unsupported" => "Upgrade the target kernel to support provider account copy before retrying.",
         "provider_account_copy_vault_locked" => "Unlock the kernel Vault through Chariox, then retry the same account copy.",
+        "provider_account_copy_cancelled" => "Account copy was cancelled or expired; no login was transferred.",
         "provider_account_copy_conflict" => "A target profile or operation already exists; use a new operation with explicit replacement to replace the profile.",
         "provider_account_copy_rejected" => "Official Claude verification rejected the account; authorize the source account again.",
         "provider_account_copy_verification_failed" => "Official Claude verification did not complete; check Claude availability and retry.",
@@ -138,6 +139,7 @@ pub(crate) fn is_public_code(code: &str) -> bool {
         code,
         "provider_account_copy_unauthorized"
             | "provider_account_copy_profile"
+            | "provider_account_copy_cancelled"
             | "provider_account_copy_unavailable"
             | "provider_account_copy_unsupported"
             | "provider_account_copy_vault_locked"
@@ -146,4 +148,29 @@ pub(crate) fn is_public_code(code: &str) -> bool {
             | "provider_account_copy_verification_failed"
             | "provider_account_copy_install_failed"
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyOffer {
+    pub source_kernel_id: String,
+    pub source_machine_id: String,
+    pub source_label: String,
+    pub source_key_thumbprint: String,
+    pub target_kernel_id: String,
+    pub provider: String,
+    pub account_profile: String,
+    pub label: String,
+}
+
+pub(crate) fn copy_profile_id(
+    source_kernel: &str,
+    source_key: &str,
+    provider: &str,
+    source_profile: &str,
+    target_kernel: &str,
+) -> String {
+    let digest = Sha256::digest(format!(
+        "{source_kernel}\0{source_key}\0{provider}\0{source_profile}\0{target_kernel}"
+    ));
+    format!("copy-{digest:x}")[..45].to_string()
 }

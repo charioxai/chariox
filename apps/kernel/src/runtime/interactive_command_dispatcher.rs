@@ -17,6 +17,7 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
         || matches!(
             request,
             LocalDaemonRequest::RespondToHandoff(_)
+                | LocalDaemonRequest::CopyProviderAccountFromKernel(_)
                 | LocalDaemonRequest::GrantAgentExtension(_)
                 | LocalDaemonRequest::MoveAgentToRemote(_)
                 | LocalDaemonRequest::MoveAgentToLocal(_)
@@ -59,6 +60,18 @@ pub(crate) fn dispatch_interactive_command<'a>(
         });
     }
     match request {
+        LocalDaemonRequest::CopyProviderAccountFromKernel(request) => {
+            boxed_interactive_handler(move || async move {
+                runtime_state
+                    .copy_provider_account_from_kernel(
+                        &command,
+                        &command_caller_user_id(&command),
+                        request,
+                    )
+                    .await
+                    .map(|receipt| LocalDaemonResponse::ProviderAccountCopied { receipt })
+            })
+        }
         LocalDaemonRequest::RespondToHandoff(request) => {
             boxed_interactive_handler(move || async move {
                 let outcome = runtime_state.respond_to_handoff(&command, request).await?;

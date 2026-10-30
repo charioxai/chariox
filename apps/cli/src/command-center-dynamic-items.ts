@@ -17,6 +17,7 @@ import type { CommandCenterItem } from "./command-center-types.js"
 import { providerAccountCapacity } from "@chariox/kernel-client"
 import {
   providerAccountDisplayLabel,
+  providerAccountFamily,
   providerAccountsForProvider,
 } from "./waiting-room-provider-accounts.js"
 
@@ -194,7 +195,7 @@ export function buildModelItems(input: string, context: CommandCenterDynamicCont
 export function buildAccountItems(input: string, context: CommandCenterDynamicContext) {
   const query = input.slice("/account ".length).trim().toLowerCase()
   return filterCommandCenterItems(
-    providerAccountsForProvider(context.providerAccounts ?? [], context.currentProvider).map((profile) => {
+    [...providerAccountsForProvider(context.providerAccounts ?? [], context.currentProvider).map((profile) => {
       const capacity = providerAccountCapacity(profile, Date.now(), context.currentModel)
       return {
         id: `account-${profile.provider}-${profile.profile_id}`,
@@ -210,7 +211,11 @@ export function buildAccountItems(input: string, context: CommandCenterDynamicCo
             ? { tone: "warning" as const }
             : {}),
       }
-    }),
+    }), ...(context.providerAccountCopyOffers ?? []).filter(offer => offer.provider === providerAccountFamily(context.currentProvider)).map(offer => ({
+      id: `account-copy-${offer.source_kernel_id}-${offer.account_profile}`,
+      label: "Copy login to this machine", description: `${offer.label} · on ${offer.source_label}`,
+      kind: "command" as const, value: `/provider accounts copy ${offer.source_kernel_id} ${offer.account_profile}`,
+    }))],
     query,
   )
 }

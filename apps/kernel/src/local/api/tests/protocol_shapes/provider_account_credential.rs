@@ -155,3 +155,110 @@ fn account_copy_protocol_609_peer_215_snapshot_and_hash() {
         "43899af76c00f35b24dfde276a44f7345e6d8794197eeb761f9844c99f83555d"
     );
 }
+
+#[test]
+fn account_copy_recipient_offer_requests_are_admitted() {
+    // MP-08 / MP-09 / MP-10 / MP-11: discovery is metadata-only and accepting
+    // an offer is routed to the receiving kernel, never a fabricated lease.
+    for value in [
+        serde_json::json!({"ListProviderAccountCopyOffers": {}}),
+        serde_json::json!({"CopyProviderAccountFromKernel": {
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}),
+        // The session that shows the Vault prompt a locked or new Vault needs.
+        serde_json::json!({"CopyProviderAccountFromKernel": {
+            "session_id":"session-1", "agent_id":"agent-1",
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}),
+    ] {
+        let request = serde_json::from_value::<LocalDaemonRequest>(value.clone());
+        assert!(
+            request.is_ok(),
+            "recipient account-copy request must be supported"
+        );
+        assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
+    }
+    let value = serde_json::json!({"kind":"request_provider_account_copy", "request": {
+        "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+        "target_kernel_id":"target", "target_key_thumbprint":"b".repeat(64), "replace":false
+    }});
+    let request =
+        serde_json::from_value::<crate::transport::relay_peer::RelayPeerRequest>(value.clone());
+    assert!(
+        request.is_ok(),
+        "authenticated recipient copy request must be supported"
+    );
+    assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
+}
+
+// The session_id/agent_id on CopyProviderAccountFromKernel are protocol 711.
+const _: () = assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 711);
+
+#[test]
+fn account_copy_recipient_protocol_711_peer_274_snapshot_and_hash() {
+    let list: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"ListProviderAccountCopyOffers":{}})).unwrap();
+    let receive: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"CopyProviderAccountFromKernel":{
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}))
+        .unwrap();
+    let scoped: LocalDaemonRequest =
+        serde_json::from_value(serde_json::json!({"CopyProviderAccountFromKernel":{
+            "session_id":"session", "agent_id":"agent",
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-2",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}))
+        .unwrap();
+    let mut bypass = serde_json::to_value(&receive).unwrap();
+    bypass["CopyProviderAccountFromKernel"]["accepted"] = true.into();
+    assert!(
+        serde_json::from_value::<LocalDaemonRequest>(bypass).is_err(),
+        "a client cannot claim kernel consent in its request"
+    );
+    let peer: crate::transport::relay_peer::RelayPeerRequest =
+        serde_json::from_value(serde_json::json!({
+            "kind":"request_provider_account_copy", "request":{
+                "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+                "target_kernel_id":"target", "target_key_thumbprint":"b".repeat(64), "replace":false
+            }
+        }))
+        .unwrap();
+    let offers = LocalDaemonResponse::ProviderAccountCopyOffers {
+        offers: vec![crate::provider_account_copy::ProviderAccountCopyOffer {
+            source_kernel_id: "source".into(),
+            source_machine_id: "machine-a".into(),
+            source_label: "A".into(),
+            source_key_thumbprint: "a".repeat(64),
+            target_kernel_id: "target".into(),
+            provider: "claude".into(),
+            account_profile: "work".into(),
+            label: "Work".into(),
+        }],
+    };
+    let mut metadata: chariox_relay::protocol::RelayProviderAccountSummary =
+        serde_json::from_value(serde_json::json!({
+            "provider":"claude", "state":"authenticated", "account_id":"work", "alias":"Work"
+        }))
+        .unwrap();
+    assert!(
+        !metadata.copyable,
+        "legacy metadata never implies transfer support"
+    );
+    assert!(serde_json::to_value(&metadata)
+        .unwrap()
+        .get("copyable")
+        .is_none());
+    metadata.copyable = true;
+    let snapshot = serde_json::json!([list, receive, scoped, peer, offers, metadata]);
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "77431d2ab46f1608599ac6b2f2e9db738307f09d6140da81b9fc79cb1ff28e51"
+    );
+}

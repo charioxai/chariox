@@ -371,6 +371,7 @@ mod tests {
             capabilities: Vec::new(),
             available_providers: vec!["opencode".to_string()],
             provider_accounts: vec![chariox_relay::protocol::RelayProviderAccountSummary {
+                copyable: false,
                 provider: "opencode:openai".to_string(),
                 state: "configured".to_string(),
                 auth_type: Some("oauth".to_string()),

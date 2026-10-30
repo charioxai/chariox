@@ -994,3 +994,16 @@ test("a Room deleted while another is created still leaves the picker", async ()
   assert.equal(ids.includes("room-5"), false)
   assert.ok(ids.includes("room-new"))
 })
+
+test("login copy discovery failure is reported without marking inventory disconnected", async () => {
+  const harness = createHarness({ snapshots: [inventory("available", {
+    providerAccountCopyUnavailable: true,
+    sessions: [session("session-available")],
+    remoteKernels: [kernel("kernel-available", { accepting_remote_leases: true })],
+  })] })
+  await harness.controller.refreshNow()
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.availableSessions()[0]?.id, "session-available")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, true)
+  assert.equal(harness.warnings()[0]?.message, "login copy discovery unavailable")
+})

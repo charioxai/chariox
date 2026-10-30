@@ -154,6 +154,9 @@ pub struct RelayKernelPresence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProviderAccountSummary {
+    /// This kernel can explicitly transfer this authenticated account.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub copyable: bool,
     pub provider: String,
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
