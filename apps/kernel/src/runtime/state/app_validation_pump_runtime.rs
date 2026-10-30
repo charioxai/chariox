@@ -50,6 +50,12 @@ impl KernelRuntimeState {
             {
                 continue;
             }
+            if self.sudo_covers_validation(&operation).await {
+                self.decide_validation(&operation.operation_id, true).await;
+                self.app_control()
+                    .end_validation_prompt(&operation.operation_id);
+                continue;
+            }
             let Some(session) = self.validation_session(&operation.owner) else {
                 // No owner view or Room yet; retain the durable pending request.
                 self.app_control()
@@ -88,16 +94,9 @@ impl KernelRuntimeState {
                     }
                 });
                 if let Some(approved) = decision {
-                    let store = runtime.owned.durable_state_store.clone();
-                    let operation_id = operation.operation_id.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        store.app_validation(ValidationCommand::Decide {
-                            operation_id,
-                            approved,
-                            now_ms: crate::session::unix_epoch_ms(),
-                        })
-                    })
-                    .await;
+                    runtime
+                        .decide_validation(&operation.operation_id, approved)
+                        .await;
                 }
                 // Undecided (timed out or abandoned): shown again on a later pass
                 // while the operation is still pending.
@@ -106,6 +105,48 @@ impl KernelRuntimeState {
                     .end_validation_prompt(&operation.operation_id);
             });
         }
+    }
+
+    async fn decide_validation(&self, operation_id: &str, approved: bool) {
+        let store = self.owned.durable_state_store.clone();
+        let operation_id = operation_id.to_owned();
+        let _ = tokio::task::spawn_blocking(move || {
+            store.app_validation(ValidationCommand::Decide {
+                operation_id,
+                approved,
+                now_ms: crate::session::unix_epoch_ms(),
+            })
+        })
+        .await;
+    }
+
+    /// The owner's /sudo task covers a protected action the App asked for while it was
+    /// handling calls only from agents running under that task. A human or background
+    /// caller, or an unrecorded caller list, still gets the owner's passkey decision.
+    pub(super) async fn sudo_covers_validation(&self, operation: &ValidationOperation) -> bool {
+        let Ok(callers) = serde_json::from_str::<Vec<serde_json::Value>>(&operation.callers) else {
+            return false;
+        };
+        if callers.is_empty() {
+            return false;
+        }
+        let owner = self.provider_account_authority_owner_user_id(&operation.owner);
+        for actor in &callers {
+            let (Some("agent"), Some(id)) = (actor["kind"].as_str(), actor["id"].as_str()) else {
+                return false;
+            };
+            let Ok(agent) = self.owned.agent_store.get_agent(id) else {
+                return false;
+            };
+            if self.provider_account_authority_owner_user_id(agent.owner_user_id()) != owner
+                || !self
+                    .sudo_task_authorizes_agent(agent.session_id(), id)
+                    .await
+            {
+                return false;
+            }
+        }
+        true
     }
 
     /// Native views route owner decisions to the user domain, even when an
