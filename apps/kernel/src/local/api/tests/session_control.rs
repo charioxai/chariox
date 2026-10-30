@@ -1284,6 +1284,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
     let request =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "envp01-no-agent".into(),
+            view: None,
         });
     let response = harness.dispatch_as_user("local", request.clone()).unwrap();
     match response {
@@ -1408,6 +1409,7 @@ fn envp02a_hidden_utility_cleanup_preserves_standalone_project_environment() {
     let get =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "utility-project".into(),
+            view: None,
         });
     let before = harness.dispatch(get.clone()).unwrap();
     let created = harness
@@ -1513,6 +1515,7 @@ fn envp02b_read(
         .dispatch(LocalDaemonRequest::GetProjectEnvironment(
             crate::local::GetProjectEnvironmentRequest {
                 project_id: "edit-project".into(),
+                view: None,
             },
         ))
         .unwrap();
@@ -1771,6 +1774,20 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
         .expect("immutable history");
     let history: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
+    let archives: Vec<_> = (0..=saved.revision)
+        .map(|revision| {
+            let name = history_path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .strip_suffix(".revisions.json")
+                .unwrap();
+            let path = history_path.with_file_name(format!("{name}.revision-{revision}.json"));
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
     cache.evidence_digest = "b".repeat(64);
     cache.proposals[0].requirement.title = "Changed evidence".into();
     store.save_detection(&cache).unwrap();
@@ -1784,8 +1801,25 @@ fn envp02b_accept_exclude_choices_survive_changed_detect_and_immutable_history()
     harness.dispatch(request).unwrap();
     let after: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&history_path).unwrap()).unwrap();
-    assert_eq!(after["revisions"][0], history["revisions"][0]);
-    assert_eq!(after["revisions"][1], history["revisions"][1]);
+    assert_eq!(after["revisions"].as_array().unwrap().len(), 1);
+    assert_eq!(after["revisions"][0]["revision"], saved.revision + 1);
+    assert_ne!(
+        after["revisions"][0]["content_digest"],
+        history["revisions"][0]["content_digest"]
+    );
+    for (path, bytes) in archives {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    let name = history_path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_suffix(".revisions.json")
+        .unwrap();
+    assert!(history_path
+        .with_file_name(format!("{name}.revision-{}.json", saved.revision + 1))
+        .is_file());
 }
 fn environment_draft_for_test(
     e: &crate::project_environment::ProjectEnvironment,
@@ -1926,11 +1960,16 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
         };
         harness.dispatch(serde_json::from_value(serde_json::json!({"UpdateProjectWorkspaces":{"project_id":"edit-project","workspace_ids":workspaces}})).unwrap()).unwrap();
         let current = envp02b_read(&harness);
+        let mut saved_projection = current.clone();
+        saved_projection.folders.truncate(saved.folders.len());
         assert_eq!(
-            environment_draft_for_test(&current),
+            environment_draft_for_test(&saved_projection),
             environment_draft_for_test(&saved),
-            "workspace mutation must not alter saved specification"
+            "live additions must not rewrite acknowledged requirements"
         );
+        let additions: Vec<_> = current.folders.iter().skip(saved.folders.len()).collect();
+        assert!(additions.iter().all(|f| f.requirements.is_empty()
+            && workspaces.contains(&f.local_workspace_binding.as_str())));
         assert_eq!(current.revision, saved.revision);
         assert_eq!(current.content_digest, saved.content_digest);
         for (folder, original) in current.folders.iter().zip(&saved.folders) {
@@ -1944,7 +1983,10 @@ fn envp02b_saved_revision_survives_workspace_add_remove_and_reorder() {
             );
         }
         let LocalDaemonResponse::ProjectEnvironmentDiff { diff } = harness.dispatch(serde_json::from_value(serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"edit-project","expectedRevision":current.revision,"draft":environment_draft_for_test(&current)}})).unwrap()).unwrap() else { panic!("Preview expected") };
-        assert_eq!(diff.target_digest, current.content_digest);
+        assert_eq!(
+            diff.target_digest == current.content_digest,
+            additions.is_empty()
+        );
     }
 }
 
@@ -2091,10 +2133,23 @@ fn r4_envp02b_accept_detected_requirement_in_newly_attached_folder() {
     let target = harness.with_app(|app| serde_json::json!({"machine_id":app.config().host_machine_id,"target_instance_generation":app.config().daemon_id,"slice_ref":null}));
     let LocalDaemonResponse::ProjectEnvironment { environment: detected } = harness.dispatch(serde_json::from_value(serde_json::json!({"DetectProjectEnvironment":{"projectId":"edit-project","operationId":"new-folder-detect","folderIds":[],"target":target,"provider":"codex","allowModelFolders":[]}})).unwrap()).unwrap() else { panic!("Detect expected") };
     assert_eq!(detected.content_digest, saved.content_digest);
-    assert_eq!(
-        environment_draft_for_test(&detected),
-        environment_draft_for_test(&saved)
-    );
+    assert_eq!(detected.project_requirements, saved.project_requirements);
+    for folder in &saved.folders {
+        assert_eq!(
+            detected
+                .folders
+                .iter()
+                .find(|live| live.folder_id == folder.folder_id),
+            Some(folder)
+        );
+    }
+    assert!(detected
+        .folders
+        .iter()
+        .find(|folder| folder.local_workspace_binding == paths[1])
+        .unwrap()
+        .requirements
+        .is_empty());
     let proposal = detected
         .proposals
         .iter()
@@ -2143,20 +2198,14 @@ fn r4_envp02b_accept_detected_requirement_in_newly_attached_folder() {
                 .read_dir()
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
-                .find(|path| path.to_string_lossy().ends_with("revisions.json"))
+                .find(|path| path.to_string_lossy().ends_with("revision-1.json"))
                 .unwrap(),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        history["revisions"][1]["content_digest"],
-        saved.content_digest
-    );
-    assert_eq!(
-        history["revisions"][1]["folders"].as_array().unwrap().len(),
-        1
-    );
+    assert_eq!(history["content_digest"], saved.content_digest);
+    assert_eq!(history["folders"].as_array().unwrap().len(), 1);
 }
 
 // MP-08 / MP-10 / MP-11: P03 selections are measured by the owner kernel, not trusted from a client.
@@ -2469,26 +2518,34 @@ fn r6_envp03_edit_detected_requirement_in_newly_attached_folder() {
             environment_draft_for_test(&reopened),
             environment_draft_for_test(&next)
         );
-        let root = harness.with_app(|app| app.config().private_runtime_state_root());
-        let history: serde_json::Value = serde_json::from_slice(
+        // Bounded history keeps the latest revision in the index and each earlier
+        // snapshot in its own immutable archive.
+        let history_dir = harness.with_app(|app| {
+            app.config()
+                .private_runtime_state_root()
+                .join("project-environments")
+        });
+        let index_path = history_dir
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with("revisions.json"))
+            .unwrap();
+        let name = index_path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .strip_suffix(".revisions.json")
+            .unwrap();
+        let archived: serde_json::Value = serde_json::from_slice(
             &std::fs::read(
-                root.join("project-environments")
-                    .read_dir()
-                    .unwrap()
-                    .map(|entry| entry.unwrap().path())
-                    .find(|path| path.to_string_lossy().ends_with("revisions.json"))
-                    .unwrap(),
+                index_path.with_file_name(format!("{name}.revision-{}.json", saved.revision)),
             )
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            history["revisions"][1]["content_digest"],
-            saved.content_digest
-        );
-        assert_eq!(
-            history["revisions"][1]["folders"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(archived["content_digest"], saved.content_digest);
+        assert_eq!(archived["folders"].as_array().unwrap().len(), 1);
     }
 }

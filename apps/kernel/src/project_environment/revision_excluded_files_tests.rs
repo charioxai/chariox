@@ -1,7 +1,7 @@
 //! MP-08 / MP-10 / MP-11: excluded metadata survives absence; synthetic regression only.
 use super::*;
 #[test]
-fn review0212_excluded_absent_files_survive_preview_and_save() {
+fn revision_excluded_files_absent_files_survive_preview_and_save() {
     for deleted_selection in [false, true] {
         let root = crate::test_support::TestWorktree::new("review0212-excluded");
         let project = RuntimeProject::new(

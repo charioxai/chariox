@@ -44,11 +44,11 @@ fn project(root: &std::path::Path, id: &str) -> crate::session::RuntimeProject {
     )
 }
 
-#[path = "review0821_budget_tests.rs"]
+#[path = "check_operation_budget_tests.rs"]
 mod budget;
-#[path = "review0821_dns_tests.rs"]
+#[path = "check_dns_budget_tests.rs"]
 mod dns;
-#[path = "review0821_excluded_tests.rs"]
+#[path = "check_excluded_dependencies_tests.rs"]
 mod excluded;
-#[path = "review0821_wildcard_tests.rs"]
+#[path = "check_version_operator_tests.rs"]
 mod wildcard;

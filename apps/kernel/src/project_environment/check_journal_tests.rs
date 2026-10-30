@@ -1,6 +1,23 @@
 //! MP-08 / MP-10 / MP-11: Check acknowledgement journal durability and recovery.
 use super::*;
 #[test]
+fn journal_slot_padding_preserves_non_aligned_payloads_and_inode_size() {
+    // MP-08 / MP-10 / MP-11: exercise both slot boundaries and shorter reuse.
+    let root = crate::test_support::TestWorktree::new("check-journal-padding");
+    let path = root.path().join("checks.wal");
+    let mut initial_size = None;
+    for len in [4095, 4096, 4097, 65531, 17, 65536] {
+        let bytes = vec![b'x'; len];
+        super::check_journal::append(&path, &bytes).unwrap();
+        assert!(
+            super::check_journal::read(&path).unwrap().as_deref() == Some(bytes.as_slice()),
+            "slot padding must preserve exactly {len} payload bytes"
+        );
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(*initial_size.get_or_insert(size), size);
+    }
+}
+#[test]
 fn deleting_a_project_removes_only_its_private_check_journal() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal-delete");
     let store = ProjectEnvironmentStore::new(root.path());
@@ -68,10 +85,8 @@ fn check_projection_waits_for_the_durable_writer() {
 fn check_journal_updates_do_not_grow_the_durable_inode() {
     let root = crate::test_support::TestWorktree::new("envp04-check-fixed-size");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks {
-        folder_binding_digest: "first".into(),
-        ..Default::default()
-    };
+    let mut checks = EnvironmentChecks::default();
+    checks.folder_binding_digest = "first".into();
     store.save_checks("project", &checks).unwrap();
     let file = store.path("project").with_extension("checks.wal");
     let before = std::fs::metadata(&file).unwrap().len();
@@ -88,10 +103,8 @@ fn check_journal_retains_last_complete_durable_snapshot() {
     use std::io::{Seek, SeekFrom, Write};
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let mut checks = EnvironmentChecks {
-        folder_binding_digest: "first".into(),
-        ..Default::default()
-    };
+    let mut checks = EnvironmentChecks::default();
+    checks.folder_binding_digest = "first".into();
     store.save_checks("project", &checks).unwrap();
     checks.folder_binding_digest = "second".into();
     store.save_checks("project", &checks).unwrap();
@@ -121,22 +134,17 @@ fn check_journal_retains_last_complete_durable_snapshot() {
 }
 
 #[test]
-fn check_journal_grows_atomically_and_imports_append_snapshots() {
+fn check_journal_grows_atomically_and_reuses_slots() {
     let root = crate::test_support::TestWorktree::new("envp04-check-resize");
     let store = ProjectEnvironmentStore::new(root.path());
     let path = store.path("project").with_extension("checks.wal");
-    let mut checks = EnvironmentChecks {
-        folder_binding_digest: "legacy append".into(),
-        ..Default::default()
-    };
-    let mut legacy = serde_json::to_vec(&checks).unwrap();
-    legacy.push(b'\n');
-    crate::config::write_private_file(&path, &legacy).unwrap();
+    let mut checks = EnvironmentChecks::default();
+    checks.folder_binding_digest = "initial".into();
+    store.save_checks("project", &checks).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy append"
+        "initial"
     );
-    store.save_checks("project", &checks).unwrap();
     let before = std::fs::metadata(&path).unwrap().len();
     checks.folder_binding_digest = "a".repeat(70_000);
     store.save_checks("project", &checks).unwrap();
@@ -155,24 +163,15 @@ fn check_journal_grows_atomically_and_imports_append_snapshots() {
     );
 }
 #[test]
-fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
+fn check_journal_rejects_symlinks_and_hardlinks() {
     let root = crate::test_support::TestWorktree::new("envp04-check-journal");
     let store = ProjectEnvironmentStore::new(root.path());
-    let checks = EnvironmentChecks {
-        folder_binding_digest: "legacy".into(),
-        ..Default::default()
-    };
-    let legacy = store.path("project").with_extension("checks.json");
-    crate::config::write_private_file(&legacy, &serde_json::to_vec(&checks).unwrap()).unwrap();
-    assert_eq!(
-        store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy"
-    );
+    let mut checks = EnvironmentChecks::default();
+    checks.folder_binding_digest = "current".into();
     store.save_checks("project", &checks).unwrap();
-    std::fs::remove_file(legacy).unwrap();
     assert_eq!(
         store.load_checks("project").unwrap().folder_binding_digest,
-        "legacy"
+        "current"
     );
     #[cfg(unix)]
     {
@@ -190,4 +189,14 @@ fn check_journal_imports_legacy_snapshot_and_rejects_symlinks() {
         assert!(store.load_checks("project").is_err());
         assert_eq!(std::fs::read(outside).unwrap(), b"unchanged");
     }
+}
+
+// MP-08 / MP-10 / MP-11: unshipped formats must not silently migrate into the journal.
+#[test]
+fn rejects_unrecognized_journal_format() {
+    let root = crate::test_support::TestWorktree::new("journal-format");
+    let path = root.path().join("checks.wal");
+    std::fs::write(&path, b"{}\n").unwrap();
+    assert!(super::check_journal::read(&path).is_err());
+    assert!(super::check_journal::append(&path, b"{}").is_err());
 }

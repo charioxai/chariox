@@ -340,6 +340,7 @@ pub(crate) fn observe_provider_auth_status_until(
                 login_hint: None,
                 detected_version: command_version_until(&executable, deadline).ok(),
             };
+            ensure_status_budget(deadline)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -355,20 +356,44 @@ pub(crate) fn observe_provider_auth_status_until(
             Ok(status)
         }
         Some("claude") => {
-            let status = claude_profile_auth_status(
-                registry,
-                owner_user_id,
-                provider,
-                &profile,
-                &environment,
-                config,
-                deadline,
-            )?;
+            let status = if deadline.is_some() {
+                if crate::provider::provider_account_credential_registered(
+                    owner_user_id,
+                    provider,
+                    &profile.profile_id,
+                )? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "get_provider_auth_status",
+                        message:
+                            "Vault-backed Claude authentication requires explicit account refresh"
+                                .into(),
+                    });
+                }
+                let status = claude_auth_status_until(
+                    provider,
+                    &profile.profile_id,
+                    &environment,
+                    deadline,
+                )?;
+                ensure_status_budget(deadline)?;
+                status
+            } else {
+                claude_profile_auth_status(
+                    registry,
+                    owner_user_id,
+                    provider,
+                    &profile,
+                    &environment,
+                    config,
+                    None,
+                )?
+            };
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
         Some("opencode") => {
             let status = opencode_auth_status_until(&profile.profile_id, &environment, deadline)?;
+            ensure_status_budget(deadline)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             registry.update_services(
                 owner_user_id,
@@ -740,6 +765,19 @@ fn claude_auth_status_until(
 /// must not hold its caller, such as the post-import refresh, forever: past the
 /// deadline the owned process and inherited pipe writers are stopped.
 const PROVIDER_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+// MP-08 / MP-10 / MP-11: an optional version probe may consume the remaining
+// Check budget. Do not follow an expired probe with durable profile mutations.
+fn ensure_status_budget(deadline: Option<std::time::Instant>) -> Result<(), DaemonError> {
+    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        return Err(DaemonError::LocalTransport {
+            operation: "get_provider_auth_status",
+            message: "Provider status operation deadline exceeded; authentication is inconclusive"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 fn bounded_status_output(
     command: Command,
@@ -1855,6 +1893,7 @@ mod tests {
             },
         ] {
             let request = GetProviderCatalogRequest {
+                summary_only: false,
                 provider: Some("codex".to_string()),
                 account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
                 execution_location,

@@ -14,6 +14,18 @@ struct Selection {
     bytes: u64,
     count: usize,
     protected: bool,
+    deadline: Option<std::time::Instant>,
+}
+impl Selection {
+    fn check_budget(&self) -> Result<(), DaemonError> {
+        if self
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return Err(environment_error("Check file measurement budget exceeded"));
+        }
+        Ok(())
+    }
 }
 fn protected_path(path: &str) -> bool {
     !safe_metadata(path)
@@ -31,6 +43,7 @@ fn stream(
     path: &str,
     selection: &mut Selection,
 ) -> Result<Option<String>, DaemonError> {
+    selection.check_budget()?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(None);
@@ -55,6 +68,15 @@ fn stream(
     let mut overlap = Zeroizing::new(Vec::<u8>::new());
     let mut bytes = 0u64;
     loop {
+        selection.check_budget()?;
+        #[cfg(test)]
+        if let Some(marker) = std::env::var_os("CHARIOX_FILES_CHECK_IO_STALL_MARKER") {
+            // MP-08 / MP-10 / MP-11: owned process supervision bounds an admitted I/O stall.
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+            std::fs::write(marker, std::process::id().to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
         let n = file
             .read(&mut buffer)
             .map_err(|_| environment_error("selected File read failed"))?;
@@ -106,6 +128,7 @@ fn walk(
     if depth > 32 {
         return Err(environment_error("selected folder exceeds depth capacity"));
     }
+    selection.check_budget()?;
     if protected_path(path) {
         selection.protected = true;
         return Ok(());
@@ -116,6 +139,7 @@ fn walk(
         .map_err(|_| environment_error("selected folder unavailable"))?
         .take(MAX_ENTRIES + 1)
     {
+        selection.check_budget()?;
         let entry = entry.map_err(|_| environment_error("selected folder entry unavailable"))?;
         let name = entry
             .file_name()
@@ -155,17 +179,24 @@ fn walk(
     }
     Ok(())
 }
-fn ignored(root: &Path, path: &str) -> Option<bool> {
-    let status = std::process::Command::new("git")
+fn ignored(root: &Path, path: &str, roots: &[std::path::PathBuf]) -> Option<bool> {
+    let executable = super::check_inventory::executable("git")?;
+    let mut command = super::check_executable::command(&executable, roots).ok()?;
+    command
         .arg("-C")
         .arg(root)
         .args(["check-ignore", "--quiet", "--no-index", "--", path])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
-    match status.code() {
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    let output = crate::local::provider_requests::capture_inventory_probe(
+        command,
+        // Optional metadata must leave time for file validation and owned cleanup.
+        std::time::Duration::from_millis(100),
+    )
+    .ok()?;
+    let _stdout = Zeroizing::new(output.stdout);
+    let _stderr = Zeroizing::new(output.stderr);
+    match output.status.code() {
         Some(0) => Some(true),
         Some(1) => Some(false),
         _ => None,
@@ -175,20 +206,32 @@ pub(crate) fn verify_manual_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, true)
+    verify_files(current, draft, true, None)
 }
 // MP-08 / MP-10 / MP-11: Check measures protected content without Save-only Git metadata.
 pub(super) fn verify_check_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
+    deadline: std::time::Instant,
 ) -> Result<(), DaemonError> {
-    verify_files(current, draft, false)
+    verify_files(current, draft, false, Some(deadline))
 }
 fn verify_files(
     current: &ProjectEnvironment,
     draft: &mut EnvironmentRevisionDraft,
     git_metadata: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(), DaemonError> {
+    let roots: Vec<_> = current
+        .folders
+        .iter()
+        .filter(|folder| !folder.local_workspace_binding.is_empty())
+        .filter_map(|folder| {
+            Path::new(&folder.local_workspace_binding)
+                .canonicalize()
+                .ok()
+        })
+        .collect();
     let mut total_bytes = 0;
     let mut total_count = 0;
     for requirement in draft
@@ -280,6 +323,7 @@ fn verify_files(
                 bytes: total_bytes,
                 count: total_count,
                 protected: false,
+                deadline,
             };
             let file_digest = match entry.kind {
                 EnvironmentFileKind::File => stream(&root, &entry.relative_path, &mut selection)?,
@@ -292,7 +336,7 @@ fn verify_files(
             total_bytes = selection.bytes;
             total_count = selection.count;
             if git_metadata {
-                entry.git_ignored = ignored(path, &entry.relative_path);
+                entry.git_ignored = ignored(path, &entry.relative_path, &roots);
             }
             entry.secret_looking = selection.protected;
             if selection.protected {

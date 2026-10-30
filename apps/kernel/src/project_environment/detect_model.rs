@@ -5,6 +5,39 @@ impl EnvironmentDetection {
     // Deterministic proposals precede appended provider hints. Keep that priority
     // while reserving the remaining cache budget for operation results.
     fn bound_model_proposals(&mut self) {
+        // Classification must stay in authoritative provenance without making
+        // a deterministic proposal exceed the same origin limit used by Save.
+        let mut omitted_origins = 0usize;
+        for proposal in &mut self.proposals {
+            let origins = &mut proposal.requirement.origins;
+            let metadata: Vec<_> = origins
+                .iter()
+                .filter(|o| matches!(o, RequirementOrigin::DetectedMetadata { .. }))
+                .cloned()
+                .collect();
+            if origins.len() <= super::detect_importers::MAX_ORIGINS {
+                continue;
+            }
+            let metadata_count = metadata.len().min(super::detect_importers::MAX_ORIGINS);
+            let mut retained: Vec<_> = origins
+                .iter()
+                .filter(|o| !matches!(o, RequirementOrigin::DetectedMetadata { .. }))
+                .take(super::detect_importers::MAX_ORIGINS - metadata_count)
+                .cloned()
+                .collect();
+            retained.extend(metadata.into_iter().take(metadata_count));
+            omitted_origins += origins.len() - retained.len();
+            *origins = retained;
+        }
+        if omitted_origins > 0 {
+            self.skips.push(EnvironmentItemResult {
+                requirement_id: "detect:model-origin-limit".into(),
+                status: EnvironmentObservationStatus::NeedsYourInput,
+                reason_code: "origin_limit".into(),
+                safe_summary: format!("{omitted_origins} reference origins omitted to retain provider classification · provenance limited to 128 origins per proposal"),
+                receipt_ids: vec![],
+            });
+        }
         let mut bytes = 2usize;
         let mut omitted = 0usize;
         self.proposals.retain(|proposal| {
@@ -96,13 +129,13 @@ impl EnvironmentDetection {
                         locator: ProjectEnvironmentLocator::Missing,
                     },
                 };
-                proposal
-                    .requirement
-                    .origins
-                    .push(RequirementOrigin::DetectedMetadata {
-                        source: "provider_classification".into(),
-                        reference: manifest.evidence_digest.clone(),
-                    });
+                let origin = RequirementOrigin::DetectedMetadata {
+                    source: "provider_classification".into(),
+                    reference: manifest.evidence_digest.clone(),
+                };
+                if !proposal.requirement.origins.contains(&origin) {
+                    proposal.requirement.origins.push(origin);
+                }
             }
         }
         // Free-form hints cannot author a requirement, command, locator or capability.

@@ -274,6 +274,7 @@ response_policies! {
         ProjectEnvironmentManifest,
         // Value-free Environment aggregates: names, versions and Vault references only.
         ProjectEnvironment,
+        ProjectEnvironmentView,
         ProjectEnvironmentDiff,
         ProjectEnvironmentSaved,
         EnvironmentOperation,

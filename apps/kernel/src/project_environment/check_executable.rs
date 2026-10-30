@@ -3,6 +3,17 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 fn trusted(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, &'static str> {
+    let parent = path
+        .parent()
+        .ok_or("interpreter_unavailable")?
+        .canonicalize()
+        .map_err(|_| "interpreter_unavailable")?;
+    if roots
+        .iter()
+        .any(|root| path.starts_with(root) || parent.starts_with(root))
+    {
+        return Err("untrusted_executable");
+    }
     let path = path.canonicalize().map_err(|_| "interpreter_unavailable")?;
     let metadata = path.metadata().map_err(|_| "interpreter_unavailable")?;
     if !metadata.is_file() || roots.iter().any(|root| path.starts_with(root)) {
@@ -20,13 +31,12 @@ fn trusted(path: &Path, roots: &[PathBuf]) -> Result<PathBuf, &'static str> {
 
 /// Resolve the shebang before clearing the environment. Invoke the vetted
 /// interpreter explicitly, so /usr/bin/env cannot choose a different runtime.
-pub(super) fn command(
+pub(crate) fn command(
     path: &Path,
     roots: &[PathBuf],
 ) -> Result<std::process::Command, &'static str> {
-    #[cfg(unix)]
-    let mut invocation = path.to_path_buf();
     let mut executable = trusted(path, roots)?;
+    let mut invocation = path.to_path_buf();
     let mut arguments = Vec::<std::ffi::OsString>::new();
     let mut directories = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -116,11 +126,7 @@ pub(super) fn command(
             }
             PathBuf::from(name)
         };
-        #[cfg(unix)]
-        {
-            invocation = interpreter.clone();
-        }
-        let interpreter = trusted(&interpreter, roots)?;
+        let resolved = trusted(&interpreter, roots)?;
         if let Some(directory) = interpreter.parent() {
             if !directories.iter().any(|path| path == directory) {
                 directories.push(directory.to_path_buf());
@@ -129,7 +135,8 @@ pub(super) fn command(
         interpreter_arguments.push(executable.into_os_string());
         interpreter_arguments.extend(arguments);
         arguments = interpreter_arguments;
-        executable = interpreter;
+        invocation = interpreter;
+        executable = resolved;
     }
     Err("interpreter_chain_exceeds_bounds")
 }

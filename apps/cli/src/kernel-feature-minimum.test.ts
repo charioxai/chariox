@@ -77,10 +77,10 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
 })
 
 // MP-08 / MP-10: VERSION(P01).
-test("standalone and reserved Project Environment operations require protocol 487", () => {
+test("standalone and reserved Project Environment operations require protocol 660", () => {
   for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 659), /Project Environment needs protocol ≥660/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 660))
   }
 })
 

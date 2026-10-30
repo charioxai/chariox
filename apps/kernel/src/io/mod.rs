@@ -23,5 +23,6 @@ pub use types::{
     WorkspaceIdentity,
 };
 
+pub(crate) mod control_memory;
 #[cfg(windows)]
 pub(crate) mod windows_pipe_process;

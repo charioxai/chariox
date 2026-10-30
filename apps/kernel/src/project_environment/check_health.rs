@@ -116,11 +116,6 @@ pub(super) fn health_until(
             let Some(p) = executable(name) else {
                 return Ok(false);
             };
-            if p.canonicalize()
-                .is_ok_and(|canonical| roots.iter().any(|r| canonical.starts_with(r)))
-            {
-                return Err("worker_required");
-            }
             let mut c = super::check_executable::command(&p, roots)?;
             c.args(args);
             let exit = crate::local::provider_requests::capture_inventory_probe(

@@ -61,7 +61,10 @@ pub(crate) fn check_requirement(
     let roots: Vec<PathBuf> = env
         .folders
         .iter()
-        .filter(|f| !f.local_workspace_binding.is_empty())
+        .filter(|f| {
+            !f.local_workspace_binding.is_empty()
+                && !matches!(&r.spec, RequirementSpec::Files { .. })
+        })
         .filter_map(|f| {
             PathBuf::from(&f.local_workspace_binding)
                 .canonicalize()
@@ -97,7 +100,8 @@ pub(crate) fn check_requirement(
             if !env.folders.iter().any(|f| {
                 &f.folder_id == folder_id
                     && !f.local_workspace_binding.is_empty()
-                    && std::fs::read_dir(&f.local_workspace_binding).is_ok()
+                    && (matches!(&r.spec, RequirementSpec::Files { .. })
+                        || std::fs::read_dir(&f.local_workspace_binding).is_ok())
             }) {
                 return outcome(
                     Missing,
@@ -107,9 +111,9 @@ pub(crate) fn check_requirement(
             }
         }
         match &r.spec {
-            RequirementSpec::Files { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
+            RequirementSpec::Files { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
             RequirementSpec::Software { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
@@ -135,12 +139,12 @@ pub(crate) fn check_requirement(
                 };
                 match inventory::health_until(p,health_expectation,&roots,deadline){Ok(true)=>outcome(Ready,"service_healthy","Named service health probe passed; Check does not start or restart services"),Ok(false)=>outcome(Missing,"service_unhealthy","Service health probe failed; no repair performed"),Err("worker_required")=>outcome(NeedsYourInput,"worker_required","Executable health script requires confirmed disposable-worker execution; no host command ran"),Err(_)=>outcome(NeedsYourInput,"probe_unproven","Named health probe is unavailable or invalid; review its target and probe")}
             }
-            RequirementSpec::Variables { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
-            RequirementSpec::Secrets { .. } => {
-                super::check_assets::check_assets(ctx, env, r, target, baseline, &mut facts)
-            }
+            RequirementSpec::Variables { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
+            RequirementSpec::Secrets { .. } => super::check_assets::check_assets(
+                ctx, env, r, target, baseline, &mut facts, deadline,
+            ),
             RequirementSpec::MachineNeeds { .. } => {
                 super::check_platform::check_platform(ctx, env, r, &roots, &mut facts, deadline)
             }
@@ -229,6 +233,11 @@ pub(crate) fn invalidate_check_dependencies(
     target: &EnvironmentTargetBinding,
     operation: Option<&str>,
 ) {
+    let blocked = super::dependency_graph::blocked(
+        env.project_requirements
+            .iter()
+            .chain(env.folders.iter().flat_map(|folder| &folder.requirements)),
+    );
     for _ in 0..observations.len() {
         let good: std::collections::BTreeSet<_> = observations
             .iter()
@@ -256,14 +265,22 @@ pub(crate) fn invalidate_check_dependencies(
             if let RequirementSpec::Services { depends_on, .. } = &r.spec {
                 dependencies.extend(depends_on.iter().cloned());
             }
-            if dependencies.iter().any(|id| !good.contains(id)) {
+            let cyclic = blocked.contains(r.requirement_id.as_str());
+            if cyclic || dependencies.iter().any(|id| !good.contains(id)) {
                 o.stale |= operation
                     .is_none_or(|operation| o.check_operation_id.as_deref() != Some(operation));
                 o.status = NeedsYourInput;
-                o.reason_code = "dependency_unready".into();
-                o.safe_summary =
+                o.reason_code = if cyclic {
+                    "dependency_cycle"
+                } else {
+                    "dependency_unready"
+                }
+                .into();
+                o.safe_summary = if cyclic {
+                    "A dependency cycle or absent prerequisite prevents readiness; review the dependencies"
+                } else {
                     "A required dependency is missing, stale or not checked; no repair performed"
-                        .into();
+                }.into();
                 changed = true;
             }
         }

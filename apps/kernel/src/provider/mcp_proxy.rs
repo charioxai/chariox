@@ -124,13 +124,37 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    dispatch_provider_mcp_proxy_request_with_excluded_roots(
+        owner_provider_run_id,
+        owner_session_id,
+        backing,
+        payload,
+        &[],
+    )
+}
+
+// MP-08 / MP-10 / MP-11: Check keeps its host execution exclusions through
+// the shared HTTP adapter, including resolver/interpreter aliases and redirects.
+pub(crate) fn dispatch_provider_mcp_proxy_request_with_excluded_roots(
+    owner_provider_run_id: &str,
+    owner_session_id: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+    excluded_roots: &[std::path::PathBuf],
+) -> Result<serde_json::Value, DaemonError> {
     let is_tools_list = payload
         .get("method")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|method| method == "tools/list");
     let mut response = match &backing.transport {
         CharioxMcpTransportConfig::StreamableHttp { .. } => {
-            streamable_http::dispatch(owner_provider_run_id, owner_session_id, backing, payload)
+            streamable_http::dispatch_with_excluded_roots(
+                owner_provider_run_id,
+                owner_session_id,
+                backing,
+                payload,
+                excluded_roots,
+            )
         }
         CharioxMcpTransportConfig::Stdio { .. } => {
             let key = backing.definition_hash()?;
@@ -189,6 +213,10 @@ pub(crate) fn shutdown_provider_mcp_proxy_run(provider_run_id: &str) {
             }),
         );
     }
+}
+
+pub(crate) fn cancel_provider_mcp_proxy_run(provider_run_id: &str) {
+    streamable_http::cancel_run(provider_run_id);
 }
 
 fn mark_provider_proxy_tools_preapproved(response: &mut serde_json::Value) {

@@ -634,6 +634,8 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
     let noisy_command_types = [
         "external_provider_session.list",
         "provider.catalog.get",
+        "project.environment.get",
+        "project.environment.GetEnvironmentOperation",
         "prompt_input_history.get",
         "session.state.get",
         "session.history.blob",
@@ -668,8 +670,27 @@ async fn persistent_command_cache_skips_noisy_read_commands_on_disk() {
         "high-frequency read command results should not be serialized to disk"
     );
 
+    // MP-08 / MP-10 / MP-11: excluding polls must preserve Check receipt recovery.
+    let check = CommandResultCache::fingerprint_for_command_type_test(
+        "project.environment.CheckProjectEnvironment",
+    );
+    cache
+        .insert_completed_for_test(
+            "check-admitted".into(),
+            check.clone(),
+            Some(serde_json::json!({"admitted":true})),
+        )
+        .await;
     let restored = CommandResultCache::new_with_persistent_path(path.clone())
         .expect("persistent cache should reload");
+    let wait = match restored.reserve("check-admitted", &check).await {
+        CommandReservation::Wait(wait) => wait,
+        _ => panic!("Check receipt must remain recoverable after restart"),
+    };
+    assert_eq!(
+        *wait.await.unwrap().response_value(),
+        Some(serde_json::json!({"admitted":true}))
+    );
     for command_type in noisy_command_types {
         let command_id = format!("command-{}", command_type.replace('.', "-"));
         let fingerprint = CommandResultCache::fingerprint_for_command_type_test(command_type);

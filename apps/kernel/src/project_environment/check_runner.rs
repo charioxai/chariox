@@ -26,10 +26,10 @@ impl ProjectEnvironmentStore {
         deadline: std::time::Instant,
     ) -> Result<(), crate::error::DaemonError> {
         let target = operation.target.clone();
-        let lock = self.lock(&env.local_project_id)?;
+        let lock = self.lock_until(&env.local_project_id, deadline)?;
         let project = validate()?;
 
-        let current = self.snapshot_locked(&project)?;
+        let current = self.snapshot_until(&project, deadline)?;
         if current.content_digest != env.content_digest {
             return Err(environment_error("revision changed before Check"));
         }
@@ -86,9 +86,9 @@ impl ProjectEnvironmentStore {
                     deadline,
                 )
             };
-            let _lock = self.lock(&env.local_project_id)?;
+            let _lock = self.lock_until(&env.local_project_id, deadline)?;
             let project = validate()?;
-            if self.snapshot_locked(&project)?.content_digest != env.content_digest {
+            if self.snapshot_until(&project, deadline)?.content_digest != env.content_digest {
                 return Err(environment_error(
                     "Project changed during Check; check the current revision again",
                 ));
@@ -134,9 +134,9 @@ impl ProjectEnvironmentStore {
                 last_progress = std::time::Instant::now();
             }
         }
-        let _lock = self.lock(&env.local_project_id)?;
+        let _lock = self.lock_until(&env.local_project_id, deadline)?;
         let project = validate()?;
-        if self.snapshot_locked(&project)?.content_digest != env.content_digest {
+        if self.snapshot_until(&project, deadline)?.content_digest != env.content_digest {
             return Err(environment_error("Project changed during Check"));
         }
         // A dependent cannot become Ready while its prerequisite is missing, stale or excluded.

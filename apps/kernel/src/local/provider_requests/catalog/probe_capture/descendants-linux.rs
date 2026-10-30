@@ -7,7 +7,7 @@ pub(super) struct Descendant {
     fd: OwnedFd,
 }
 impl Descendant {
-    fn alive(&self) -> bool {
+    pub(super) fn alive(&self) -> bool {
         let mut p = libc::pollfd {
             fd: self.fd.as_raw_fd(),
             events: libc::POLLIN,
@@ -92,14 +92,12 @@ fn group_members(root: u32) -> io::Result<Vec<u32>> {
     Ok(members)
 }
 fn group(pid: u32) -> Option<u32> {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()?
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(2)?
-        .parse()
-        .ok()
+    // MP-08 / MP-10 / MP-11: process-group lookup needs no unrelated process
+    // stat files. getpgid is a read-only kernel lookup; pidfd pinning and the
+    // ancestry/group checks below still establish ownership before signaling.
+    let pid = super::signal_pid(pid.into()).ok()?;
+    let group = unsafe { libc::getpgid(pid) };
+    (group > 1).then_some(group as u32)
 }
 pub(super) fn observe(
     root: Option<u32>,

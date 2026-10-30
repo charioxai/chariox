@@ -200,6 +200,7 @@ pub(super) fn parse_sse_event(payload: &str, provider_run_id: &str) -> Option<Op
 }
 
 fn session_error_message(error: Value, provider_run_id: &str) -> String {
+    super::error_diagnostics::record(&error);
     error
         .get("data")
         .and_then(|value| value.get("message"))

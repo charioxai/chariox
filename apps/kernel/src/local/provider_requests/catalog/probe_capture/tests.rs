@@ -208,6 +208,9 @@ mod escaped {
             );
             return;
         }
+        // MP-08 / MP-10 / MP-11: initialize the single supervised reaper
+        // before measuring growth across repeated capture timeouts.
+        capture(shell("printf warm"), Duration::from_secs(2)).unwrap();
         let before = std::fs::read_dir("/proc/self/task").unwrap().count();
         for _ in 0..10 {
             let error = capture(shell("sleep 30"), Duration::from_millis(10)).unwrap_err();
@@ -342,7 +345,7 @@ fn review0821_probe_group_rejects_unrelated_siblings() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut probe = super::platform::Process::spawn(&mut command).unwrap();
-    let pid = probe.child.id();
+    let pid = probe.child_mut().id();
     assert!(pid > 1 && pid <= i32::MAX as u32);
     let mut sibling = shell("sleep .1");
     unsafe {

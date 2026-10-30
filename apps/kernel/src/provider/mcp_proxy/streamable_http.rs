@@ -1,6 +1,6 @@
 mod sessions;
 use sessions::HttpState;
-pub(super) use sessions::{dispatch, release_run, release_session};
+pub(super) use sessions::{cancel_run, dispatch_with_excluded_roots, release_run, release_session};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
@@ -9,14 +9,19 @@ use std::time::Duration;
 use crate::error::DaemonError;
 
 fn forward_streamable_http_mcp_request(
-    url: &str,
-    bearer_token_env_var: Option<&str>,
-    http_headers: &BTreeMap<String, String>,
-    env_http_headers: &BTreeMap<String, String>,
+    transport: &crate::mcp::CharioxMcpTransportConfig,
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
     state: &mut HttpState,
+    excluded_roots: &[std::path::PathBuf],
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<serde_json::Value, DaemonError> {
+    let crate::mcp::CharioxMcpTransportConfig::StreamableHttp { url, .. } = transport else {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.transport",
+            message: "HTTP MCP transport required".into(),
+        });
+    };
     let request_id = payload.get("id").cloned();
     let expects_response = |message: &serde_json::Value| {
         message.get("method").is_some() && message.get("id").is_some()
@@ -35,15 +40,7 @@ fn forward_streamable_http_mcp_request(
     if initialize {
         *state = HttpState::default();
     }
-    let request = http_request(
-        url,
-        "POST",
-        bearer_token_env_var,
-        http_headers,
-        env_http_headers,
-        timeout,
-        state,
-    )?;
+    let request = http_request(transport, "POST", timeout, state, excluded_roots)?;
 
     let response = match request.send_bytes(&body) {
         Ok(response) => response,
@@ -103,6 +100,7 @@ fn forward_streamable_http_mcp_request(
             url,
             BufReader::new(response.into_reader()),
             request_id.as_ref(),
+            cancelled,
         )?
     } else {
         let text = response
@@ -116,6 +114,12 @@ fn forward_streamable_http_mcp_request(
             message: format!("upstream `{url}` returned invalid JSON: {error}"),
         })?
     };
+    if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.cancelled",
+            message: "MCP call cancelled".into(),
+        });
+    }
     if initialize && message.get("error").is_none() && message.get("result").is_some() {
         state.session_id = assigned_session;
         state.protocol_version = message
@@ -131,15 +135,26 @@ fn forward_streamable_http_mcp_request(
 }
 
 fn http_request(
-    url: &str,
+    transport: &crate::mcp::CharioxMcpTransportConfig,
     method: &str,
-    bearer_token_env_var: Option<&str>,
-    http_headers: &BTreeMap<String, String>,
-    env_http_headers: &BTreeMap<String, String>,
     timeout: Duration,
     state: &HttpState,
+    excluded_roots: &[std::path::PathBuf],
 ) -> Result<ureq::Request, DaemonError> {
-    let agent = streamable_http_agent(url, timeout)?;
+    let crate::mcp::CharioxMcpTransportConfig::StreamableHttp {
+        url,
+        bearer_token_env_var,
+        http_headers,
+        env_http_headers,
+        ..
+    } = transport
+    else {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.transport",
+            message: "HTTP MCP transport required".into(),
+        });
+    };
+    let agent = streamable_http_agent(url, timeout, excluded_roots)?;
     let mut request = agent
         .request(method, url)
         .set("Content-Type", "application/json")
@@ -176,10 +191,17 @@ fn read_sse_json_rpc_response(
     url: &str,
     mut reader: impl BufRead,
     request_id: Option<&serde_json::Value>,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<serde_json::Value, DaemonError> {
     let mut data_lines = Vec::new();
     let mut line = String::new();
     loop {
+        if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(DaemonError::LocalTransport {
+                operation: "mcp.proxy.http.cancelled",
+                message: "MCP call cancelled".into(),
+            });
+        }
         line.clear();
         let bytes_read =
             reader
@@ -225,7 +247,12 @@ fn read_sse_json_rpc_response(
     })
 }
 
-fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
+fn streamable_http_agent(
+    url: &str,
+    timeout: Duration,
+    excluded_roots: &[std::path::PathBuf],
+) -> Result<ureq::Agent, DaemonError> {
+    let excluded_roots = excluded_roots.to_vec();
     // ureq's synchronous default DNS is outside its transport timeout. Own
     // each lookup (including proxies/redirects) under this dispatch deadline.
     let deadline = std::time::Instant::now() + timeout;
@@ -244,7 +271,7 @@ fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, Da
                 "MCP DNS deadline exceeded",
             ));
         }
-        crate::local::provider_requests::resolve_bounded_host(host, remaining, &[])
+        crate::local::provider_requests::resolve_bounded_host(host, remaining, &excluded_roots)
             .map(|addresses| {
                 addresses
                     .into_iter()

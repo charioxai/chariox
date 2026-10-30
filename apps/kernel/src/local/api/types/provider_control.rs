@@ -126,6 +126,9 @@ pub struct UpdateProviderRunSelectionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderCatalogRequest {
+    /// MP-08 / MP-10 / MP-11: provider/default summaries before explicit model browsing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub summary_only: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// Optional provider-profile overrides. Providers omitted here resolve to
@@ -139,6 +142,7 @@ pub struct GetProviderCatalogRequest {
 impl Default for GetProviderCatalogRequest {
     fn default() -> Self {
         Self {
+            summary_only: false,
             provider: None,
             account_profiles: BTreeMap::new(),
             execution_location: ProviderCatalogExecutionLocation::Local,

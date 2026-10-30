@@ -31,6 +31,12 @@ pub fn detect_environment(
     for file in &index.files {
         importer.import(file)
     }
+    // Declared requirements across every folder precede repeated source hints.
+    // Keep the same budget without letting one folder's references displace
+    // another folder's actual toolchain manifest.
+    for file in &index.files {
+        importer.import_references(file)
+    }
     for file in &index.files {
         importer.import_file(file)
     }

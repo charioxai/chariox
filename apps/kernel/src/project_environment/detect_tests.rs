@@ -338,9 +338,9 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     let root = TestWorktree::new("envp02a-utility-cache");
     write(&root, "package.json", r#"{"engines":{"node":"22"}}"#);
     let folder = folder(&root);
-    let detection = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
+    let detection = detect_environment(&[folder.clone()], "environment").unwrap();
     assert_eq!(
-        detection.model_folders(None, &[], std::slice::from_ref(&folder)),
+        detection.model_folders(None, &[], &[folder.clone()]),
         ["folder".into()].into()
     );
     let target = EnvironmentTargetBinding {
@@ -378,16 +378,12 @@ fn envp02a_successful_unchanged_evidence_skips_utility_including_opt_in() {
     store.save_detection(&cache).unwrap();
     let reloaded = store.load_detection("project").unwrap().unwrap();
     assert!(detection
-        .model_folders(
-            Some(&reloaded),
-            &["folder".into()],
-            std::slice::from_ref(&folder)
-        )
+        .model_folders(Some(&reloaded), &["folder".into()], &[folder.clone()])
         .is_empty());
     write(&root, "package.json", r#"{"engines":{"node":"24"}}"#);
-    let changed = detect_environment(std::slice::from_ref(&folder), "environment").unwrap();
+    let changed = detect_environment(&[folder.clone()], "environment").unwrap();
     assert!(!changed
-        .model_folders(Some(&reloaded), &[], std::slice::from_ref(&folder))
+        .model_folders(Some(&reloaded), &[], &[folder.clone()])
         .is_empty());
     cache.operation.phase = EnvironmentOperationPhase::Failed;
     assert!(!detection
@@ -418,29 +414,29 @@ fn envp02a_gui_names_do_not_match_canvas_or_longer_words() {
     }
 }
 
-#[path = "detect_review_2_tests.rs"]
-mod review_2;
+#[path = "detect_reference_privacy_tests.rs"]
+mod detect_reference_privacy;
 
-#[path = "detect_review_3_tests.rs"]
-mod review_3;
+#[path = "detect_medium_repository_tests.rs"]
+mod detect_medium_repository;
 
-#[path = "detect_review_4_tests.rs"]
-mod review_4;
+#[path = "detect_cache_recovery_tests.rs"]
+mod detect_cache_recovery;
 
-#[path = "detect_review_5_tests.rs"]
-mod review_5;
+#[path = "detect_evidence_digest_tests.rs"]
+mod detect_evidence_digest;
 
-#[path = "detect_review_1_tests.rs"]
-mod review_1;
+#[path = "detect_classification_tests.rs"]
+mod detect_classification;
 
-#[path = "detect_review_6_tests.rs"]
-mod review_6;
+#[path = "detect_model_coverage_tests.rs"]
+mod detect_model_coverage;
 
-#[path = "detect_review_7_tests.rs"]
-mod review_7;
+#[path = "detect_runtime_version_tests.rs"]
+mod detect_runtime_version;
 
-#[path = "detect_review_8_tests.rs"]
-mod review_8;
+#[path = "detect_proposal_bounds_tests.rs"]
+mod detect_proposal_bounds;
 
 #[test]
 fn r4_detect_prompt_retains_plain_folder_inventory() {

@@ -90,29 +90,20 @@ impl KernelRuntimeState {
                 // No arbitrary error/output projection. Unsettled operations remain visibly failed.
                 let config = self_config(&state);
                 let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-                if let Ok(_lock) = store.lock(&failure_identity.local_project_id) {
-                    if state
-                        .owned
-                        .session_store
-                        .get_project(&failure_identity.local_project_id)
-                        .is_ok()
-                    {
-                        if let Ok(mut checks) =
-                            store.load_checks(&failure_identity.local_project_id)
-                        {
-                            if let Some(op) = checks
-                                .operations
-                                .iter_mut()
-                                .find(|o| o.operation_id == failure_identity.operation_id)
-                            {
-                                op.phase = EnvironmentOperationPhase::Failed;
-                                op.updated_at_ms = crate::session::unix_epoch_ms();
-                                op.recovery_state = EnvironmentRecoveryState::Settled;
-                            }
-                            let _ = store.save_checks(&failure_identity.local_project_id, &checks);
-                        }
-                    }
-                }
+                let _ = tokio::task::spawn_blocking(move || {
+                    store.settle_failed_check(
+                        &failure_identity.local_project_id,
+                        &failure_identity.operation_id,
+                        || {
+                            state
+                                .owned
+                                .session_store
+                                .get_project(&failure_identity.local_project_id)
+                                .is_ok()
+                        },
+                    )
+                })
+                .await;
             }
         });
         Ok(LocalDaemonResponse::EnvironmentOperation {
@@ -128,6 +119,7 @@ impl KernelRuntimeState {
             .get_project_environment(
                 crate::local::GetProjectEnvironmentRequest {
                     project_id: request.project_id,
+                    view: None,
                 },
                 user,
             )
@@ -143,13 +135,17 @@ impl KernelRuntimeState {
             Some(operation) => operation,
             None => {
                 let config = self.owned.config_projection.snapshot();
-                ProjectEnvironmentStore::new(&config.private_runtime_state_root())
-                    .check_operation(
-                        &environment.local_project_id,
-                        &request.operation_id,
-                        &current_check_target(&config),
-                    )?
-                    .ok_or_else(|| environment_error("Environment operation not found"))?
+                tokio::task::spawn_blocking(move || {
+                    ProjectEnvironmentStore::new(&config.private_runtime_state_root())
+                        .check_operation(
+                            &environment.local_project_id,
+                            &request.operation_id,
+                            &current_check_target(&config),
+                        )
+                })
+                .await
+                .map_err(|_| environment_error("Check operation read task failed"))??
+                .ok_or_else(|| environment_error("Environment operation not found"))?
             }
         };
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })
