@@ -9,6 +9,26 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+/// Every tool the source App registers. The kernel refuses a worker whose
+/// registered tools differ from the signed declaration, so the two must match.
+pub const TOOLS: [&str; 15] = [
+    "echo",
+    "shared",
+    "increment",
+    "wait",
+    "ignore",
+    "trap",
+    "spin",
+    "oom",
+    "stream",
+    "slow_stream",
+    "subscribe",
+    "upload",
+    "early_response",
+    "grace",
+    "huge",
+];
+
 pub fn package(core: &[u8]) -> (Vec<u8>, TrustedPublisher) {
     package_version(core, None, "1.0.0", 0)
 }
@@ -37,7 +57,7 @@ pub fn package_version(
         "ui":{"entry":"ui/index.html"},"tools":"schemas/tools.json","uiActions":"schemas/ui-actions.json","capabilities":{}
     }))
     .unwrap();
-    let tools: Vec<_> = ["echo","shared","wait","ignore","trap","spin","oom","stream","slow_stream","subscribe","upload","early_response","grace"]
+    let tools: Vec<_> = TOOLS
         .map(|name| json!({"name":name,"description":format!("Source App drill: {name}"),"inputSchema":{"type":"object","properties":{"portable":{"type":"string"}},"required":["portable"],"additionalProperties":false}})).into();
     let mut files = BTreeMap::from([
         ("runtime/app.wasm".into(), bytes),

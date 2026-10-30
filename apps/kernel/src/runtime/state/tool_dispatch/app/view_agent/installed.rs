@@ -131,12 +131,44 @@ async fn signed_installed_ui_actions_reach_the_real_view_context() {
         .app_control()
         .active_app_lease("alice", APP)
         .is_some());
+    // The catalog opens a granted App with every viewer closed, through the
+    // real browser controller process (A3), as `check_live_binding` does.
+    let controllers =
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+            "systemd-run",
+            vec![
+                "--scope".into(),
+                "--quiet".into(),
+                "-p".into(),
+                "MemoryMax=4G".into(),
+                "-p".into(),
+                "MemorySwapMax=0".into(),
+                "node".into(),
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("src/runtime/state/app-view-actor.fixture.mjs")
+                    .display()
+                    .to_string(),
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("slice-linux-docker/docker")
+                    .display()
+                    .to_string(),
+                rig.root.display().to_string(),
+            ],
+            std::time::Duration::from_secs(3),
+        );
+    controllers.acquire(&rig.session).unwrap();
+    rig.runtime
+        .set_browser_controller_process_store_for_test(controllers.clone());
     let visible = rig
         .runtime
         .app_view_tool(&rig.run, &rig.agent, CATALOG, json!({}))
-        .await
-        .unwrap();
-    assert_eq!(visible["views"][0]["actions"][0]["name"], "inspect");
+        .await;
+    controllers.release(&rig.session).unwrap();
+    let visible = visible.unwrap();
+    assert_eq!(
+        visible["views"][0]["actions"][0]["name"], "inspect",
+        "{visible}"
+    );
     assert_eq!(visible["views"][0]["actions"].as_array().unwrap().len(), 1);
     rig.runtime
         .app_control()

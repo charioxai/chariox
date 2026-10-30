@@ -185,7 +185,19 @@ async fn invoke(prepared: PreparedWorker, portable: &str) -> Value {
         panic!("worker.ready required")
     };
     assert_eq!(method, "worker.ready");
-    assert_eq!(params["tools"].as_array().unwrap().len(), 15);
+    let mut registered: Vec<_> = params["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool.as_str().unwrap())
+        .collect();
+    registered.sort_unstable();
+    let mut signed = package::TOOLS;
+    signed.sort_unstable();
+    assert_eq!(
+        registered, signed,
+        "registered tools must match the signed declaration"
+    );
     // Real kernel ordering: keep worker.ready pending while precommit health
     // runs. The ready response grants activation only after health succeeds.
     channel
