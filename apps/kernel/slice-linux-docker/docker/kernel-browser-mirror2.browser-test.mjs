@@ -1260,6 +1260,35 @@ test("MP-10: a source-text copy whose rules differ from the page's own selects t
     }, { "/gh.css": { type: "text/css", body } });
 });
 
+// The same guard inside a cross-origin frame: the child is not mounted unstyled, its owner stays an opaque region.
+test("MP-10: a cross-origin frame whose sheet's source copy would lose rules is an opaque region, not an unstyled child", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/frame" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await settle(500);
+    const packet = await next();
+    assert.equal(packet.reset, true);
+    assert.equal(packet.fallback, undefined, "MP-10: the page itself stays a DOM mirror");
+    assert(!JSON.stringify(packet.nodes).includes("framed"), "MP-10: the child document is not published without its style");
+    assert(packet.nodes.some(row => row[4]?.reason === "cross_origin_frame"), `MP-10: the frame is an opaque region: ${JSON.stringify(packet.nodes.filter(row => row[2] === "iframe" || row[4]?.reason))}`);
+  }, {
+    "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="b">framed</p>' },
+    "/frame.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}" },
+  }));
+
+test("MP-10: a lossy sheet a cross-origin frame links later selects the whole-page video", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/frame" style="width:300px;height:100px"></iframe>', async ({ next, evaluate }) => {
+    await settle(500);
+    const first = await next();
+    assert.equal(first.fallback, undefined);
+    assert(JSON.stringify(first.nodes).includes("framed"), "MP-10: the plain frame is mirrored");
+    await evaluate("document.querySelector('iframe').contentWindow.postMessage('link', '*'), true");
+    const packets = [];
+    for (let i = 0; i < 8 && !packets.at(-1)?.fallback; i++) packets.push(await next(500));
+    assert.equal(packets.at(-1).fallback, "css_incomplete", `MP-10: the frame's incomplete copy selects the video: ${JSON.stringify(packets.map(p => [p.sequence, p.reset, p.fallback ?? null]))}`);
+  }, {
+    "/frame": { type: "text/html", body: '<!doctype html><p class="b">framed</p><script>addEventListener("message",()=>{const l=document.createElement("link");l.rel="stylesheet";l.href="http://127.0.0.1:PORT/frame.css";document.head.append(l)})</script>' },
+    "/frame.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}.b{background:url(/a}b.png)}.b{--after:1}" },
+  }));
+
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
     const first = [await next()];
