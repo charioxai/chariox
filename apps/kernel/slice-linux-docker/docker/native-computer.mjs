@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { processIdentity, signalOwned, settleOwned } from './linux-owned-process.mjs';
 import { UserDomainRefusal } from './kernel-browser-refusal.mjs';
 import { EXTENSIONS_REFUSED } from './kernel-browser-policy.mjs';
-import { activeBrowserPage, fenceBrowserCapture } from './browser-protection-regions.mjs';
+import { activeBrowserPage, fenceBrowserCapture, hasBrowserFill } from './browser-protection-regions.mjs';
 import { redactObservation } from './browser-controller-snapshot.mjs';
 const helper = fileURLToPath(new URL('./native-computer.py', import.meta.url));
 // MP-08/MP-10: human input the warm channel carries (no admission; see native-computer.py).
@@ -164,10 +164,12 @@ export class NativeComputer {
     const mask=command.op==='clipboard_read'&&Boolean(values.length || policy?.targets?.length);
     const browser_processes=await binding.browserProcesses?.();
     const processes=await binding.ownedProcesses?.()??[];
-    const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
+    const browser=command.op==='clipboard_read'?null:binding.browser?.();
+    // A tracked Vault fill: a browser window whose field cannot be measured is covered whole, never refused.
+    const fill=browser&&hasBrowserFill(browser,policy);
+    const observe=browser_protection=>this.execute({op:command.op,mask,values,query:command.query,processes,...(fill?{fill:true}:{}),...(browser_processes?{browser_processes}:{}),...(browser_protection?{browser_protection}:{})},binding.environment,signal);
     // MP-08/MP-11: kernel-browser windows reveal all but their protected regions
     // only for an unchanged, presented field measurement; uncertain placement retries.
-    const browser=command.op==='clipboard_read'?null:binding.browser?.();
     // AT-SPI may expose a just-navigated document a moment after CDP does:
     // retry a capture whose kernel-browser window stayed unbound (withheld).
     let result;
