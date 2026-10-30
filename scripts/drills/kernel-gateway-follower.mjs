@@ -29,7 +29,7 @@ const label = flags.get("--label") ?? "run"
 // What stops answering: the followed kernel itself, or the relay between the kernels (both kernels keep serving).
 const stalled = flags.get("--stall") ?? "worker"
 const scenario = flags.get("--scenario") ?? "stall"
-assert(["stall", "limits"].includes(scenario), "--scenario is stall or limits")
+assert(["stall", "limits", "retarget"].includes(scenario), "--scenario is stall, limits or retarget")
 const stallMs = Number(flags.get("--stall-seconds") ?? 9) * 1000
 assert(["worker", "relay", "home-restart"].includes(stalled), "--stall is worker, relay or home-restart")
 const stateRoot = required("--state-root"), evidence = required("--evidence-dir")
@@ -242,11 +242,38 @@ try {
 
     assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
     assert.equal((await cli(home, ["events", "unsubscribe", "--all"])).code, 0)
+  } else if (scenario === "retarget") {
+    // The last followed target goes away while the target kernel is slow to confirm the cleanup, and a new one is followed meanwhile.
+    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "retarget-second", no_subscribe: true } })).SessionCreated.session.id
+    assert.equal((await cli(home, ["events", "subscribe", "--kernel", target, "--session", session])).code, 0)
+    let cursor = (await cli(home, ["events", "wait", "--since", "0", "--timeout", "2"])).value.next_cursor
+    signal(worker.child, "SIGSTOP")
+    try {
+      assert.equal((await cli(home, ["events", "unsubscribe", "--kernel", target, "--session", session])).code, 0)
+      await delay(800)
+      const following = cli(home, ["events", "subscribe", "--kernel", target, "--session", second])
+      await delay(2500)
+      signal(worker.child, "SIGCONT")
+      r = await following
+    } finally { signal(worker.child, "SIGCONT") }
+    await delay(1500)
+    const opened = await cli(home, ["terminal", "open", "--kernel", target, "--session", second, "--", "/bin/sh", "-c", "exit 17"])
+    assert.equal(opened.code, 0, opened.err)
+    const seen = []
+    const end = Date.now() + 15000
+    while (Date.now() < end && !seen.some(e => e.type === "terminal")) {
+      const batch = await cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "3"])
+      seen.push(...(batch.value?.events ?? [])); cursor = batch.value?.next_cursor ?? cursor
+    }
+    check("a target followed while another one's cleanup was slow is still followed", seen.some(e => e.type === "terminal" && e.session_id === second), { subscribe: r.code, seen: seen.map(e => e.type) })
+    await remote({ EndSession: { session_id: second } })
   } else {
     const attachment = (await remote({ AttachToSession: { session_id: session, client_id: "gateway-drill", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
     const run = (script, timeoutMs = 60000) => cli(home, ["request", "--kernel", target, "--command-id", randomUUID(), "--timeout", String(Math.ceil(timeoutMs / 1000) + 30)],
       { RunShellCommand: { session_id: session, attachment_id: attachment, command: "/bin/sh", args: ["-c", script], working_directory: join(worker.dir, "work"), timeout_ms: timeoutMs } })
     const failure = r => { try { return JSON.parse(r.err).error } catch { return { code: null } } }
+    const missing = await cli(home, ["request", "--kernel", target, "--timeout", "30"], { GetSessionState: { session_id: "no-such-session" } })
+    check("a missing session is exit 1 with the kernel's own code, as the guide's exit table says", missing.code === 1 && failure(missing).code === "session_not_found", { code: missing.code, error: failure(missing) })
     const small = await run("head -c 120000 /dev/zero | tr '\\0' x")
     check("a 120 KB answer is returned", small.code === 0 && small.value?.ShellCommandCompleted?.result?.exit_code === 0, { code: small.code, error: failure(small) })
     const big = await run("head -c 300000 /dev/zero | tr '\\0' x")

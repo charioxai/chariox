@@ -63,13 +63,7 @@ impl KernelGateway {
                     let keep = gateway
                         .pump_event_part(&origin, &kernel, &mut subscribed)
                         .await;
-                    if !keep {
-                        gateway
-                            .event_parts
-                            .running
-                            .lock()
-                            .expect("event pumps poisoned")
-                            .remove(&key);
+                    if !keep && gateway.finish_event_part(&origin, &kernel, &key) {
                         return;
                     }
                     drop(gateway);
@@ -77,6 +71,35 @@ impl KernelGateway {
                 }
             });
         }
+    }
+    /// Whether the pump of `key` ended. A target followed while the pump was busy found it
+    /// running and started nothing, so the pump looks again, under the lock that starting takes,
+    /// before it leaves; the target is either seen here or starts the next pump.
+    pub(super) fn finish_event_part(
+        &self,
+        origin: &Origin,
+        kernel: &str,
+        key: &(String, String),
+    ) -> bool {
+        let mut running = self
+            .event_parts
+            .running
+            .lock()
+            .expect("event pumps poisoned");
+        // A store that cannot be read says nothing about the targets: keep following.
+        let wanted = self
+            .runtime_state
+            .outside_store()
+            .outside_part(&origin.grant_id)
+            .map_or(true, |part| {
+                part.is_some_and(|part| {
+                    part.ended.is_none() && part.targets.iter().any(|t| t.kernel == kernel)
+                })
+            });
+        if !wanted {
+            running.remove(key);
+        }
+        !wanted
     }
     async fn pump_event_part(
         &self,

@@ -476,3 +476,81 @@ async fn check_busy_kernel() {
         .unwrap();
     assert_eq!(health_events(), 3);
 }
+
+#[test]
+fn a_pump_does_not_leave_while_a_target_was_added_to_its_kernel() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(check_pump_exit());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn check_pump_exit() {
+    let app = crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        4,
+    );
+    let gateway = router.kernel_gateway();
+    let state = router.runtime_state();
+    let store = state.outside_store();
+    let origin = Origin {
+        grant_id: "leaving".into(),
+        harness: "test".into(),
+    };
+    let key = (origin.grant_id.clone(), "remote".to_string());
+    let target = EventTarget {
+        kernel: "remote".into(),
+        session_id: "room".into(),
+        agent_id: None,
+    };
+    let subscribe = |targets| Mutation::Subscribe {
+        id: origin.grant_id.clone(),
+        home: true,
+        baseline: vec![],
+        open_decisions: vec![],
+        targets,
+    };
+    let running = || gateway.event_parts.running.lock().unwrap().contains(&key);
+    gateway
+        .event_parts
+        .running
+        .lock()
+        .unwrap()
+        .insert(key.clone());
+    // The pump decided to leave from a look taken before this target was followed.
+    store
+        .outside_mutate(subscribe(vec![target.clone()]))
+        .unwrap();
+    assert!(
+        !gateway.finish_event_part(&origin, "remote", &key),
+        "a followed target keeps the pump"
+    );
+    assert!(running());
+    store
+        .outside_mutate(Mutation::Unsubscribe {
+            id: origin.grant_id.clone(),
+            targets: vec![target],
+            all: false,
+            reason: "cancelled".into(),
+        })
+        .unwrap();
+    assert!(gateway.finish_event_part(&origin, "remote", &key));
+    assert!(!running(), "with nothing followed the pump is gone");
+    // The next target starts a pump again.
+    assert!(gateway
+        .event_parts
+        .running
+        .lock()
+        .unwrap()
+        .insert(key.clone()));
+}
