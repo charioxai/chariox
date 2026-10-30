@@ -421,6 +421,57 @@ async fn sudo_operations_workspace_extension_reuses_task_consent() {
     assert!(result.is_none());
 }
 
+#[tokio::test]
+async fn sudo_operations_room_app_self_binding_reuses_task_consent() {
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
+    crate::durable_state::app_state::fixture_catalog(&f.state.owned.durable_state_store);
+    let turn = running(&f);
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&turn.session_id)
+        .unwrap();
+    let prompts = &f.state.owned.prompt_state_owner;
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+        .unwrap();
+    let attachment = f
+        .state
+        .owned
+        .attachment_store
+        .get_attachment(&f.request.attachment_id)
+        .unwrap();
+    let mut owner_request = active.clone().with_source_attachment(&attachment);
+    owner_request.set_status(crate::session::PromptStatus::Running);
+    assert!(prompts.replace_active_prompt_if_matches(
+        &session,
+        &turn.agent_id,
+        &active,
+        owner_request
+    ));
+    let agent = f.state.owned.agent_store.get_agent(&turn.agent_id).unwrap();
+    assert!(f.state.owner_requested_prompt(&agent).is_some());
+    assert!(
+        f.state
+            .sudo_task_authorizes_agent(&turn.session_id, &turn.agent_id)
+            .await
+    );
+    let permit = tokio::time::timeout(
+        Duration::from_millis(500),
+        f.state.authorize_agent_app_binding(
+            &turn.session_id,
+            &turn.agent_id,
+            &turn.agent_id,
+            "installed",
+        ),
+    )
+    .await
+    .expect("covered Room App self binding asked again")
+    .unwrap();
+    assert!(permit.is_some());
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sudo_operations_claude_watched_command_reuses_task_consent() {
@@ -753,4 +804,78 @@ async fn sudo_startup_trust_without_selected_folder_proof_asks_the_owner() {
             .is_none(),
         "an unvalidated worker startup must use the ordinary owner decision"
     );
+}
+
+#[tokio::test]
+async fn sudo_operations_non_room_app_binding_reuses_task_consent() {
+    let f = super::tests::fixture_for_owner(None, false, "dev-stub", "dev-stub", None, "alice");
+    crate::durable_state::app_state::fixture_catalog(&f.state.owned.durable_state_store);
+    let turn = running(&f);
+    f.state
+        .owned
+        .agent_store
+        .update_agent_config(
+            &turn.agent_id,
+            None,
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let bind = || {
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            f.state.authorize_agent_app_binding(
+                &turn.session_id,
+                &turn.agent_id,
+                &turn.agent_id,
+                "installed",
+            ),
+        )
+    };
+    assert!(bind()
+        .await
+        .expect("covered App binding asked again")
+        .unwrap()
+        .is_some());
+    f.state.owned.sudo_turns.lock().unwrap().clear();
+    assert!(
+        bind().await.is_err(),
+        "without the task the binding still waits for the owner"
+    );
+}
+
+#[tokio::test]
+async fn sudo_operations_app_validation_stays_with_the_owner_decision() {
+    use crate::durable_state::app_validations::{
+        canonical, ValidationCommand, ValidationOperation, ValidationState,
+    };
+    let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
+    let store = f.state.owned.durable_state_store.clone();
+    crate::durable_state::app_state::fixture_catalog(&store);
+    // The caller's agent runs a live /sudo task; protected App actions are still the owner's.
+    let turn = running(&f);
+    let (parameters, digest) = canonical(&serde_json::json!({"to": "acct"}));
+    store
+        .app_validation(ValidationCommand::Create(ValidationOperation {
+            operation_id: "by-sudo-agent".into(),
+            owner: "alice".into(),
+            installation: "installed".into(),
+            generation: 1,
+            action: "send_payment".into(),
+            parameters,
+            digest,
+            state: ValidationState::Pending,
+            expires_ms: crate::session::unix_epoch_ms() + 600_000,
+            callers: serde_json::json!([{"kind": "agent", "id": turn.agent_id}]).to_string(),
+        }))
+        .unwrap();
+    f.state
+        .app_validation_pass(crate::session::unix_epoch_ms())
+        .await;
+    let status = store
+        .app_validation_status("alice", "installed", "by-sudo-agent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.state, ValidationState::Pending);
 }
