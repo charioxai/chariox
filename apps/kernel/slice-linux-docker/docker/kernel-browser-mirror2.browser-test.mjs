@@ -1174,6 +1174,17 @@ test("MP-10: linked lossy CSS stops CSSOM serialization before unused suffix rul
     assert.equal(suffixReads,0,`MP-10: serialization stops at the first lossy rule; read ${suffixReads} suffix rules`);
   }, { "/gh.css": { type: "text/css", body: "p{border:var(--w) solid;border-color:red}" + Array.from({length:200},(_,i)=>`.tail{--suffix-marker-${i}:${i}}`).join("") + ".tail{--suffix-marker-199:199}" } }));
 
+// mirrorfid (pancake.ai/login): Tailwind writes `content-['']` as `.content-\[\'\'\]`; an escaped quote in a
+// selector is not a string, so the source text after it must still reach the viewer.
+test("MP-10: linked lossy CSS read as source keeps the rules after an escaped quote in a selector", () => mirrored(
+  '<link rel="stylesheet" href="/gh.css"><p class="b">fixture</p>', async ({ next }) => {
+    const packets = [await next()];
+    for (let i = 0; i < 5; i++) packets.push(await next(500));
+    const css = mirroredCss(packets) + "\n" + packets.flatMap(packet => Object.values(packet.sheets ?? {})).join("\n");
+    assert(css.includes("var(--w)"), `MP-10: the lossy sheet is read as source text: ${css.slice(0, 300)}`);
+    assert(css.includes("after-quote-marker"), `MP-10: rules after the escaped quote reach the viewer: ${css.slice(-300)}`);
+  }, { "/gh.css": { type: "text/css", body: "@layer utilities{.before\\:content-\\[\\'\\'\\]:before{content:''}.b{border:var(--w) solid;border-color:red}.b{--after-quote-marker:1}}" } }));
+
 test("MP-08/MP-10: the next document reads a linked sheet the kernel read as source text the same way, borders kept", () => mirrored(
   '<link rel="stylesheet" href="/gh.css"><div class="b" style="width:50px;height:20px">a</div>', async ({ next, evaluate, host }) => {
     const first = [await next()];
