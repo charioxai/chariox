@@ -1729,14 +1729,10 @@ mod tests {
         assert_eq!(idle.running_agent_count, 0);
         assert!(idle.changed_at_ms >= busy.changed_at_ms);
         assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
-        assert_eq!(
-            runtime
-                .owned
-                .session_projection
-                .get(&session_id)
-                .expect("ended session should project")
-                .status(),
-            crate::session::SessionStatus::Ended
+        // An ended session is retired from the live projection; its end is durable above.
+        assert!(
+            runtime.owned.session_projection.get(&session_id).is_none(),
+            "an ended session leaves the live projection"
         );
     }
 
