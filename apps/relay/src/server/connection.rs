@@ -462,6 +462,13 @@ pub(crate) async fn handle_connection(
                                 let allowed_targets = identity.allowed_targets.clone();
                                 verified_identity = Some(identity.clone());
                                 let mut guard = registry.write().await;
+                                // A socket the daemon's reconnect replaced is already
+                                // being closed; its heartbeat must not take the registry back.
+                                if guard.daemon_peers.get(&current_daemon_key) != Some(&peer_addr) {
+                                    drop(guard);
+                                    send_close(&outgoing_tx, "daemon reconnected".to_string());
+                                    break;
+                                }
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {
                                     peer.realm_id = Some(identity.realm_id.clone());
                                     peer.identity = Some(identity.into());
