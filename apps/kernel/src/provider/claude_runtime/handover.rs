@@ -231,6 +231,15 @@ pub(super) fn hand_over(
             }
         }
     }
+    crate::logging::info_with_fields(
+        "hot_reload.claude",
+        "handing over a running Claude turn",
+        serde_json::json!({
+            "pid": state.child.id(),
+            "applied_lines_pending": stdout_lines.iter().filter(|b| **b == b'\n').count(),
+            "unread_bytes": stdout_unread.len(),
+        }),
+    );
     stdout_lines.append(&mut stdout_unread);
     stderr_lines.append(&mut stderr_unread);
     // The process read its MCP configuration at start; the next program writes its own.

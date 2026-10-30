@@ -65,6 +65,18 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn run_provider_output_pump(&self) {
+        self.run_provider_output_pump_until(std::future::pending())
+            .await;
+    }
+
+    /// Runs until `stop`, then finishes the polls in flight and applies their
+    /// results: output a poll took from a provider reaches history before the
+    /// kernel stops.
+    pub(crate) async fn run_provider_output_pump_until(
+        &self,
+        stop: impl std::future::Future<Output = ()>,
+    ) {
+        tokio::pin!(stop);
         let mut jobs = FuturesUnordered::new();
         let mut in_flight = BTreeSet::new();
         let mut pending = BTreeSet::new();
@@ -116,6 +128,14 @@ impl KernelRuntimeState {
             };
             let has_jobs = !jobs.is_empty();
             tokio::select! {
+                () = &mut stop => {
+                    while jobs.next().await.is_some() {}
+                    // Apply the polls those passes started.
+                    for run in self.owned.provider_store.list_runs() {
+                        self.pump_ready_provider_output_run(run.id()).await;
+                    }
+                    return;
+                }
                 Some(run_id) = jobs.next(), if has_jobs => { in_flight.remove(&run_id); }
                 _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}
                 _ = self.wait_for_provider_output_ready_after(ready_sequence) => {}

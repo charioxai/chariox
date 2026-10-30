@@ -604,7 +604,7 @@ fn connections_during_a_hot_reload_are_not_refused() {
 }
 
 /// Claude Code as the kernel drives it (stream-json on stdin/stdout): each
-/// prompt is a turn that streams 16 parts over 8 s. It records every start
+/// prompt is a turn that streams 400 parts over 4 s. It records every start
 /// and every prompt it receives.
 const FAKE_CLAUDE: &str = r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi
@@ -626,11 +626,18 @@ while IFS= read -r line; do
     turn=$((turn + 1))
     echo "prompt $turn" >> "$record/prompts"
     printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\",\"model\":\"claude-haiku-5-5\"}"
-    for part in $(seq 1 16); do
-        printf '%s\n' "{\"type\":\"assistant\",\"session_id\":\"$session\",\"message\":{\"id\":\"msg-$turn-$part\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"turn-$turn-part-$part \"}]}}"
-        echo "part $part" >> "$record/parts"
-        sleep 0.5
+    # One message whose text block streams as deltas, as with --include-partial-messages.
+    printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\"}}}"
+    printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+    text=""
+    for part in $(seq 1 400); do
+        printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"turn-$turn-part-$part \"}}}"
+        text="${text}turn-$turn-part-$part "
+        echo "part $part $EPOCHREALTIME" >> "$record/parts"
+        sleep 0.01
     done
+    printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_stop\",\"index\":0}}"
+    printf '%s\n' "{\"type\":\"assistant\",\"session_id\":\"$session\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}}"
     printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"turn-$turn-done\"}"
     echo "result $turn" >> "$record/parts"
 done
@@ -758,7 +765,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
 
         // Upgrade while the turn streams.
         let deadline = Instant::now() + Duration::from_secs(60);
-        while lines(&record.join("parts")).len() < 4 {
+        while lines(&record.join("parts")).len() < 40 {
             assert!(
                 Instant::now() < deadline,
                 "the turn did not start streaming"
@@ -807,10 +814,12 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         .await
         .to_string();
         std::fs::write(scratch.join("history.json"), &history).unwrap();
-        for part in [1, 8, 16] {
-            assert!(
-                history.contains(&format!("turn-1-part-{part} ")),
-                "part {part} is missing from history: {history}"
+        // Every part once: none lost or repeated across the swap.
+        for part in 1..=400 {
+            assert_eq!(
+                history.matches(&format!("turn-1-part-{part} ")).count(),
+                1,
+                "part {part} is not in history once: {history}"
             );
         }
         assert!(!history.contains("interrupted"), "{history}");

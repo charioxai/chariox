@@ -425,6 +425,12 @@ pub(super) fn execute_output_poll_command(
         }));
     }
     if run.adapter_key() == "claude" {
+        // A hot reload hands the unapplied output over with the turn: output
+        // taken now could no longer reach history.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_claude_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),

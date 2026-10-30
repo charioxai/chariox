@@ -212,6 +212,11 @@ pub(crate) fn submit_claude_prompt(
     if let Some(adopted) = state.adopted_turn.take() {
         // The process already runs this prompt's turn: a hot reload handed it
         // over. Continue reading it instead of sending the prompt again.
+        crate::logging::info_with_fields(
+            "hot_reload.claude",
+            "continuing a handed-over Claude turn",
+            serde_json::json!({ "provider_run_id": run.id(), "turn_id": adopted.turn_id }),
+        );
         state.active_turn_id = adopted.turn_id;
         state.active_prompt_message = adopted.prompt_message;
         state.turn_watchdog.begin(Instant::now());
