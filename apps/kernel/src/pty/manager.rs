@@ -928,6 +928,7 @@ impl PtyManager {
                 .process_id()
                 .ok_or_else(|| unavailable("the PTY child has no PID"))?,
             process_group: process.process_group,
+            cgroup: process.resources.cgroup_path(),
         })
     }
 
@@ -945,9 +946,12 @@ impl PtyManager {
         };
         // The handover named this fd for this PTY alone.
         let master = unsafe { AdoptedMaster::from_raw(handover.master_fd) };
-        let resources = crate::runtime::process_resources::PreparedDomain::watchdog()
-            .and_then(|domain| domain.start(handover.pid))
-            .map_err(|e| failed(e.to_string()))?;
+        let resources = crate::runtime::process_resources::PreparedDomain::adopted(
+            handover.cgroup.clone(),
+            handover.pid,
+        )
+        .and_then(|domain| domain.start(handover.pid))
+        .map_err(|e| failed(e.to_string()))?;
         resources.bind_key(&process_key);
         self.attach(
             process_key.clone(),

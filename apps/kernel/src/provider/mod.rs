@@ -89,6 +89,7 @@ pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToo
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
 };
+pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };

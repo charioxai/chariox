@@ -44,6 +44,41 @@ impl Domain {
         configured.ok()?;
         Some(group)
     }
+    /// The domain a child of the previous kernel program runs in (hot reload).
+    /// Its budget is that program's; it goes once its last domain ends.
+    pub fn adopt(path: PathBuf, limit: u64, pid: u32) -> Option<Self> {
+        let parent = path.parent()?;
+        let created_here = parent.starts_with("/sys/fs/cgroup")
+            && parent
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("chariox-"))
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("process-"));
+        if !created_here {
+            return None;
+        }
+        let budget_limit = std::fs::read_to_string(parent.join("memory.max"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        let group = Self {
+            _budget: Arc::new(Budget {
+                path: parent.to_path_buf(),
+                limit: std::sync::atomic::AtomicU64::new(budget_limit),
+            }),
+            path,
+            limit,
+        };
+        if group.owns(pid) {
+            Some(group)
+        } else {
+            // Not ours to remove: forget it without the drop that ends it.
+            std::mem::forget(group);
+            None
+        }
+    }
     pub fn pids(&self) -> std::io::Result<Vec<u32>> {
         Ok(std::fs::read_to_string(self.path.join("cgroup.procs"))?
             .lines()

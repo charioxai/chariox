@@ -6,5 +6,6 @@ mod manager;
 mod sandbox_lifetime_tests;
 
 pub use handover::PtyHandover;
+pub(crate) use handover::ReaderGate;
 pub(crate) use manager::{PtyInputWriter, PtyOutputSignal};
 pub use manager::{PtyManager, PtyOutputChunk, PtyProcessState, PtySpawnRequest};

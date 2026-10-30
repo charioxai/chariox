@@ -14,6 +14,8 @@ pub struct PtyHandover {
     pub master_fd: i32,
     pub pid: u32,
     pub process_group: Option<i32>,
+    /// The memory domain the child joined, which it keeps.
+    pub cgroup: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +30,7 @@ enum Gate {
 /// Lets a hot reload stop a PTY reader between two reads, so no byte is read
 /// into memory that the next program would not receive.
 #[derive(Debug, Default)]
-pub(super) struct ReaderGate {
+pub(crate) struct ReaderGate {
     state: Mutex<Gate>,
     changed: Condvar,
 }
@@ -41,7 +43,7 @@ impl ReaderGate {
     }
 
     /// Reader side, between reads: wait here while a hot reload holds the output.
-    pub(super) fn checkpoint(&self) {
+    pub(crate) fn checkpoint(&self) {
         let mut state = self.lock();
         if *state == Gate::HoldRequested {
             *state = Gate::Held;
@@ -55,13 +57,13 @@ impl ReaderGate {
         }
     }
 
-    pub(super) fn finish(&self) {
+    pub(crate) fn finish(&self) {
         *self.lock() = Gate::Finished;
         self.changed.notify_all();
     }
 
     /// True once the reader is held (or has ended) within `timeout`.
-    pub(super) fn hold(&self, timeout: Duration) -> bool {
+    pub(crate) fn hold(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         let mut state = self.lock();
         if *state == Gate::Open {
@@ -81,7 +83,7 @@ impl ReaderGate {
         true
     }
 
-    pub(super) fn release(&self) {
+    pub(crate) fn release(&self) {
         let mut state = self.lock();
         if matches!(*state, Gate::HoldRequested | Gate::Held) {
             *state = Gate::Open;

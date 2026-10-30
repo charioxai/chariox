@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Stdio};
+use std::process::{Child, ChildStdin, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
 
 use serde_json::Value;
 
+use super::handover::LineReader;
 use crate::error::DaemonError;
 
 pub(super) enum ClaudeRuntimeMessage {
@@ -31,9 +32,9 @@ pub(super) fn spawn_claude_child(
     output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
 ) -> Result<
     (
-        Child,
+        ClaudeChild,
         ChildStdin,
-        Receiver<ClaudeRuntimeMessage>,
+        ClaudeOutput,
         crate::runtime::process_resources::ProcessDomain,
     ),
     DaemonError,
@@ -107,7 +108,8 @@ pub(super) fn spawn_claude_child(
     let resources = match prepared.start(child.id()) {
         Ok(resources) => resources,
         Err(error) => {
-            stop_child(&mut child);
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(DaemonError::LocalTransport {
                 operation,
                 message: error.to_string(),
@@ -136,68 +138,160 @@ pub(super) fn spawn_claude_child(
             operation,
             message: "Claude Code did not expose stderr".to_string(),
         })?;
-    let (tx, receiver) = mpsc::channel();
-    {
-        let tx = tx.clone();
-        let output_notifier = output_notifier.clone();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(line) if line.trim().is_empty() => {}
-                    Ok(line) => match serde_json::from_str::<Value>(&line) {
-                        Ok(value) => {
-                            let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stdout(value));
-                        }
-                        Err(error) => {
-                            let _ = output_notifier.send(
-                                &tx,
-                                ClaudeRuntimeMessage::StdoutParseError(format!("{error}: {line}")),
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        let _ = output_notifier.send(
-                            &tx,
-                            ClaudeRuntimeMessage::StdoutParseError(error.to_string()),
-                        );
-                        break;
-                    }
-                }
-            }
-        });
+    let output = ClaudeOutput::start(
+        stdout.into(),
+        Vec::new(),
+        stderr.into(),
+        Vec::new(),
+        false,
+        output_notifier,
+    );
+
+    Ok((ClaudeChild::Started(child), stdin, output, resources))
+}
+
+/// The Claude Code process: started by this kernel program, or started by the
+/// previous one and inherited across a hot reload (still this process's child).
+pub(super) enum ClaudeChild {
+    Started(Child),
+    Adopted {
+        pid: u32,
+        status: Option<ExitStatus>,
+    },
+}
+
+impl ClaudeChild {
+    pub(super) fn id(&self) -> u32 {
+        match self {
+            Self::Started(child) => child.id(),
+            Self::Adopted { pid, .. } => *pid,
+        }
     }
-    let output_notifier = output_notifier.clone();
-    thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            match line {
-                Ok(line) if line.trim().is_empty() => {}
-                Ok(line) => {
-                    let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(line));
+
+    pub(super) fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        match self {
+            Self::Started(child) => child.try_wait(),
+            Self::Adopted { pid, status } => {
+                if status.is_none() {
+                    *status = reap(*pid, libc::WNOHANG)?;
                 }
-                Err(error) => {
-                    let _ =
-                        output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(error.to_string()));
-                    break;
+                Ok(*status)
+            }
+        }
+    }
+
+    fn kill_and_wait(&mut self) {
+        match self {
+            Self::Started(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Self::Adopted { pid, status } => {
+                unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
+                *status = reap(*pid, 0).ok().flatten();
+            }
+        }
+    }
+}
+
+fn reap(pid: u32, options: libc::c_int) -> std::io::Result<Option<ExitStatus>> {
+    use std::os::unix::process::ExitStatusExt;
+    let mut raw = 0;
+    loop {
+        match unsafe { libc::waitpid(pid as libc::pid_t, &mut raw, options) } {
+            0 => return Ok(None),
+            reaped if reaped > 0 => return Ok(Some(ExitStatus::from_raw(raw))),
+            _ => {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error);
                 }
             }
         }
-    });
-
-    Ok((child, stdin, receiver, resources))
+    }
 }
 
-pub(super) fn stop_child(child: &mut Child) {
+#[cfg(test)]
+impl ClaudeChild {
+    pub(super) fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Started(child) => child.kill(),
+            Self::Adopted { .. } => Ok(()),
+        }
+    }
+
+    pub(super) fn wait(&mut self) {
+        self.kill_and_wait();
+    }
+}
+
+/// Claude Code's stdout and stderr, read line by line into one channel.
+pub(super) struct ClaudeOutput {
+    pub(super) receiver: Receiver<ClaudeRuntimeMessage>,
+    pub(super) stdout: LineReader,
+    pub(super) stderr: LineReader,
+}
+
+impl ClaudeOutput {
+    #[cfg(test)]
+    pub(super) fn detached() -> Self {
+        let null = || OwnedFd::from(std::fs::File::open("/dev/null").expect("open /dev/null"));
+        Self::start(
+            null(),
+            Vec::new(),
+            null(),
+            Vec::new(),
+            false,
+            &Default::default(),
+        )
+    }
+
+    pub(super) fn start(
+        stdout: OwnedFd,
+        stdout_unread: Vec<u8>,
+        stderr: OwnedFd,
+        stderr_unread: Vec<u8>,
+        held: bool,
+        output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
+    ) -> Self {
+        let (tx, receiver) = mpsc::channel();
+        let stdout = {
+            let tx = tx.clone();
+            let output_notifier = output_notifier.clone();
+            LineReader::start(stdout, stdout_unread, held, move |line| {
+                let message = match serde_json::from_str::<Value>(&line) {
+                    Ok(value) => ClaudeRuntimeMessage::Stdout(value),
+                    Err(error) => {
+                        ClaudeRuntimeMessage::StdoutParseError(format!("{error}: {line}"))
+                    }
+                };
+                let _ = output_notifier.send(&tx, message);
+            })
+        };
+        let output_notifier = output_notifier.clone();
+        let stderr = LineReader::start(stderr, stderr_unread, held, move |line| {
+            let _ = output_notifier.send(&tx, ClaudeRuntimeMessage::Stderr(line));
+        });
+        Self {
+            receiver,
+            stdout,
+            stderr,
+        }
+    }
+
+    pub(super) fn release(&self) {
+        self.stdout.release();
+        self.stderr.release();
+    }
+}
+
+pub(super) fn stop_child(child: &mut ClaudeChild) {
     // Signal only the exact child created by this runtime.
     if child.id() <= 1 {
         return;
     }
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        Err(_) => {}
+    if let Ok(None) = child.try_wait() {
+        child.kill_and_wait();
     }
 }
 

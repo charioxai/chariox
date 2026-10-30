@@ -163,6 +163,9 @@ impl KernelRuntimeState {
                     queued_recovery_targets,
                 )
                 .await;
+            // Recovered prompts claimed their handed-over turns in this pass.
+            #[cfg(unix)]
+            crate::hot_reload::end_unclaimed_providers();
             if summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0 {
                 return summary;
             }
@@ -972,7 +975,12 @@ impl KernelRuntimeState {
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
         let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
-        if adapter_key == "dev-stub" {
+        // A hot reload handed the running turn over: the same prompt continues it.
+        #[cfg(unix)]
+        let handed_over = crate::hot_reload::provider_handed_over(session_id, agent.id());
+        #[cfg(not(unix))]
+        let handed_over = false;
+        if adapter_key == "dev-stub" || handed_over {
             self.redispatch_local_prompt(session_id, agent.id(), &prompt)
                 .await?;
             return Ok(UncertainLocalRecoveryOutcome::OriginalRedispatched);

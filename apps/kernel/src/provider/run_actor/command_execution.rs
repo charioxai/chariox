@@ -291,6 +291,21 @@ pub(super) fn execute_terminate_command(
     {
         return Ok(());
     }
+    #[cfg(unix)]
+    if run.adapter_key() == "claude" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_claude_runtime(&run_id)?;
+        match crate::provider::hand_over_claude_runtime(state) {
+            Ok(handover) => {
+                crate::hot_reload::hand_over_provider(&run, handover);
+                return Ok(());
+            }
+            Err(state) => {
+                *slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+            }
+        }
+    }
     if run.adapter_key() == "opencode"
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
