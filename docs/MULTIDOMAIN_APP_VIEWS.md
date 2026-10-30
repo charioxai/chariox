@@ -85,6 +85,9 @@ origin, apply the supplied strict CSP, prohibit top navigation/popups and run
 it in a sandboxed frame. UI scripts may run inside that App frame; they must
 never run in the trusted terminal document. The bridge exposes
 `window.chariox.call(method, input)` and forwards only through the kernel.
+A call the kernel refuses with `APP_BUSY` is answered before it is dispatched, so the
+bridge sends it again up to five times, waiting 500 ms longer each time, before the
+page sees the error.
 The `.invalid` origin is a kernel identity, not an Internet endpoint. Native
 hosts must map it to their isolated App asset loader; a web host needs an
 isolated origin or equivalent isolation before it renders any signed script.
