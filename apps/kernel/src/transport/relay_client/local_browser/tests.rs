@@ -1891,6 +1891,29 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
     });
 }
 
+/// MP-08 protocol 917: an RTC-only kernel (no loopback grant ever minted)
+/// still retires an admitted data channel when the Cloud pairing is cleared.
+#[test]
+fn mp11_webrtc_session_closes_when_the_pairing_is_cleared() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        let mut unpaired = kernel.projection.snapshot();
+        unpaired.cloud_relay = None;
+        kernel.projection.update(unpaired);
+        assert_eq!(
+            client.next_json().await,
+            serde_json::json!({"kind": "close", "reason": "local browser authority revoked"})
+        );
+    });
+}
+
 /// MP-08 TR-15: after the machine changes network a new offer is answered from
 /// the interfaces that exist now; the address it left is no longer offered.
 #[test]

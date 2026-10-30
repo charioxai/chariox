@@ -81,6 +81,7 @@ pub(crate) struct LocalBrowserDirect {
     grants: std::sync::Mutex<BTreeMap<String, LocalBrowserGrant>>,
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
+    authority_watch: std::sync::Once,
     rtc: rtc::RtcEndpoint,
 }
 
@@ -129,6 +130,7 @@ impl LocalBrowserDirect {
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
+            authority_watch: std::sync::Once::new(),
             rtc,
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
@@ -160,6 +162,7 @@ impl LocalBrowserDirect {
         identity: &RelayCallerIdentity,
         client: LocalDirectClient,
     ) -> Result<serde_json::Value, RelayError> {
+        self.watch_authority_once();
         let (grant, authority) = self.mint_grant(identity, client)?;
         let endpoint = self
             .ensure_endpoint()
@@ -189,6 +192,7 @@ impl LocalBrowserDirect {
         identity: &RelayCallerIdentity,
         offer: &str,
     ) -> Result<serde_json::Value, RelayError> {
+        self.watch_authority_once();
         let (grant, _) = self.mint_grant(identity, LocalDirectClient::Browser)?;
         let (answer, epoch) = self
             .rtc
@@ -326,10 +330,21 @@ impl LocalBrowserDirect {
         Ok(bound)
     }
 
+    /// Starts the revocation watch with the first grant of either carrier, so
+    /// a kernel that is only reached over the data channel retires its
+    /// sessions too, and a kernel nobody connects to polls nothing.
+    fn watch_authority_once(self: &Arc<Self>) {
+        self.authority_watch.call_once(|| {
+            tokio::spawn(Self::watch_authority(Arc::downgrade(self)));
+        });
+    }
+
     /// Revocation: logout, re-pairing to another account or realm, Cloud
     /// origin change, or kernel key rotation retires every direct session.
-    async fn watch_authority(&self) {
-        let mut shutdown = self.shutdown.clone();
+    async fn watch_authority(direct: std::sync::Weak<Self>) {
+        let Some(mut shutdown) = direct.upgrade().map(|direct| direct.shutdown.clone()) else {
+            return;
+        };
         loop {
             tokio::select! {
                 _ = shutdown.changed() => return,
@@ -338,7 +353,10 @@ impl LocalBrowserDirect {
             if *shutdown.borrow() {
                 return;
             }
-            self.refresh_authority();
+            let Some(direct) = direct.upgrade() else {
+                return;
+            };
+            direct.refresh_authority();
         }
     }
 

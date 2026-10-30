@@ -92,10 +92,7 @@ pub(super) async fn run_when_bound(
     let Some(direct) = direct.upgrade() else {
         return;
     };
-    tokio::join!(
-        run_listener(Arc::clone(&direct), listener, endpoint),
-        direct.watch_authority(),
-    );
+    run_listener(direct, listener, endpoint).await;
 }
 
 async fn run_listener(
