@@ -258,17 +258,30 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         let mut restored_sessions = Vec::with_capacity(ended_session_ids.len());
         for session_id in ended_session_ids {
-            let session = self
+            let ended = self
                 .owned
                 .session_store
                 .restore_ended_session(&session_id)?;
-            let session = self.owned.session_snapshot(session.id())?;
+            // Archiving drops the live agents; the ended snapshot still holds
+            // them, so the restored Room gets its own agents back, not new ones.
+            let agents = ended.agents().to_vec();
+            for agent in &agents {
+                self.owned.agent_store.restore_agent(agent.clone());
+            }
+            let session = self.owned.session_snapshot(ended.id())?;
             self.append_session_durable_event(
                 "session.updated",
                 &session,
                 "runtime_restore_project",
             )
             .await?;
+            for agent in &agents {
+                self.owned.durable_state_store.append_event(
+                    "agent.updated",
+                    Some(agent.id().to_string()),
+                    serde_json::json!({"agent": agent, "source": "runtime_restore_project"}),
+                )?;
+            }
             restored_sessions.push(session);
         }
         let project = self
