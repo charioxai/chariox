@@ -3,8 +3,8 @@ use super::*;
 // Local 912 / relay peer 363: the owner's client unlocks the Vault with no session.
 #[test]
 fn unlock_credential_vault_912_363_shapes_are_pinned() {
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 912);
-    assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 363);
+    const { assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 912) };
+    const { assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 363) };
     let request =
         LocalDaemonRequest::UnlockCredentialVault(crate::local::UnlockCredentialVaultRequest {
             passphrase: crate::local::VaultPassphrase::new("typed by the owner"),
