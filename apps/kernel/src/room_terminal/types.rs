@@ -32,10 +32,14 @@ pub enum RoomTerminalDriver {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum RoomTerminalOutcome {
+    OutsideEnd,
     /// The shell, or the command a terminal was opened with, ended.
     ProgramExited {
         exit_code: Option<u32>,
         signal: Option<String>,
+    },
+    MemoryLimit {
+        limit_bytes: u64,
     },
     KernelRestarted,
 }
@@ -43,6 +47,10 @@ pub enum RoomTerminalOutcome {
 impl RoomTerminalOutcome {
     pub fn description(&self) -> String {
         match self {
+            Self::MemoryLimit { limit_bytes } => {
+                format!("ended: memory limit of {limit_bytes} bytes exceeded")
+            }
+            Self::OutsideEnd => "ended: stopped by a session controller".into(),
             Self::KernelRestarted => "ended: kernel restarted".to_string(),
             Self::ProgramExited {
                 exit_code: Some(code),
@@ -141,6 +149,10 @@ pub enum RoomTerminalWatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RoomTerminalEventKind {
+    OutsideEnd,
+    MemoryLimit {
+        limit_bytes: u64,
+    },
     Finished {
         /// Known when the shell itself exited; a foreground program that
         /// returned to the prompt leaves its status to the screen.

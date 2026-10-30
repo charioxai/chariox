@@ -13,6 +13,19 @@ import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 const commandTree = loadCommandCenterTestCatalog()
 
+test("MP-08 / MP-10 / MP-11 Continue is not replaced by fuzzy wait commands", () => {
+  for (const entry of ["keyboard", "submit"] as const) {
+    const harness = createHarness("/continue")
+    harness.controller.sync()
+    assert.ok(harness.controller.items().some((item) => item.value.startsWith("/wait-")), "exercise the real catalog's continue aliases")
+    assert.equal(entry === "keyboard"
+      ? harness.controller.handleKey({ name: "return" })
+      : harness.controller.selectFromSubmit(), false, entry)
+    assert.equal(harness.promptText, "/continue")
+    assert.deepEqual(harness.executed, [])
+  }
+})
+
 test("Enter leaves a fully typed agent profile command for the normal submit handler", () => {
   for (const prompt of ["/agent provider reviewer opencode", "/agent model reviewer codex/gpt-6-luna"]) {
     const harness = createHarness(prompt, [{

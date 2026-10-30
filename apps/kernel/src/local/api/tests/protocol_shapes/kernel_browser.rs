@@ -177,6 +177,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             bitrate: 2_000_000,
             device_scale_factor: 2,
             initial_push: false,
+            tab_display: false,
         },
         Command::DisplayNext {
             subscription_id: "s".into(),
@@ -530,7 +531,7 @@ fn mp08_mp10_mp11_browser_display_placement_529_snapshot() {
     let bytes = include_bytes!("browser-display-placement-529.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1396cbd02821e79f5fa2f4166548d9d1f4c1ca554cf7100873d556205cbae47b"
+        "03bc735de1f624775bc8e24f11f8104c827cacb2bb52e3b46a29a022ce385158"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -557,7 +558,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "1537d21345b80c50e9b0446f2af5cfb76cc654fbb0c56b94092aa43afee432c1"
+        "6e9025d2c457661c4e71c73ec1a8f10a43d25d15b92c7b15ce0ef22ae2faf120"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -660,7 +661,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "65a21c0be1468f33e4a03d9d887ebbb4426bb2c9c4f5327a530e3017de6df855"
+        "673449c6635996d095e0421382d362ab9984a8a28fb407015280f8c45f63b0ea"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -676,7 +677,7 @@ fn browser_dialog_protocol630_snapshot() {
     let bytes = include_bytes!("browser-dialog-630.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "70fda0c32a9f9c3c9f895189095f7ca82caaaea2a8896518542474c9f3a45734"
+        "f09652681a92d96b2f38b7eae399020b56c17b83c50454024923818d04f9eb43"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

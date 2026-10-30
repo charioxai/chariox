@@ -2,8 +2,8 @@
 
 MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
 and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
-popup naming the agent, the full prompt and the window; guests cannot answer
-it. Press Tab to choose 1 hour (default), 2, 4 or 8 hours, then enter the
+popup naming the agent, the full prompt, its attachments (a note shows its
+text) and the window; guests cannot answer it. Press Tab to choose 1 hour (default), 2, 4 or 8 hours, then enter the
 passkey. The critical-approval remember window never satisfies sudo. Never type
 a passkey into an agent transcript, provider prompt or shell command.
 
@@ -58,11 +58,11 @@ session grant. Startup workspace trust can reuse an already approved launch
 for that exact workspace without treating the pending task as live tool authority.
 Global extension registration reuses consent only for source inside this
 workspace; outside source roots still ask, and App sandboxing stays in force.
-Other session/workspace targets and unclassified host operations require a fresh owner
-passkey in an operation-scope popup showing their exact parameters. That added
-approval binds a digest to the original work and window. Scope is not inferred
-from natural-language similarity or a delegate's result. Extend renews only
-time. Destructive agent/workflow operations retain the immutable direct-creator
+A live window covers every typed kernel request the owner has not reserved for
+themselves (see the refused list below), in any session or workspace of this
+kernel, with no further passkey. The window ends at the earlier of its monotonic
+deadline and the expiry clients display, so a host that slept past the expiry
+does not extend it. Extend renews only time. Destructive agent/workflow operations retain the immutable direct-creator
 fences even under sudo. Raw credential values and full kernel configuration
 are unavailable to this bridge.
 
@@ -92,7 +92,7 @@ a late timer nor a wall-clock change can extend a window.
 Sudo never answers arbitrary interactions: `RespondToInteraction` is refused to
 `chariox_kernel_request` and to every kernel-agent caller, and the legacy
 `chariox.meta.resolve_runtime_interaction` tool is removed. Covered provider tool permission gates consume task consent before registering
-an interaction. Owners answer new scope and other approvals in their terminal. Sudo also cannot mint access or sudo, answer
+an interaction. Owners answer approvals in their terminal. Sudo also cannot mint access or sudo, answer
 credential-entry prompts, export secret values, change the passkey or
 configure kernel access, pairing, relay or Cloud identity.
 
@@ -224,8 +224,8 @@ Required live scenario `kernel-sudo/S02`: use a lane-created identity, the real
 built web and TUI, hosted WSS and an official provider. Approve one `/sudo`
 task to rename its own session three times. All three exact typed operations,
 including their different alias parameters, must complete with zero additional
-permission prompts. A harmless rename of another session must still open scope
-consent and refusal must leave that session unchanged. Capture both clients at
+permission prompts. A rename of another session must also complete without a
+prompt. Capture both clients at
 DPR1 and DPR2 and record source/binary identities, the resolved provider model,
 all consent counts and cleanup. The baseline must show the repeated prompt.
 This session-resource drill does not establish unclassified host-operation,
@@ -234,7 +234,7 @@ provider-native tool approval, managed-worker, or full MP-11 acceptance.
 MP-08 / MP-10 / MP-11 S02 room-admission regression: run the session-resource
 scenario with room agent tools enabled. The consent sheet must not promise
 provider-controlled focus. Through the authenticated `chariox_kernel_request`
-path, both `FocusAgent` and `CycleAgentFocus` must fail promptly without a scope
+path, both `FocusAgent` and `CycleAgentFocus` must fail promptly without a
 popup or a focus change; all three covered session renames must still succeed.
 
 ## MP-08 / MP-10 / MP-11: task operation acceptance (S02, S08–S18)
@@ -243,7 +243,7 @@ Each row needs a fail-first drill against the base and the final built kernel,
 real clients and official provider harness. Source regressions supplement it.
 
 - S02: one approved task, three changed workspace-query parameters and provider
-  metadata operations; no added scope sheet. A different workspace/session asks.
+  metadata operations; no added sheet, in the task's session or any other.
 - S08: Required-mode watched command runs under the approved task without
   changing permanent permissions; no-sudo still refuses or asks.
 - S09: Claude and native harness watched commands reuse task consent, while
@@ -269,5 +269,5 @@ outputs. A control without /sudo must still ask. Record the resolved model,
 turn count, screenshots/video at DPR1/DPR2, prompt count and exact source/binary
 identities. No provider-wide approval cache or automatic interaction-answer API
 is introduced. Missing actual passwords, passkeys/codes, first account linking,
-identity choice, new scope, takeover, expiry/revoke and once-only effects keep
+identity choice, takeover, expiry/revoke and once-only effects keep
 their normal boundaries.

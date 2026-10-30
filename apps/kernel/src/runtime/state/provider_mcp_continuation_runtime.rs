@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         token: &str,
     ) -> Vec<(String, String, serde_json::Value)> {
         let mut tools: Vec<_> = self
-            .runtime_tool_specs_for_auth_token(token)
+            .runtime_tool_specs_for_current_grants(token)
             .into_iter()
             .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
@@ -335,6 +335,13 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
+        // Accepted catalog work belongs to the kernel's continuation. Replacing
+        // its source provider must not invalidate that continuation's caller epoch.
+        // Keep external grants and peer authority scoped through the replacement.
+        let state = self.with_room_provider_origin(None, None);
+        if state.owned.agent_store.get_agent(agent_id)?.archived() {
+            return Ok(());
+        }
         let previous_provider_run_id = self
             .owned
             .provider_store
@@ -348,7 +355,7 @@ impl KernelRuntimeState {
                     Some(run.id().to_string())
                 }
             });
-        let outcome = self
+        let outcome = state
             .reload_agent_provider_if_idle_for_reason(
                 &continuation.session_id,
                 &continuation.agent_id,
@@ -369,23 +376,24 @@ impl KernelRuntimeState {
             // Usually the existing poller still owns the original budget. A
             // prompt-completion callback may restart previously expired work,
             // but a Deferred poll attempt never spawns a replacement task.
-            self.ensure_pending_mcp_continuation_poller(session_id, agent_id);
+            state.ensure_pending_mcp_continuation_poller(session_id, agent_id);
             return Ok(());
         }
         if outcome == ProviderReloadOutcome::Reloaded {
-            self.wait_for_agent_provider_relaunch(
-                &continuation.session_id,
-                &continuation.agent_id,
-                previous_provider_run_id.as_deref(),
-            )
-            .await?;
+            state
+                .wait_for_agent_provider_relaunch(
+                    &continuation.session_id,
+                    &continuation.agent_id,
+                    previous_provider_run_id.as_deref(),
+                )
+                .await?;
         }
 
         let (hidden_system_context, _manifest) =
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
         if self.owned.config_projection.snapshot().room_agent_tools {
-            return self
+            return state
                 .dispatch_catalog_task_continuation(
                     continuation,
                     previous_provider_run_id,
@@ -404,7 +412,7 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_system_context);
-        let mut submission = self
+        let mut submission = state
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: continuation.session_id,
                 prompt,
@@ -413,10 +421,10 @@ impl KernelRuntimeState {
             })
             .await?;
         if let Some(dispatch) = submission.dispatch.take() {
-            self.spawn_prompt_dispatch(dispatch, self.owned.provider_store.run_operation_lanes());
+            state.spawn_prompt_dispatch(dispatch, self.owned.provider_store.run_operation_lanes());
         }
         if let Some(dispatch) = submission.remote_dispatch.take() {
-            self.spawn_remote_prompt_dispatch(dispatch);
+            state.spawn_remote_prompt_dispatch(dispatch);
         }
         Ok(())
     }

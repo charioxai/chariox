@@ -16,6 +16,7 @@ mod catalog;
 mod launch_args;
 mod mcp_config;
 mod native_tui;
+mod state_path;
 mod usage_capture;
 mod usage_probe;
 
@@ -182,7 +183,6 @@ fn plan_claude_launch_unlocked(
         return Ok(launch);
     }
     if request.provider == CLAUDE_HEADLESS_PROVIDER_ID {
-        ensure_claude_headless_onboarding_state(Some(request))?;
         crate::logging::info_with_fields(
             "daemon.provider.claude",
             "preparing Claude headless native bridge files",
@@ -298,19 +298,22 @@ fn plan_claude_launch_unlocked(
     Ok(launch)
 }
 
-pub(crate) fn prepare_vaulted_claude_native_onboarding(
+/// Initializes the selected profile's onboarding state while the launch
+/// environment (including a Project-bound HOME) is still in the request,
+/// before secrets are separated from it and its metadata is persisted.
+pub(crate) fn prepare_claude_onboarding_state(
     request: &LaunchProviderRequest,
 ) -> Result<(), DaemonError> {
-    if crate::provider::canonical_provider_family(&request.provider) == Some("claude")
-        && !request.client_interface.is_chariox()
-        && request.provider != CLAUDE_HEADLESS_PROVIDER_ID
+    if crate::provider::canonical_provider_family(&request.provider) != Some("claude") {
+        return Ok(());
+    }
+    let headless = request.provider == CLAUDE_HEADLESS_PROVIDER_ID;
+    let vaulted_native = !request.client_interface.is_chariox()
         && request
             .provider_credential_env
             .iter()
-            .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty())
-    {
-        // Initialize the selected profile before secrets are separated from the
-        // planner request and its metadata is persisted.
+            .any(|(name, token)| name == "CLAUDE_CODE_OAUTH_TOKEN" && !token.trim().is_empty());
+    if headless || vaulted_native {
         ensure_claude_headless_onboarding_state(Some(request))?;
     }
     Ok(())
@@ -319,27 +322,24 @@ pub(crate) fn prepare_vaulted_claude_native_onboarding(
 fn ensure_claude_headless_onboarding_state(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<(), DaemonError> {
-    let selected_config_dir = request
-        .and_then(|request| request.provider_account_env.get(CLAUDE_CONFIG_DIR_ENV))
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            env::var_os(CLAUDE_CONFIG_DIR_ENV)
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        });
-    let state_path = if let Some(config_dir) = selected_config_dir {
-        config_dir.join(CLAUDE_HEADLESS_STATE_FILE)
-    } else {
-        let home = env::var_os("HOME").ok_or_else(|| DaemonError::LocalTransport {
-            operation: "initialize Claude headless onboarding state",
-            message: "HOME is unavailable".to_string(),
-        })?;
-        PathBuf::from(home).join(CLAUDE_HEADLESS_STATE_FILE)
-    };
-    ensure_claude_headless_onboarding_state_at(&state_path)
+    let state_path = state_path::for_launch(request)?;
+    ensure_claude_headless_onboarding_state_at(&state_path).map_err(|error| match error {
+        DaemonError::LocalTransport {
+            operation,
+            mut message,
+        } => {
+            if let Some(request) = request {
+                // HOME may be a private launch binding. Keep its value out of errors.
+                for (name, value) in request.provider_credential_env.iter() {
+                    if name == "HOME" && !value.is_empty() {
+                        message = message.replace(value, "[redacted]");
+                    }
+                }
+            }
+            DaemonError::LocalTransport { operation, message }
+        }
+        other => other,
+    })
 }
 
 pub(super) fn ensure_claude_headless_onboarding_state_at(
@@ -920,6 +920,7 @@ mod tests {
             "default",
             "claude-headless/claude-sonnet-4-6",
         );
+        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
@@ -1010,6 +1011,7 @@ mod tests {
             "CLAUDE_CONFIG_DIR".to_string(),
             selected_config_dir.display().to_string(),
         )]));
+        super::prepare_claude_onboarding_state(&request).expect("state should initialize");
         let launch = plan_claude_launch(Some(&request)).expect("launch should resolve");
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
@@ -1072,7 +1074,7 @@ mod tests {
         let request = request
             .with_client_interface(crate::provider::ProviderClientInterface::NativeTui)
             .with_provider_credential_env(credentials);
-        super::prepare_vaulted_claude_native_onboarding(&request)
+        super::prepare_claude_onboarding_state(&request)
             .expect("selected account should initialize");
         let mut request = request;
         let _credentials = std::mem::take(&mut request.provider_credential_env);
@@ -1427,3 +1429,7 @@ fn mp11_claude_onboarding_fifo_is_rejected_without_waiting() {
         ensure_claude_headless_onboarding_state_at(&path).is_err()
     });
 }
+
+#[cfg(test)]
+#[path = "claude/state_path_tests.rs"]
+mod state_path_tests;

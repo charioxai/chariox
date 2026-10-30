@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
@@ -29,8 +29,25 @@ pub(super) fn spawn_claude_child(
     working_directory: Option<&PathBuf>,
     operation: &'static str,
     output_notifier: &crate::provider::output_ready::ProviderEventNotifier,
-) -> Result<(Child, ChildStdin, Receiver<ClaudeRuntimeMessage>), DaemonError> {
-    let mut command = Command::new(program);
+) -> Result<
+    (
+        Child,
+        ChildStdin,
+        Receiver<ClaudeRuntimeMessage>,
+        crate::runtime::process_resources::ProcessDomain,
+    ),
+    DaemonError,
+> {
+    let prepared = crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
+        DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        }
+    })?;
+    #[cfg(unix)]
+    let inner_program = program;
+    let (program, args) = prepared.command(program.to_string(), args.to_vec());
+    let mut command = crate::process_spawn::command(program);
     command
         .args(args)
         .stdin(Stdio::piped())
@@ -59,6 +76,19 @@ pub(super) fn spawn_claude_child(
     }
 
     #[cfg(unix)]
+    {
+        let path = match command.get_envs().find(|(name, _)| *name == "PATH") {
+            Some((_, value)) => value.map(std::ffi::OsStr::to_os_string),
+            None => std::env::var_os("PATH"),
+        };
+        crate::runtime::process_resources::validate_executable(inner_program, command.get_current_dir(), path.as_deref())
+            .map_err(|_| DaemonError::LocalTransport {
+                operation,
+                message: "Claude Code executable is missing or not executable; reinstall Claude Code and retry".into(),
+            })?;
+    }
+
+    #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
         command.pre_exec(|| {
@@ -74,6 +104,17 @@ pub(super) fn spawn_claude_child(
             message: format!("failed to start Claude Code for `{provider_run_id}`: {error}"),
         }
     })?;
+    let resources = match prepared.start(child.id()) {
+        Ok(resources) => resources,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: error.to_string(),
+            });
+        }
+    };
+    resources.bind_key(provider_run_id);
     let stdin = child
         .stdin
         .take()
@@ -142,7 +183,7 @@ pub(super) fn spawn_claude_child(
         }
     });
 
-    Ok((child, stdin, receiver))
+    Ok((child, stdin, receiver, resources))
 }
 
 pub(super) fn stop_child(child: &mut Child) {

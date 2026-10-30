@@ -20,7 +20,7 @@ pub(crate) fn list_workspace_worktrees(
         return Ok(Vec::new());
     }
     let workspace_path = PathBuf::from(workspace_id);
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&workspace_path)
         .output();
@@ -208,7 +208,7 @@ fn resolve_deletable_git_worktree(
         });
     }
     let repo_root = resolve_repo_root(workspace_id)?;
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&repo_root)
         .output()

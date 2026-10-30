@@ -33,6 +33,9 @@ fn event(session: &str, agent: &str) -> OutsideEvent {
             run_state: Some(EventRunState::Idle),
             task_state: None,
             reason: None,
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
         },
         summary: "idle".into(),
         at_ms: 1,
@@ -843,4 +846,199 @@ fn check_other_kernel_health(source_before_health: bool) {
             "health-only kernel B must expire the cursor past its lost transition"
         );
     }
+}
+
+fn identify(store: &DurableKernelStateStore) {
+    store
+        .outside_mutate(Mutation::Identity {
+            kernel: "kernel-a".into(),
+            machine: "machine-a".into(),
+        })
+        .unwrap();
+}
+fn working(session: &str, agent: &str) -> outside::RunState {
+    outside::RunState {
+        session_id: session.into(),
+        agent_id: agent.into(),
+        state: EventRunState::Working,
+        turn: None,
+    }
+}
+fn run_states(f: &Fixture, id: &str) -> Vec<(String, EventRunState)> {
+    list(f, id)
+        .events
+        .into_iter()
+        .filter_map(|event| match event.value {
+            OutsideEventValue::Agent { run_state, .. } => Some((event.agent_id?, run_state?)),
+            _ => None,
+        })
+        .collect()
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the writer cost of a publication must not multiply
+// the subscription payloads by the number of published states.
+#[test]
+fn outside_run_states_write_each_followed_part_once() {
+    let f = Fixture::new();
+    identify(&f.store);
+    for id in ["a", "b", "c"] {
+        subscribe(&f, id, true, vec![target("s", None)]);
+    }
+    let states = (0..50)
+        .map(|i| working("s", &format!("agent-{i}")))
+        .collect();
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let tx = db.transaction().unwrap();
+    let before = tx.total_changes();
+    outside::apply(&tx, Mutation::RunStates { states }).unwrap();
+    assert_eq!(
+        tx.total_changes() - before,
+        3 * 50 + 3,
+        "one inbox row per part and state, one part write per part"
+    );
+    tx.commit().unwrap();
+    assert_eq!(run_states(&f, "b").len(), 50);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: unchanged run states never reach the writer again,
+// and a new follower is offered every state.
+#[test]
+fn outside_run_states_queue_only_changes_until_the_targets_change() {
+    let f = Fixture::new();
+    identify(&f.store);
+    subscribe(&f, "a", true, vec![target("s", None)]);
+    let queue = |states: Vec<outside::RunState>| {
+        f.store
+            .enqueue_outside_run_states(Some("s"), |_| Some(states))
+            .unwrap()
+    };
+    assert!(queue(vec![working("s", "x")]));
+    assert!(
+        !queue(vec![working("s", "x")]),
+        "unchanged state queued again"
+    );
+    assert!(!f
+        .store
+        .enqueue_outside_run_states(Some("unfollowed"), |_| panic!(
+            "captured an unfollowed session"
+        ))
+        .unwrap());
+    subscribe(&f, "b", true, vec![target("s", None)]);
+    assert!(
+        queue(vec![working("s", "x")]),
+        "a subscribe must offer every state again"
+    );
+    f.store.outside_settled().unwrap();
+    assert_eq!(run_states(&f, "a"), [("x".into(), EventRunState::Working)]);
+    assert_eq!(run_states(&f, "b"), [("x".into(), EventRunState::Working)]);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: nobody waits for a publication, so a state the writer
+// could not commit is offered again by the next one instead of being lost.
+#[test]
+fn outside_run_states_offer_again_after_a_failed_commit() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-outside-reoffer-{:016x}",
+        rand::random::<u64>()
+    ));
+    std::fs::create_dir_all(root.join("faults")).unwrap();
+    let store = {
+        let _faults = faults::TestFaultDir::set(&root.join("faults"));
+        DurableKernelStateStore::open_owned(root.join("state.sqlite")).unwrap()
+    };
+    let f = Fixture { root, store };
+    identify(&f.store);
+    subscribe(&f, "a", true, vec![target("s", None)]);
+    let queue = || {
+        f.store
+            .enqueue_outside_run_states(None, |_| Some(vec![working("s", "x")]))
+            .unwrap()
+    };
+    std::fs::write(f.root.join("faults/writer-fail"), "").unwrap();
+    assert!(queue());
+    assert!(f.store.outside_settled().is_err());
+    std::fs::remove_file(f.root.join("faults/writer-fail")).unwrap();
+    assert!(queue(), "the failed state must be offered again");
+    f.store.outside_settled().unwrap();
+    assert_eq!(run_states(&f, "a"), [("x".into(), EventRunState::Working)]);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: an inbox nobody acknowledges grows to its limit; it is
+// counted only when new events could have filled it, and trimmed with headroom so a full
+// inbox is not counted and trimmed again on every event.
+#[test]
+fn outside_retention_counts_only_when_an_inbox_could_be_full() {
+    let f = Fixture::new();
+    subscribe(&f, "grant", true, vec![target("x", None)]);
+    let bound = |limit| {
+        f.store
+            .outside_mutate(Mutation::Bound {
+                id: "grant".into(),
+                limit,
+            })
+            .unwrap();
+        let part = f.store.outside_part("grant").unwrap().unwrap();
+        let retained = f
+            .store
+            .outside_list("grant", Some(part.floor), 1000)
+            .unwrap()
+            .unwrap()
+            .events
+            .len();
+        (part, retained)
+    };
+    for n in 0..40 {
+        publish(&f, &n.to_string(), event("x", "x1"));
+    }
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 30, "trimmed to the limit less its headroom");
+    assert_eq!(
+        part.counted,
+        Some(outside::CountedInbox {
+            at: part.latest,
+            rows: 30
+        })
+    );
+    publish(&f, "40", event("x", "x1"));
+    publish(&f, "41", event("x", "x1"));
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 32, "two new events cannot pass the limit");
+    assert_eq!(part.counted.map(|counted| counted.rows), Some(30));
+    publish(&f, "42", event("x", "x1"));
+    let (part, retained) = bound(32);
+    assert_eq!(retained, 30);
+    assert_eq!(part.counted.map(|counted| counted.rows), Some(30));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: every publication decodes and rewrites the parts it
+// reaches, so a part must not grow with the agents whose events it has forwarded.
+#[test]
+fn an_acknowledged_part_does_not_grow_with_forwarded_agents() {
+    let stored = |agents: usize| {
+        let f = Fixture::new();
+        subscribe(&f, "grant", false, vec![target("x", None)]);
+        for i in 0..agents {
+            publish(&f, &format!("{i}"), event("x", &format!("agent-{i:03}")));
+        }
+        let batch = list(&f, "grant");
+        f.store
+            .outside_mutate(Mutation::Ack {
+                id: "grant".into(),
+                cursor: batch.next_cursor,
+            })
+            .unwrap();
+        Connection::open(f.root.join("state.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT length(payload) FROM agent_outside_subscriptions WHERE id='grant'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    let (few, many) = (stored(2), stored(60));
+    assert!(
+        many - few < 16,
+        "the part is {few} bytes after 2 forwarded agents and {many} after 60"
+    );
 }

@@ -186,12 +186,23 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         if expected_prompt_id.is_some_and(|expected_prompt_id| prompt.id() != expected_prompt_id) {
             return Ok(false);
         };
-        if expected_prompt_id.is_some() {
-            let diagnosed = self
-                .provider_store
-                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
-            self.app.update_provider_run_projection(diagnosed);
+        if let Some(termination) = provider_termination.as_ref() {
+            super::provider_output_fanout::ProviderOutputFanout::new(self.app).fail_pending_tools(
+                &self.prompt_activity,
+                session_id,
+                provider_run_id,
+                termination,
+            );
         }
+        let run = self.provider_store.get_run(provider_run_id)?;
+        let failure = provider_termination
+            .as_ref()
+            .and_then(|termination| termination.failure.clone())
+            .unwrap_or_else(|| crate::provider::TurnOutcome::classify(run.adapter_key(), message));
+        let diagnosed = self
+            .provider_store
+            .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+        self.app.update_provider_run_projection(diagnosed);
         if let Ok(outcome) = self
             .provider_store
             .terminate_run_provider_only(session_id, provider_run_id)
@@ -241,6 +252,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             &agent_id,
             Some(provider_run_id),
             provider_termination,
+            Some(failure),
         )?;
         self.clear_active_turn(provider_run_id);
         Ok(true)
@@ -298,6 +310,11 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             );
             let _ =
                 crate::app::KernelSessionReadService::new(self.app).session_snapshot(session_id);
+        } else {
+            let diagnosed = self
+                .provider_store
+                .record_terminal_diagnostic(provider_run_id, message.to_string())?;
+            self.app.update_provider_run_projection(diagnosed);
         }
         let _ = self
             .app
@@ -351,7 +368,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
-                active_tool_ids: std::collections::BTreeSet::new(),
+                active_tools: Default::default(),
             });
     }
 
@@ -636,6 +653,7 @@ mod tests {
             Some(&old_prompt_id),
             Some(
                 crate::provider::ProviderRunTermination::explicit_provider_error(
+                    "codex",
                     "late oversized poll",
                     crate::session::unix_epoch_ms(),
                 ),

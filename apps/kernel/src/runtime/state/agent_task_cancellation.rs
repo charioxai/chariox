@@ -128,6 +128,79 @@ impl KernelRuntimeOwnedState {
     }
 }
 impl KernelRuntimeState {
+    /// Stop still owns parked work when its provider turn has already ended.
+    pub(crate) async fn cancel_parked_agent_task(
+        &self,
+        request: &crate::local::CancelActivePromptRequest,
+        agent: &str,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        self.owned
+            .ensure_attachment_in_session(session.id(), &request.attachment_id)?;
+        // A native prompt-specific Stop must never cancel a different task.
+        if request.expected_prompt_id.is_some()
+            || self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent)
+                .is_some()
+            || !self.owned.config_projection.snapshot().room_agent_tools
+        {
+            return Ok(None);
+        }
+        // AgentRuntime already checked the caller against the agent owner,
+        // just as it does before cancelling an active prompt.
+        let tasks = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(session.id()), Some(agent))?;
+        let mut tasks = tasks.into_iter().filter(|task| {
+            !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+                || task
+                    .obligations
+                    .iter()
+                    .any(|obligation| obligation.status == "open")
+        });
+        let Some(task) = tasks.next() else {
+            return Ok(None);
+        };
+        if tasks.next().is_some() {
+            return Err(crate::durable_state::agent_lifecycle::error("multiple unfinished tasks on this agent; cancel the intended task from its task controls"));
+        }
+        let Outcome::Task(cancelled) =
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::CancelTask {
+                    task: task.task_id,
+                    owner: session.owner_user_id().into(),
+                    revision: task.revision,
+                })?
+        else {
+            unreachable!()
+        };
+        self.retract_stale_task_owner_interactions(session.id(), std::slice::from_ref(&cancelled))
+            .await;
+        Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
+        let snapshot = self.owned.session_snapshot(session.id())?;
+        self.owned
+            .terminal_stream
+            .notify_terminal_projection_change(session.id());
+        let task = snapshot
+            .agent_tasks()
+            .iter()
+            .find(|task| task.task_id == cancelled.task_id)
+            .cloned()
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error(
+                    "cancelled task projection unavailable",
+                )
+            })?;
+        Ok(Some(crate::local::LocalDaemonResponse::AgentTaskUpdated {
+            session_id: session.id().into(),
+            task: Box::new(task),
+        }))
+    }
+
     pub(super) async fn cancel_agent_task_resources(
         &self,
         root: &AgentTaskExecution,

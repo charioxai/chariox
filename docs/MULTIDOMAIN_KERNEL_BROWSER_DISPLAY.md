@@ -47,6 +47,16 @@ x264 remains opt-in. libyuv and libwebp are static (SharpYUV only where WebP shi
 that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB`
 are build-only search paths.
 
+A kernel whose latency, bytes or idle traffic is measured is built with the
+repository's pinned Rust toolchain (`rustc 1.88.0`) and with both search paths set:
+`CHARIOX_NATIVE_DISPLAY_INCLUDE` to the FFmpeg 60 headers plus the sysroot headers
+and `CHARIOX_NATIVE_DISPLAY_LIB` to the sysroot holding the static libyuv, libwebp
+and SharpYUV archives. A plain `cargo build --features native-display` on a host
+with other headers or libraries compiles a different display worker: the same
+commit then fails native navigation preparation and resets the mirror while idle,
+so its numbers are not the measured kernel's. Record the build's SHA-256 next to
+every measurement.
+
 MP-08/MP-10/MP-11 phase 28: unprotected, whole-frame software motion at
 1920×1080 and 2560×1600 uses 1280×720 and 1280×800 video respectively.
 Resizing precedes color conversion. Reduced video certifies no native pixels;

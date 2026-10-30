@@ -17,6 +17,7 @@ import type {
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import { LocalIpcError } from "./ipc.js"
 import {
   createWaitingRoomInventoryCache,
   waitingRoomInventoryCacheScopeKey,
@@ -713,7 +714,7 @@ function createHarness(options: {
   nowMs?: () => number
   hiddenKernelIds?: Set<string>
   snapshots?: WaitingRoomInventory[]
-  getSessionPage?: (cursor: string | null) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
+  getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: WaitingRoomPublicSessionSummary[]; next_cursor: string | null }>
   getInventory?: () => Promise<WaitingRoomInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
   cachedInventories?: readonly WaitingRoomInventory[]
@@ -993,4 +994,39 @@ test("a Room deleted while another is created still leaves the picker", async ()
   const ids = harness.availableSessions().map(s => s.id)
   assert.equal(ids.includes("room-5"), false)
   assert.ok(ids.includes("room-new"))
+})
+
+test("login copy discovery failure is reported without marking inventory disconnected", async () => {
+  const harness = createHarness({ snapshots: [inventory("available", {
+    providerAccountCopyUnavailable: true,
+    sessions: [session("session-available")],
+    remoteKernels: [kernel("kernel-available", { accepting_remote_leases: true })],
+  })] })
+  await harness.controller.refreshNow()
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.availableSessions()[0]?.id, "session-available")
+  assert.equal(harness.remoteKernels()[0]?.accepting_remote_leases, true)
+  assert.equal(harness.warnings()[0]?.message, "login copy discovery unavailable")
+})
+
+
+test("history paging sends its ordering version and retries an activity change atomically", async () => {
+  let changed = false
+  const calls: Array<[string | null, string]> = []
+  const first = inventory("v1", { sessions: [session("old")], sessionsTotal: 2, sessionsNextCursor: "next" })
+  const next = inventory("v2", { sessions: [session("new")], sessionsTotal: 2, sessionsNextCursor: "next" })
+  const harness = createHarness({ getInventory: async () => changed ? next : first, getSessionPage: async (cursor, version) => {
+    calls.push([cursor, version])
+    if (version === "v1") {
+      if (cursor === null) return { sessions: [session("stale")], next_cursor: "next" }
+      assert.deepEqual(harness.availableSessions().map(row => row.id), ["old"], "an incomplete catalog is not published")
+      changed = true
+      throw new LocalIpcError("list sessions", "Session activity changed during listing", "waiting_room_inventory_changed")
+    }
+    return { sessions: [session("new"), session("kept")], next_cursor: null }
+  } })
+  await harness.controller.refreshNow()
+  await harness.controller.loadSessionHistory()
+  assert.deepEqual(calls, [[null, "v1"], ["next", "v1"], [null, "v2"]])
+  assert.deepEqual(harness.availableSessions().map(row => row.id).sort(), ["kept", "new"])
 })

@@ -105,7 +105,7 @@ fn workspace_live_sync_root_for_working_directory(working_directory: &Path) -> P
 }
 
 fn workspace_live_sync_git_toplevel(path: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .arg("-C")
         .arg(path)
         .arg("rev-parse")
@@ -160,7 +160,7 @@ mod tests {
     }
 
     fn run_git_init(path: &Path) {
-        let status = std::process::Command::new("git")
+        let status = crate::process_spawn::command("git")
             .arg("-C")
             .arg(path)
             .arg("init")

@@ -39,18 +39,7 @@ pub(crate) fn review_items(
             }
             continue;
         }
-        let patterns = match fs::symlink_metadata(root.join(".charioxignore")) {
-            Ok(_) => {
-                let (bytes, _) = overlay::read_regular_file_without_following_symlinks(
-                    root,
-                    ".charioxignore",
-                    MAX_CONTEXT_IGNORE_BYTES,
-                )?;
-                overlay::parse_context_ignore_patterns(bytes)?
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(_) => return Err(context_error("Vault review ignore rules are unavailable")),
-        };
+        let patterns = overlay::read_context_ignore_patterns(root)?;
         let mut pending = vec![PathBuf::new()];
         let started = std::time::Instant::now();
         while let Some(relative) = pending.pop() {
@@ -62,9 +51,7 @@ pub(crate) fn review_items(
                 let path = path
                     .to_str()
                     .ok_or_else(|| context_error("Vault review path is not UTF-8"))?;
-                if overlay::context_force_excluded_path(path)
-                    || overlay::user_ignore_pattern_matches_any(&patterns, path)
-                {
+                if overlay::context_force_excluded_path(path) {
                     continue;
                 }
                 if started.elapsed() > std::time::Duration::from_secs(120) {
@@ -74,6 +61,16 @@ pub(crate) fn review_items(
                 }
                 let metadata = fs::symlink_metadata(root.join(path))
                     .map_err(|_| context_error("Vault review metadata unavailable"))?;
+                let rule_path = if metadata.is_dir() {
+                    format!("{path}/")
+                } else {
+                    path.to_string()
+                };
+                if overlay::user_rules_exclude_path(&rule_path, &patterns)
+                    && (!metadata.is_dir() || !overlay::may_include_descendant(&patterns, path))
+                {
+                    continue;
+                }
                 if metadata.file_type().is_symlink() {
                     continue;
                 }

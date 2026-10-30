@@ -175,6 +175,18 @@ export function setProviderAccountCredentialRequest(
   }
 }
 
+/** Requires local kernel protocol 637. This metadata never contains native history. */
+export type NativeProviderCheckpointBinding = {
+  provider: "codex"
+  session_id: string
+  account_sha256: string
+  model: string
+  variant: string | null
+  cli_version: string
+  source_os: "linux"
+  artifact_sha256: string
+}
+
 export function launchProviderRunRequest(
   sessionId: string,
   provider: string,
@@ -186,6 +198,7 @@ export function launchProviderRunRequest(
     structuredEndpoint?: string | null
     providerSessionId?: string | null
     nativeTui?: boolean | null
+    checkpointBinding?: NativeProviderCheckpointBinding | null
   } | null,
 ) {
   const adapterKey = provider === "claude-headless" || provider === "claude-p"
@@ -204,6 +217,7 @@ export function launchProviderRunRequest(
       structured_endpoint: native?.structuredEndpoint ?? null,
       provider_session_id: native?.providerSessionId ?? null,
       native_tui: native?.nativeTui ?? false,
+      ...(native?.checkpointBinding ? { native_checkpoint_binding: native.checkpointBinding } : {}),
     },
   }
 }
@@ -219,6 +233,7 @@ export type LaunchProviderRunBatchItem = {
     structuredEndpoint?: string | null
     providerSessionId?: string | null
     nativeTui?: boolean | null
+    checkpointBinding?: NativeProviderCheckpointBinding | null
   } | null
 }
 

@@ -4,6 +4,16 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) async fn relay_agent_move(
+        &self,
+        request: crate::agent_move::peer::AgentMovePeerRequest,
+        caller: Option<crate::app::LeaseCallerBinding>,
+    ) -> Result<crate::agent_move::peer::AgentMovePeerResponse, DaemonError> {
+        self.runtime_state
+            .agent_move_peer_request(request, caller)
+            .await
+    }
+
     // MP-08/MP-09/MP-10/MP-11 A10: the bridge only wires the worker service.
     pub(crate) async fn relay_leased_watched_process(
         &self,
@@ -54,10 +64,10 @@ impl CommandRouter {
     }
 
     pub(crate) fn lease_worker_enrollment(&self) -> Option<(String, String)> {
-        self.config_projection
-            .snapshot()
-            .cloud_relay
-            .map(|profile| (profile.realm_id, profile.user_id))
+        // A private relay asserts its own identities, never the Cloud enrollment.
+        let config = self.config_projection.snapshot();
+        crate::runtime::cloud_relay_control::active_cloud_profile(&config)
+            .map(|profile| (profile.realm_id.clone(), profile.user_id.clone()))
     }
 
     pub(crate) async fn relay_authorize_execution_lease_caller(

@@ -25,7 +25,12 @@ where
     }
     let kind = relay_envelope_kind(&envelope);
     let frame = if binary_events {
-        match chariox_relay::binary_event::from_envelope(&envelope) {
+        match chariox_relay::binary_response::from_envelope(&envelope).and_then(|response| {
+            match response {
+                Some(bytes) => Ok(Some(bytes)),
+                None => chariox_relay::binary_event::from_envelope(&envelope),
+            }
+        }) {
             Ok(Some(bytes)) => Message::Binary(bytes.into()),
             Ok(None) => match serde_json::to_string(&envelope) {
                 Ok(text) => Message::Text(text.into()),

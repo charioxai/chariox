@@ -24,14 +24,7 @@ impl KernelRuntimeState {
         targets: Vec<EventTarget>,
     ) -> Result<(), DaemonError> {
         let _mutation = self.owned.begin_managed_activity_mutation();
-        let baseline = self
-            .owned
-            .outside_run_state_snapshot(&targets)
-            .ok_or_else(|| {
-                crate::durable_state::agent_lifecycle::outside::refused(
-                    "event targets are changing; retry subscribe",
-                )
-            })?;
+        let baseline = self.owned.outside_run_state_baseline(&targets);
         let open_decisions = self.owned.outside_open_decisions(&targets);
         self.outside_store().outside_mutate(Mutation::Subscribe {
             id: id.into(),
@@ -197,23 +190,17 @@ impl KernelRuntimeState {
                 return Ok(ending);
             }
             let response = self.outside_list_response(id, request.since, request.limit)?;
-            // A grant kept for the next start keeps its inbox: the holder is
-            // told to ask again instead of being told its subscription ended.
+            // Shutdown interrupts this wait, while its retained subscription
+            // remains live. An early interruption is not a timeout.
             if self.kernel_access_stopping() {
-                return Ok(match response {
-                    LocalDaemonResponse::EventsListed {
-                        events,
-                        next_cursor,
-                        oldest_cursor,
-                        ..
-                    } => LocalDaemonResponse::EventsListed {
-                        timed_out: events.is_empty(),
-                        events,
-                        next_cursor,
-                        oldest_cursor,
-                    },
-                    other => other,
-                });
+                return match response {
+                    LocalDaemonResponse::EventsListed { ref events, .. } if events.is_empty() => {
+                        Err(crate::durable_state::agent_lifecycle::outside::refused(
+                            "kernel is shutting down; retry event wait after restart",
+                        ))
+                    }
+                    other => Ok(other),
+                };
             }
             match response {
                 LocalDaemonResponse::EventsListed {

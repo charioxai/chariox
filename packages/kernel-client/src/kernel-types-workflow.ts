@@ -930,6 +930,8 @@ export type WorkflowQueuedPrompt = {
   updated_at_ms: number
   dispatched_at_ms?: number | null
   workflow_run_id?: string | null
+  /** Set while a notification send is unconfirmed: held (never re-sent) until this deadline. */
+  delivery_uncertain_until_ms?: number | null
 }
 
 export type WorkflowPublicationInvocationEnvelope = {

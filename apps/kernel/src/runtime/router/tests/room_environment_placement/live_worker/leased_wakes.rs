@@ -1206,104 +1206,6 @@ async fn leased_sudo_window_is_enforced_on_home_and_worker() {
 }
 
 #[test]
-fn mp10_a10_leased_sudo_scope_approval_outlasts_the_relay_request_wait() {
-    run_test(leased_sudo_scope_approval_outlasts_the_relay_request_wait);
-}
-
-/// accam r3: a leased agent's typed host operation needs a fresh owner scope
-/// approval at home. The worker waits for that human decision instead of
-/// failing at its ordinary relay request timeout.
-async fn leased_sudo_scope_approval_outlasts_the_relay_request_wait() {
-    use crate::local::{ApprovalPasskey, KernelConnectionClass};
-    let _tools = with_room_tools();
-    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
-    let mut state = agent_worker_state(&fixture);
-    state.config.relay_request_timeout_ms = 3_000;
-    let worker = start_agent_worker(&fixture, state).await;
-    let room = fixture.rooms[0].clone();
-    let attachment = owner_attachment(&fixture, &room).await;
-    let agent =
-        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
-    let (owner, _) = open_leased_sudo(
-        &fixture,
-        &room,
-        &attachment,
-        &agent,
-        Duration::from_secs(60),
-    )
-    .await;
-    let home_prompt = fixture
-        .home
-        .runtime_state
-        .list_sudo_turns(&owner)
-        .pop()
-        .unwrap()
-        .prompt_id
-        .unwrap();
-    let run = worker.run_for(&fixture, &agent, &home_prompt).await;
-    let token = run.runtime_mcp_auth_token().unwrap().to_string();
-    eventually("the worker lists the tool for the elevated turn", || {
-        worker
-            .router
-            .runtime_tool_specs_for_auth_token(&token)
-            .iter()
-            .any(|spec| spec.name == "chariox_kernel_request")
-            .then_some(())
-    })
-    .await;
-    let call = tokio::spawn({
-        let router = Arc::clone(&worker.router);
-        async move {
-            router
-                .dispatch_authenticated_runtime_tool_call(
-                    &token,
-                    "chariox_kernel_request",
-                    json!({"request":{"GetDaemonHealth":null}}),
-                )
-                .await
-        }
-    });
-    let scope = eventually("the owner's operation scope popup", || {
-        fixture
-            .home
-            .runtime_state
-            .passkey_prompts_for(&owner)
-            .into_iter()
-            .find(|prompt| prompt.interaction_id.contains(":scope:"))
-    })
-    .await;
-    // The owner answers after the worker's ordinary relay request wait.
-    tokio::time::sleep(Duration::from_millis(3_500)).await;
-    fixture
-        .home
-        .runtime_state
-        .answer_terminal_runtime_interaction(
-            &scope.session_id,
-            &scope.interaction_id,
-            "approve",
-            None,
-            Some(&owner),
-            Some(&ApprovalPasskey::new(OWNER_PASSKEY)),
-            None,
-            Some(KernelConnectionClass::Terminal),
-        )
-        .await
-        .expect("the owner authorizes the exact operation");
-    let result = timeout(Duration::from_secs(20), call)
-        .await
-        .expect("the leased call returns")
-        .unwrap();
-    worker.stop().await;
-    fixture.stop().await;
-    let result = result.expect("the approved operation reaches the leased agent");
-    assert!(result.ok, "{result:?}");
-    assert!(
-        result.payload.to_string().contains("DaemonHealth"),
-        "{result:?}"
-    );
-}
-
-#[test]
 fn mp10_a10_leased_room_tools_act_at_home_with_the_lease_origin() {
     run_test(leased_room_tools_act_at_home_with_the_lease_origin);
 }
@@ -1406,24 +1308,27 @@ async fn worker_restart_resumes_leased_work_without_elevation() {
     leased_work_continues_after_a_wake(true).await;
 }
 
-async fn leased_work_continues_after_a_wake(restart_worker: bool) {
-    let _tools = with_room_tools();
-    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
-    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
-    let room = fixture.rooms[0].clone();
-    let attachment = owner_attachment(&fixture, &room).await;
+struct ParkedElevated {
+    owner: String,
+    agent: String,
+    task: String,
+    prompt: String,
+    registration: String,
+}
+
+/// An elevated leased agent whose sudo-bound task waits on a home-owned timer
+/// after the worker finished the turn that registered it.
+async fn park_elevated_leased_task(
+    fixture: &mut LiveWorker,
+    worker: &AgentWorker,
+    room: &str,
+    attachment: &str,
+) -> ParkedElevated {
     // MP-10: a silent fixture keeps this turn active until manual completion;
     // echo output can finish it and admit task correction before tool calls.
-    let agent =
-        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
-    let (owner, _) = open_leased_sudo(
-        &fixture,
-        &room,
-        &attachment,
-        &agent,
-        Duration::from_secs(1800),
-    )
-    .await;
+    let agent = spawn_on_agent_worker_with_model(fixture, room, "controlled-cancel-idle").await;
+    let (owner, _) =
+        open_leased_sudo(fixture, room, attachment, &agent, Duration::from_secs(1800)).await;
     let window = fixture
         .home
         .runtime_state
@@ -1432,7 +1337,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         .expect("live window");
     let task = window.task_id.clone().expect("window bound to owner work");
     let prompt = window.prompt_id.clone().unwrap();
-    let first = worker.run_for(&fixture, &agent, &prompt).await;
+    let first = worker.run_for(fixture, &agent, &prompt).await;
     let token = first.runtime_mcp_auth_token().unwrap().to_string();
     let call = |name: &'static str, args: Value| {
         let worker = &worker;
@@ -1464,9 +1369,9 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     fixture
         .home
         .runtime_state
-        .record_leased_answer_for_test(&room, &agent, "MP-10 A10 waiting on the timer")
+        .record_leased_answer_for_test(room, &agent, "MP-10 A10 waiting on the timer")
         .unwrap();
-    let leased = binding(&fixture, &agent).await.leased_agent_id;
+    let leased = binding(fixture, &agent).await.leased_agent_id;
     let (backing_session, _) =
         crate::app::RemoteLeaseRuntime::new(&mut *worker.router.app.lock().await)
             .leased_agent_backing(&leased)
@@ -1477,10 +1382,10 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
     )
     .await
     .expect("the worker finishes the elevated turn");
-    let store = store(&fixture).await;
+    let store = store(fixture).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let tasks = store.agent_tasks(Some(&room), Some(&agent)).unwrap();
+        let tasks = store.agent_tasks(Some(room), Some(&agent)).unwrap();
         if tasks.iter().any(|t| {
             t.task_id == task
                 && t.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
@@ -1489,11 +1394,35 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         }
         if tokio::time::Instant::now() >= deadline {
             let windows = fixture.home.runtime_state.list_sudo_turns(&owner);
-            let inbox = store.agent_inbox(&room, &agent, 0).unwrap();
-            panic!("elevated task never waited: tasks {tasks:?}, windows {windows:?}, inbox {inbox:?}, binding {:?}", binding(&fixture, &agent).await);
+            let inbox = store.agent_inbox(room, &agent, 0).unwrap();
+            panic!("elevated task never waited: tasks {tasks:?}, windows {windows:?}, inbox {inbox:?}, binding {:?}", binding(fixture, &agent).await);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    ParkedElevated {
+        owner,
+        agent,
+        task,
+        prompt,
+        registration,
+    }
+}
+
+async fn leased_work_continues_after_a_wake(restart_worker: bool) {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let parked = park_elevated_leased_task(&mut fixture, &worker, &room, &attachment).await;
+    let (owner, agent, task, prompt, registration) = (
+        parked.owner,
+        parked.agent,
+        parked.task,
+        parked.prompt,
+        parked.registration,
+    );
+    let store = store(&fixture).await;
     // Restart from the same durable state while the home-owned timer wait
     // remains open. Its next correlated turn must run as regular work.
     let worker = if restart_worker {
@@ -1680,6 +1609,47 @@ async fn idle_leased_agent_admits_its_first_turn_after_worker_restart() {
     assert!(
         receipt.is_some(),
         "the new worker holds the actual first-turn receipt"
+    );
+}
+
+// MP-08/MP-10/MP-11 A10-S05: an owner prompt held behind a leased sudo-bound
+// wait stays queued; the home does not retry a local launch for the
+// remote-backed agent and report each failed retry to the owner.
+#[test]
+fn mp10_a10_owner_prompt_behind_leased_sudo_wait_raises_no_launch_retry_notice() {
+    run_test(owner_prompt_behind_leased_sudo_wait_raises_no_launch_retry_notice);
+}
+
+async fn owner_prompt_behind_leased_sudo_wait_raises_no_launch_retry_notice() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start_with_home_passkey(OWNER_PASSKEY).await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let parked = park_elevated_leased_task(&mut fixture, &worker, &room, &attachment).await;
+    dispatch_json(
+        &fixture.home,
+        json!({"SubmitPrompt":{
+            "session_id":room,"attachment_id":attachment,"target_agent_id":parked.agent,
+            "prompt":"MP-10 A10-S05 plain owner prompt while elevated work waits"
+        }}),
+    )
+    .await
+    .expect("the owner prompt is accepted");
+    fixture
+        .home
+        .runtime_state
+        .sweep_agent_lifecycle_for_test()
+        .await
+        .unwrap();
+    let notices = fixture.home.runtime_state.session_notices_for_test(&room);
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(
+        !notices
+            .iter()
+            .any(|text| text.contains("Queued prompt remained pending")),
+        "a leased agent's queued prompt is not retried locally: {notices:?}"
     );
 }
 
@@ -2112,3 +2082,4 @@ async fn leased_required_agent_with_a_home_sudo_window_types_without_approval() 
 }
 
 mod connectivity;
+mod process_requests;

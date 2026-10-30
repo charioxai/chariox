@@ -649,10 +649,10 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
         )
         .unwrap_err()
         .contains("not_focused_agent"));
+    // A Vault fill needs the grant and the tab, not focus.
     assert!(host
         .scope_browser_request(Some(&admission), "host.secret", &json!({"tab_id":"tab"}))
-        .unwrap_err()
-        .contains("sensitive_requires_focus"));
+        .is_ok());
     host.revoke_agent("first");
     assert!(host
         .check_admission(Some(&admission))

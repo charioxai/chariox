@@ -4,6 +4,10 @@ use flate2::read::GzDecoder;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+#[path = "move_workspace_tests.rs"]
+mod move_workspace;
+
 struct TestEnvironmentVariableGuard {
     name: &'static str,
     previous: Option<std::ffi::OsString>,

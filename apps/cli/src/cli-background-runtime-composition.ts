@@ -471,6 +471,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
       if (Object.prototype.hasOwnProperty.call(metadata, "alias")) {
         patch.alias = nullableString(metadata.alias)
       }
+      if (Object.prototype.hasOwnProperty.call(metadata, "last_activity_at_ms")) {
+        const activityAt = nullableNumber(metadata.last_activity_at_ms)
+        if (activityAt !== null) patch.last_activity_at_ms = activityAt
+      }
       if (Object.prototype.hasOwnProperty.call(metadata, "last_used_at_ms")) {
         patch.last_used_at_ms = nullableNumber(metadata.last_used_at_ms)
       }
@@ -573,6 +577,10 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
     refreshAssistantMessageHistory,
+    applySessionProcesses: (sessionId, processes) => {
+      const session = deps.sessionState()
+      if (deps.isAttached() && session.id === sessionId) deps.applySessionState({ ...session, processes })
+    },
     applyKernelSessionSnapshot: applyKernelSessionSnapshotWithWorkflowRefresh,
     applyAgentActivityChanged,
     applyProviderRunChanged,

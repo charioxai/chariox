@@ -98,6 +98,10 @@ export function nextCommandCenterIndex(
 
 export function shouldBypassCommandCenterSubmitSelection(prompt: string): boolean {
   const command = parseSlashCommand(prompt)
+  // Continue addresses the failed turn, even when wait-command aliases match.
+  if (command?.kind === "continue") {
+    return true
+  }
   // Browser access has a different authority from the fuzzy kernel-access
   // catalog match. Preserve the typed command for its normal protocol gate.
   if (command?.kind === "access") {

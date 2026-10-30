@@ -1,8 +1,7 @@
-import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 import { answerUserDomainInteraction } from "./user-domain-interaction-api.js"
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { createEffect, onCleanup } from "solid-js"
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { captureCliDialogFocus, restoreCliDialogFocus, type CliDialogFocusTarget } from "./cli-dialog-focus-controller.js"
 import { createKernelApprovalController, type KernelApprovalKey } from "./kernel-approval-controller.js"
 import { createKernelApprovalRenderer } from "./kernel-approval-renderer.js"
@@ -80,7 +79,7 @@ export function createCliKernelApprovalComposition(deps: {
     respond: (prompt, choiceId, proof) =>
       prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
         ? respondToKernelAccessDecision(deps.client, prompt.interaction_id, choiceId, proof)
-        : prompt.session_id === "" && userAppViewsPrototypeEnabled()
+        : prompt.session_id === ""
           ? respondUserPrompt(prompt.interaction_id, choiceId, proof)
           : respondToInteraction(deps.client, prompt.session_id, prompt.interaction_id, choiceId, null, proof),
     notify: deps.notify,
@@ -89,10 +88,28 @@ export function createCliKernelApprovalComposition(deps: {
     show: () => controller.show(),
     choose: (interactionId, choiceId) => { void controller.choose(interactionId, choiceId) },
   })
+  let detached: RuntimeInteraction[] = []
+  let detachedClient: LocalIpcClient | null = null
+  let detachedEpoch = 0
+  let detachedDisposed = false
+  let detachedPolling: LocalIpcClient | null = null
+  let detachedCursor: number | null = null
+  let shownDetached = new Set<string>()
   const controller = createKernelApprovalController({
+    detachedInteractions: () => detached,
+    detachedBinding: () => detachedEpoch,
+    respondDetached: async (id, choice) => {
+      const source = detachedClient
+      if (!source || source !== actualClient()) throw new Error("This approval belongs to the previous kernel")
+      await answerUserDomainInteraction(source, id, choice)
+      if (source === detachedClient && source === actualClient()) {
+        detached = detached.filter(item => item.id !== id)
+        detachedCursor = null
+      }
+    },
     delegateSudoToPasskeyPopup: true,
     getSession: deps.session,
-    connected: deps.connected,
+    connected: () => detached.length ? deps.kernelConnected() : deps.connected(),
     onView: (view) => surface.render(view, deps.dimensions()),
     onOpen: opened,
     onClose: closed,
@@ -105,6 +122,34 @@ export function createCliKernelApprovalComposition(deps: {
     applySession: deps.applySession,
     showPasskeyPrompt: (sessionId, interactionId) => popup.show(sessionId, interactionId),
   })
+  const pollDetached = async () => {
+    if (detachedDisposed || !deps.kernelConnected()) return
+    const source = actualClient()
+    if (detachedClient !== source) {
+      detachedClient = source; detachedEpoch++; detachedCursor = null; detached = []; shownDetached.clear()
+      controller.sync()
+    }
+    if (detachedPolling === source) return
+    detachedPolling = source
+    try {
+      const response = await source.send<{ UserAppViewsChanged?: { cursor: number; interactions: RuntimeInteraction[] } }>({
+        SubscribeUserAppViews: { after: detachedCursor, wait_ms: detachedCursor === null ? 0 : 25000 },
+      })
+      if (detachedDisposed || source !== actualClient() || source !== detachedClient) return
+      const snapshot = response.UserAppViewsChanged
+      if (!snapshot) throw new Error("The kernel did not return its pending approvals")
+      detachedCursor = snapshot.cursor; detached = snapshot.interactions
+      const newDecision = detached.some(item => !shownDetached.has(item.id))
+      shownDetached = new Set(detached.map(item => item.id))
+      controller.sync()
+      if (newDecision) controller.show()
+    } catch {
+      if (source === detachedClient) { detached = []; detachedCursor = null; controller.sync() }
+    } finally { if (detachedPolling === source) detachedPolling = null }
+  }
+  const detachedTick = setInterval(() => { void pollDetached() }, 1000)
+  void pollDetached()
+  onCleanup(() => { detachedDisposed = true; clearInterval(detachedTick); detached = [] })
   // MP-08/MP-10/MP-11 A04: every attached terminal shows the kernel's sudo
   // windows with Extend (fresh passkey popup) and Revoke.
   const report = (failure: unknown) => deps.notify(failure instanceof Error ? failure.message : String(failure))
@@ -143,7 +188,7 @@ export function createCliKernelApprovalComposition(deps: {
   })
   onCleanup(deps.client.onKernelEvent((event) => {
     if (event.event === "passkey_prompts_changed") {
-      const prompts = passkeyPromptsFromEvent(event.prompts, userAppViewsPrototypeEnabled())
+      const prompts = passkeyPromptsFromEvent(event.prompts, true)
       userPromptClients.clear()
       for (const prompt of prompts) if (prompt.session_id === "") userPromptClients.set(prompt.interaction_id, actualClient())
       popup.apply(prompts, event)
@@ -162,7 +207,6 @@ export function createCliKernelApprovalComposition(deps: {
     ...controller,
     openFromCommand() {
       if (popup.view().count) popup.show()
-      else if (!deps.attached()) deps.flashFooter("start or join a session to view approvals", "info")
       else if (controller.view().count) controller.show()
       else deps.flashFooter("No pending approvals", "info")
     },

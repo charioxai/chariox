@@ -252,18 +252,15 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
         .provider_run_has_active_prompt(session.id(), &projected)
         .unwrap());
     let remote_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
-    assert!(matches!(
-        runtime
-            .owned
-            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
-                session.id(),
-                &remote_agent,
-            ),
-        Err(crate::error::DaemonError::LocalTransport {
-            operation: "move agent to local",
-            ..
-        })
-    ));
+    // The unacknowledged prompt keeps the agent busy, so the Move waits for it instead of starting.
+    let waiting = runtime
+        .move_agent_transaction(session.id(), remote_agent, None)
+        .await
+        .expect("a Move requested while the prompt is unacknowledged is deferred");
+    assert_eq!(
+        waiting.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
     assert_eq!(
         runtime
             .owned
@@ -289,4 +286,211 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
         .await
         .provider_run_has_prompt_work(session.id(), &projected)
         .unwrap());
+}
+
+#[tokio::test]
+async fn move_waiting_for_the_turn_holds_queued_work_until_it_is_cancelled() {
+    let worktree = crate::test_support::TestWorktree::new("move-waiting-queue-hold");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let prompt = |id: &str| {
+        crate::session::PromptQueueItem::new(
+            id,
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id("move-wait-run"),
+            agent.id(),
+            id,
+            crate::session::PromptStatus::Queued,
+        )
+    };
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("active-prompt"), false)
+        .expect("first prompt should start");
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("queued-prompt"), true)
+        .expect("second prompt should queue behind the turn");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let waiting = runtime
+        .move_agent_transaction(session.id(), agent.clone(), Some("target".to_string()))
+        .await
+        .expect("a Move requested during a turn is deferred");
+    assert_eq!(
+        waiting.agent_move().map(|status| &status.stage),
+        Some(&crate::agent_move::AgentMoveStage::WaitingForTurn)
+    );
+    app.lock()
+        .await
+        .prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+        .expect("the turn ends");
+
+    // The queue behind the turn belongs to the Move until it runs or is cancelled.
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    let owner = &runtime.owned.prompt_state_owner;
+    assert!(owner
+        .peek_next_queued_prompt(&session_state, agent.id())
+        .is_none());
+    assert!(owner
+        .activate_next_queued_prompt_for_dispatch(&session_state, agent.id(), None)
+        .unwrap()
+        .is_none());
+    assert!(owner
+        .try_claim_idle_queue_promotion(&session_state, agent.id())
+        .is_none());
+
+    runtime
+        .abort_agent_move(session.id(), agent.agent_ref(), agent.owner_user_id())
+        .await
+        .expect("a waiting Move can be cancelled");
+    assert!(
+        owner
+            .peek_next_queued_prompt(&session_state, agent.id())
+            .is_some(),
+        "cancelling the wait releases the queue"
+    );
+}
+
+/// A Move waits for a running turn and a queued prompt; the caller ends the turn.
+async fn deferred_move_behind_a_turn(
+    worktree: &crate::test_support::TestWorktree,
+) -> (
+    Arc<Mutex<DaemonApp>>,
+    KernelRuntimeState,
+    crate::agent::AgentInstance,
+    String,
+) {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let prompt = |id: &str| {
+        crate::session::PromptQueueItem::new(
+            id,
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id("move-fence-run"),
+            agent.id(),
+            id,
+            crate::session::PromptStatus::Queued,
+        )
+    };
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("active-prompt"), false)
+        .expect("first prompt should start");
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt("queued-prompt"), true)
+        .expect("second prompt should queue behind the turn");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .move_agent_transaction(session.id(), agent.clone(), Some("target".to_string()))
+        .await
+        .expect("a Move requested during a turn is deferred");
+    (app, runtime, agent, session.id().to_string())
+}
+
+async fn failed_move_reason(runtime: &KernelRuntimeState, agent_id: &str) -> String {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let agent = runtime.owned.agent_store.get_agent(agent_id).unwrap();
+        if let Some(crate::agent_move::AgentMoveStage::Failed { reason }) =
+            agent.agent_move().map(|status| &status.stage)
+        {
+            return reason.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the deferred Move ends with a status"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn deferred_move_keeps_its_fence_until_it_claims_the_agent() {
+    let worktree = crate::test_support::TestWorktree::new("move-waiting-fence-handoff");
+    let (app, runtime, agent, session_id) = deferred_move_behind_a_turn(&worktree).await;
+
+    // The turn ends while the app is busy, so the Move cannot publish its Moving status yet.
+    let mut held_app = app.lock().await;
+    held_app
+        .prompt_owner_complete_active_prompt_only(&session_id, agent.id())
+        .expect("the turn ends");
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+    let session_state = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let owner = &runtime.owned.prompt_state_owner;
+    assert!(
+        owner
+            .try_claim_idle_queue_promotion(&session_state, agent.id())
+            .is_none(),
+        "the queue promoter must not take an agent whose Move has not claimed it yet"
+    );
+    let late = held_app
+        .prompt_owner_submit_prepared_prompt(
+            &session_id,
+            crate::session::PromptQueueItem::new(
+                "late-prompt",
+                crate::scheduler::runtime::workflow_prompt_source_attachment_id("move-fence-run"),
+                agent.id(),
+                "late",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .expect("a prompt is admitted");
+    assert!(
+        matches!(late, crate::session::PromptSubmissionOutcome::Queued { .. }),
+        "a prompt must wait for the Move instead of starting on the source: {late:?}"
+    );
+    drop(held_app);
+
+    let reason = failed_move_reason(&runtime, agent.id()).await;
+    assert!(
+        !reason.contains("active turn") && !reason.contains("preparing queued work"),
+        "the Move must claim the agent after its turn instead of failing the claim: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn deferred_move_cancelled_before_it_claims_the_agent_does_not_move() {
+    let worktree = crate::test_support::TestWorktree::new("move-waiting-cancel-handoff");
+    let (app, runtime, agent, session_id) = deferred_move_behind_a_turn(&worktree).await;
+
+    let mut held_app = app.lock().await;
+    held_app
+        .prompt_owner_complete_active_prompt_only(&session_id, agent.id())
+        .expect("the turn ends");
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    assert!(
+        runtime
+            .owned
+            .agent_moves
+            .waiting
+            .cancel(&crate::agent_move::wait_key(&session_id, agent.id())),
+        "the Move still waits until it claims the agent"
+    );
+    drop(held_app);
+
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
+    assert!(
+        !matches!(
+            agent.agent_move().map(|status| &status.stage),
+            Some(crate::agent_move::AgentMoveStage::Failed { .. })
+        ),
+        "a cancelled Move must stop before it claims the agent: {:?}",
+        agent.agent_move()
+    );
+    assert!(runtime
+        .owned
+        .agent_moves
+        .for_agent(&session_id, agent.id())
+        .is_none());
 }

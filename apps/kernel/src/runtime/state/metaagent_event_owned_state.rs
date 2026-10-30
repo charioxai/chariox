@@ -144,17 +144,16 @@ impl KernelRuntimeState {
         completed_agent_id: &str,
         completion: &crate::session::PromptCompletion,
     ) -> Result<(), DaemonError> {
-        if self.owned.config_projection.snapshot().room_agent_tools {
-            let tasks = self
+        if self.owned.config_projection.snapshot().room_agent_tools
+            && self
                 .owned
                 .durable_state_store
-                .agent_tasks(Some(session_id), Some(completed_agent_id))?;
-            if tasks.iter().any(|t| {
-                t.prompt_id == completion.completed.id()
-                    && t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
-            }) {
-                return Ok(());
-            }
+                .agent_turn_task(session_id, completed_agent_id, completion.completed.id())?
+                .is_some_and(|t| {
+                    t.state != crate::durable_state::agent_lifecycle::ExecutionState::Done
+                })
+        {
+            return Ok(());
         }
         let completed_agent = self.owned.agent_store.get_agent(completed_agent_id)?;
         if completed_agent.is_metaagent() {
@@ -377,6 +376,22 @@ impl KernelRuntimeState {
                 });
             }
         }
+        // Account refusal is definite before submission can reserve or enqueue
+        // anything. Later submission failures may already have admitted work.
+        crate::runtime::room_dispatch_registration::reject_if_failed(
+            &self.owned.durable_state_store,
+            obligation.as_deref(),
+            self.owned
+                .agent_store
+                .get_agent(target_agent_id)
+                .and_then(|target| {
+                    if target.remote_execution().is_some() {
+                        return Ok(());
+                    }
+                    self.owned
+                        .require_agent_account_authenticated(&target, None, "submit prompt")
+                }),
+        )?;
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
                 session_id: session_id.to_string(),

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
@@ -183,7 +182,7 @@ impl CharioxEnvironmentConfig {
                         message: "python executable does not exist",
                     });
                 }
-                let status = Command::new(python)
+                let status = crate::process_spawn::command(python)
                     .arg("--version")
                     .status()
                     .map_err(io_error("env.validate"))?;
@@ -209,7 +208,7 @@ impl CharioxEnvironmentConfig {
                         });
                     }
                 }
-                let status = Command::new(node)
+                let status = crate::process_spawn::command(node)
                     .arg("--version")
                     .status()
                     .map_err(io_error("env.validate"))?;
@@ -661,7 +660,7 @@ def test_run() -> None:
         ]) else {
             return;
         };
-        if !Command::new(&node)
+        if !crate::process_spawn::command(&node)
             .arg("--import")
             .arg("tsx")
             .arg("-e")

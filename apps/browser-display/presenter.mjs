@@ -1,4 +1,4 @@
-import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
+import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,tabDisplayMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -277,7 +277,8 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
     :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer,
-      ...(pushMode&&transport.initialPush===true&&transport.kernelProtocolVersion>=initialPushProtocolVersion?{initial_push:true}:{})});}
+      ...(pushMode&&transport.initialPush===true&&transport.kernelProtocolVersion>=initialPushProtocolVersion?{initial_push:true}:{}),
+      ...(pushMode&&options.tabDisplay===true&&!options.target&&transport.kernelProtocolVersion>=tabDisplayMinimumProtocolVersion?{tab_display:true}:{})});}
   catch(error){warmDecoder?.close();options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
@@ -573,6 +574,9 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     get running() { return running; },
     get error() { return failure; },
     requestKey: () => ack(presenter.sequence, true),
+    // P1 (protocol 720): a Tab display sends nothing while parked; the Tab's next commit unparks it in the kernel,
+    // so its first frame arrives without a request. Reception keeps running.
+    park: parked => binding.tab_display === true ? request({ op: 'display_park', subscription_id: binding.subscription_id, generation: binding.generation, parked }) : Promise.reject(Error('MP-08: not a Tab display')),
     input: async input => {presenter.prediction?.restore();const submitted={...input},sequence=presenter.sequence,epoch=++predictionEpoch;const reply=await request(presenter.input(submitted));if(!closed&&epoch===predictionEpoch&&presenter.sequence===sequence)presenter.prediction?.predict(submitted,options.deviceScaleFactor??1);return reply;},
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},

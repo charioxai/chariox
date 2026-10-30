@@ -283,7 +283,7 @@ pub struct AgentPromptScheduleCollection {
 pub struct SessionService {
     store: SessionStore,
     room_environments: RoomEnvironmentRegistry,
-    room_environment_durable_state: Option<crate::durable_state::DurableKernelStateStore>,
+    durable_state: Option<crate::durable_state::DurableKernelStateStore>,
     projects: BTreeMap<String, RuntimeProject>,
     ephemeral_session_ids: BTreeSet<String>,
     host_machine_id: String,
@@ -294,7 +294,6 @@ pub struct SessionService {
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,
     next_workflow_edge_number: u64,
-    next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
     next_workflow_publication_number: u64,
@@ -309,6 +308,7 @@ pub struct SessionService {
 
 mod core;
 mod durable_queue;
+mod retired_sessions;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod helpers;
 mod launches;
@@ -326,8 +326,8 @@ mod workflow_defs;
 
 pub use helpers::classify_workflow_failure_kind;
 use helpers::{
-    collect_ready_workflow_dispatches, describe_session_match, normalize_session_alias,
-    normalize_workflow_alias, normalize_workflow_endpoint_alias,
+    collect_ready_workflow_dispatches, describe_session_match, new_workflow_node_run_id,
+    normalize_session_alias, normalize_workflow_alias, normalize_workflow_endpoint_alias,
     normalize_workflow_publication_alias, normalize_workflow_queue_alias,
     validate_workflow_edge_handoff,
 };

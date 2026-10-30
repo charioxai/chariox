@@ -144,6 +144,9 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/created_at_ms")
         .expect("session created_at_ms should encode") = serde_json::json!(42);
     *snapshot
+        .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_activity_at_ms")
+        .expect("session activity should encode") = serde_json::json!(42);
+    *snapshot
         .pointer_mut("/3/WorkspaceLiveSyncModeUpdated/session/last_used_at_ms")
         .expect("session last_used_at_ms should encode") = serde_json::json!(42);
     assert_eq!(
@@ -183,7 +186,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9532c94456dbfaec1a8ea4ec4c1678d9d84f5187c0fcf845b0a10921c7dd3342"
+        "2310a9554cc05659266f076da039e0e5a445bf7de5957a9634e7e3bb3e33099b"
     );
 }
 
@@ -271,6 +274,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 external_provider_turn_id: Some("turn-1".to_string()),
                 started_at_ms: 42,
                 lifecycle: crate::local::SessionHistoryOutlineTurnLifecycle::Open,
+                outcome: None,
                 completed_at_ms: None,
                 user_prompt,
                 entries: vec![assistant_entry],
@@ -1023,4 +1027,63 @@ fn local_daemon_protocol_prompt_attachment_size_shape_is_versioned_and_hashed() 
     let decoded: crate::history::SessionHistoryPromptAttachment =
         serde_json::from_value(legacy).unwrap();
     assert_eq!(decoded.size_bytes, None);
+}
+
+#[test]
+fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
+    use crate::runtime::process_resources::{ProcessSample, SessionProcess, SessionProcessOwner};
+    let snapshot = serde_json::json!({
+        "protocol_version": LOCAL_DAEMON_PROTOCOL_VERSION,
+        "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        "shapes": [
+        crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
+            session_id: "room-1".into(),
+            processes: vec![SessionProcess {
+                owner: SessionProcessOwner::Agent("agent-1".into()),
+                process: ProcessSample {
+                    process_id: "process-issued-1".into(),
+                    pid: 42,
+                    command: "python3".into(),
+                    resident_set_bytes: 1048576,
+                    cpu_millis: 250,
+                    sampled_at_ms: 10000,
+                    age_ms: 3000,
+                }
+            }],
+        },
+        crate::provider::ProviderRunTermination::memory_limit(33554432, 10000),
+        crate::room_terminal::RoomTerminalOutcome::MemoryLimit {
+            limit_bytes: 33554432
+        },
+        crate::room_terminal::RoomTerminalEventKind::MemoryLimit {
+            limit_bytes: 33554432
+        },
+        LocalDaemonRequest::StopSessionProcesses(crate::local::StopSessionProcessesRequest {
+            session_id: "room-1".into(),
+            target: crate::runtime::process_resources::ProcessControlTarget::Process {
+                process_id: "process-issued-1".into()
+            }
+        }),
+        LocalDaemonResponse::SessionProcessesStopped {
+            result: crate::runtime::process_resources::ProcessControlResult {
+                outcome: crate::runtime::process_resources::ProcessControlOutcome::OutsideEnd,
+                process_ids: vec!["process-issued-1".into()]
+            }
+        },
+        crate::provider::ProviderRunTermination::outside_end(10000),
+    ]});
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("session-processes-800.json")).unwrap();
+    assert_eq!(snapshot, expected);
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "a840a4e724e7405c1ffd1239e552133e9eeb3a13ea746c0ebeeda4004f0f344c"
+    );
 }

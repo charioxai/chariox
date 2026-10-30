@@ -179,6 +179,9 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
   && test -x /usr/bin/x-terminal-emulator \
   && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/check-process-sampler.mjs /usr/local/lib/chariox/check-process-sampler.mjs
+RUN node /usr/local/lib/chariox/check-process-sampler.mjs
+
 # Nested Docker cannot write an unprivileged uid_map on every host. The
 # setuid helper only sets up Bubblewrap's namespace and drops its caps
 # before the provider starts. Slice launches select the supported Bubblewrap
@@ -397,7 +400,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-native.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-visible-page.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-display.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-navigation-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-layout-observer.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-owned-display.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-pixel-worker.mjs \

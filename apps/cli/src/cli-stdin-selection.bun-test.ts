@@ -91,3 +91,21 @@ test("MP-08 / MP-10 batched typing is decoded as the same keys typed one by one"
     assert.deepEqual(counts, { clears: 2, shortcuts: 2 })
   }
 })
+
+// The CLI decodes shortcuts with its own parser, which the renderer's mouse
+// reset never reaches. A drag whose release was lost must not leave Escape
+// buffered into an Alt chord there either.
+test("MP-08 / MP-10 the CLI parser recovers Escape and the next key after a missed mouse release", async () => {
+  const seen: Array<{ name: string; meta?: boolean | undefined }> = []
+  const controller = createCliStdinKeyController({
+    createStdinParser: (onTimeoutFlush: () => void) => new StdinParser({ timeoutMs: 10, armTimeouts: true, onTimeoutFlush, useKittyKeyboard: true }),
+    clearTextSelection: () => {},
+    dialogOverlayOpen: () => false,
+    handleSessionBrowserKey: (event: { name: string; meta?: boolean }) => { seen.push({ name: event.name, meta: event.meta }); return true },
+  } as unknown as CliStdinKeyControllerDeps)
+  controller.handleData("\x1b[<0;1;1M")
+  controller.handleData("\x1b")
+  await new Promise((resolve) => setTimeout(resolve, 700))
+  controller.handleData("c")
+  assert.deepEqual(seen.map((key) => `${key.meta ? "meta+" : ""}${key.name}`), ["escape", "c"])
+})

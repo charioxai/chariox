@@ -14,10 +14,7 @@ impl KernelRuntimeOwnedState {
         ) {
             return Some("requester_ended");
         }
-        if turn
-            .deadline
-            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-        {
+        if super::window::window_lapsed(turn) {
             return Some("expired");
         }
         let prompt_id = turn.prompt_id.as_deref()?;
@@ -69,14 +66,6 @@ impl KernelRuntimeState {
     /// The live window bound to `run`'s current turn. The provider bearer never
     /// changes: each use resolves the exact agent, running turn and window.
     pub(super) fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
-        self.sudo_for_run_checked(run_id, true)
-    }
-
-    fn sudo_for_run_checked(
-        &self,
-        run_id: &str,
-        sweep: bool,
-    ) -> Result<KernelSudoTurn, DaemonError> {
         let denied = || error("this provider turn has no sudo authority");
         let (session_id, agent) = match self.leased_agent_for_projected_run(run_id) {
             // A10: a leased turn is the home agent's current worker run.
@@ -101,9 +90,7 @@ impl KernelRuntimeState {
             }
         };
         let agent = agent.as_str();
-        if sweep {
-            self.sweep_sudo();
-        }
+        self.sweep_sudo();
         let session = self.owned.session_store.get_session(&session_id)?;
         if self
             .owned
@@ -133,16 +120,6 @@ impl KernelRuntimeState {
         turn.prompt_id = Some(prompt);
         turn.provider_run_id = Some(run_id.into());
         Ok(turn)
-    }
-
-    /// MP-11: recheck the original turn without sweeping inside browser input authority.
-    pub(crate) fn sudo_turn_live(&self, original: &KernelSudoTurn) -> bool {
-        let (Some(run), Some(prompt)) = (&original.provider_run_id, &original.prompt_id) else {
-            return false;
-        };
-        self.sudo_for_run_checked(run, false).is_ok_and(|current| {
-            current.entry_id == original.entry_id && current.prompt_id.as_ref() == Some(prompt)
-        })
     }
 
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
@@ -192,16 +169,6 @@ impl KernelRuntimeState {
         id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
-        let session = self.check_sudo_request(id, request)?;
-        self.require_sudo_scope(id, request)?;
-        Ok(session)
-    }
-
-    pub(super) fn check_sudo_request(
-        &self,
-        id: &str,
-        request: &LocalDaemonRequest,
-    ) -> Result<String, DaemonError> {
         let turn = self
             .owned
             .sudo_turns
@@ -224,6 +191,16 @@ impl KernelRuntimeState {
         if sudo_request_forbidden(request) {
             return Err(error("sudo cannot answer approvals, grant authority, read secrets, change the passkey or access configuration"));
         }
+        // No session has an empty id, so the request cannot work as written.
+        if matches!(
+            crate::runtime::session_membership::scope::request_session_scope(request),
+            Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(id))
+                if id.trim().is_empty()
+        ) {
+            return Err(error(
+                "this kernel request names an empty session_id; pass a session id from chariox.room.overview or ListSessions",
+            ));
+        }
         self.check_sudo_creator_scope(&turn, request)?;
         Ok(turn.session_id.clone())
     }
@@ -238,6 +215,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::CoverKernelAccessProcess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
             | LocalDaemonRequest::SubscribeEvents(_)
@@ -386,5 +364,18 @@ mod registry_tests {
         ] {
             assert!(sudo_request_forbidden(&request));
         }
+    }
+
+    // A sudo window belongs to one turn on one kernel: it cannot name a background process.
+    #[test]
+    fn sudo_cannot_cover_a_background_process() {
+        assert!(sudo_request_forbidden(
+            &LocalDaemonRequest::CoverKernelAccessProcess(
+                crate::local::CoverKernelAccessProcessRequest {
+                    pid: 2,
+                    start: None
+                }
+            )
+        ));
     }
 }

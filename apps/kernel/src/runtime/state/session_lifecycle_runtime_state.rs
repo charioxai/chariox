@@ -725,7 +725,7 @@ impl KernelRuntimeState {
             .agent_deadline(session_id, local_agent.id())?
             .is_some()
         {
-            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a lane deadline must stay on its executing kernel; start a new lane on the worker".into() });
+            return Err(DaemonError::MachineRequest { code: "agent_deadline_requires_executor".into(), message: "an agent with a agent deadline must stay on its executing kernel; start a new agent on the worker".into() });
         }
         let slice_admission = self
             .guard_slice_execution(
@@ -745,38 +745,8 @@ impl KernelRuntimeState {
             Some(slice_id) => self.resolve_slice_worker_kernel_ref(slice_id).await?,
             None => machine_ref.to_string(),
         };
-        // MP-08/MP-10/MP-11 D1: Apps remain home-owned across placement
-        // changes; their existing grant generation and expiry still apply.
-        self.owned
-            .kernel_browser_host
-            .revoke_agent(local_agent.id());
-        let terminated_run_ids = self
-            .owned
-            .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
-        for provider_run_id in terminated_run_ids {
-            let (_, process_key) = self
-                .with_app_side_effect(|app| {
-                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
-                })
-                .await
-                .unwrap_or((false, None));
-            self.owned
-                .remove_provider_process_tracking_for_run(&provider_run_id, process_key);
-        }
-        let agent = self
-            .with_app_side_effect(|app| {
-                self.authorize_current_external_command()?;
-                app.move_agent_to_remote_authorized(session_id, agent_ref, &worker_ref, &|| {
-                    self.authorize_current_external_command()
-                })
-            })
-            .await?;
-        if let Some(slice_ref) = target_slice_id {
-            self.with_external_command_authority(None)
-                .attach_slice_agent(&slice_ref, session_id, agent.id())
-                .await?;
-        }
-        Ok(agent)
+        self.move_agent_transaction(session_id, local_agent, Some(worker_ref))
+            .await
     }
 
     pub(crate) async fn move_agent_to_local(
@@ -789,46 +759,8 @@ impl KernelRuntimeState {
         let remote_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to local")?;
-        let slice_ref = remote_agent
-            .remote_execution()
-            .and_then(|remote| {
-                self.owned
-                    .slice_store
-                    .resolve_by_worker_kernel_ref(&remote.worker_kernel_id)
-                    .or_else(|| {
-                        self.owned
-                            .slice_store
-                            .resolve_by_worker_kernel_ref(&remote.worker_machine_id)
-                    })
-            })
-            .map(|slice| slice.id);
-        self.owned
-            .terminate_idle_remote_provider_projection_for_agent_before_local_move(
-                session_id,
-                &remote_agent,
-            )?;
-        let agent = self
-            .with_authorized_app_side_effect(|app| {
-                app.move_agent_to_local_authorized(session_id, agent_ref, &|| {
-                    self.authorize_current_external_command()
-                })
-            })
-            .await?;
-        // The move committed; finish its slice bookkeeping under kernel authority.
-        if let Some(slice_ref) = slice_ref {
-            let slice = self.owned.slice_store.detach_agent(
-                &slice_ref,
-                agent.id(),
-                crate::session::unix_epoch_ms(),
-            )?;
-            self.owned.durable_state_store.append_event(
-                "slice.updated",
-                Some(slice.id.clone()),
-                serde_json::json!({ "slice": &slice }),
-            )?;
-        }
-        let _ = self.owned.session_snapshot(session_id)?;
-        Ok(agent)
+        self.move_agent_transaction(session_id, remote_agent, None)
+            .await
     }
 
     pub(crate) async fn destroy_agent_in_session(
@@ -1063,6 +995,8 @@ impl KernelRuntimeState {
         }
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         self.detach_session_slices(&session).await?;
+        owned.terminal_stream.remove_session(session_id);
+        owned.session_store.retire_ended_session(session_id);
         Ok(session)
     }
 
@@ -1084,8 +1018,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = session_id.to_string();
         let owned = &self.owned;
+        let session_before_delete = owned.session_store.get_session(&session_id)?;
         let durable_session = owned.session_end_snapshot(&session_id)?;
-        let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        let durable_project_delete = owned.project_removed_by_session_delete(&session_id)?;
         let _vault_observation_guard = self.vault_observation_mutation_guard().await;
         // Revoke the bound worker copy while its Room/slice binding still exists.
         if self
@@ -1109,7 +1044,7 @@ impl KernelRuntimeState {
             .await;
         let worker_agents = self.agents_leased_to_workers(&session_id);
         let (session, terminated_run_ids, removed_project) =
-            owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+            owned.delete_session(session_before_delete)?;
         // Swept only now: the Room is gone, so an open that raced the delete
         // fails its own Room check instead of outliving this sweep.
         self.end_room_terminals(&session_id);
@@ -1669,6 +1604,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ending_session_with_active_turn_survives_restart() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let config = runtime.app.lock().await.config().clone();
+        let worktree = crate::test_support::TestWorktree::new("active-turn-restart");
+        let LocalDaemonResponse::SessionCreated { session, agent, .. } = runtime
+            .create_session_response(worktree.session_request())
+            .await
+            .unwrap()
+        else {
+            panic!("expected session")
+        };
+        let session_id = session.id().to_owned();
+        let agent_id = agent.id().to_owned();
+        let run = runtime
+            .with_app_side_effect(|app| {
+                app.launch_provider(
+                    crate::provider::LaunchProviderRequest::new(
+                        &session_id,
+                        "dev-stub",
+                        "default",
+                        "default",
+                        "model",
+                    )
+                    .with_agent_id(&agent_id),
+                )
+            })
+            .await
+            .unwrap();
+        runtime
+            .owned
+            .active_turns
+            .start(crate::app::ActiveTurnState::new(
+                session_id.clone(),
+                agent_id,
+                "active-prompt".into(),
+                run.id().into(),
+            ));
+        runtime.end_session(&session_id).await.unwrap();
+        let ended_sequence = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.ended")
+            .unwrap()[0]
+            .sequence;
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.activity.updated")
+            .unwrap()
+            .iter()
+            .all(|event| event.sequence < ended_sequence));
+        // Replays from older executables may already contain a late completion.
+        runtime
+            .owned
+            .durable_state_store
+            .append_event(
+                "session.activity.updated",
+                Some(session_id.clone()),
+                serde_json::json!({"last_activity_at_ms": crate::session::unix_epoch_ms() + 100}),
+            )
+            .unwrap();
+        drop(runtime);
+        let restored = DaemonApp::bootstrap(config).unwrap();
+        assert_eq!(
+            restored
+                .sessions()
+                .get_session(&session_id)
+                .unwrap()
+                .status(),
+            crate::session::SessionStatus::Ended
+        );
+    }
+
+    #[tokio::test]
     async fn ending_last_active_session_persists_final_idle_transition() {
         let runtime = runtime_state_for_rollback_test().await;
         runtime
@@ -1720,14 +1729,10 @@ mod tests {
         assert_eq!(idle.running_agent_count, 0);
         assert!(idle.changed_at_ms >= busy.changed_at_ms);
         assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
-        assert_eq!(
-            runtime
-                .owned
-                .session_projection
-                .get(&session_id)
-                .expect("ended session should project")
-                .status(),
-            crate::session::SessionStatus::Ended
+        // An ended session is retired from the live projection; its end is durable above.
+        assert!(
+            runtime.owned.session_projection.get(&session_id).is_none(),
+            "an ended session leaves the live projection"
         );
     }
 
@@ -2332,7 +2337,7 @@ mod tests {
     }
 
     fn git_output(cwd: &std::path::Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()
@@ -2347,7 +2352,7 @@ mod tests {
     }
 
     fn run_git(cwd: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(cwd)
             .output()
@@ -2357,6 +2362,81 @@ mod tests {
             "git {} failed: {}",
             args.join(" "),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[tokio::test]
+    async fn session_activity_moves_for_prompt_transitions_but_not_presence_or_focus() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let session = create_activity_test_session(&runtime, "semantic-activity");
+        let id = session.id().to_owned();
+        let before = session.last_activity_at_ms();
+        let mut touched = session.clone();
+        touched.touch();
+        touched.set_focused_agent(Some("agent".into()));
+        runtime.owned.session_store.restore_session(touched);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            before
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let prompt = crate::session::PromptQueueItem::new(
+            "prompt",
+            "attachment",
+            "agent",
+            "Work",
+            crate::session::PromptStatus::Running,
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt.clone()), Default::default())
+            .unwrap();
+        let started = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(started > before);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", Some(prompt), Default::default())
+            .unwrap();
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            started
+        );
+        runtime
+            .owned
+            .mirror_prompt_owner_agent_state(&id, "agent", None, Default::default())
+            .unwrap();
+        let ended = runtime
+            .owned
+            .session_store
+            .get_session(&id)
+            .unwrap()
+            .last_activity_at_ms();
+        assert!(ended > started);
+        // A metadata snapshot captured before the turn cannot roll activity backwards.
+        runtime.owned.session_store.restore_session(session);
+        assert_eq!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&id)
+                .unwrap()
+                .last_activity_at_ms(),
+            ended
         );
     }
 }

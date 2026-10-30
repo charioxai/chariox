@@ -82,7 +82,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &program,
         &args,
@@ -117,6 +117,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
                     .map(|(identity, _)| identity),
             )),
             child,
+            resources: Some(resources),
             stdin,
             receiver,
             output_notifier,
@@ -259,6 +260,29 @@ pub(crate) fn drain_claude_events(
     }
     apply_claude_usage_capture(run, state, &mut batch);
 
+    if let Some(limit) = state
+        .resources
+        .as_ref()
+        .and_then(|domain| domain.memory_limit_bytes())
+    {
+        batch.process_memory_limit_bytes = Some(limit);
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::memory_limit(limit, crate::session::unix_epoch_ms())
+                .reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
+    if crate::runtime::process_resources::outside_ended_for_key(run.id()) && !state.exit_reported {
+        batch.process_outside_ended = true;
+        batch.terminal_failure = Some(
+            super::ProviderRunTermination::outside_end(crate::session::unix_epoch_ms()).reason,
+        );
+        batch.prompt_completed = state.active_turn_id.is_some();
+        state.exit_reported = true;
+        clear_active_claude_turn(state);
+    }
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
             Ok(Some(status)) => {
@@ -500,7 +524,7 @@ fn restart_claude_runtime(
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
-    let (child, stdin, receiver) = spawn_claude_child(
+    let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
         &state.program,
         &args,
@@ -519,6 +543,7 @@ fn restart_claude_runtime(
             .ok()
             .map(|(identity, _)| identity);
     state.child = child;
+    state.resources = Some(resources);
     state.stdin = stdin;
     state.receiver = receiver;
     state.args = base_args;
@@ -611,6 +636,7 @@ fn write_claude_hidden_context(
 #[cfg(test)]
 mod tests {
     mod model_observation;
+    mod process_resources;
     #[cfg(target_os = "linux")]
     mod sandbox_lifetime;
     mod tool_results;
@@ -639,7 +665,7 @@ mod tests {
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
-        let mut child = std::process::Command::new("/bin/sh")
+        let mut child = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("cat >/dev/null")
             .stdin(std::process::Stdio::piped())
@@ -668,6 +694,7 @@ mod tests {
                 mcp_config_file: None,
                 process_identity: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 child,
+                resources: None,
                 stdin,
                 receiver,
                 output_notifier: Default::default(),
@@ -1199,16 +1226,30 @@ done
 
     #[test]
     fn runtime_mcp_config_cleans_up_when_child_spawn_fails() {
-        let token = format!(
-            "runtime-bearer-spawn-failure-{}-{}",
-            std::process::id(),
-            crate::session::unix_epoch_ms()
-        );
         let missing_program = std::env::temp_dir().join(format!(
             "chariox-missing-claude-{}-{}",
             std::process::id(),
             crate::session::unix_epoch_ms()
         ));
+        assert_failed_runtime_cleans_up_mcp_config(&missing_program);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_mcp_config_cleans_up_when_child_is_not_executable() {
+        let worktree = crate::test_support::TestWorktree::new("nonexecutable-claude");
+        let program = worktree.path().join("claude");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_failed_runtime_cleans_up_mcp_config(&program);
+    }
+
+    fn assert_failed_runtime_cleans_up_mcp_config(missing_program: &std::path::Path) {
+        let token = format!(
+            "runtime-bearer-spawn-failure-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        );
         let request =
             LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
                 .with_runtime_mcp_binding(RuntimeMcpBinding::new(
@@ -1234,10 +1275,11 @@ done
             },
         );
 
-        assert!(
-            initialize_claude_runtime(&run).is_err(),
-            "missing Claude executable should fail"
-        );
+        let result = initialize_claude_runtime(&run);
+        assert!(result.is_err(), "unavailable Claude executable should fail");
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("reinstall Claude Code and retry"));
+        assert_eq!(message.lines().count(), 1);
 
         let leaked_config = std::fs::read_dir(std::env::temp_dir())
             .expect("kernel temp directory should be readable")
@@ -1324,6 +1366,92 @@ done
                 .collect::<Vec<_>>(),
             vec![8, 13, 18, 23]
         );
+    }
+
+    /// EA2-75: a Claude `result` error and a `StopFailure` hook keep the
+    /// harness text and give the typed cause. "Not logged in", the exit text,
+    /// 529, 429 and the connection-refused text are recorded output
+    /// (rootaudit/r1/matrix1.txt:14, agents/accam/agent.log:306014, the r39
+    /// drill); the credit-balance text is Claude's documented wording and was
+    /// not recorded.
+    #[test]
+    fn claude_errors_are_typed_from_their_result_and_hook() {
+        use crate::provider::{TurnOutcome, TurnOutcomeKind::*};
+        let result_error = |text: &str| {
+            let (mut state, mut batch) = parser_state();
+            apply_claude_message(
+                "run-1",
+                &mut state,
+                json!({"type": "result", "subtype": "success", "is_error": true, "result": text}),
+                &mut batch,
+            );
+            assert!(batch.explicit_provider_error);
+            TurnOutcome::classify("claude", &batch.terminal_failure.expect("failure"))
+        };
+        let expected = |kind, retryable, reason: &str| TurnOutcome {
+            kind,
+            retryable,
+            reason: reason.to_string(),
+        };
+        assert_eq!(
+            result_error("Not logged in · Please run /login"),
+            expected(SignInRequired, false, "Not logged in · Please run /login")
+        );
+        // Recorded official CLI output (r39 fixture drill, extagent/r39 evidence):
+        // a synthetic backend answering with Anthropic's HTTP 529
+        // `overloaded_error` body, and against an unreachable proxy.
+        let overloaded = "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment. If it persists, check your inference gateway (127.0.0.1:57990).";
+        assert_eq!(
+            result_error(overloaded),
+            expected(Overloaded, true, overloaded)
+        );
+        // The official CLI's result of an exhausted subscription (api_error
+        // `usage_limit_reached`, HTTP 429), recorded 2026-10-27 (failwhy/r1).
+        let weekly = "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)";
+        assert_eq!(result_error(weekly), expected(UsageLimit, false, weekly));
+        let refused =
+            "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)";
+        assert_eq!(result_error(refused), expected(Network, true, refused));
+        assert_eq!(
+            result_error("Credit balance is too low"),
+            expected(UsageLimit, false, "Credit balance is too low")
+        );
+        assert_eq!(
+            result_error("Claude Code exited before completing the active turn: exit status: 1"),
+            expected(
+                ProviderCrashed,
+                true,
+                "Claude Code exited before completing the active turn: exit status: 1"
+            )
+        );
+        // Recorded official CLI output (r39 fixture drill): a synthetic backend that
+        // answers HTTP 429 with Anthropic's `rate_limit_error` body.
+        let rate_limited = "API Error: Server is temporarily limiting requests (not your usage limit) · Number of request tokens has exceeded your per-minute rate limit";
+        assert_eq!(
+            result_error(rate_limited),
+            expected(UsageLimit, true, rate_limited)
+        );
+        let stop_failure = crate::provider::claude_native_stop_failure(&json!({
+            "hook_event_name": "StopFailure",
+            "error": "rate_limit",
+            "last_assistant_message": "You've hit your session limit · resets 8:30am"
+        }))
+        .expect("StopFailure frame");
+        assert_eq!(
+            TurnOutcome::classify("claude", &stop_failure),
+            expected(
+                UsageLimit,
+                false,
+                "You've hit your session limit · resets 8:30am"
+            )
+        );
+        let auth = crate::provider::claude_native_stop_failure(&json!({
+            "hook_event_name": "StopFailure",
+            "error": "authentication_failed",
+            "last_assistant_message": "Invalid API key · Please run /login"
+        }))
+        .expect("StopFailure frame");
+        assert_eq!(TurnOutcome::classify("claude", &auth).kind, SignInRequired);
     }
 
     #[test]

@@ -110,13 +110,13 @@ enum CloudRelayRefreshResult {
 }
 
 fn should_refresh_cloud_relay(config: &crate::config::DaemonConfig) -> bool {
-    config.cloud_relay.is_some()
+    crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config)
 }
 
 fn missing_relay_config_disposition(
     config: &crate::config::DaemonConfig,
 ) -> MissingRelayConfigDisposition {
-    if config.cloud_relay.is_some() {
+    if crate::runtime::cloud_relay_control::cloud_relay_transport_selected(config) {
         MissingRelayConfigDisposition::CloudUnavailable
     } else {
         MissingRelayConfigDisposition::LocalIdle

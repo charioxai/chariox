@@ -3,6 +3,7 @@ use super::*;
 mod approval;
 mod capability_room_authority;
 mod control_authority;
+mod cover;
 mod credential_authority;
 mod gateway_authority;
 mod inherited_grants;
@@ -20,7 +21,9 @@ impl KernelRuntimeState {
         let holder = process::inspect(std::process::id()).unwrap().0;
         let id = format!("queue-access-{:016x}", rand::random::<u64>());
         let grant = Grant {
+            covered: Vec::new(),
             summary: KernelAccessGrant {
+                covered: Vec::new(),
                 grant_id: id.clone(),
                 owner_user_id: session.owner_user_id().into(),
                 holder_pid: holder.pid,
@@ -154,6 +157,12 @@ impl KernelRuntimeState {
                         clock.notice = Instant::now() - Duration::from_millis(1);
                     }
                 }
+                // The host slept: the displayed expiry is near, the monotonic
+                // deadline and notice are not.
+                "slept" => {
+                    grant.summary.expires_at_ms =
+                        Some(crate::session::unix_epoch_ms() + 4 * 60_000);
+                }
                 "reuse" => grant.holder.start = grant.holder.start.wrapping_add(1),
                 _ => panic!("unknown test control"),
             }
@@ -262,7 +271,9 @@ async fn until_exit_grant_outlives_every_deadline_but_not_its_holder() {
     .runtime_state();
     let live_holder = process::inspect(std::process::id()).unwrap().0;
     let grant = |id: &str, term, clock, holder: ProcessIdentity| Grant {
+        covered: Vec::new(),
         summary: KernelAccessGrant {
+            covered: Vec::new(),
             grant_id: id.into(),
             owner_user_id: "local".into(),
             holder_pid: holder.pid,
@@ -352,6 +363,7 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
         .unwrap();
     let doomed_holder = process::inspect(child.id()).unwrap().0;
     let summary = |id: &str, term, holder: &ProcessIdentity| KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: id.into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -396,8 +408,8 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
                 .unwrap();
         }
         let inbox = state.outside_subscription_response("kept").unwrap();
-        // Stopping releases a waiting holder with an empty answer, not with
-        // the end of its subscription.
+        // A retained subscription stays live, but shutdown must explain why
+        // a wait stopped before its deadline.
         state.end_kernel_access_for_shutdown().unwrap();
         let released = state
             .outside_wait(
@@ -410,15 +422,13 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
                 Some("kept"),
                 None,
             )
-            .await
-            .unwrap();
+            .await;
         assert!(
             matches!(
-                released,
-                LocalDaemonResponse::EventsListed {
-                    timed_out: true,
-                    ..
-                }
+                &released,
+                Err(DaemonError::MachineRequest { code, message })
+                    if code == "events_refused"
+                        && message == "kernel is shutting down; retry event wait after restart"
             ),
             "{released:?}"
         );
@@ -445,6 +455,54 @@ async fn until_exit_grant_survives_a_restart_while_its_holder_lives() {
     assert!(state.outside_ended_response("timed").unwrap().is_some());
 }
 
+// The event pumps of a follower's remote targets start with the router. They
+// must find the restored grant, or they end the inbox of a holder that lives.
+#[tokio::test]
+async fn restored_grant_is_in_place_before_event_pumps_look_for_it() {
+    let root = crate::test_support::TestWorktree::new("access-restart-pumps");
+    let holder = process::inspect(std::process::id()).unwrap().0;
+    {
+        let router = reopen_kernel(&root);
+        let state = router.runtime_state();
+        let summary = KernelAccessGrant {
+            grant_id: "kept".into(),
+            owner_user_id: "local".into(),
+            holder_pid: holder.pid,
+            holder_executable: holder.executable.clone(),
+            holder_harness: None,
+            term: KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+            covered: Vec::new(),
+        };
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        state
+            .admit_grant(&mut access, "kept".into(), summary, holder, None)
+            .unwrap();
+        drop(access);
+        state
+            .outside_store()
+            .outside_mutate(
+                crate::durable_state::agent_lifecycle::outside::Mutation::Subscribe {
+                    open_decisions: vec![],
+                    baseline: vec![],
+                    id: "kept".into(),
+                    home: true,
+                    targets: vec![crate::local::EventTarget {
+                        kernel: "remote-kernel".into(),
+                        session_id: "remote-session".into(),
+                        agent_id: None,
+                    }],
+                },
+            )
+            .unwrap();
+    }
+    let router = reopen_kernel(&root);
+    let state = router.runtime_state();
+    assert!(state.access_grant_summary("kept").is_some());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(state.outside_ended_response("kept").unwrap().is_none());
+}
+
 /// An until-exit grant whose revocation could not be written: the grant is
 /// gone from memory, the fault is still on, and its holder (this process) lives.
 fn failed_revocation(
@@ -461,6 +519,7 @@ fn failed_revocation(
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -550,6 +609,7 @@ async fn a_revocation_the_audit_could_not_append_is_written_by_the_retry() {
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,
@@ -601,6 +661,7 @@ async fn the_sweep_writes_a_revocation_the_audit_could_not_append() {
     let state = router.runtime_state();
     let holder = process::inspect(std::process::id()).unwrap().0;
     let summary = KernelAccessGrant {
+        covered: Vec::new(),
         grant_id: "kept".into(),
         owner_user_id: "local".into(),
         holder_pid: holder.pid,

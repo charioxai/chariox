@@ -249,11 +249,11 @@ fn subscription_wait_duration_is_ready_for_due_deadlines() {
 }
 
 #[test]
-fn subscription_deadline_intervals_preserve_previous_cadence() {
+fn subscription_deadlines_keep_process_observations_fresh() {
     assert_eq!(subscription_heartbeat_interval(), Duration::from_secs(5));
     assert_eq!(
         subscription_snapshot_reconciliation_interval(),
-        Duration::from_secs(30)
+        Duration::from_secs(2)
     );
 }
 

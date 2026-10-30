@@ -158,6 +158,21 @@ pub(super) fn verify_claude_account_credential_with_timeout(
     {
         return Err(ClaudeCredentialCheckError::Rejected);
     }
+    // Claude authenticates the token before it applies the plan's limit, so a
+    // 429 limit report proves the credential is valid; the exhausted account
+    // reports its own limit and reset time on every turn.
+    if failed_result
+        && result
+            .get("api_error_status")
+            .and_then(serde_json::Value::as_u64)
+            == Some(429)
+        && result
+            .get("result")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(crate::provider::text_reports_resource_limit)
+    {
+        return Ok(());
+    }
     let single_turn = super::auth_probe::validate_auth_result(&result).is_ok();
     if status.success() && single_turn {
         Ok(())
@@ -535,7 +550,6 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     #[cfg(unix)]
     #[test]
@@ -646,7 +660,11 @@ mod tests {
 
     #[test]
     fn probes_both_usage_windows_without_replacing_home() {
-        if Command::new("node").arg("--version").output().is_err() {
+        if crate::process_spawn::command("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let fixture = std::env::temp_dir().join(format!(
@@ -695,7 +713,7 @@ process.stdout.write(JSON.stringify({
         // A concurrent fork can retain this process's writable descriptors.
         // Like TestTool, install from a child and wait for it to exit: the
         // parallel test process never holds the executable open for writing.
-        let installed = Command::new("install")
+        let installed = crate::process_spawn::command("install")
             .args(["-m", "700"])
             .arg(&source)
             .arg(&executable)
@@ -839,6 +857,41 @@ process.stdout.write(JSON.stringify({
                     "MP-08/MP-11: a quoted 401 is not rejection, and a non-marker reply is not verification");
             }
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn credential_check_accepts_a_token_whose_plan_limit_is_reached() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let reply = root.join("reply.json");
+        // The official `claude -p` result of an exhausted subscription.
+        fs::write(
+            &reply,
+            serde_json::json!({"type":"result", "subtype":"success", "is_error":true, "api_error_status":429,
+                "api_error":"usage_limit_reached", "terminal_reason":"api_error", "num_turns":1,
+                "result":"You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)"})
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\ncat '{}'\nexit 1\n", reply.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+        let checked = verify_claude_account_credential_with_timeout(
+            &executable,
+            &environment,
+            Duration::from_secs(2),
+        );
+        assert_eq!(checked, Ok(()), "the limit proves the token authenticated");
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -7,7 +7,69 @@ use std::process::{Child, Command};
 #[path = "process_spawn_tests.rs"]
 mod tests;
 
+/// Kernel workloads must be killable without lowering a positive service policy.
+pub(crate) fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    make_killable(&mut command);
+    command
+}
+
+pub(crate) fn async_command(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
+    command(program).into()
+}
+
+fn make_killable(command: &mut Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // Only async-signal-safe syscalls run between fork and exec, so a
+        // refusal cannot be logged here. Killability is best effort: the
+        // kernel is non-dumpable (PR_SET_DUMPABLE 0), which makes its
+        // /proc/self files root-owned, so an ordinary user may not open
+        // oom_score_adj for writing. Open read-only first and write only to
+        // raise an inherited negative adjustment (which needs privilege the
+        // caller then has); never fail the spawn.
+        unsafe {
+            command.pre_exec(|| {
+                let fd = libc::open(
+                    c"/proc/self/oom_score_adj".as_ptr(),
+                    libc::O_RDONLY | libc::O_CLOEXEC,
+                );
+                if fd < 0 {
+                    return Ok(());
+                }
+                let mut adjustment = [0_u8; 16];
+                let count = loop {
+                    let result = libc::read(fd, adjustment.as_mut_ptr().cast(), adjustment.len());
+                    if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                    {
+                        continue;
+                    }
+                    break result;
+                };
+                libc::close(fd);
+                // A positive adjustment is already killable and an
+                // unprivileged child may not lower it.
+                if count > 0 && adjustment[0] == b'-' {
+                    let fd = libc::open(
+                        c"/proc/self/oom_score_adj".as_ptr(),
+                        libc::O_WRONLY | libc::O_CLOEXEC,
+                    );
+                    if fd >= 0 {
+                        libc::write(fd, b"0\n".as_ptr().cast(), 2);
+                        libc::close(fd);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = command;
+}
+
 pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
+    make_killable(&mut command);
     on_owner(
         move || command.spawn(),
         |mut child| {
@@ -17,10 +79,27 @@ pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
     )
 }
 
+// Keep shell/native entry policies aligned with the standard pre-exec hook.
+#[cfg(target_os = "linux")]
+pub(crate) const KILLABLE_SHELL_PREFIX: &str = concat!(
+    "IFS= read -r chariox_oom_score_adj < /proc/self/oom_score_adj; ",
+    "case \"$chariox_oom_score_adj\" in -*) printf '0\\n' > /proc/self/oom_score_adj;; esac;"
+);
+
 pub(crate) fn spawn_pty(
     slave: Box<dyn SlavePty + Send>,
-    command: CommandBuilder,
+    mut command: CommandBuilder,
 ) -> io::Result<Box<dyn portable_pty::Child + Send + Sync>> {
+    #[cfg(target_os = "linux")]
+    {
+        let argv = std::mem::take(command.get_argv_mut());
+        let entry = format!("{KILLABLE_SHELL_PREFIX} exec \"$@\"");
+        *command.get_argv_mut() = ["/bin/sh", "-c", &entry, "chariox-owned-process"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .chain(argv)
+            .collect();
+    }
     on_owner(
         move || slave.spawn_command(command).map_err(io::Error::other),
         |mut child| {

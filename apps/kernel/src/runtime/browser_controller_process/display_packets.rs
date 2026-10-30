@@ -358,12 +358,12 @@ mod tests {
     #[test]
     fn mp11_native_packets_reclaim_raster_after_supervisor_death() {
         use std::io::BufRead;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
         let spool = DisplayPackets::create().unwrap();
         let root = spool.root.clone();
         // The supervisor uses Node's real mkdtemp naming and private modes.
         // Kill only this child after its raster is durable, without close().
-        let mut child = Command::new("node")
+        let mut child = crate::process_spawn::command("node")
             .args(["--input-type=module", "-e", r#"
                 import fs from 'node:fs';
                 import path from 'node:path';

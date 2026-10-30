@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: executor-local durable deadlines.
 use super::*;
 #[test]
-fn lane_deadline_protocol_shape_and_hash() {
+fn agent_deadline_protocol_shape_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()

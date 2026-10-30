@@ -214,6 +214,11 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "kernel_access_not_covered"
             | "kernel_access_ended"
             | "kernel_access_already_granted"
+            | "kernel_access_cover_gone"
+            | "kernel_access_cover_identity_changed"
+            | "kernel_access_cover_kernel_process"
+            | "kernel_access_cover_outside"
+            | "kernel_access_cover_limit"
             | "invalid_request"
             | "invalid_frame"
             | "kernel_request_overloaded"
@@ -301,6 +306,7 @@ public_events! {
     TerminalOutput => "terminal_output",
     RuntimeNotices => "runtime_notices",
     AssistantMessageCompleted => "assistant_message_completed",
+    SessionProcessesChanged => "session_processes_changed",
     SessionSnapshot => "session_snapshot",
     AgentTaskUpdated => "agent_task_updated",
     AgentActivityChanged => "agent_activity_changed",

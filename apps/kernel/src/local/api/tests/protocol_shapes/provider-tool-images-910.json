@@ -1,0 +1,20 @@
+{
+  "local_protocol": 911,
+  "peer_protocol": 362,
+  "tool_with_image": {
+    "tool": "Read",
+    "status": "completed",
+    "input": { "file_path": "/work/chart.png" },
+    "id": "toolu_chart",
+    "output": "chart.png",
+    "images": ["data:image/png;base64,iVBORw0KGgo="]
+  },
+  "tool_with_omitted_image": {
+    "tool": "Read",
+    "status": "completed",
+    "input": { "file_path": "/work/huge.png" },
+    "id": "toolu_huge",
+    "output": "huge.png",
+    "images_omitted": 1
+  }
+}

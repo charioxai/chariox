@@ -67,7 +67,7 @@ impl Default for UserLinuxSliceConfig {
             build_image: Some(SliceImageBuildPolicy::Auto),
             extension_dockerfile: None,
             allow_unconfined_seccomp: Some(false),
-            allow_provider_sandbox_compatibility: Some(false),
+            allow_provider_sandbox_compatibility: None,
             memory_mb: Some(DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB),
             cpus: None,
             disk_layer_mb: None,

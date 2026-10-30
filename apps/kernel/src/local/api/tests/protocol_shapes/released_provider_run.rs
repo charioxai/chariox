@@ -100,6 +100,7 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
     ))
     .expect("session snapshot should encode");
     session_value["created_at_ms"] = serde_json::json!(1_000);
+    session_value["last_activity_at_ms"] = serde_json::json!(1_000);
     session_value["last_used_at_ms"] = serde_json::json!(1_000);
     let fork_response = ReleasedProviderRunResponse::AgentForked {
         source_agent_id: "agent-1".to_string(),
@@ -130,6 +131,10 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         .as_object_mut()
         .unwrap()
         .remove("archived");
+    snapshot[3]["AgentForked"]["session"]
+        .as_object_mut()
+        .unwrap()
+        .remove("last_activity_at_ms");
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(

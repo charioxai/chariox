@@ -2,6 +2,7 @@ import { resolve as resolvePath } from "node:path"
 
 import type {
   RuntimeSession,
+  WorkflowDefinition,
   WorkflowPublicationDefinition,
   WorkflowPublicationPackageFile,
 } from "./kernel-types.js"
@@ -12,6 +13,7 @@ import {
   exportWorkflowPublicationPackageRequest,
   getWorkflowPublicationRequest,
   listWorkflowPublicationsRequest,
+  listWorkflowsRequest,
 } from "./ipc-requests.js"
 import type { ShellCommandResult, ShellContext } from "./shell-core.js"
 import { sessionContextAgentId } from "./shell-session-context.js"
@@ -131,7 +133,13 @@ export async function executeWorkflowPublicationCommand(
   }
 
   if (action === "create" || action === "new") {
-    const parsed = parseWorkflowPublicationCreateOptions(rest, context.workflowId)
+    const parsed = await parseWorkflowPublicationCreateOptions(rest, context.workflowId, async (ref) => {
+      const response = await deps.client.send(listWorkflowsRequest(sessionId))
+      const { workflows } = expectVariant<{ workflows: WorkflowDefinition[] }>(response, "WorkflowsListed")
+      const normalizedRef = ref.trim().toLowerCase()
+      if (workflows.some((workflow) => workflow.id === normalizedRef)) return true
+      return workflows.some((workflow) => workflow.alias === normalizedRef)
+    })
     if (!parsed.ok) {
       return { ok: false, message: parsed.message }
     }
@@ -200,12 +208,13 @@ async function executeWorkflowPublicationConfigCommand(args: string[], context: 
   return { ok: false, message: "usage: workflow trigger config show|set|clear" }
 }
 
-function parseWorkflowPublicationCreateOptions(
+async function parseWorkflowPublicationCreateOptions(
   args: string[],
-  currentWorkflowId?: string,
-):
+  currentWorkflowId: string | undefined,
+  resolvesWorkflow: (ref: string) => Promise<boolean>,
+): Promise<
   | { ok: true; workflowRef: string; endpointRef: string; options: CreateWorkflowPublicationOptions }
-  | { ok: false; message: string } {
+  | { ok: false; message: string }> {
   const positional: string[] = []
   const options: CreateWorkflowPublicationOptions = {}
   const methods: string[] = []
@@ -257,9 +266,16 @@ function parseWorkflowPublicationCreateOptions(
   if (methods.length > 0) {
     options.methods = methods
   }
-  const workflowRef = positional.length >= 3 ? positional[0] : currentWorkflowId
-  const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
-  const alias = positional.length >= 3 ? positional[2] : positional[1]
+  // MP-08 / MP-10: generated guidance supplies workflow + endpoint with no alias.
+  // Only exact workflow IDs/aliases disambiguate two operands under a selection.
+  // Endpoint refs may share a workflow prefix. Three operands are unambiguous.
+  // Inventory/creation request failures still reach the user.
+  const explicitWorkflow = positional.length >= 3
+    || (positional.length >= 2 && (!currentWorkflowId || positional[0] === currentWorkflowId
+      || await resolvesWorkflow(positional[0]!)))
+  const workflowRef = explicitWorkflow ? positional[0] : currentWorkflowId
+  const endpointRef = explicitWorkflow ? positional[1] : positional[0]
+  const alias = explicitWorkflow ? positional[2] : positional[1]
   if (!workflowRef || !endpointRef) {
     return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] [--queue <queue-ref>] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--trace-exposure-json <json>] [--mode async]" }
   }

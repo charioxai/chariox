@@ -56,6 +56,12 @@ function fixture(){let offer,release;const calls=[];const encoder={async encode(
 test('MD-DISPLAY superseded encoder work forces independent recovery without waiting input',async()=>{const f=fixture();f.hold();f.offer(1);f.offer(2);f.m.invalidate();f.offer(3);assert.equal(f.m.take(),null);f.release();await f.m.active;assert.deepEqual(f.calls.map(x=>x.key),[true,true]);assert.equal(f.m.take().serial,3);await f.m.close()});
 test('MD-DISPLAY invalidation and close retire in-flight encoding',async()=>{const f=fixture();f.hold();f.offer(1);f.m.invalidate();const closing=f.m.close();f.release();await closing;assert.equal(f.m.frames.length,0)});
 test('MD-DISPLAY exact repair retains a fully delivered video reference, avoiding a key per click',async()=>{const f=fixture();f.offer(1);await f.m.active;assert.equal(f.m.take().encoded.key,true);f.m.retireUnsent();f.offer(2);await f.m.active;assert.equal(f.m.take().encoded.key,false);await f.m.close()});
+test('MP-08/MP-10 an exact repair keeps video work of the repaired raster or a newer one in its chain',async()=>{
+ const f=fixture();f.offer(1);await f.m.active;assert.equal(f.m.take().encoded.key,true);
+ f.hold();f.offer(3);f.m.retireUnsent(2);f.release();await f.m.active;assert.equal(f.m.take().encoded.key,false,'newer in-flight work survives the repair of serial 2');
+ f.hold();f.offer(4);f.m.retireUnsent(5);f.release();await f.m.active;assert.equal(f.m.take(),null,'older in-flight work retires');
+ f.offer(6);await f.m.active;assert.equal(f.m.take().encoded.key,true,'and the chain restarts with a key');await f.m.close();
+});
 test('MD-DISPLAY full queue preserves decoder references and coalesces only unencoded source work',async()=>{const f=fixture();for(let n=1;n<=5;n++){f.offer(n);await f.m.active}assert.deepEqual(f.calls.map(x=>x.image),['1','2']);assert.equal(f.m.frames.length,2);assert.equal(f.m.take().serial,1);await f.m.active;assert.deepEqual(f.calls.map(x=>x.image),['1','2','5']);assert.equal(f.m.take().serial,2);assert.equal(f.m.take().serial,5);assert.equal(f.calls[2].key,false);await f.m.close()});
 
 test('MD-DISPLAY credit pressure has hysteresis, bounded rate and recovery',()=>{let time=0;const r=new CreditBudget(2000000,()=>time);assert.equal(r.feedback(6),false);time=500;assert.equal(r.feedback(6),true);assert.equal(r.bitrate,1600000);for(let i=0;i<20;i++){time+=500;r.feedback(8)}assert.equal(r.bitrate,500000);r.feedback(0);time+=2000;r.feedback(0);assert.equal(r.bitrate,500000,'MP-10: recovery waits for 5 s without pressure');time+=3000;r.feedback(0);assert.equal(r.bitrate,550000);assert.equal(r.feedback(NaN),false);for(let i=0;i<30;i++){time+=5000;r.feedback(0)}assert.equal(r.bitrate,2000000)});
@@ -262,4 +268,24 @@ test('MP-08/MP-10 a Chrome UI stream drops queued deltas for the newest sample, 
  assert.deepEqual(calls.filter(c=>c.discarded).map(c=>c.discarded),['1','2']);
  assert.equal(m.take(),null);
  await m.close();
+});
+// A settling page's small damage after an exact frame was patched losslessly, which retired the video in hand: a
+// ~100 KB key at 1920 per patch, 80 ms of wire each, before the page reached its settled picture.
+test('MP-08/MP-10 small damage of a settling page continues the video chain in hand instead of a patch that retires it for a key',async()=>{
+ const {DisplayStream}=await import('./kernel-browser-display.mjs');
+ const {nativePatchable}=await import('./kernel-browser-display-credit.mjs');
+ const raw={nativeExact:async()=>{},format:'bgr0',width:1280,height:800,length:1280*800*4,pixels:Buffer.alloc(1280*800*4),damage:[0,0,32,32],base_serial:10,serial:11,adjacent_damage_tiles:[[0,0,32,32]]};
+ const stream=new DisplayStream({subscription_id:'s',tab_id:'t',device_scale_factor:1,bitrate:2_000_000,codec:'avc1.420033',dependencies:true},{now:()=>0,wait:async()=>{},encoder:{close:async()=>{}}});
+ stream.document_id='d';stream.previous={signature:'exact'};stream.exact=true;stream.compositorSerial=10;stream.compositorMasks='[]';
+ const f=fixture();stream.producer=f.m;
+ try{
+  assert.equal(nativePatchable(stream,{serial:11,raw}),true,'an idle encoder lets small damage patch the exact canvas');
+  f.offer(11);await f.m.active;
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),true,'no key yet: nothing settles, the patch wins');
+  stream.keyAt=performance.now();
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}}),false,'queued video work of a settling page keeps the chain');
+  assert.equal(nativePatchable(stream,{serial:11,raw},{holdsVideo:false}),true);
+  assert.equal(nativePatchable(stream,{serial:12,raw:{...raw,serial:12,base_serial:10}},f.m,stream.keyAt+1001),true,'a second after the key an animated page patches again: its canvas becomes exact');
+  f.hold();f.offer(12);assert.equal(f.m.holdsVideo,true,'an encode in flight holds video too');f.release();await f.m.active;
+ }finally{await stream.close()}
 });

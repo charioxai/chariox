@@ -1099,8 +1099,8 @@ ensure_container() {
       # system-path masks block that setup before bubblewrap can install the
       # narrower provider boundary. Managed hosts use a dedicated rootless
       # daemon; explicit DEV enrollment uses a rootful unmapped engine.
-      # Ordinary local placements must explicitly opt in. These
-      # are Bubblewrap's documented setup capabilities; the provider receives
+      # The kernel enables this for local placements unless the user opts
+      # out. These are Bubblewrap's documented setup capabilities; the provider receives
       # none of them because the inner sandbox uses --cap-drop ALL.
       docker_create_args+=(
         --cap-add SYS_ADMIN

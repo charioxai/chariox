@@ -140,7 +140,8 @@ impl DurableKernelStateStore {
                 fault,
             })))
             .map_err(|_| Error::StorageUnavailable)?;
-        receiver.recv().map_err(|_| Error::StorageUnavailable)?
+        crate::durable_state::await_writer_response(receiver)
+            .map_err(|_| Error::StorageUnavailable)?
     }
     pub(crate) fn app_snapshot_restore_committed(
         &self,

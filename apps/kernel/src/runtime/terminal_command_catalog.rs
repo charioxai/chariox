@@ -410,6 +410,7 @@ mod tests {
             ("workflow-queue-move", "/workflow queue move "),
             ("workflow-queue-clear", "/workflow queue clear "),
             ("workflow-queue-flush", "/workflow queue flush "),
+            ("workflow-queue-retry", "/workflow queue retry "),
             ("workflow-queue-remove", "/workflow queue remove "),
             ("workflow-cancel", "/workflow cancel "),
             ("workflow-pause", "/workflow pause "),
@@ -833,6 +834,23 @@ mod tests {
             .find(|node| node.id == "workflow-trigger")
             .expect("workflow trigger commands should be present");
 
+        // MP-08 / MP-10: source settings must be discoverable beside subscriptions.
+        let settings = workflow
+            .children
+            .iter()
+            .find(|node| node.id == "workflow-notifications")
+            .expect("workflow notification settings should be present");
+        assert_eq!(
+            settings
+                .children
+                .iter()
+                .map(|node| node.value.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/workflow notifications on ",
+                "/workflow notifications off "
+            ]
+        );
         assert_eq!(trigger.value, "/workflow trigger ");
         assert_eq!(
             trigger
@@ -842,6 +860,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "/workflow trigger list",
+                "/workflow trigger notification ",
                 "/workflow trigger create ",
                 "/workflow trigger show ",
                 "/workflow trigger export ",

@@ -584,7 +584,7 @@ impl KernelBrowserHost {
                 &admission.user,
                 agent,
                 UserDomainResource::BrowserTab { tab_id: tab.into() },
-                method == "host.secret" && !admission.elevated,
+                false,
             )?;
         } else if !matches!(
             params["op"].as_str(),

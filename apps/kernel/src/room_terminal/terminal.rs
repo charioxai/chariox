@@ -50,9 +50,11 @@ pub(super) struct Terminal {
     /// Input an interrupt discarded before the terminal's program read it.
     pub dropped_input_bytes: u64,
     pub unsaved_since: Option<Instant>,
+    pub pending_save: Option<super::store::PendingWrite>,
     /// The last time a program returned to the prompt (or the shell exited).
     pub last_program_end: Option<ProgramEnd>,
     pub outside_ends: Vec<ProgramEnd>,
+    pub pending_outside: Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome>,
     /// Commands that began, in order: the n-th command answers the n-th line.
     pub commands_started: u64,
 }
@@ -123,9 +125,11 @@ impl Terminal {
             command_in_flight: false,
             waiting_reported: false,
             dropped_input_bytes: 0,
+            pending_save: None,
             unsaved_since: None,
             last_program_end: None,
             outside_ends: Vec::new(),
+            pending_outside: None,
             commands_started: 0,
         }
     }
@@ -208,6 +212,9 @@ impl Terminal {
 
     pub(super) fn end(&mut self, outcome: RoomTerminalOutcome) {
         self.run_id = None;
+        // The shell's PID is free for reuse from here on; a later sweep of
+        // "its session" would hit whoever holds that number.
+        self.session_sweep = None;
         self.record.ended = Some(outcome);
         self.unsaved_since = Some(Instant::now());
     }

@@ -50,6 +50,12 @@ pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("An account named {label} already exists. Choose another name.")]
+    ProviderAccountNameTaken { label: String },
+    #[error("The code looks incomplete. Copy the whole code, including # and the part after it.")]
+    ProviderLoginCodeIncomplete,
+    #[error("The code could not be read. Copy the whole code and try again.")]
+    ProviderLoginCodeInvalid,
     #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
     ProviderProfileRefused {
         reason: ProviderProfileRefusal,
@@ -72,6 +78,10 @@ pub enum DaemonError {
     /// The owner revoked a gateway's key on this kernel; it gets no request and no stream.
     #[error("this kernel's owner revoked that gateway (unpaired or revoked)")]
     GatewayKeyRevoked,
+    /// The provider refused a prompt dispatch and `message` is its own reason.
+    /// Kernel-side dispatch errors never use this variant.
+    #[error("{message}")]
+    ProviderRefusal { message: String },
     #[error("local transport `{operation}` failed: {message}")]
     LocalTransport {
         operation: &'static str,
@@ -389,6 +399,10 @@ pub enum DaemonError {
         provider_run_id: String,
         operation: &'static str,
         message: String,
+    },
+    #[error("native provider checkpoint failed: {reason}")]
+    NativeProviderCheckpoint {
+        reason: crate::provider::NativeCheckpointFailure,
     },
     #[error("failed to spawn PTY for provider run `{provider_run_id}`: {message}")]
     PtySpawn {

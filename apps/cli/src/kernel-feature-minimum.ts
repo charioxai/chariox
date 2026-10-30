@@ -8,6 +8,8 @@ import { KernelProtocolMinimumError } from "./protocol-minimum-diagnostic.js"
 type FeatureMinimum = { feature: string; minimum: number }
 
 const features: Record<string, FeatureMinimum> = {
+  ListProviderAccountCopyOffers: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
+  CopyProviderAccountFromKernel: { feature: "Provider account copy", minimum: requests.providerAccountCopyMinimumProtocolVersion },
   AddSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   RemoveSshMachine: { feature: "SSH machine management", minimum: requests.sshMachineMinimumProtocolVersion },
   GetClientCatalogRevisions: { feature: "Catalog revisions", minimum: requests.clientCatalogRevisionsMinimumProtocolVersion },
@@ -20,6 +22,7 @@ const features: Record<string, FeatureMinimum> = {
   IssueCloudRelayClientToken: { feature: "Kernel terminal delegation", minimum: requests.kernelOwnershipMinimumProtocolVersion },
   PreflightProviderAccountPortability: { feature: "Provider account portability", minimum: requests.providerAccountPortabilityPreflightMinimumProtocolVersion },
   RequestKernelAccess: { feature: "Local-kernel access", minimum: 470 },
+  CoverKernelAccessProcess: { feature: "Covering a background process", minimum: 641 },
   ControlRoomWorkflowRuns: { feature: "Room workflow run controls", minimum: 491 },
   SteerActivePrompt: { feature: "Active prompt steering", minimum: requests.activePromptSteeringMinimumProtocolVersion },
   GetProjectEnvironment: { feature: "Project Environment", minimum: requests.projectEnvironmentMinimumProtocolVersion },
@@ -47,6 +50,8 @@ const features: Record<string, FeatureMinimum> = {
   RetryRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   GetManagedEnvironmentReimagePreflight: { feature: "Managed environment reimage preflight", minimum: requests.managedEnvironmentReimagePreflightMinimumProtocolVersion },
   AdjustProjectEnvironment: { feature: "Project environment adjustment", minimum: projectEnvironmentAdjustmentMinimumProtocolVersion },
+  ListEventConnectionEvents: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
+  ReplayEventConnectionEvent: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
   GetKernelResourceTelemetry: { feature: "Kernel resource telemetry", minimum: requests.kernelResourceTelemetryMinimumProtocolVersion },
 }
 
@@ -72,8 +77,13 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
       : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
   } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
     feature = { feature: "App automation injection", minimum: 491 }
+  } else if (name === "UpdateQueuedWorkflowPrompt" && payload?.retry_delivery === true) {
+    feature = { feature: "Held notification retry", minimum: requests.queuedNotificationRetryMinimumProtocolVersion }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
     feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
+  } else if (name === "MoveAgentToLocal" && payload?.abort_pending === true) {
+    // An older kernel ignores the flag and would Return the agent instead of cancelling its Move.
+    feature = { feature: "Move cancellation", minimum: 638 }
   } else if (name === "SubmitRoomEnvironmentBrowserAction") {
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab
@@ -98,7 +108,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Display resumption") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Display resumption" || feature?.feature === "Move cancellation") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

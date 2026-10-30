@@ -563,6 +563,16 @@ impl CommandRouter {
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
 
+        if let Some(reference) = spawn.slice_ref.as_deref() {
+            match self
+                .runtime_state
+                .resolve_spawn_slice(reference, metaagent.id())
+            {
+                Ok(slice) => spawn.slice_ref = Some(slice.id),
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        }
+
         let mut created_slice = None;
         if let Some(slice_create) = spawn.slice_create.take() {
             let worktree_id = spawn

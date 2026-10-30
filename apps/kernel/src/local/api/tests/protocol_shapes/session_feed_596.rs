@@ -25,6 +25,7 @@ fn turn() -> crate::local::SessionHistoryOutlineTurn {
         started_at_ms: 42,
         lifecycle: crate::local::SessionHistoryOutlineTurnLifecycle::Completed,
         completed_at_ms: Some(99),
+        outcome: None,
         user_prompt,
         entries: vec![assistant],
         summary: None,
@@ -90,7 +91,7 @@ fn session_feed_596_shapes_are_pinned() {
     let bytes = include_bytes!("session-feed-596.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "28bc073dec86f0d69f88f47b100a4107a96ec27b6e331f8c882ac354d1f3919c"
+        "f16548812287a9c7cde9d7c3677aeb194c6e3ca7d9b9876977fc8cd28fdd61c7"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture, fixture_events());

@@ -82,7 +82,7 @@ async fn isolated_case(recovery: RecoveryCase) {
         let test = format!(
             "runtime::state::provider_output_runtime_tests::credential_copy_recovery::{case}"
         );
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = crate::process_spawn::command(std::env::current_exe().unwrap())
             .args(["--exact", &test, "--test-threads=1", "--nocapture"])
             .env("CHARIOX_CREDWARN_FIXTURE_CHILD", case)
             .env("CHARIOX_CODEX_BIN", &fixture)

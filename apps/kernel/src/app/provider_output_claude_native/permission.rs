@@ -23,6 +23,23 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+    if value
+        .strip_prefix("accepted:")
+        .is_some_and(|id| !id.is_empty())
+    {
+        // Acknowledgement belongs to this launch's fresh runtime directory.
+        let _ = fs::write(
+            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+            "accepted",
+        );
+    }
+}
+
+pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
+    fs::read_to_string(
+        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
+    )
+    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
@@ -136,21 +153,26 @@ pub(super) fn claude_headless_workspace_trust_interaction_id(context_file: &str)
         .filter(|interaction_id| !interaction_id.is_empty())
 }
 
-pub(super) fn write_claude_workspace_trust_selection_marker(context_file: &str) {
+pub(super) fn write_claude_workspace_trust_selection_marker(
+    context_file: &str,
+    interaction_id: &str,
+) {
     write_claude_native_marker(
         context_file,
         &format!(
-            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}",
+            "{CLAUDE_HEADLESS_WORKSPACE_TRUST_INTERACTION_PREFIX}select-yes:{}:{interaction_id}",
             unix_epoch_ms()
         ),
     );
 }
 
 pub(super) fn claude_workspace_trust_selection_started_at(context_file: &str) -> Option<u64> {
-    claude_headless_workspace_trust_interaction_id(context_file)?
-        .strip_prefix("select-yes:")?
-        .parse()
-        .ok()
+    let marker = claude_headless_workspace_trust_interaction_id(context_file)?;
+    let (started_at, interaction_id) = marker.strip_prefix("select-yes:")?.split_once(':')?;
+    if interaction_id.is_empty() {
+        return None;
+    }
+    started_at.parse().ok()
 }
 
 pub(super) fn claude_headless_workspace_trust_interaction_marker(marker: &str) -> bool {
@@ -583,22 +605,30 @@ pub(super) fn claude_headless_bypass_confirmation_visible(text: &str) -> bool {
     mode_visible && (complete_acceptance || clipped_choice)
 }
 
+/// Appends one PTY drain to the recent frame. Drains are cut anywhere, so the
+/// stream is joined exactly as received: an edge between drains is never a
+/// separator, and a line boundary split across drains stays one boundary.
 pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str) -> String {
-    let normalized = normalize_claude_rendered_permission_text(rendered);
-    if normalized.trim().is_empty() {
-        return claude_permission_recent_file(context_file)
-            .and_then(|path| fs::read_to_string(path).ok())
-            .unwrap_or_default();
-    }
+    // Keep line boundaries: the selected-folder proof reads the displayed path.
+    let normalized = claude_rendered_terminal_text(rendered);
     let Some(path) = claude_permission_recent_file(context_file) else {
         return normalized;
     };
     let mut recent = fs::read_to_string(&path).unwrap_or_default();
-    if recent.trim_end().ends_with(normalized.trim()) {
+    if normalized.is_empty() {
         return recent;
     }
-    recent.push(' ');
-    recent.push_str(&normalized);
+    let continued = if recent.ends_with('\n') {
+        normalized.strip_prefix('\n').unwrap_or(&normalized)
+    } else {
+        &normalized
+    };
+    // Every drain is fresh stream bytes; matching text is not a repeat (a
+    // pathname may repeat a segment across drains).
+    if continued.is_empty() {
+        return recent;
+    }
+    recent.push_str(continued);
     if recent.chars().count() > 4000 {
         recent = recent
             .chars()
@@ -619,7 +649,21 @@ pub(super) fn clear_claude_permission_recent(context_file: &str) {
     }
 }
 
+/// Terminal text for matching: every separator is a plain space.
 fn normalize_claude_rendered_permission_text(value: &str) -> String {
+    claude_rendered_terminal_text(value).replace('\n', " ")
+}
+
+/// Terminal text without escape sequences. A run of line breaks (CR, LF,
+/// CRLF, blank lines, vertical cursor moves) is one `\n` boundary, so a
+/// reader can tell a terminal boundary from a literal space in a pathname.
+/// Other separators stay single spaces.
+pub(super) fn claude_rendered_terminal_text(value: &str) -> String {
+    fn boundary(output: &mut String) {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
     let mut output = String::new();
     let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -628,6 +672,14 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
                 Some('[') => {
                     for next in chars.by_ref() {
                         if ('@'..='~').contains(&next) {
+                            // Ink uses cursor movement for word separators.
+                            match next {
+                                'A' | 'B' | 'E' | 'F' | 'H' | 'f' => boundary(&mut output),
+                                'C' | 'D' | 'G' if !output.ends_with([' ', '\n']) => {
+                                    output.push(' ');
+                                }
+                                _ => {}
+                            }
                             break;
                         }
                     }
@@ -647,19 +699,17 @@ fn normalize_claude_rendered_permission_text(value: &str) -> String {
             }
             continue;
         }
-        if ch.is_control() {
-            if !output.ends_with(' ') {
-                output.push(' ');
-            }
+        if matches!(ch, '\r' | '\n') {
+            boundary(&mut output);
             continue;
         }
-        if ch.is_whitespace() {
-            if !output.ends_with(' ') {
-                output.push(' ');
-            }
-        } else {
-            output.push(ch);
+        if ch.is_control() {
+            output.push(' ');
+            continue;
         }
+        // Only terminal/control separators are normalized; literal path
+        // characters, including repeated or Unicode spaces, stay exact.
+        output.push(ch);
     }
     output
 }

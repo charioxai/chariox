@@ -62,7 +62,9 @@ impl CommandRouter {
         )
         .await
         {
-            return response.map(Some);
+            return self
+                .redact_result_for_user(response, caller_user_id)
+                .map(Some);
         }
         if let LocalDaemonRequest::RemoveEventConnection(removal) = request {
             let _connection_guard = self
@@ -84,6 +86,12 @@ impl CommandRouter {
                 Some(request.connection_id.clone())
             }
             LocalDaemonRequest::TestEventConnection(request) => Some(request.connection_id.clone()),
+            LocalDaemonRequest::ListEventConnectionEvents(request) => {
+                Some(request.connection_id.clone())
+            }
+            LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
+                Some(request.connection_id.clone())
+            }
             LocalDaemonRequest::ReconnectEventConnection(request) => {
                 Some(request.connection_id.clone())
             }
@@ -188,6 +196,7 @@ impl CommandRouter {
         }
         if matches!(request, LocalDaemonRequest::GetDaemonHealth(_)) {
             return execute_daemon_health_request(
+                &self.daemon_health_cache,
                 self.daemon_health_projection_input(0),
                 request.clone(),
             )

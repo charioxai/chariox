@@ -359,6 +359,7 @@ impl DaemonApp {
             provider_run_id.as_deref(),
             settled_at_ms,
             "cancelled",
+            None,
         );
         self.completed_git_turn_snapshot_store()
             .record_prompt_settlement(

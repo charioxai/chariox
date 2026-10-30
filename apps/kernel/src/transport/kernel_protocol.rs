@@ -142,6 +142,10 @@ pub(crate) enum KernelEvent {
     RoomWorkflowsChanged {
         inventory: crate::runtime::projection::RoomWorkflowInventory,
     },
+    SessionProcessesChanged {
+        session_id: String,
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    },
     SessionSnapshot {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
         session: Box<RuntimeSession>,
@@ -707,6 +711,12 @@ pub(crate) fn session_projection_changed_events(
     previous: Option<&SessionSnapshotProjection>,
 ) -> Vec<KernelEvent> {
     [
+        (previous.is_none_or(|previous| previous.processes != snapshot.processes)
+            && (previous.is_some() || !snapshot.processes.is_empty()))
+        .then(|| KernelEvent::SessionProcessesChanged {
+            session_id: snapshot.session.id().to_string(),
+            processes: snapshot.processes.clone(),
+        }),
         agent_activity_changed_event(snapshot, previous),
         provider_run_changed_event(snapshot, previous),
         session_metadata_changed_event(snapshot, previous),
@@ -747,6 +757,11 @@ pub(crate) fn can_skip_session_snapshot(
     // a window opens, warns, extends or ends alongside another projection delta.
     emitted_projection_delta
         && previous_snapshot.is_some_and(|previous| {
+            // Interaction and task deltas cannot carry a changed execution route
+            // or account. Keep the full agent projection alongside those deltas.
+            if previous.session.agents() != snapshot.session.agents() {
+                return false;
+            }
             if previous.session.sudo_windows() != snapshot.session.sudo_windows() {
                 return false;
             }
@@ -858,6 +873,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::HomeExtensionAuditAppended { .. } => "home_extension_audit_appended",
         KernelEvent::HomeExtensionAuditLagged { .. } => "home_extension_audit_lagged",
         KernelEvent::RoomWorkflowsChanged { .. } => "room_workflows_changed",
+        KernelEvent::SessionProcessesChanged { .. } => "session_processes_changed",
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
@@ -895,6 +911,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::HomeExtensionAuditAppended { session_id, .. }
         | KernelEvent::HomeExtensionAuditLagged { session_id } => Some(session_id.as_str()),
         KernelEvent::RoomWorkflowsChanged { inventory } => Some(&inventory.session_id),
+        KernelEvent::SessionProcessesChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
@@ -962,6 +979,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::HomeExtensionAuditAppended { .. }
         | KernelEvent::HomeExtensionAuditLagged { .. }
         | KernelEvent::RoomWorkflowsChanged { .. }
+        | KernelEvent::SessionProcessesChanged { .. }
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
@@ -1049,6 +1067,15 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         return crate::runtime::kernel_access::Refusal::Ended.transport_error();
     }
     match error {
+        DaemonError::ProviderAccountNameTaken { .. } => {
+            kernel_error("provider_account_name_taken", error, false)
+        }
+        DaemonError::ProviderLoginCodeIncomplete => {
+            kernel_error("provider_login_code_incomplete", error, false)
+        }
+        DaemonError::ProviderLoginCodeInvalid => {
+            kernel_error("provider_login_code_invalid", error, false)
+        }
         DaemonError::ProviderAccountCopy {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
@@ -1119,6 +1146,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             retryable,
             ..
         } => kernel_error(code, error, *retryable),
+        DaemonError::RelayTransport {
+            code,
+            message,
+            retryable,
+            ..
+        } if code == "provider_capacity_reached" => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         // A terminal on another kernel refuses in the terminal service's own words; they
         // are passed on as they came, so the caller that sent the id reads them.
         DaemonError::RelayTransport {

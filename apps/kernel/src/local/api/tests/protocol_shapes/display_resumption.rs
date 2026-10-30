@@ -135,7 +135,7 @@ fn mp08_mp10_mp11_display_connect_553_161_snapshot_hash() {
     let bytes = include_bytes!("display-connect-553.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "f20f5d967f65a3524beea6f17acb99bb9b6f4d7f06a4ae9bbef92b61ff7eb3d8"
+        "c45bd3b0bea816dc29b117c273fad5923e8a3309c7891d14f1ed3cba78541319"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], 553);

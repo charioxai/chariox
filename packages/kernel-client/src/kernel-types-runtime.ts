@@ -76,6 +76,7 @@ export type CompletedGitTurnActionProjection = {
   completed_at_ms: number
   settlement_status: "completed" | "cancelled" | "failed"
   provider_termination?: ProviderRunTermination | null
+  outcome?: TurnOutcome
   duration_ms?: number | null
   changed_paths: string[]
   undo_available: boolean
@@ -92,6 +93,29 @@ export type ProviderRunTermination = {
     | "unknown"
   reason: string
   timestamp_ms: number
+  failure?: TurnOutcome
+}
+
+/**
+ * How a turn ended. Decide to retry or stop from `kind` and `retryable` only; `reason` is for people.
+ * `completed` and `cancelled` are not errors. A kind a newer kernel added reads as `unknown`.
+ */
+export type TurnOutcomeKind =
+  | "completed"
+  | "cancelled"
+  | "interrupted_by_restart"
+  | "overloaded"
+  | "usage_limit"
+  | "sign_in_required"
+  | "provider_crashed"
+  | "network"
+  | "other"
+  | "unknown"
+
+export type TurnOutcome = {
+  kind: TurnOutcomeKind
+  retryable: boolean
+  reason: string
 }
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
@@ -399,6 +423,12 @@ export type UserConfigMutationEffect = {
   } | null
 }
 
+/** `target_ref` is the destination asked for; null or absent is home. A failed Move stays until it is cancelled or asked for again. */
+export type AgentMoveStatus = { target_ref?: string | null } & (
+  | { state: "waiting_for_turn" | "moving" }
+  | { state: "failed"; reason: string }
+)
+
 export type AgentInstance = {
   /** Unknown legacy lineage is never inferred from controller links. */
   spawned_by_agent_id?: string | null
@@ -429,6 +459,8 @@ export type AgentInstance = {
     active_worker_provider_run_id?: string | null
     relay_peer_protocol_version?: number | null
   } | null
+  /** A Move the kernel holds for this agent until it settles or is cancelled (protocol 639). */
+  agent_move?: AgentMoveStatus | null
   extension_grants?: ExtensionGrant[]
   remote_extension_manifest_sync?: RemoteExtensionManifestSyncStatus | null
   /** Tried in order, each for one turn whose provider failed (protocol 397). */
@@ -497,7 +529,11 @@ export type KernelAccessGrant = {
   term: KernelAccessTerm
   /** Absent for `until_holder_exits`. */
   expires_at_ms?: number | null
+  /** Protocol 641: the background processes the grant covers by name; absent when none. */
+  covered?: KernelCoveredProcess[]
 }
+export type KernelCoveredProcess = { pid: number; start: number; executable: string }
+export type KernelAccessCoveredResponse = { KernelAccessCovered: { grant_id: string; process: KernelCoveredProcess } }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }

@@ -17,7 +17,8 @@ export async function executeWorkflowNotificationSettings(args: string[], contex
   const response = await deps.client.send(registerWorkflowNotificationSourceRequest(context.sessionId, workflow, state === "on", fields))
   const payload = response as WorkflowNotificationSourceRegisteredResponse
   if (!payload.WorkflowNotificationSourceRegistered) throw new Error("unexpected notification source response")
-  return { ok: true, message: `Send notifications when runs finish: ${state}`, data: payload.WorkflowNotificationSourceRegistered }
+  const source = payload.WorkflowNotificationSourceRegistered.source
+  return { ok: true, message: `Send notifications when runs finish for ${source.name} (${source.workflow_id}): ${state}`, data: payload.WorkflowNotificationSourceRegistered }
 }
 
 export async function executeWorkflowNotificationTrigger(args: string[], context: ShellContext, deps: Deps): Promise<ShellCommandResult> {

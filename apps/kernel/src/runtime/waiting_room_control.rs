@@ -69,6 +69,18 @@ pub(crate) async fn execute_waiting_room_request(
                 caller_user_id,
             )
             .await?;
+            if request
+                .inventory_version
+                .as_ref()
+                .is_some_and(|version| version != &snapshot.inventory_version)
+            {
+                return Err(DaemonError::MachineRequest {
+                    code: "waiting_room_inventory_changed".into(),
+                    message:
+                        "Session activity changed during listing. Read the session list again."
+                            .into(),
+                });
+            }
             Ok(LocalDaemonResponse::WaitingRoomSessionsListed {
                 page: super::waiting_room_sessions::session_page(snapshot.sessions, request)?,
             })
@@ -254,7 +266,11 @@ async fn projected_waiting_room_full_snapshot(
         }
     })?);
     snapshot.structural_version = format!("{:x}", hasher.finalize());
-    snapshot.inventory_version = snapshot.structural_version.clone();
+    // A page cursor must also be invalidated when semantic activity changes its order.
+    let mut ordering = Sha256::new();
+    ordering.update(snapshot.structural_version.as_bytes());
+    ordering.update(snapshot.activity_revision.as_bytes());
+    snapshot.inventory_version = format!("{:x}", ordering.finalize());
     snapshot.provider_accounts = accounts;
     snapshot.git_credentials = git_credentials;
     Ok(snapshot)

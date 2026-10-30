@@ -120,6 +120,7 @@ export function createCliAppState(options: {
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
   // MP-08 / MP-11: An account inventory that has not arrived is unknown.
   // The kernel remains authoritative for a prompt submitted during hydration.
+  const [providerAccountCopyOffersState, setProviderAccountCopyOffersState] = createSignal<import("@chariox/kernel-client").ProviderAccountCopyOffer[]>([])
   const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>()
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
@@ -266,6 +267,7 @@ export function createCliAppState(options: {
     setRemoteMachinesState,
     remoteKernelsState,
     setRemoteKernelsState,
+    providerAccountCopyOffersState, setProviderAccountCopyOffersState,
     providerAccountsState,
     setProviderAccountsState,
     slicesState,

@@ -59,7 +59,7 @@ impl DurableKernelStateStore {
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.wakes")?;
-        let mut q = db.prepare("SELECT payload FROM agent_wakes WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        let mut q = db.prepare_cached("SELECT payload FROM agent_wakes WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
         let rows = q
             .query_map(params![room, agent], |r| r.get::<_, String>(0))
             .map_err(sql)?;
@@ -754,7 +754,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::RetireWakes { room, agent, now } => {
             let removed = |r: &str, a: &str| r == room && agent.as_deref().is_none_or(|x| x == a);
             // The recipient is going away, so its tasks can never progress.
-            for mut t in tasks(tx)? {
+            for mut t in room_tasks(tx, &room, agent.as_deref())? {
                 if removed(&t.room_id, &t.agent_id) {
                     if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
                         match registrations(tx, &t.task_id) {

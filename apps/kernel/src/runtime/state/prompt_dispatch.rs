@@ -837,6 +837,17 @@ impl KernelRuntimeState {
             crate::session::PromptSubmissionOutcome::Queued { prompt } => {
                 let session_id = submission.session.id();
                 let agent_id = prompt.target_agent_id();
+                // Completion may race the queue mutation. Retry on the current
+                // route when that Move has already released its barrier.
+                if !parked_by_caller
+                    && self
+                        .owned
+                        .agent_moves
+                        .for_agent(session_id, agent_id)
+                        .is_some_and(|operation| !operation.phase.is_pending())
+                {
+                    self.spawn_agent_move_queue_promotion(session_id, agent_id)?;
+                }
                 // A prompt its caller force-queued is parked on purpose (a paused
                 // task's note); only an ordinary admission retries the backlog.
                 if !parked_by_caller
@@ -864,6 +875,25 @@ impl KernelRuntimeState {
                 return Ok(());
             }
         };
+        // Admission already succeeded; cleanup cannot turn it into a failed submission.
+        match self
+            .retire_superseded_restart_task(submission.session.id(), prompt)
+            .await
+            .and_then(|retired| {
+                retired
+                    .then(|| {
+                        self.owned
+                            .session_store
+                            .get_session(submission.session.id())
+                    })
+                    .transpose()
+            }) {
+            Ok(Some(session)) => submission.session = session,
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "Restart owner-decision cleanup failed after prompt acceptance");
+            }
+        }
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(prompt.source_attachment_id())
         {
             return Ok(());

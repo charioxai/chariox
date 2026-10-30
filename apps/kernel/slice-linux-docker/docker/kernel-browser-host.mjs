@@ -1,7 +1,6 @@
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
-import {NavigationDisplays} from './kernel-browser-navigation-display.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
 import { appRestoreOrigin } from "./browser-app-restore.mjs";
@@ -117,7 +116,6 @@ export class KernelBrowserHost {
     this.streams = new Map();
     this.displays = new Map();
     this.displaySessions = new DisplaySessions(this);
-    this.navigationDisplays = new NavigationDisplays(this);
     this.scales = new Map();
     this.layouts = new Map();
     this.layoutRevisions = new Map();
@@ -157,7 +155,7 @@ export class KernelBrowserHost {
     this.nativeAccessibility.clear();
     this.mirror.invalidate();
     await this.closeCompositors();
-    for (const stream of this.displays.values()) stream.invalidate();
+    for (const stream of this.displays.values()) stream.invalidate(true, 'protection');
     if (this.browser) this.browser.protectedValues = new Set(policy.values);
     // No frame captured before insertion/retirement can be returned afterward.
     for (const stream of this.streams.values()) {
@@ -235,7 +233,7 @@ export class KernelBrowserHost {
     this.browser = null;
     for (const stream of this.streams.values()) { stream.off(); clearTimeout(stream.timer); }
     this.streams.clear();
-    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;this.navigationDisplays.clear();
+    this.tabs.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
@@ -827,7 +825,7 @@ export class KernelBrowserHost {
     if (command.op.startsWith("display_") && !featureOn("CHARIOX_KERNEL_BROWSER_DISPLAY")) throw new Error("MD-DISPLAY: display disabled");
     if (command.op === "stop") return this.stop();
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["dialog", "state", "snapshot", "screenshot", "subscribe", "poll", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -874,11 +872,17 @@ export class KernelBrowserHost {
         ?this.displaySessions.resume(command.subscription_id,scope,command.generation,binding)
         :this.displaySessions.suspend(command.subscription_id,scope,command.generation,binding);
     }
+    // P1 (protocol 720): the viewer parks its Tab display while the DOM mirror paints; a commit unparks it.
+    if(command.op==='display_park'){
+      if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
+      const stream=this.displaySessions.require(command.subscription_id,scope,command.generation);
+      if(!stream.tabDisplay||typeof command.parked!=='boolean')throw new UserDomainRefusal('stale_reference','display_retired');
+      stream.park(command.parked);stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
+      return {generation:this.generation,parked:stream.parked};
+    }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
-      // A navigation the observer's mirror just reported already started this display (see NavigationDisplays).
-      this.navigationDisplays.remember(command,scope);
-      try{return this.initialPush(command,await this.navigationDisplays.adopt(command,scope)??await subscribeVisiblePage(this,command,scope,signal));}
+      try{return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));}
       catch(error){const png=pngFallbackCommand(error,command);if(!png)throw error;this.timing('native_visible_page_png_fallback',timestamp());command=png;}
     }
     if(command.op==='display_subscribe'&&command.target) {

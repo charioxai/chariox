@@ -48,7 +48,8 @@ impl KernelRuntimeState {
             return None;
         }
         let config = self.owned.config_projection.snapshot();
-        let profile = config.cloud_relay.as_ref()?;
+        // A private relay asserts its own identities, never the Cloud owner.
+        let profile = crate::runtime::cloud_relay_control::active_cloud_profile(&config)?;
         if identity.realm_id != profile.realm_id
             || identity.user_id.as_deref() != Some(profile.user_id.as_str())
         {
@@ -545,6 +546,20 @@ mod tests {
     };
     use tokio::sync::{oneshot, watch};
 
+    // Cloud discovery seeds notification inventory on the hosted transport; the
+    // fixture relay has no Cloud API, so read its metadata with the relay token.
+    async fn seed_presence(runtime: &KernelRuntimeState, config: &DaemonConfig, kernel: &str) {
+        let mut config = config.clone();
+        config.cloud_relay = None;
+        let presence = crate::transport::relay_discovery::get_live_kernel(&config, kernel)
+            .await
+            .unwrap();
+        runtime
+            .owned
+            .notification_inventory_projection
+            .update(vec![], vec![presence]);
+    }
+
     fn peer(
         f: &mut Fixture,
         url: &str,
@@ -573,6 +588,7 @@ mod tests {
             realm_id: "wfnotify-fixture".into(),
             user_id: "local".into(),
             api_url: "http://127.0.0.1:1".into(),
+            relay_url: url.into(),
             ..Default::default()
         });
         config.relay_token = Some(token(&config, secret, "local"));
@@ -681,6 +697,29 @@ mod tests {
             user_id: Some("local".into()),
             public_key_thumbprint: None,
         };
+        assert!(runtime.notification_peer_owner(&identity).is_none());
+    }
+
+    #[test]
+    fn private_relay_identity_cannot_claim_retained_cloud_owner() {
+        // MP-08 / MP-10 / MP-11: only the Cloud relay vouches for Cloud owner claims.
+        let mut f = Fixture::for_kernel("notification-home");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let identity = chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "wfnotify-fixture".into(),
+            subject: "home-peer".into(),
+            subject_kind: RelaySubjectKind::Kernel,
+            expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+            token_id: None,
+            user_id: Some("local".into()),
+            public_key_thumbprint: None,
+        };
+        assert_eq!(
+            runtime.notification_peer_owner(&identity).as_deref(),
+            Some("local")
+        );
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        runtime.owned.config_projection.update(config);
         assert!(runtime.notification_peer_owner(&identity).is_none());
     }
 
@@ -811,6 +850,8 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+        seed_presence(&target_runtime, &tc, &sc.daemon_id).await;
+        seed_presence(&source_runtime, &sc, &tc.daemon_id).await;
         let source_record = source.source(&a);
         let response = target_runtime
             .notification_peer(
@@ -835,13 +876,6 @@ mod tests {
                 sources,
             })
             .unwrap();
-        let presence = crate::transport::relay_discovery::get_live_kernel(&tc, &sc.daemon_id)
-            .await
-            .unwrap();
-        target_runtime
-            .owned
-            .notification_inventory_projection
-            .update(vec![], vec![presence]);
         target_runtime
             .refresh_notification_sources_from_inventory("local", false)
             .await
@@ -954,6 +988,8 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+        seed_presence(&source_runtime, &sc, &tc.daemon_id).await;
+        seed_presence(&target_runtime, &tc, &sc.daemon_id).await;
         let envelope = pending[0].1.clone();
         // Admit once while source still has no ACK (lost response seam).
         assert!(matches!(
@@ -1061,13 +1097,7 @@ mod tests {
             .unwrap();
         // The existing connector clears discovery on disconnect. Restore the
         // relay's live presence before testing an online source's empty answer.
-        let presence = crate::transport::relay_discovery::get_live_kernel(&tc, &sc.daemon_id)
-            .await
-            .unwrap();
-        target_runtime
-            .owned
-            .notification_inventory_projection
-            .update(vec![], vec![presence]);
+        seed_presence(&target_runtime, &tc, &sc.daemon_id).await;
         target_runtime
             .refresh_notification_sources_from_inventory("local", true)
             .await

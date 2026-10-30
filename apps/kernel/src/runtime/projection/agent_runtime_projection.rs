@@ -65,6 +65,10 @@ impl AgentRuntimeProjectionStore {
     }
 
     pub(crate) fn update_session(&self, session: &RuntimeSession) {
+        if session.status() == crate::session::SessionStatus::Ended {
+            self.remove_session(session.id());
+            return;
+        }
         let mut agents = self
             .agents
             .lock()

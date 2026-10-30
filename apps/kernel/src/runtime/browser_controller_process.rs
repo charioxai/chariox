@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -299,7 +299,7 @@ impl BrowserControllerProcessStdioBackend {
     }
 
     fn spawn(&mut self) -> Result<(), String> {
-        let mut command = Command::new(&self.command);
+        let mut command = crate::process_spawn::command(&self.command);
         command
             .args(&self.args)
             .stdin(Stdio::piped())
@@ -1422,6 +1422,11 @@ fn terminate_child(
 }
 
 fn kill_child(child: &mut Child) {
+    // A reaped child's PID may already belong to someone else, and the group
+    // is anchored to the PID's identity; only an unreaped child is pinned.
+    if !matches!(child.try_wait(), Ok(None)) {
+        return;
+    }
     let mut group = owned_process_group::OwnedProcessGroup::new(child.id());
     kill_owned_child(child, &mut group);
 }
@@ -2793,7 +2798,7 @@ mod tests {
             // by this multi-threaded test process could leak into another
             // test's fork and make exec fail with ETXTBSY.
             let path = root.join("controller-tool.sh");
-            let installed = std::process::Command::new("install")
+            let installed = crate::process_spawn::command("install")
                 .args(["-m", "700"])
                 .arg(&source)
                 .arg(&path)
@@ -3170,8 +3175,10 @@ done
             fs::read_to_string(format!("/proc/{pid}/stat"))
                 .ok()
                 .is_some_and(|s| {
+                    // A killed process goes Z (zombie), then X (dead) when its
+                    // parent reaps it; both are gone, so liveness cannot flicker.
                     s.rsplit_once(')')
-                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with('Z'))
+                        .is_some_and(|(_, tail)| !tail.trim_start().starts_with(['Z', 'X']))
                 })
         }
         for crash in [true, false] {
@@ -3256,7 +3263,7 @@ done
                 "{}::mp10_host_encoder_environment_crosses_the_real_spawn_boundary",
                 module_path!().split_once("::").unwrap().1
             );
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
+            let status = crate::process_spawn::command(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .env("CHARIOX_TEST_DISPLAY_ENV_CHILD", "1")
                 .env("CHARIOX_BROWSER_DISPLAY_SOFTWARE_ENCODER", "libopenh264")

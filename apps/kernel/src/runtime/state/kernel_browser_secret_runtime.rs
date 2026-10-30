@@ -1,7 +1,6 @@
 //! MD-5: user-domain scope over the Room Vault/observation implementation.
 use super::kernel_browser_runtime::{host_error, PASTE};
 use super::*;
-use crate::local::KernelSudoTurn;
 use crate::runtime::browser_controller_action::BrowserLocatorAction;
 use crate::runtime::kernel_browser_host::{KernelBrowserAdmission, KernelBrowserHost};
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -185,7 +184,6 @@ impl KernelRuntimeState {
         agent: &crate::agent::AgentInstance,
         arguments: Value,
         admission: KernelBrowserAdmission,
-        sudo_turn: Option<&KernelSudoTurn>,
     ) -> Result<RuntimeToolResult, DaemonError> {
         let args: PasteArgs = serde_json::from_value(arguments)
             .map_err(|_| host_error("MD-5: invalid Vault input arguments".into()))?;
@@ -209,7 +207,6 @@ impl KernelRuntimeState {
             self.home_runtime_secret_service()?
                 .validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
-            sudo_turn.is_some(),
         )?;
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
@@ -226,16 +223,9 @@ impl KernelRuntimeState {
         let _barrier = protection.barrier(&scope)?.write_owned().await;
         check_authority()?;
         let current = self.owned.agent_store.get_agent(agent.id())?;
-        let authorized = match sudo_turn {
-            Some(turn) => self.sudo_turn_live(turn),
-            None => self.owned.session_snapshot(session)?.focused_agent_id() == Some(agent.id()),
-        };
-        if current.session_id() != session
-            || current.owner_user_id() != agent.owner_user_id()
-            || !authorized
-        {
+        if current.session_id() != session || current.owner_user_id() != agent.owner_user_id() {
             return Err(host_error(
-                "MD-3: current local focus or sudo window required after Vault wait".into(),
+                "MD-3: the agent changed session or owner during the Vault wait".into(),
             ));
         }
         require_vault_owner(
@@ -253,7 +243,6 @@ impl KernelRuntimeState {
         crate::runtime::state::sudo::require_login_handle_scope(
             service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?,
             session,
-            sudo_turn.is_some(),
         )?;
         let secret = zeroize::Zeroizing::new(
             service.browser_secret_input_for_target_url(&args.credential_id, &url)?,

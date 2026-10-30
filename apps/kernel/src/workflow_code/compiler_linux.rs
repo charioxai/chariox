@@ -33,7 +33,7 @@ pub(super) fn runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::Dae
 }
 
 fn discover_runtime_files(node: &Path) -> Result<BTreeSet<PathBuf>, crate::DaemonError> {
-    let dependencies = Command::new("/usr/bin/ldd")
+    let dependencies = crate::process_spawn::command("/usr/bin/ldd")
         .env_clear()
         .arg(node)
         .output()

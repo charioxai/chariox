@@ -1,5 +1,7 @@
 // MP-08 / MP-10 / MP-11: framing is socket-local and precedes decryption/correlation.
 export const relayChunkBytes = 16 * 1024
+export const relayBinaryHeaderBytes = 16
+export const relayBinaryPayloadBytes = relayChunkBytes - relayBinaryHeaderBytes
 export const relayMaxMessageBytes = 64 * 1024 * 1024
 export function relayTransportUrl(value: string): string {
   const url = new URL(value)
@@ -15,10 +17,40 @@ export function relayResponseInProgress(socket: object | null): boolean { return
 export class RelayFrameReceiver {
   private progressAt = -Infinity
   constructor(socket?: object) { if (socket) receivers.set(socket, this) }
-  receiving(): boolean { return this.active.size > 0 && performance.now() - this.progressAt < 1000 }
+  receiving(): boolean { return (this.active.size + this.binaryActive.size) > 0 && performance.now() - this.progressAt < 1000 }
   private active = new Map<number, { total: number; bytes: number; parts: string[] }>()
+  private binaryActive = new Map<number, { total: number; bytes: number; parts: Uint8Array[] }>()
   private reserved = 0
   private lastId = 0
+  receiveBinary(data: ArrayBuffer, receipt: (frame: string) => void): ArrayBuffer | null {
+    const bytes = new Uint8Array(data)
+    if (bytes.length < 4 || bytes[0] !== 67 || bytes[1] !== 88 || bytes[2] !== 66 || bytes[3] !== 49) return data
+    if (bytes.length <= relayBinaryHeaderBytes || bytes.length > relayChunkBytes) throw Error("invalid binary transport chunk bounds")
+    const header = new DataView(data), id = header.getUint32(4), offset = header.getUint32(8), total = header.getUint32(12)
+    const payload = bytes.subarray(relayBinaryHeaderBytes)
+    // Full non-final chunks bound fragment storage and receipt pressure.
+    if (!id || !total || total > relayMaxMessageBytes || offset > total || payload.length !== Math.min(relayBinaryPayloadBytes, total - offset)) throw Error("invalid binary transport chunk bounds")
+    if (this.active.has(id)) throw Error("transport payload type changed")
+    if (!this.binaryActive.has(id)) {
+      if (offset !== 0 || id <= this.lastId || this.active.size + this.binaryActive.size >= relayMaxTransfers || total > relayMaxAssemblyBytes - this.reserved) throw Error("invalid transport transfer start")
+      this.lastId = id; this.reserved += total
+      this.binaryActive.set(id, {total, bytes: 0, parts: []})
+    }
+    const active = this.binaryActive.get(id)!
+    if (active.total !== total || active.bytes !== offset) throw Error("non-contiguous transport chunk")
+    active.parts.push(payload); active.bytes += payload.length
+    this.progressAt = performance.now()
+    let completed: ArrayBuffer | null = null
+    if (active.bytes === total) {
+      const assembled = new Uint8Array(total); let cursor = 0
+      for (const part of active.parts) { assembled.set(part, cursor); cursor += part.length }
+      if (assembled[0] === 67 && assembled[1] === 88 && assembled[2] === 66 && assembled[3] === 49) throw Error("nested transport frame")
+      this.binaryActive.delete(id); this.reserved -= total
+      completed = assembled.buffer
+    }
+    receipt(JSON.stringify({kind:"transport_ack",transfer_id:id,offset:active.bytes}))
+    return completed
+  }
   receive(text: string, receipt: (frame: string) => void): string | null {
     const frame: unknown = JSON.parse(text)
     if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw Error("invalid relay frame")
@@ -39,8 +71,9 @@ export class RelayFrameReceiver {
       return null
     }
     if (bytes === 0) throw Error("invalid transport chunk bounds")
+    if (this.binaryActive.has(id)) throw Error("transport payload type changed")
     if (!this.active.has(id)) {
-      if (offset !== 0 || id <= this.lastId || this.active.size >= relayMaxTransfers
+      if (offset !== 0 || id <= this.lastId || this.active.size + this.binaryActive.size >= relayMaxTransfers
           || total > relayMaxAssemblyBytes - this.reserved) throw Error("invalid transport transfer start")
       this.lastId = id; this.reserved += total
       this.active.set(id, { total, bytes: 0, parts: [] })

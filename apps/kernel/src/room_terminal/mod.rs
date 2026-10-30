@@ -4,6 +4,7 @@ mod driver;
 mod events;
 pub(crate) mod managed_work;
 mod output_log;
+mod owner;
 mod plain_text;
 mod pump;
 mod screen;

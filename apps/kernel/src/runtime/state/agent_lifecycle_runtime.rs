@@ -68,25 +68,26 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         run: Option<&str>,
     ) -> Result<(), DaemonError> {
-        if self
+        let existing = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .iter()
-            .any(|t| t.prompt_id == prompt.id())
-        {
-            return Ok(());
-        }
+            .agent_turn_task(room, agent, prompt.id())?;
         let session = self.session_store.get_session(room)?;
-        let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(Operation::Begin {
-            owner: session.owner_user_id().into(),
-            room: room.into(),
-            agent: agent.into(),
-            prompt: prompt.id().into(),
-            run: run.map(str::to_owned),
-            now: crate::session::unix_epoch_ms(),
-        })?
-        else {
-            unreachable!()
+        let task = if let Some(task) = existing {
+            task
+        } else {
+            let Outcome::Task(task) =
+                self.durable_state_store.agent_lifecycle(Operation::Begin {
+                    owner: session.owner_user_id().into(),
+                    room: room.into(),
+                    agent: agent.into(),
+                    prompt: prompt.id().into(),
+                    run: run.map(str::to_owned),
+                    now: crate::session::unix_epoch_ms(),
+                })?
+            else {
+                unreachable!()
+            };
+            task
         };
         // A workflow node turn dispatched before an upgrade keeps its live node, so
         // the run stays supervised and its continuation stays in the invocation.
@@ -134,9 +135,7 @@ impl KernelRuntimeOwnedState {
         }
         let Some(task) = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt))
+            .agent_turn_or_continuation_task(room, agent, prompt)?
         else {
             return Ok(None);
         };
@@ -296,9 +295,7 @@ impl KernelRuntimeOwnedState {
         self.ensure_agent_task(room, agent, prompt, Some(run))?;
         let Some(task) = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| t.prompt_id == prompt.id())
+            .agent_turn_task(room, agent, prompt.id())?
         else {
             return Ok(None);
         };
@@ -389,6 +386,7 @@ impl KernelRuntimeOwnedState {
                         prompt.id(),
                         answer_run,
                     );
+                    self.trace_assessment_waiting_result(&task, prompt.id(), &result);
                 }
                 // What the owner already saw of the work turn; the receipt must not repeat it.
                 let work_output = ledger::completion::evaluation(&task)
@@ -497,6 +495,10 @@ impl KernelRuntimeState {
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
         }
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        self.owned
+            .require_agent_account_authenticated(target, None, "send agent message")?;
         // Room admission precedes resource lookup; no cross-room discovery.
         let id = args
             .idempotency_key
@@ -531,9 +533,7 @@ impl KernelRuntimeState {
         let task = self
             .owned
             .durable_state_store
-            .agent_tasks(Some(session.id()), Some(sender.id()))?
-            .into_iter()
-            .find(|t| t.prompt_id == current.id())
+            .agent_turn_task(session.id(), sender.id(), current.id())?
             .ok_or_else(|| ledger::error("sender task unavailable"))?;
         let Outcome::Event(event) =
             self.owned
@@ -546,6 +546,16 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        if let Err(error) = self
+            .owned
+            .record_session_activity(session.id(), crate::session::unix_epoch_ms())
+        {
+            crate::logging::error_with_fields(
+                "daemon.activity",
+                "Could not persist session message activity",
+                serde_json::json!({"session_id": session.id(), "error": error.to_string()}),
+            );
+        }
         self.owned.record_notice_for_agent(
             session.id(),
             None,
@@ -667,6 +677,8 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+            .await;
         let name = self.agent_notice_name(&task.agent_id);
         let message = super::agent_task_projection::task_status_notice(&task, &name);
         self.owned.record_notice_for_agent(
@@ -711,12 +723,7 @@ impl KernelRuntimeState {
             let other_unfinished = self
                 .owned
                 .durable_state_store
-                .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
-                .iter()
-                .any(|t| {
-                    t.task_id != task.task_id
-                        && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                });
+                .agent_has_other_unfinished_task(&task.room_id, &task.agent_id, &task.task_id)?;
             if !other_unfinished {
                 self.owned
                     .durable_state_store
@@ -826,6 +833,21 @@ impl KernelRuntimeState {
         } else {
             text
         };
+        let (text, hidden_system_context) = match workflow.as_ref() {
+            Some((run, node)) => {
+                let session = self.owned.session_store.get_session(&task.room_id)?;
+                let refresh = |text: &str| {
+                    crate::scheduler::prompt_injection::refresh_recovered_workflow_prompt(
+                        &session, run, node, text,
+                    )
+                };
+                (
+                    refresh(&text),
+                    hidden_system_context.map(|context| refresh(&context)),
+                )
+            }
+            None => (text, hidden_system_context),
+        };
         let prompt = crate::session::PromptQueueItem::new(
             id.clone(),
             workflow_attachment.as_deref().unwrap_or(&attachment),
@@ -932,7 +954,12 @@ impl KernelRuntimeState {
                 }
                 continue;
             }
-            if task.state == ExecutionState::Cancelled {
+            if task.state == ExecutionState::Cancelled
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_task_terminal_recorded(&task)?
+            {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
                 }
@@ -1016,6 +1043,18 @@ impl KernelRuntimeState {
                     } else {
                         None
                     };
+                    let public_answer = public_answer.or_else(|| {
+                        workflow_source
+                            .as_ref()
+                            .filter(|run| {
+                                matches!(
+                                    run.status(),
+                                    crate::session::WorkflowRunStatus::Failed
+                                        | crate::session::WorkflowRunStatus::Stopped
+                                )
+                            })
+                            .map(super::agent_workflow_tasks::workflow_failure_answer)
+                    });
                     let occurrence = terminal_task
                         .as_ref()
                         .map(|t| format!("task-terminal-{}", t.task_id))
@@ -1044,7 +1083,14 @@ impl KernelRuntimeState {
             // A queue item is not a live executor. Recover the exact eligible
             // head through normal provider/project admission; do not advance
             // a different (possibly blocked) task on this task's authority.
+            // A leased agent's provider runs on its worker, where only the
+            // leased dispatch starts its queued prompts.
             if task.state == ExecutionState::Working
+                && self
+                    .owned
+                    .agent_store
+                    .get_agent(&task.agent_id)
+                    .is_ok_and(|agent| agent.remote_execution().is_none())
                 && self
                     .owned
                     .prompt_state_owner

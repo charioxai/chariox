@@ -260,7 +260,7 @@ fn a02_forwarded_task_answers_protect_recovered_room_history() {
         .unwrap();
     let excerpt = answer["excerpt"].as_str().unwrap();
     assert!(!excerpt.contains("synthetic-only"));
-    assert!(excerpt.contains("withheld"));
+    assert!(excerpt.contains("[redacted]"));
 }
 
 // MP-08/MP-10/MP-11: even non-Vault peer requests construct these shared
@@ -494,28 +494,74 @@ fn worker_local_transcripts_share_home_room_registry_and_recovery_fence() {
 }
 
 #[test]
-fn split_terminal_chunks_are_withheld_without_human_clearance() {
+fn terminal_streams_reach_humans_and_model_bound_history_is_scrubbed_across_chunks() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
-    assert_eq!(store.protect_unframed_bytes("room", b"normal"), b"normal");
     store.register("room", "synthetic-only").unwrap();
-
-    for bytes in [b"synthetic".as_slice(), b"-only".as_slice()] {
-        let protected = store.protect_unframed_bytes("room", bytes);
-        assert_eq!(protected, b"[sensitive Room terminal stream withheld]");
-        let entry = crate::history::SessionHistoryEntry::provider_output(
+    let entry = |text: &str| {
+        crate::history::SessionHistoryEntry::provider_output(
             "room",
             "run",
             None,
             crate::terminal::TerminalOutputKind::ProviderOutput,
             None,
-            String::from_utf8_lossy(bytes),
-        );
-        assert_eq!(
-            store.protect_transcript_entry(entry).text,
-            "[sensitive Room terminal stream withheld]"
-        );
-    }
+            text,
+        )
+    };
+    // The person's view of the stream is never blanked.
+    assert_eq!(
+        store.protect_transcript_entry(entry("later output")).text,
+        "later output"
+    );
+    assert_eq!(
+        store
+            .protect_transcript_entry(entry("echo synthetic-only"))
+            .text,
+        "echo [redacted]"
+    );
+    // A value split across two stored chunks is scrubbed when model-bound events are built.
+    let event = |sequence: u64, text: &str| {
+        serde_json::from_value::<crate::history::HistoryEvent>(serde_json::json!({
+            "event_id": format!("event-{sequence}"),
+            "sequence": sequence,
+            "timestamp_ms": sequence,
+            "session_id": "room",
+            "agent_id": "agent",
+            "provider_run_id": "run",
+            "kind": "provider_output",
+            "content": text,
+        }))
+        .unwrap()
+    };
+    let protected = store.protect_history_events(vec![
+        event(1, "log synthetic"),
+        event(2, "-only done"),
+        event(3, "untouched"),
+    ]);
+    let texts = protected
+        .iter()
+        .map(|event| event.content.clone().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(texts.concat(), "log [redacted] doneuntouched");
+    assert!(!texts.concat().contains("synthetic"));
+}
+
+#[test]
+fn scrub_covers_unpadded_standard_base64() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    // 0xfb 0xff bytes encode to `+` and `/` in the standard alphabet.
+    let secret = "?>?>x";
+    store.register("room", secret).unwrap();
+    let unpadded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(secret);
+    assert!(
+        unpadded.contains('+') || unpadded.contains('/'),
+        "{unpadded}"
+    );
+    assert!(!store
+        .scrub("room", format!("token {unpadded}"))
+        .unwrap()
+        .contains(&unpadded));
 }
 
 #[test]
@@ -633,10 +679,6 @@ async fn legacy_room_migration_is_autonomous_and_permanently_withholds_only_prio
                 .scrub(&room.session_id, "fresh result".to_string())
                 .unwrap(),
             "fresh result"
-        );
-        assert_eq!(
-            store.protect_unframed_bytes(&room.session_id, b"fresh terminal"),
-            b"fresh terminal"
         );
         let policy: serde_json::Value =
             serde_json::from_str(&store.capture_policy(&room.session_id).unwrap()).unwrap();
@@ -836,6 +878,40 @@ fn marker_io_failure_aborts_input_and_withholds_capture() {
     let store = RoomSecretObservations::new(path, BTreeSet::new());
     assert!(store.register("room", "synthetic-only").is_err());
     assert!(store.require("room", true).is_err());
+}
+
+#[test]
+fn streamed_history_stays_withheld_when_the_registry_cannot_initialize() {
+    let root = TestRoot::new();
+    let path = root.path().join("file");
+    std::fs::write(&path, b"not a directory").unwrap();
+    let store = RoomSecretObservations::new(path, BTreeSet::new());
+    let event = |sequence: u64, kind: &str| {
+        serde_json::from_value::<crate::history::HistoryEvent>(serde_json::json!({
+            "event_id": format!("event-{sequence}"),
+            "sequence": sequence,
+            "timestamp_ms": sequence,
+            "session_id": "room",
+            "agent_id": "agent",
+            "provider_run_id": "run",
+            "kind": kind,
+            "content": format!("streamed chunk {sequence}"),
+        }))
+        .unwrap()
+    };
+    for kind in ["provider_output", "provider_reasoning"] {
+        let protected = store.protect_history_events(vec![event(1, kind), event(2, kind)]);
+        for event in &protected {
+            assert_eq!(
+                event.content.as_deref(),
+                Some("[recovered sensitive Room history withheld]")
+            );
+        }
+    }
+    assert!(
+        store.rooms.lock().is_ok(),
+        "the shared registry stays usable"
+    );
 }
 
 #[tokio::test]
@@ -1084,10 +1160,6 @@ fn public_history_stored_values_scrub_after_restart_without_fencing_streams() {
     let restarted = RoomSecretObservations::new(path, BTreeSet::new()).with_identity(&key);
     for store in [&store, &restarted] {
         assert!(!store.protects_bytes("room"));
-        assert_eq!(
-            store.protect_unframed_bytes("room", b"later answer"),
-            b"later answer"
-        );
         assert_eq!(
             store.scrub_text_or_withhold("room", "echo synthetic-stored-value"),
             "echo [redacted]"

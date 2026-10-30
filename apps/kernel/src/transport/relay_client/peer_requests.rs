@@ -99,6 +99,34 @@ pub(super) async fn handle_daemon_peer_request(
             let _ = release.await;
         }
     }
+    if let RelayPeerRequest::RequestProviderAccountCopy { request } = request {
+        let result = match require_bound_managed_context_sender(
+            caller_identity.as_ref(),
+            &encrypted_request,
+        ) {
+            Ok(identity) => {
+                router
+                    .runtime_state()
+                    .send_requested_provider_account_copy(
+                        stable_peer_daemon_id(from_daemon_id),
+                        &requester_public_key,
+                        identity,
+                        request,
+                    )
+                    .await
+            }
+            Err(_) => Err(crate::provider_account_copy::failure(
+                "provider_account_copy_unauthorized",
+            )),
+        };
+        let response = match result {
+            Ok(receipt) => RelayPeerResponse::ProviderAccountCopyInstalled { receipt },
+            Err(error) => RelayPeerResponse::ProviderAccountCopyFailed {
+                code: map_relay_error(&error).code,
+            },
+        };
+        return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+    }
     if let RelayPeerRequest::InstallProviderAccountCopy {
         binding,
         credential,
@@ -159,7 +187,10 @@ pub(super) async fn handle_daemon_peer_request(
         router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
     let lease_worker_caller = if !managed_context_request(&request)
         && (is_lease_worker
-            || matches!(&request, RelayPeerRequest::CreateExecutionLease { .. })
+            || matches!(
+                &request,
+                RelayPeerRequest::CreateExecutionLease { .. } | RelayPeerRequest::AgentMove { .. }
+            )
             || lease_resource(&request).is_some())
     {
         if is_lease_worker && !lease_worker_peer_request_allowed(&request) {
@@ -192,6 +223,30 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         };
+        if let RelayPeerRequest::AgentMove { request: movement } = &request {
+            let identity = movement.identity();
+            if caller.home_kernel_id != identity.home_kernel_id
+                || canonical_peer_daemon_id(from_daemon_id)
+                    != Some(identity.home_kernel_id.as_str())
+                || crate::runtime::terminal_pairings::public_key_thumbprint(&requester_public_key)
+                    != identity.home_key_thumbprint
+                || (caller_identity
+                    .as_ref()
+                    .and_then(|identity| identity.user_id.as_deref())
+                    .is_some()
+                    && caller.owner_user_id != identity.owner_user_id)
+            {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "move claims do not match the authenticated home kernel",
+                        false,
+                    )),
+                };
+            }
+        }
         if let RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,
             owner_user_id,
@@ -426,6 +481,18 @@ pub(super) async fn handle_daemon_peer_request(
         }
     };
     let response = match request {
+        RelayPeerRequest::AgentMove { request } => {
+            match router.relay_agent_move(request, lease_worker_caller).await {
+                Ok(response) => RelayPeerResponse::AgentMove { response },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::SetLeasedComputerGrant {
             leased_agent_id,
             epoch,
@@ -685,7 +752,8 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::InstallProviderAccountCopy { .. } => {
+        RelayPeerRequest::InstallProviderAccountCopy { .. }
+        | RelayPeerRequest::RequestProviderAccountCopy { .. } => {
             unreachable!("account copy is admitted before generic peer dispatch")
         }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong {
@@ -1662,18 +1730,38 @@ pub(super) async fn handle_daemon_peer_request(
             arguments,
         } => {
             let handled = router
-                .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+                .dispatch_forwarded_workflow_runtime_tool_call(
+                    context,
+                    tool_name,
+                    arguments,
+                    |result| {
+                        router.with_forwarded_response_authority(|| {
+                            let outcome = encrypt_peer_response(
+                                &daemon_private_key,
+                                &requester_public_key,
+                                RelayPeerResponse::WorkflowRuntimeToolHandled { result },
+                            );
+                            if let Some(error) = outcome.error.as_ref() {
+                                return Err(DaemonError::RelayTransport {
+                                    operation: "release forwarded workflow response",
+                                    code: error.code.clone(),
+                                    message: error.message.clone(),
+                                    retryable: error.retryable,
+                                });
+                            }
+                            Ok(outcome)
+                        })
+                    },
+                )
                 .await;
-            match handled {
-                Ok(result) => RelayPeerResponse::WorkflowRuntimeToolHandled { result },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
+            return match handled {
+                Ok(outcome) => outcome,
+                Err(error) => RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(map_relay_error(&error)),
+                },
+            };
         }
         RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool {
             context,
@@ -2694,6 +2782,9 @@ mod selected_home_tests {
 
 fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
     match request {
+        RelayPeerRequest::AgentMove { request } => {
+            request.leased_agent_id().map(LeaseResource::LeasedAgent)
+        }
         RelayPeerRequest::DestroyExecutionLease { lease_id }
         | RelayPeerRequest::SpawnLeasedAgent { lease_id, .. } => {
             Some(LeaseResource::ExecutionLease(lease_id))
@@ -2794,7 +2885,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
 fn lease_worker_peer_request_allowed(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
-        RelayPeerRequest::Ping { .. } | RelayPeerRequest::CreateExecutionLease { .. }
+        RelayPeerRequest::Ping { .. }
+            | RelayPeerRequest::CreateExecutionLease { .. }
+            | RelayPeerRequest::AgentMove { .. }
     ) || lease_resource(request).is_some()
 }
 
@@ -2822,6 +2915,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 
 #[cfg(test)]
 mod tests {
+    mod agent_move;
     mod signed_slice;
 
     use super::*;
@@ -2832,7 +2926,6 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::process::Command;
     use tokio::sync::Mutex;
 
     use crate::app::RemoteLeaseRuntime;
@@ -3434,6 +3527,67 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn lease_worker_ignores_cloud_enrollment_claims_over_private_relay() {
+        std::thread::Builder::new()
+            .name("lease-worker-private-relay".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("lease worker private relay test runtime")
+                    .block_on(
+                        lease_worker_ignores_cloud_enrollment_claims_over_private_relay_inner(),
+                    );
+            })
+            .expect("lease worker private relay test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn lease_worker_ignores_cloud_enrollment_claims_over_private_relay_inner() {
+        // MP-08 / MP-10 / MP-11: only the Cloud relay vouches for enrollment claims.
+        for (relay_url, admitted) in [(None, true), (Some("ws://operator-relay:49100"), false)] {
+            let mut config = lease_worker_config();
+            config.relay_url = relay_url.map(Into::into);
+            config.relay_token = relay_url.map(|_| "synthetic-operator-transport".into());
+            let app = DaemonApp::bootstrap(config).expect("lease worker should boot");
+            let target_public_key = app.config().relay_public_key.clone();
+            let router = Arc::new(CommandRouter::with_interactive_capacity(
+                Arc::new(Mutex::new(app)),
+                1,
+            ));
+            let state = Arc::new(RwLock::new(RelayClientState::default()));
+            let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+            let source_private_key = relay_crypto::generate_private_key_base64();
+            let source_public_key =
+                relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                    .expect("source public key");
+            let outcome = send_lease_worker_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                scoped_machine_identity(
+                    "machine-home-1",
+                    Some(public_key_thumbprint(&source_public_key)),
+                ),
+                &source_private_key,
+                &target_public_key,
+                RelayPeerRequest::CreateExecutionLease {
+                    home_kernel_id: "source-kernel-1".to_string(),
+                    home_session_id: "session-1".to_string(),
+                    home_agent_id: "agent-1".to_string(),
+                    home_agent_metaagent: false,
+                    owner_user_id: "user-1".to_string(),
+                },
+            )
+            .await;
+            assert_eq!(outcome.error.is_none(), admitted, "relay_url={relay_url:?}");
+        }
     }
 
     #[test]
@@ -5959,7 +6113,7 @@ mod tests {
     }
 
     fn git(path: &std::path::Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::process_spawn::command("git")
             .args(args)
             .current_dir(path)
             .output()

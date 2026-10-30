@@ -218,6 +218,18 @@ pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool 
     .any(|prefix| variant.starts_with(prefix))
 }
 
+/// Whether the target records a gateway request in its durable audit: every request
+/// that changes state, and content reads of the machine's files. Status, list and
+/// state polls are not recorded.
+pub(crate) fn is_audited(request: &crate::local::LocalDaemonRequest) -> bool {
+    use crate::local::LocalDaemonRequest;
+    match request {
+        LocalDaemonRequest::ReadKernelFile(_) | LocalDaemonRequest::WriteKernelFile(_) => true,
+        LocalDaemonRequest::RelayStatus(_) | LocalDaemonRequest::CloudRelayStatus(_) => false,
+        request => !is_repeatable(request),
+    }
+}
+
 /// The target's default for waiting on an access answer (`kernel_access.request_timeout_minutes`).
 const SUDO_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
@@ -241,6 +253,7 @@ pub(crate) fn deadline_for(request: &crate::local::LocalDaemonRequest) -> std::t
         LocalDaemonRequest::RequestKernelSudo(_) => super::REQUEST_DEADLINE + SUDO_ANSWER_WAIT,
         // Owner discovery, the protocol probe and the official verification turn are bounded independently.
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => std::time::Duration::from_secs(150),
+        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => std::time::Duration::from_secs(450),
         _ => super::REQUEST_DEADLINE + wait,
     }
 }

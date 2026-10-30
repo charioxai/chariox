@@ -232,6 +232,8 @@ test("kernel health formatter reports session and agent projection invariants", 
     projection_invariants: {
       checked_sessions: 1,
       checked_agents: 1,
+      mismatch_count: 2,
+      mismatch_counts_by_kind: { stale_focused_agent: 1, agent_record_not_in_session_projection: 1 },
       mismatches: [
         {
           kind: "stale_focused_agent",

@@ -37,19 +37,19 @@ impl KernelRuntimeOwnedState {
     pub(super) fn project_removed_by_session_delete(
         &self,
         session_id: &str,
-    ) -> Option<crate::session::RuntimeProject> {
-        let session = self.session_store.get_session(session_id).ok()?;
+    ) -> Result<Option<crate::session::RuntimeProject>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
         let project_id = session.project_id();
         if project_id.is_empty()
             || self
                 .session_store
-                .sessions_in_project(project_id)
+                .sessions_in_project(project_id)?
                 .into_iter()
                 .any(|candidate| candidate.id() != session_id && !candidate.is_hidden())
         {
-            return None;
+            return Ok(None);
         }
-        self.session_store.get_project(project_id).ok()
+        self.session_store.get_project(project_id).map(Some)
     }
 
     pub(super) fn session_snapshot(
@@ -58,8 +58,9 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.durable_state_store.require_writer_healthy()?;
         let projection_sequence = self.session_projection.change_sequence();
+        // The snapshot is already projected; publishing it must not project it again.
         let session = self.build_session_snapshot(session_id)?;
-        let session = self.update_session_projection(session);
+        self.publish_projected_session(&session);
         if self.session_projection.change_sequence() != projection_sequence {
             self.runtime_projection_changes.record_change();
         }
@@ -78,19 +79,24 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        #[cfg(test)]
+        call_counts::SNAPSHOT_BUILDS.with(|count| count.set(count.get() + 1));
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
-        session.set_agent_tasks(super::agent_task_projection::visible_tasks(
+        session.set_agent_tasks(
             self.durable_state_store
-                .agent_tasks(Some(session_id), None)?
+                .visible_agent_tasks(
+                    session_id,
+                    super::agent_task_projection::VISIBLE_FINISHED_TASKS,
+                )?
                 .into_iter()
                 .map(|mut task| {
                     task.reason = crate::terminal::public_task_failure_reason(&task.reason);
                     task
                 })
                 .collect(),
-        ));
+        );
         session.set_agent_wakes(super::agent_wake_scheduler::visible_wakes(
             self.durable_state_store
                 .agent_wakes(Some(session_id), None)?,
@@ -104,6 +110,8 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &mut crate::session::RuntimeSession,
     ) {
+        #[cfg(test)]
+        call_counts::RUNTIME_VIEW_PROJECTIONS.with(|count| count.set(count.get() + 1));
         // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
         session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
         self.prompt_state_owner.project_into_session(session);
@@ -142,19 +150,19 @@ impl KernelRuntimeOwnedState {
             return session;
         }
         self.project_session_runtime_view(&mut session);
-        crate::runtime::projection::publish_session_runtime_projection(
+        self.publish_projected_session(&session);
+        session
+    }
+
+    fn publish_projected_session(&self, session: &crate::session::RuntimeSession) {
+        let changed = crate::runtime::projection::publish_session_runtime_projection(
             &self.session_projection,
             &self.agent_runtime_projection,
-            &session,
+            session,
         );
-        if let Err(error) = self.publish_outside_runtime_activity() {
-            crate::logging::error_with_fields(
-                "outside.events",
-                "agent run-state projection could not be persisted",
-                serde_json::json!({"error":error.to_string()}),
-            );
+        if changed {
+            self.publish_outside_run_states(Some(session.id()));
         }
-        session
     }
 
     pub(super) fn publish_session_after_durable_mutation(
@@ -551,6 +559,9 @@ impl KernelRuntimeOwnedState {
                 self.end_session(&session_id)?
             };
         self.workflow_cleanup_deleted_session_runtime_artifacts(&ended)?;
+        if !self.session_store.has_session(ended.id()) {
+            self.session_store.restore_session(ended.clone());
+        }
         let (mut deleted, removed_project) = self
             .session_store
             .delete_session_with_project_cleanup(ended.id())?;
@@ -593,4 +604,15 @@ pub(super) fn agent_request_from_session_defaults(
         request = request.with_permission_level_override(permission_level);
     }
     request
+}
+
+/// Per-thread call counts, so tests can assert how much work a command repeats.
+#[cfg(test)]
+pub(super) mod call_counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(in crate::runtime::state) static SNAPSHOT_BUILDS: Cell<usize> = const { Cell::new(0) };
+        pub(in crate::runtime::state) static RUNTIME_VIEW_PROJECTIONS: Cell<usize> = const { Cell::new(0) };
+    }
 }

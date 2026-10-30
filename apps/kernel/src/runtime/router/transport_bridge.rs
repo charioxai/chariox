@@ -305,7 +305,10 @@ impl CommandRouter {
                 .map(|p| (&p.kernel_id, &p.public_key))
                 .collect::<std::collections::BTreeMap<_, _>>()
         {
-            if let Some(profile) = self.config_projection.snapshot().cloud_relay {
+            let config = self.config_projection.snapshot();
+            if let Some(profile) =
+                crate::runtime::cloud_relay_control::active_cloud_profile(&config)
+            {
                 self.runtime_state
                     .refresh_notification_sources_from_inventory(&profile.user_id, true)
                     .await?;

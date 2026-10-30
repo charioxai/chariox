@@ -239,7 +239,12 @@ impl CommandRouter {
                     .await
             }),
             request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {
-                execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+                execute_daemon_health_request(
+                    &self.daemon_health_cache,
+                    self.daemon_health_projection_input(0),
+                    request,
+                )
+                .await
             }),
             LocalDaemonRequest::GetKernelResourceTelemetry(_) => boxed_handler(|| async move {
                 execute_kernel_resource_telemetry_request(self.config_projection.snapshot())
@@ -614,6 +619,12 @@ impl CommandRouter {
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
+            LocalDaemonRequest::ListProviderAccountCopyOffers(_) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_provider_account_copy_offers(&command_caller_user_id(&command))
+                    .await
+                    .map(|offers| LocalDaemonResponse::ProviderAccountCopyOffers { offers })
+            }),
             LocalDaemonRequest::CopyProviderAccountToKernel(request) => {
                 boxed_handler(|| async move {
                     let caller = command_caller_user_id(&command);
@@ -649,6 +660,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }),
+            LocalDaemonRequest::StopSessionProcesses(request) => boxed_handler(|| async move {
+                let caller = command_caller_user_id(&command);
+                let result = self
+                    .runtime_state
+                    .stop_session_processes(&request.session_id, &caller, request.target)
+                    .await?;
+                Ok(LocalDaemonResponse::SessionProcessesStopped { result })
             }),
             request @ (LocalDaemonRequest::ListProviderProcesses(_)
             | LocalDaemonRequest::TeardownProviderProcesses(_)) => boxed_handler(|| async move {

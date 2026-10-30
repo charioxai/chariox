@@ -92,6 +92,8 @@ pub struct RuntimeSession {
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pinned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pinned_at_ms: Option<u64>,
     workspace_id: String,
     worktree_id: String,
     #[serde(default = "default_session_owner_user_id")]
@@ -104,6 +106,8 @@ pub struct RuntimeSession {
     host_daemon_id: String,
     created_at_ms: u64,
     last_used_at_ms: Option<u64>,
+    #[serde(default)]
+    last_activity_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_prompt_sent_at_ms: Option<u64>,
     execution_mode: SessionExecutionMode,
@@ -268,6 +272,7 @@ impl RuntimeSession {
             host_daemon_id: host_daemon_id.into(),
             created_at_ms: now,
             last_used_at_ms: Some(now),
+            last_activity_at_ms: now,
             last_prompt_sent_at_ms: None,
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
@@ -289,6 +294,7 @@ impl RuntimeSession {
             agent_prompt_schedules: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             pinned: false,
+            pinned_at_ms: None,
             config_state: SessionConfigState::default(),
             worktree_assignments: vec![RuntimeWorktreeAssignment::new(
                 format!("worktree-assignment-{id}-1"),
@@ -391,8 +397,15 @@ impl RuntimeSession {
         self.pinned
     }
 
+    pub fn pinned_at_ms(&self) -> Option<u64> {
+        self.pinned_at_ms
+    }
+
     pub(crate) fn set_pinned(&mut self, pinned: bool) {
-        self.pinned = pinned;
+        if self.pinned != pinned {
+            self.pinned_at_ms = pinned.then(super::unix_epoch_ms);
+            self.pinned = pinned;
+        }
     }
 
     pub fn owner_user_id(&self) -> &str {
@@ -494,6 +507,15 @@ impl RuntimeSession {
 
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
+    }
+
+    pub fn last_activity_at_ms(&self) -> u64 {
+        self.last_activity_at_ms
+    }
+
+    /// Only semantic session work calls this; focus and presence keep using `touch`.
+    pub fn note_activity_at(&mut self, timestamp_ms: u64) {
+        self.last_activity_at_ms = self.last_activity_at_ms.max(timestamp_ms);
     }
 
     pub fn last_used_at_ms(&self) -> Option<u64> {
@@ -1077,6 +1099,7 @@ impl RuntimeSession {
         let right = other.clone();
         left.alias = right.alias.clone();
         left.last_used_at_ms = right.last_used_at_ms;
+        left.last_activity_at_ms = right.last_activity_at_ms;
         left.last_prompt_sent_at_ms = right.last_prompt_sent_at_ms;
         left.hidden = right.hidden;
         left.focused_agent_id = right.focused_agent_id.clone();
@@ -1168,6 +1191,7 @@ impl RuntimeSession {
 
     pub fn note_prompt_sent_at(&mut self, agent_id: &str, timestamp_ms: u64) {
         self.last_prompt_sent_at_ms = Some(timestamp_ms);
+        self.note_activity_at(timestamp_ms);
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id() == agent_id) {
             agent.note_prompt_sent_at(timestamp_ms);
         }
@@ -1277,3 +1301,52 @@ impl RuntimeSession {
 
 #[cfg(test)]
 mod tests;
+
+impl RuntimeSession {
+    pub(crate) fn for_execution_project(
+        &self,
+        project_id: &str,
+        workspace: &str,
+        worktree: &str,
+    ) -> Self {
+        let mut execution = self.clone();
+        execution.project_id = project_id.to_string();
+        execution.workspace_id = workspace.to_string();
+        execution.worktree_id = worktree.to_string();
+        execution
+    }
+}
+
+#[cfg(test)]
+mod session_activity_tests {
+    use super::*;
+
+    #[test]
+    fn session_activity_is_persisted_and_metadata_cannot_change_it() {
+        let mut session = RuntimeSession::new(
+            "session",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        let initial = session.last_activity_at_ms();
+        session.touch();
+        session.set_pinned(true);
+        let pinned_at = session.pinned_at_ms();
+        assert!(pinned_at.is_some());
+        session.set_pinned(true);
+        assert_eq!(session.pinned_at_ms(), pinned_at);
+        session.set_focused_agent(Some("agent".into()));
+        assert_eq!(session.last_activity_at_ms(), initial);
+        session.note_prompt_sent_at("agent", initial + 10);
+        assert_eq!(session.last_activity_at_ms(), initial + 10);
+        session.note_activity_at(initial + 20);
+        session.note_activity_at(initial + 5);
+        let restored: RuntimeSession =
+            serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+        assert_eq!(restored.last_activity_at_ms(), initial + 20);
+        assert_eq!(restored.pinned_at_ms(), pinned_at);
+    }
+}

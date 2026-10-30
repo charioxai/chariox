@@ -34,6 +34,19 @@ mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
 use workspace_live_sync_workspace_context::*;
+mod agent_move_abort;
+mod agent_move_composition;
+#[cfg(test)]
+mod agent_move_launch_tests;
+mod agent_move_peer;
+mod agent_move_preflight;
+mod agent_move_queue;
+mod agent_move_runtime;
+mod agent_move_slices;
+mod agent_move_source;
+mod agent_move_status;
+mod agent_move_target;
+mod agent_move_transport;
 mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
@@ -213,7 +226,6 @@ struct KernelRuntimeOwnedState {
     sudo_turns: sudo::SudoStore,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
-    sudo_scopes: Arc<std::sync::Mutex<BTreeMap<String, std::collections::BTreeSet<String>>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
     sudo_end_wakes: Arc<std::sync::Mutex<BTreeMap<String, (crate::local::KernelSudoTurn, String)>>>,
     sudo_verified_at: Arc<std::sync::Mutex<BTreeMap<String, (std::time::Instant, u64)>>>,
@@ -226,6 +238,7 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    agent_moves: crate::agent_move::AgentMoveStore,
     pending_provider_launch_credentials: Arc<
         std::sync::Mutex<
             BTreeMap<String, crate::provider::ProviderCredentialEnvironment>,
@@ -473,6 +486,7 @@ mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
 mod room_pin;
+mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
@@ -482,6 +496,7 @@ mod provider;
 mod provider_account_admission;
 mod provider_account_authority;
 mod provider_account_copy;
+mod provider_account_copy_offer;
 mod provider_focus_owned_state;
 mod provider_launch_failure_runtime;
 mod provider_launch_owned_state;
@@ -510,6 +525,7 @@ pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
 mod project_environment_setup;
+pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;
@@ -546,6 +562,7 @@ mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod session_process_control;
 mod slice_development_runtime_state;
 mod slice_project_source;
 mod slice_runtime_state;
@@ -758,6 +775,7 @@ impl KernelRuntimeState {
             sudo_windows,
             pending_agent_context_handoffs,
             room_terminals,
+            agent_moves,
         ) = {
             let started = Instant::now();
             loop {
@@ -779,6 +797,7 @@ impl KernelRuntimeState {
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
                         app.room_terminals(),
+                        app.agent_moves.clone(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -981,7 +1000,6 @@ impl KernelRuntimeState {
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
                 sudo_timers: Default::default(),
-                sudo_scopes: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
                 sudo_end_wakes: Default::default(),
@@ -992,6 +1010,7 @@ impl KernelRuntimeState {
                 agent_store,
                 attachment_store,
                 provider_store,
+                agent_moves,
                 pending_provider_launch_credentials: Arc::new(std::sync::Mutex::new(
                     BTreeMap::new(),
                 )),
@@ -1420,6 +1439,7 @@ pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
 mod agent_goal_context;
 mod agent_goal_migration;
+mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_inbox_leased_steer;
@@ -1433,11 +1453,15 @@ mod agent_process_watch;
 #[cfg(test)]
 mod agent_reply_tests;
 mod agent_task_cancellation;
+#[cfg(test)]
+mod agent_task_cancellation_sweep_tests;
 mod agent_task_failure;
 mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+#[cfg(test)]
+mod agent_turn_task_tests;
 mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;

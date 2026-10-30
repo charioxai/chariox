@@ -22,6 +22,15 @@ impl Drop for FixtureCleanup {
 
 #[tokio::test]
 async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
+    setup_token_fake_cli_fixture(false).await;
+}
+
+#[tokio::test]
+async fn setup_token_vault_steps_publish_structured_instructions_and_retry_feedback() {
+    setup_token_fake_cli_fixture(true).await;
+}
+
+async fn setup_token_fake_cli_fixture(vault: bool) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = std::env::temp_dir().join(format!(
@@ -51,6 +60,12 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
+    let vault_path = root.join("vault.enc");
+    if vault {
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+    }
     let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config.clone()).unwrap()));
     let router = CommandRouter::with_interactive_capacity(app.clone(), 1);
     let profile = router
@@ -59,7 +74,7 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         .unwrap();
     let token = format!("sk-ant-oat01-{}", "A".repeat(96));
     let mut stored = false;
-    for (mode, replace, expected) in [
+    let scenarios = [
         ("ok", false, "succeeded"),
         ("ok", false, "failed"),
         ("ok", true, "succeeded"),
@@ -70,7 +85,17 @@ async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
         ("missing", true, "failed"),
         ("cancel", true, "cancelled"),
         ("observation-failure", true, "succeeded"),
-    ] {
+    ];
+    let vault_scenarios = [("ok", false, "succeeded"), ("ok", true, "succeeded")];
+    for &(mode, replace, expected) in if vault {
+        &vault_scenarios[..]
+    } else {
+        &scenarios[..]
+    } {
+        if vault && stored {
+            crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+            crate::secret::clear_vault_secret_process_cache().unwrap();
+        }
         let script = format!(
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
@@ -153,6 +178,7 @@ exit 0
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(8);
         let mut sent_input = false;
+        let mut vault_step = 0;
         let mut saw_real_url = false;
         let probes_before = std::fs::read(root.join("probe-marker"))
             .unwrap_or_default()
@@ -193,6 +219,53 @@ exit 0
             {
                 saw_real_url = true;
             }
+            if vault
+                && status
+                    .interaction
+                    .as_ref()
+                    .and_then(|interaction| interaction.custom_choice())
+                    .is_some_and(|choice| choice.id() == "passphrase")
+            {
+                let (expected, passphrase) = if stored {
+                    match vault_step {
+                        0 => ("Enter your Chariox Vault passphrase", "wrong-passphrase"),
+                        1 => ("passphrase was not accepted", "correct-passphrase"),
+                        _ => panic!("unexpected unlock step"),
+                    }
+                } else {
+                    match vault_step {
+                        0 => ("Choose a Chariox Vault passphrase", "first-passphrase"),
+                        1 => ("again to confirm", "mismatched-passphrase"),
+                        2 => ("did not match", "correct-passphrase"),
+                        3 => ("again to confirm", "correct-passphrase"),
+                        _ => panic!("unexpected create step"),
+                    }
+                };
+                assert!(
+                    status
+                        .message
+                        .as_deref()
+                        .is_some_and(|message| message.contains(expected)),
+                    "the clean UI needs the current Vault instructions: {expected}"
+                );
+                assert_eq!(
+                    status.interaction.as_ref().unwrap().message(),
+                    status.message.as_deref().unwrap()
+                );
+                vault_step += 1;
+                crate::runtime::provider_auth_control::execute_send_provider_login_input_request(
+                    &router.runtime_state,
+                    "local",
+                    crate::local::SendProviderLoginInputRequest {
+                        login_id: id.clone(),
+                        data_base64: base64::engine::general_purpose::STANDARD
+                            .encode(format!("{passphrase}\r")),
+                    },
+                )
+                .await
+                .unwrap();
+                continue;
+            }
             if status.state != crate::local::ProviderLoginProcessState::Running {
                 break status;
             }
@@ -209,7 +282,7 @@ exit 0
                     .await
                     .unwrap();
                 } else {
-                    crate::runtime::provider_auth_control::execute_send_provider_login_input_request(&router.runtime_state, "local", crate::local::SendProviderLoginInputRequest { login_id: id.clone(), data_base64: base64::engine::general_purpose::STANDARD.encode(b"fixture-hidden-code\r") }).await.unwrap();
+                    crate::runtime::provider_auth_control::execute_send_provider_login_input_request(&router.runtime_state, "local", crate::local::SendProviderLoginInputRequest { login_id: id.clone(), data_base64: base64::engine::general_purpose::STANDARD.encode(b"fixture-hidden-code#fixture-state\r") }).await.unwrap();
                 }
             }
             assert!(
@@ -235,6 +308,9 @@ exit 0
             serde_json::json!(expected),
             "MP-08 fixture mode {mode} replacement {replace}"
         );
+        if vault {
+            assert_eq!(vault_step, if stored { 2 } else { 4 });
+        }
         if mode == "observation-failure" {
             let path = config.account_profile_registry_path();
             assert!(path.is_dir(), "the publication fault must actually fire");
@@ -254,6 +330,14 @@ exit 0
             !diagnostic.contains(&token),
             "token in retained PTY diagnostic"
         );
+        if vault {
+            crate::secret::unlock_chariox_encrypted_vault(
+                &vault_path,
+                "correct-passphrase",
+                crate::secret::VaultUnlockLease::KernelShutdown,
+            )
+            .unwrap();
+        }
         let credentials = crate::provider::resolve_provider_account_credentials(
             &config,
             "local",
@@ -708,6 +792,16 @@ async fn refused_enrollment_keeps_using_native_after_the_vault_relocks() {
     first_use_fixture("stale-native-relocked").await;
 }
 
+#[tokio::test]
+async fn setup_token_session_rejected_code_keeps_the_new_challenge_usable() {
+    first_use_fixture("enrollment-retry").await;
+}
+
+#[tokio::test]
+async fn setup_token_session_starts_reattach_without_cancelling_the_driver() {
+    first_use_fixture("enrollment-reattach").await;
+}
+
 async fn first_use_fixture(mode: &str) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
@@ -762,6 +856,18 @@ echo login >> '{root}/logins'
 printf '%s\n' 'https://claude.com/cai/oauth/authorize?code=true&client_id=fixture'
 printf 'Paste code here if prompted > '
 IFS= read -r response
+if [ '{mode}' = enrollment-reattach ]; then
+  echo received > '{root}/received'
+  IFS= read -r response
+fi
+if [ '{mode}' = enrollment-retry ]; then
+  printf '\033[2J\033[HOAuth error: Request failed with status code 400\r\nPress Enter to retry.'
+  IFS= read -r response
+  printf '\r\nhttps://claude.com/cai/oauth/authorize?state=retry\r\nPaste code here if prompted > '
+  IFS= read -r response
+  echo received > '{root}/retried'
+  IFS= read -r response
+fi
 exit 1
 "#, root = root.display())).unwrap();
     std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -960,7 +1066,7 @@ exit 1
         assert!(!root.join("logins").exists());
         return;
     }
-    if mode != "enrollment" {
+    if !mode.starts_with("enrollment") {
         router
             .provider_account_profiles
             .require_authenticated(
@@ -975,7 +1081,7 @@ exit 1
             );
     }
     let mut prepared = Box::pin(async {
-        if mode == "enrollment" {
+        if mode.starts_with("enrollment") {
             let start =
                 LocalDaemonRequest::StartProviderLogin(crate::local::StartProviderLoginRequest {
                     provider: "claude".into(),
@@ -1009,7 +1115,7 @@ exit 1
     let interaction = loop {
         tokio::select! {
             result = &mut prepared => {
-                assert_ne!(mode, "enrollment", "explicit enrollment must retain its interaction");
+                assert!(!mode.starts_with("enrollment"), "explicit enrollment must retain its interaction");
                 let error = result.expect_err("refused token without native login must fail").to_string();
                 assert!(error.contains("no working native Claude login"), "{error}");
                 assert!(error.contains("Provider Accounts"), "recovery must be actionable");
@@ -1076,6 +1182,189 @@ exit 1
             "MP-11 operation lease must end before human OAuth consent"
         );
     }
+    if mode == "enrollment-retry" {
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "provider-response",
+                Some("test-code#test-state"),
+            )
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            tokio::select! {
+                result = &mut prepared => panic!("driver stopped before the new challenge: {}", result.unwrap_err()),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if current.active_interactions().iter().any(|item| {
+                item.message().contains("That code was not accepted")
+                    && item.provider_login().is_some_and(|login| {
+                        login
+                            .login
+                            .auth_url
+                            .as_deref()
+                            .is_some_and(|url| url.contains("state=retry"))
+                    })
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "new authorization challenge was not projected"
+            );
+        }
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "provider-response",
+                Some("second-code#new-state"),
+            )
+            .await
+            .unwrap();
+        loop {
+            tokio::select! {
+                result = &mut prepared => panic!("driver stopped before the new code reached Claude: {}", result.unwrap_err()),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            }
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if root.join("retried").exists()
+                && current
+                    .active_interactions()
+                    .iter()
+                    .any(|item| item.id() == interaction.id())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the new challenge did not accept another code"
+            );
+        }
+    }
+    if mode == "enrollment-reattach" {
+        let start = |adapter: bool| {
+            let request = if adapter {
+                LocalDaemonRequest::SetProviderAccountCredential(
+                    crate::local::SetProviderAccountCredentialRequest {
+                        provider: "claude".into(),
+                        account_profile: profile.profile_id.clone(),
+                        value: String::new(),
+                        run: true,
+                        overwrite: true,
+                        session_id: Some(session.id().into()),
+                        agent_id: Some(agent.id().into()),
+                    },
+                )
+            } else {
+                LocalDaemonRequest::StartProviderLogin(crate::local::StartProviderLoginRequest {
+                    provider: "claude".into(),
+                    account_profile: profile.profile_id.clone(),
+                    method: Some("setup_token".into()),
+                })
+            };
+            let mut command = KernelCommand::from_local_request("reattach", None, None, &request);
+            command.session_id = Some(session.id().into());
+            command.agent_id = Some(agent.id().into());
+            (command, request)
+        };
+        let login_id = interaction
+            .provider_login()
+            .unwrap()
+            .login
+            .login_id
+            .clone()
+            .unwrap();
+        let (command, request) = start(false);
+        let repeated = router.dispatch(command, request).await.unwrap();
+        let (one_command, one_request) = start(false);
+        let (two_command, two_request) = start(true);
+        let (one, two) = tokio::join!(
+            router.dispatch(one_command, one_request),
+            router.dispatch(two_command, two_request)
+        );
+        for response in [repeated, one.unwrap(), two.unwrap()] {
+            let LocalDaemonResponse::ProviderLoginStarted { login } = response else {
+                panic!("expected reattached login")
+            };
+            assert_eq!(login.login_id.as_deref(), Some(login_id.as_str()));
+        }
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let current = router
+            .app
+            .lock()
+            .await
+            .sessions()
+            .get_session(session.id())
+            .unwrap();
+        assert!(
+            current
+                .active_interactions()
+                .iter()
+                .any(|item| item.id() == interaction.id()),
+            "reattach destroyed the original interaction"
+        );
+        assert!(
+            router.app.lock().await.pty_mut().has_process(&login_id),
+            "reattach killed the provider process"
+        );
+        router
+            .runtime_state
+            .resolve_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "provider-response",
+                Some("test-code#test-state"),
+            )
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !root.join("received").exists() {
+            tokio::select! { _ = &mut prepared => panic!("reattached driver stopped"), _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "original provider process did not receive the code"
+            );
+        }
+        loop {
+            let current = router
+                .app
+                .lock()
+                .await
+                .sessions()
+                .get_session(session.id())
+                .unwrap();
+            if current
+                .active_interactions()
+                .iter()
+                .any(|item| item.id() == interaction.id())
+            {
+                break;
+            }
+            tokio::select! { _ = &mut prepared => panic!("reattached driver stopped"), _ = tokio::time::sleep(Duration::from_millis(50)) => {} }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "driver did not continue after sending input"
+            );
+        }
+    }
     assert!(interaction.message().contains("authorization link"));
     assert!(!interaction.message().contains("--replace"));
     assert!(!interaction.message().contains("claude setup-token"));
@@ -1099,7 +1388,8 @@ exit 1
     assert_eq!(
         checks,
         usize::from(
-            mode != "enrollment" && (!mode.starts_with("expired") || mode == "expired-cached")
+            !mode.starts_with("enrollment")
+                && (!mode.starts_with("expired") || mode == "expired-cached")
         )
     );
     assert!(!router

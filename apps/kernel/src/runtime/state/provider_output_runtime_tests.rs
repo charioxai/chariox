@@ -161,6 +161,7 @@ mod history_projection;
 mod large_codex_resume;
 mod leased_output;
 mod mcp_catalog_reload;
+mod process_tool_settlement;
 #[cfg(unix)]
 mod project_queued_environment;
 mod prompt_cancellation;

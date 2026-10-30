@@ -175,8 +175,7 @@ impl CommandRouter {
                 })?)
                 .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
             self.runtime_state
-                .confirm_sudo_scope(&turn, &request)
-                .await?;
+                .authorize_sudo_request(&turn.entry_id, &request)?;
             let mut command = crate::runtime::command::KernelCommand::from_local_request(
                 format!("{}:{}", turn.entry_id, rand::random::<u64>()),
                 turn.prompt_id.clone(),
@@ -212,7 +211,7 @@ impl CommandRouter {
         auth_token: &str,
     ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
         self.runtime_state
-            .runtime_tool_specs_for_auth_token(auth_token)
+            .runtime_tool_specs_for_current_grants(auth_token)
     }
 
     pub(crate) fn runtime_catalog_signature(
@@ -231,14 +230,22 @@ impl CommandRouter {
             .await
     }
 
-    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call(
+    pub(crate) async fn dispatch_forwarded_workflow_runtime_tool_call<R>(
         &self,
         context: crate::execution_lease::RemoteWorkflowTurnContext,
         tool_name: String,
         arguments: serde_json::Value,
-    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        release_response: impl FnOnce(
+            crate::transport::runtime_tools::RuntimeToolResult,
+        ) -> Result<R, DaemonError>,
+    ) -> Result<R, DaemonError> {
         self.runtime_state
-            .dispatch_forwarded_workflow_runtime_tool_call(context, tool_name, arguments)
+            .dispatch_forwarded_workflow_runtime_tool_call(
+                context,
+                tool_name,
+                arguments,
+                release_response,
+            )
             .await
     }
 

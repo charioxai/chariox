@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { listProviderAccountCopyOffers, copyProviderAccountFromKernel } from "./provider-api.js"
 import { withAgentTaskUpdate } from "@chariox/kernel-client/agent-task-state"
 import type { AgentTaskExecution } from "@chariox/kernel-client/kernel-types"
 import { getManagedContextTransferStatus } from "./managed-environment-api.js"
@@ -27,7 +29,9 @@ import {
 import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
+  cancelAgentMove as cancelAgentMoveApi,
   destroyAgent as destroyAgentApi,
+  moveAgent as moveAgentApi,
   focusAgent as focusAgentApi,
   forkAgent as forkAgentApi,
   spawnAgent as spawnAgentApi,
@@ -203,6 +207,8 @@ import {
 type AnyFn = (...args: any[]) => any
 
 export type CliCommandActionCompositionDeps = {
+  openSessionProcesses?: () => void
+  confirmProcessStop?: (agent: string) => Promise<boolean>
   userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
@@ -332,6 +338,7 @@ export type CliCommandActionCompositionDeps = {
 }
 
 export function createCliCommandActionComposition(deps: CliCommandActionCompositionDeps) {
+  const copyOperations = new WeakMap<object, Map<string, string>>()
   const {
     client,
     options,
@@ -603,6 +610,26 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       ...(isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}),
     }),
     logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
+    refreshWaitingRoomInventory: async () => { await refreshWaitingRoomData() },
+    listProviderAccountCopyOffers: () => listProviderAccountCopyOffers(client),
+    accountCopyBinding: () => (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client,
+    copyProviderAccountFromKernel: offer => {
+      const source = (client as typeof client & {currentClient?(): typeof client}).currentClient?.() ?? client
+      const operations = copyOperations.get(source) ?? new Map<string, string>()
+      copyOperations.set(source, operations)
+      const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.account_profile])
+      const operation = operations.get(key) ?? `account-copy-${randomUUID()}`
+      operations.set(key, operation)
+      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => { operations.delete(key); return receipt })
+    },
+    ...(deps.confirmProcessStop ? { confirmProcessStop: deps.confirmProcessStop } : {}),
+    stopSessionProcesses: async target => {
+      if (!isAttached()) throw new Error("Attach to a session to stop its processes.")
+      const id = target.kind === "agent" ? sessionState().agents.find((agent: {id: string; alias?: string}) => agent.id === target.agent_id || agent.alias === target.agent_id)?.id : null
+      const response = await client.send({StopSessionProcesses: {session_id: sessionState().id, target: target.kind === "agent" ? {kind: "agent", agent_id: id ?? target.agent_id} : target}})
+      if (!(response as Record<string, unknown>).SessionProcessesStopped) throw new Error("The kernel did not confirm the stop; refresh Health.")
+    },
+    openSessionProcesses: () => { if (isAttached()) deps.openSessionProcesses?.(); else flashFooter("Attach to a session to view its processes.", "error") },
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
     linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
@@ -978,6 +1005,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         providerRun: payload.providerRun,
       }
     },
+    moveAgent: (agentId, destination) => moveAgentApi(client, sessionState().id, agentId, destination),
+    cancelAgentMove: (agentId) => cancelAgentMoveApi(client, sessionState().id, agentId),
+    pause: ms => new Promise(resolve => setTimeout(resolve, ms)),
     destroyAgent: async (agentId) => {
       await destroyAgentApi(client, sessionState().id, agentId)
       return getSessionState(client, sessionState().id)

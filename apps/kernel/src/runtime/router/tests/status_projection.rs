@@ -724,3 +724,238 @@ async fn provider_auth_status_does_not_use_generic_app_fallback_inner() {
         error => panic!("unexpected error: {error}"),
     }
 }
+
+#[tokio::test]
+async fn ended_session_retires_runtime_projections_and_remains_readable() {
+    let worktree = crate::test_support::TestWorktree::new("ended-session-projections");
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+    ));
+    let router = CommandRouter::with_interactive_capacity(app, 1);
+    let request = LocalDaemonRequest::CreateSession(worktree.session_request());
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("create-retired", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::SessionCreated { session, .. } = response else {
+        panic!("session response");
+    };
+    let session_id = session.id().to_string();
+    let request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("end-retired", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("health-retired", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::DaemonHealth { projection } = response else {
+        panic!("health response");
+    };
+    assert!(
+        projection.projection_invariants.mismatches.is_empty(),
+        "normal end created invariant drift"
+    );
+    assert_eq!(projection.agent_runtime_projection.projected_agents, 0);
+    assert_eq!(projection.session_projection.projected_sessions, 0);
+    assert!(!router.session_runtime.has_lane(&session_id).await);
+    let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest { session_id });
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("read-retired", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::SessionState { session, .. } = response else {
+        panic!("historical session response");
+    };
+    assert_eq!(session.status(), crate::session::SessionStatus::Ended);
+}
+
+#[tokio::test]
+async fn daemon_health_bounds_corruption_and_reuses_a_published_snapshot() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+    ));
+    let router = CommandRouter::with_interactive_capacity(app, 1);
+    for index in 0..5_000 {
+        let id = format!("damaged-session-{index}");
+        let mut session = crate::session::RuntimeSession::new(
+            &id,
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        session.set_agents(
+            (0..2)
+                .map(|agent| {
+                    crate::agent::AgentInstance::new(
+                        format!("missing-{index}-{agent}"),
+                        format!("agent-{agent}"),
+                        &id,
+                        None,
+                        "codex",
+                        None,
+                        None,
+                        None,
+                        crate::agent::GridPosition::new(0, 0, 1, 1),
+                    )
+                })
+                .collect(),
+        );
+        router.session_projection.update(session);
+    }
+    let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("health-corruption", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    assert!(serde_json::to_vec(&response).unwrap().len() < 64 * 1024);
+    let LocalDaemonResponse::DaemonHealth { projection } = response else {
+        panic!("health response");
+    };
+    assert_eq!(projection.projection_invariants.checked_sessions, 5_000);
+    assert_eq!(projection.projection_invariants.mismatch_count, 10_000);
+    assert_eq!(projection.projection_invariants.mismatches.len(), 16);
+    // Repeated reads use the already-published diagnostic sample.
+    let request = LocalDaemonRequest::GetDaemonHealth(GetDaemonHealthRequest);
+    let second = router
+        .dispatch(
+            KernelCommand::from_local_request("health-cached", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::DaemonHealth { projection: second } = second else {
+        panic!("health response");
+    };
+    assert_eq!(
+        second.metadata.generated_at_ms,
+        projection.metadata.generated_at_ms
+    );
+}
+
+#[tokio::test]
+async fn ended_session_archive_supports_reattach_project_restore_and_delete() {
+    let worktree = crate::test_support::TestWorktree::new("ended-session-archive");
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+    ));
+    let router = CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let request = LocalDaemonRequest::CreateSession(worktree.session_request());
+    let response = router
+        .dispatch(
+            KernelCommand::from_local_request("archive-create", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::SessionCreated { session, .. } = response else {
+        panic!("session response");
+    };
+    let session_id = session.id().to_owned();
+    let project_id = session.project_id().to_owned();
+    for index in 0..2 {
+        let request = LocalDaemonRequest::EndSession(EndSessionRequest {
+            session_id: session_id.clone(),
+        });
+        router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    format!("archive-end-{index}"),
+                    None,
+                    None,
+                    &request,
+                ),
+                request,
+            )
+            .await
+            .unwrap();
+        assert!(
+            app.lock().await.sessions().list_all_sessions().is_empty(),
+            "ended sessions must leave the runtime store"
+        );
+        let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        });
+        let response = router
+            .dispatch(
+                KernelCommand::from_local_request(
+                    format!("archive-read-{index}"),
+                    None,
+                    None,
+                    &request,
+                ),
+                request,
+            )
+            .await
+            .unwrap();
+        let LocalDaemonResponse::SessionState { session, .. } = response else {
+            panic!("historical response");
+        };
+        assert_eq!(session.status(), crate::session::SessionStatus::Ended);
+        if index == 0 {
+            let request = LocalDaemonRequest::RestoreProject(crate::local::RestoreProjectRequest {
+                project_id: project_id.clone(),
+            });
+            router
+                .dispatch(
+                    KernelCommand::from_local_request("archive-restore", None, None, &request),
+                    request,
+                )
+                .await
+                .unwrap();
+            let request = LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+                session_id: session_id.clone(),
+                client_id: "archive-client".into(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            });
+            router
+                .dispatch(
+                    KernelCommand::from_local_request("archive-attach", None, None, &request),
+                    request,
+                )
+                .await
+                .unwrap();
+            assert_eq!(app.lock().await.sessions().list_sessions().len(), 1);
+        }
+    }
+    let request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+        session_ref: session_id.clone(),
+        workspace_id: None,
+    });
+    router
+        .dispatch(
+            KernelCommand::from_local_request("archive-delete", None, None, &request),
+            request,
+        )
+        .await
+        .unwrap();
+    let request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest { session_id });
+    assert!(router
+        .dispatch(
+            KernelCommand::from_local_request("archive-deleted-read", None, None, &request),
+            request
+        )
+        .await
+        .is_err());
+}

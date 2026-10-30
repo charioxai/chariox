@@ -62,3 +62,28 @@ test("access status reports granted, ended, pending and not_requested from a pro
     }
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
+
+test("access cover names one pid to the kernel and prints the grant id and the process it now covers", async () => {
+  const process_ = { pid: 4242, start: 77, executable: "/usr/bin/shipper" }
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, { response: { KernelAccessCovered: { grant_id: "access-1", process: process_ } } }))
+  const previous = { out: console.log, err: console.error, exit: process.exitCode }
+  let out = ""
+  console.log = (line: string) => { out += line }
+  try {
+    assert.equal(await runAccessCommand(["access", "cover", "--pid", "4242", "--socket", kernel.path]), true)
+    assert.deepEqual(kernel.frames.map(frame => frame.request), [{ CoverKernelAccessProcess: { pid: 4242 } }])
+    assert.deepEqual(JSON.parse(out), { grant_id: "access-1", process: process_ })
+    for (const pid of ["0", "1", "-3", "x"]) {
+      process.exitCode = undefined
+      console.error = () => {}
+      await runAccessCommand(["access", "cover", "--pid", pid, "--socket", kernel.path])
+      assert.equal(process.exitCode, 2, `pid ${pid}`)
+    }
+    assert.equal(kernel.frames.length, 1)
+  } finally {
+    console.log = previous.out
+    console.error = previous.err
+    process.exitCode = previous.exit
+    await kernel.close()
+  }
+})

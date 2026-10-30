@@ -278,7 +278,7 @@ fn reused_session_error_after_idle_overrides_completion_in_the_same_drain() {
     let requests = server.join().unwrap();
     assert_eq!(
         result.terminal_failure.as_deref(),
-        Some("same-turn failure")
+        Some("OpenCode error [other]: same-turn failure")
     );
     assert!(result.completions.is_empty());
     assert!(result.prompt_completed);

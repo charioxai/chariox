@@ -98,6 +98,7 @@ impl KernelRuntimeOwnedState {
             settled_at_ms,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
             None,
+            None,
         );
         if !self.prompt_completion_recorded(provider_run_id) {
             self.record_assistant_message_completion(
@@ -136,6 +137,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         provider_run_id: &str,
         message: &str,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<Option<bool>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let Some(active_prompt) = self
@@ -183,11 +185,25 @@ impl KernelRuntimeOwnedState {
         // MP-08 / MP-10 / MP-11: cancellation owns completion fan-out even
         // before dispatch creates prompt activity. Preserve this dispatch's
         // run identity if the failed provider was already retired.
-        self.cancel_active_prompt_only_for_provider_run(
-            session_id,
-            agent_id,
-            Some(provider_run_id),
-        )?;
+        match failure {
+            Some(failure) => {
+                self.fail_local_prompt_without_advance_with_termination_if_matches(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                    Some(prompt_id),
+                    None,
+                    failure,
+                )?;
+            }
+            None => {
+                self.cancel_active_prompt_only_for_provider_run(
+                    session_id,
+                    agent_id,
+                    Some(provider_run_id),
+                )?;
+            }
+        }
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         let released_claim = self.clear_prompt_activity(provider_run_id);
@@ -212,6 +228,7 @@ impl KernelRuntimeOwnedState {
             None,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
             None,
+            None,
         )
     }
 
@@ -222,6 +239,7 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         expected_prompt_id: Option<&str>,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: crate::provider::TurnOutcome,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         self.settle_local_prompt_without_advance_if_matches(
             session_id,
@@ -230,6 +248,7 @@ impl KernelRuntimeOwnedState {
             expected_prompt_id,
             crate::git_observer::CompletedTurnSettlementStatus::Failed,
             provider_termination,
+            Some(failure),
         )
     }
 
@@ -247,9 +266,14 @@ impl KernelRuntimeOwnedState {
             expected_prompt_id,
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
             None,
+            None,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep explicit prompt identity and separate failure and termination evidence on the existing settlement path"
+    )]
     fn settle_local_prompt_without_advance_if_matches(
         &self,
         session_id: &str,
@@ -258,6 +282,7 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: Option<&str>,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -285,10 +310,8 @@ impl KernelRuntimeOwnedState {
         let Some(completed) = completed else {
             return Ok(None);
         };
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-
+        // The turn's outcome is recorded before the prompt leaves the agent, so the
+        // idle or error state that follows always names the turn it ends.
         let completion_provider_run_id = provider_run_id.map(str::to_string).or_else(|| {
             self.provider_store
                 .get_run_for_agent(session_id, agent_id)
@@ -303,11 +326,15 @@ impl KernelRuntimeOwnedState {
             settled_at_ms,
             settlement_status,
             provider_termination,
+            failure,
         );
         if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
             self.agent_store
                 .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         let completion_record_key = provider_run_id.unwrap_or(agent_id);
         if !self.prompt_completion_recorded(completion_record_key) {
             let provider_run_id = completion_provider_run_id
@@ -405,6 +432,7 @@ impl KernelRuntimeOwnedState {
             Some(&provider_run_id),
             crate::session::unix_epoch_ms(),
             crate::git_observer::CompletedTurnSettlementStatus::Completed,
+            None,
             None,
         );
         let released_workflow_claim = match (
@@ -698,6 +726,7 @@ impl KernelRuntimeOwnedState {
         settled_at_ms: u64,
         settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
         provider_termination: Option<crate::provider::ProviderRunTermination>,
+        failure: Option<crate::provider::TurnOutcome>,
     ) {
         if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
             crate::app::clear_claude_context_delivery_for_settled_prompt(
@@ -728,6 +757,7 @@ impl KernelRuntimeOwnedState {
             provider_run_id,
             settled_at_ms,
             settlement_status.as_str(),
+            failure.as_ref(),
         );
         self.completed_git_turn_snapshots
             .record_prompt_settlement_with_termination(
@@ -739,6 +769,7 @@ impl KernelRuntimeOwnedState {
                 started_at_ms,
                 settlement_status,
                 provider_termination,
+                failure,
             );
     }
 }

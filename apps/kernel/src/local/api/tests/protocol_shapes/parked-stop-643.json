@@ -1,0 +1,33 @@
+{
+  "request": {
+    "CancelActivePrompt": {
+      "session_id": "room",
+      "attachment_id": "terminal",
+      "target_agent_id": "agent"
+    }
+  },
+  "response": {
+    "AgentTaskUpdated": {
+      "session_id": "room",
+      "task": {
+        "task_id": "task",
+        "room_id": "room",
+        "owner_user_id": "owner",
+        "agent_id": "agent",
+        "prompt_id": "prompt",
+        "provider_run_id": null,
+        "revision": 2,
+        "blocked_revision": 0,
+        "state": "cancelled",
+        "reason": "cancelled by owner",
+        "obligations": [],
+        "wait": null,
+        "last_progress_at_ms": 1,
+        "progress_sequence": 0,
+        "no_progress_wakes": 0,
+        "correction_used": false,
+        "pending_prompt_id": null
+      }
+    }
+  }
+}

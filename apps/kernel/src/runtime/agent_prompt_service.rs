@@ -130,6 +130,15 @@ impl AgentPromptCommandService {
             .await
     }
 
+    pub(crate) async fn cancel_parked_agent_task(
+        &self,
+        request: &crate::local::CancelActivePromptRequest,
+        agent: &str,
+    ) -> Result<Option<crate::local::LocalDaemonResponse>, DaemonError> {
+        self.authorize_command()?;
+        self.state.cancel_parked_agent_task(request, agent).await
+    }
+
     pub(crate) async fn steer_queued_prompt(
         &self,
         session_id: &str,

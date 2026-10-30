@@ -1,6 +1,42 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: project existing producers into outside parts.
 use super::*;
 
+/// Commit the notification with the first successful physical cleanup receipt.
+pub(in crate::durable_state::agent_lifecycle) fn publish_deadline(
+    tx: &Transaction<'_>,
+    deadline: &crate::local::AgentDeadline,
+) -> Result<(), DaemonError> {
+    let Some((kernel, machine)) = identity(tx)? else {
+        return Ok(());
+    };
+    let event = OutsideEvent {
+        cursor: 0,
+        kernel,
+        machine,
+        session_id: deadline.session_id.clone(),
+        agent_id: Some(deadline.agent_id.clone()),
+        value: OutsideEventValue::Agent {
+            run_state: None,
+            task_state: None,
+            reason: Some("deadline_reached".into()),
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
+        },
+        summary: "deadline reached".into(),
+        at_ms: outside_now_ms()?,
+        refs: Default::default(),
+    };
+    publish(
+        tx,
+        &format!(
+            "deadline:{}",
+            encode(&(&deadline.session_id, &deadline.agent_id))?
+        ),
+        &event,
+    )
+}
+
 /// Called by the same writer transaction that changes task state.
 pub(in crate::durable_state::agent_lifecycle) fn publish_task(
     tx: &Transaction<'_>,
@@ -31,6 +67,9 @@ pub(in crate::durable_state::agent_lifecycle) fn publish_task(
                     .take(512)
                     .collect(),
             ),
+            prompt_id: None,
+            turn_id: None,
+            outcome: None,
         },
         summary: task
             .reason
@@ -110,37 +149,42 @@ impl DurableKernelStateStore {
 }
 
 impl DurableKernelStateStore {
-    pub(crate) fn outside_publish_job(
+    pub(crate) fn enqueue_outside_publish_job(
         &self,
-        session: &str,
-        agent: Option<&str>,
-        terminal: &str,
-        command: Option<u64>,
-        offset: u64,
-        exit_code: Option<u32>,
-    ) -> Result<(), DaemonError> {
+        job: TerminalCompletion,
+    ) -> Result<Option<crate::durable_state::agent_lifecycle::PendingLifecycleOutcome>, DaemonError>
+    {
+        let TerminalCompletion {
+            session,
+            agent,
+            terminal,
+            command,
+            offset,
+            exit_code,
+        } = job;
         let Some((kernel, machine)) =
             publish_identity(&*self.lock_connection("outside.identity")?)?
         else {
-            return Ok(());
+            return Ok(None);
         };
         let event = OutsideEvent {
             cursor: 0,
             kernel,
             machine,
-            session_id: session.into(),
-            agent_id: agent.map(Into::into),
+            session_id: session,
+            agent_id: agent,
             value: OutsideEventValue::Terminal { exit_code },
             summary: format!("exited ({exit_code:?})"),
             at_ms: outside_now_ms()?,
             refs: crate::local::EventRefs {
-                terminal_id: Some(terminal.into()),
+                terminal_id: Some(terminal.clone()),
                 ..Default::default()
             },
         };
-        self.outside_mutate(Mutation::Publish {
+        self.enqueue_agent_lifecycle(Operation::Outside(Mutation::Publish {
             occurrence: format!("terminal-{terminal}-{command:?}-{offset}"),
             event: Box::new(event),
-        })
+        }))
+        .map(Some)
     }
 }

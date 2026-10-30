@@ -70,7 +70,8 @@ export async function handleKernelSlashCommand(
   if (subcommand === "access") {
     if (args[0] === "list" && args.length === 1 && deps.listKernelAccessGrants) {
       const { grants, sudo_turns = [] } = await deps.listKernelAccessGrants()
-      const lines = grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), local kernel, ${g.term === "until_holder_exits" ? "until the agent exits" : `expires ${new Date(g.expires_at_ms!).toISOString()}`}`)
+      const covered = (g: typeof grants[number]) => g.covered?.length ? `, covering ${g.covered.map((p) => `${JSON.stringify(p.executable)} (pid ${p.pid})`).join(", ")}` : ""
+      const lines = grants.map((g) => `${g.grant_id}: ${JSON.stringify(g.holder_executable)} (pid ${g.holder_pid}), local kernel, ${g.term === "until_holder_exits" ? "until the agent exits" : `expires ${new Date(g.expires_at_ms!).toISOString()}`}${covered(g)}`)
       lines.push(...sudo_turns.map((t) => `${t.entry_id}: sudo ${t.expires_at_ms ? `window until ${new Date(t.expires_at_ms).toISOString()}` : "pending authorization"}, agent ${t.agent_id}, session ${t.session_id}. Revoke: /kernel access revoke ${t.entry_id}`))
       deps.appendNotice(lines.join("\n") || "No external grants or sudo windows.")
       deps.flashFooter(`${grants.length} external grants, ${sudo_turns.length} sudo windows`, "info")

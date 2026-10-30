@@ -352,6 +352,7 @@ export type RelayKernelPresence = {
 }
 
 export type ProviderAccountSummary = {
+  copyable?: boolean
   provider: string
   state: string
   auth_type?: string | null

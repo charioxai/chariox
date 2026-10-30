@@ -28,8 +28,7 @@ impl DurableKernelStateStore {
                 AppInstallationOperationRequest { command, response },
             )))
             .map_err(|_| InstallOperationError::Storage)?;
-        receiver
-            .recv()
+        crate::durable_state::await_writer_response(receiver)
             .map_err(|_| InstallOperationError::CommitUnknown)?
     }
     #[cfg(test)]

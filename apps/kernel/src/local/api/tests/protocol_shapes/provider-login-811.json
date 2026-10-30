@@ -1,0 +1,47 @@
+{
+  "local_protocol": 811,
+  "peer_protocol": 361,
+  "request": {
+    "SendProviderLoginInput": {
+      "login_id": "login",
+      "data_base64": "YWJjMTIzI2RlZjQ1Ng0="
+    }
+  },
+  "response": {
+    "ProviderLoginStatus": {
+      "login": {
+        "provider": "claude",
+        "account_profile": "work",
+        "login_id": "login",
+        "state": "running",
+        "message": "The code could not be read. Copy the whole code and try again.",
+        "terminal_output_base64": "",
+        "started_at_ms": 1,
+        "updated_at_ms": 2,
+        "interaction": {
+          "id": "login",
+          "agent_id": "agent",
+          "kind": "choice",
+          "level": "warning",
+          "message": "The code could not be read. Copy the whole code and try again.",
+          "choices": [],
+          "requested_at_ms": 2,
+          "provider_login": {
+            "kernel_id": "worker",
+            "login": {
+              "provider": "claude",
+              "account_profile": "work",
+              "login_kind": "terminal_setup_token",
+              "login_id": "login",
+              "auth_url": null,
+              "verification_url": null,
+              "user_code": null
+            },
+            "terminal_output_base64": "",
+            "problem": "The code could not be read. Copy the whole code and try again."
+          }
+        }
+      }
+    }
+  }
+}

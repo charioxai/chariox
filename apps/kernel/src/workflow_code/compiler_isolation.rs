@@ -312,7 +312,7 @@ pub(super) fn compiler_command(
             "isolated workflow compilation requires /usr/bin/bwrap",
         ));
     }
-    let mut command = Command::new("/usr/bin/bwrap");
+    let mut command = crate::process_spawn::command("/usr/bin/bwrap");
     command
         .env_clear()
         .args([

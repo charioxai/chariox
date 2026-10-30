@@ -6,6 +6,7 @@ export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
   | { kind: "waiting"; raw: string }
   | { kind: "stop"; raw: string }
+  | { kind: "continue"; raw: string }
   | { kind: "approvals"; raw: string }
   | { kind: "attachment"; raw: string }
   | {
@@ -64,6 +65,7 @@ export type SlashCommandHandlers = {
   onWaiting: () => Promise<unknown> | unknown
   onApprovals: () => Promise<unknown> | unknown
   onStop: () => Promise<unknown> | unknown
+  onContinue?: () => Promise<unknown> | unknown
   onAttachment: (command: Extract<ParsedSlashCommand, { kind: "attachment" }>) => Promise<unknown> | unknown
   onSession: (command: Extract<ParsedSlashCommand, { kind: "session" }>) => Promise<unknown> | unknown
   onProvider: (command: Extract<ParsedSlashCommand, { kind: "provider" }>) => Promise<unknown> | unknown
@@ -116,6 +118,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   if (trimmed === "/approvals") {
     return { kind: "approvals", raw: trimmed }
   }
+  if (trimmed === "/continue") return { kind: "continue", raw: trimmed }
   if (trimmed === "/stop") {
     return { kind: "stop", raw: trimmed }
   }
@@ -132,6 +135,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       value: args.join(" ").trim(),
     }
   }
+  if (trimmed === "/processes") return { kind: "provider", raw: trimmed, value: "session-processes" }
   if (trimmed.startsWith("/provider")) {
     return {
       kind: "provider",
@@ -310,6 +314,10 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       prompt: trimmed.replace(/^\/loop\s*/, "").trim(),
     }
   }
+  const sudoGoalControl = /^\/sudo\s+\/goal\s+((?:pause|resume|cancel|interval|edit)(?:\s+[\s\S]*)?)$/u.exec(trimmed)
+  if (sudoGoalControl) {
+    return { kind: "goal", raw: trimmed, prompt: sudoGoalControl[1]!.trim() }
+  }
   if (trimmed === "/goal" || trimmed.startsWith("/goal ")) {
     return {
       kind: "goal",
@@ -464,6 +472,9 @@ export async function executeSlashCommand(
     case "approvals":
       await handlers.onApprovals()
       break
+    case "continue":
+      await handlers.onContinue?.()
+      break
     case "stop":
       await handlers.onStop()
       break
@@ -585,6 +596,7 @@ export async function executeSlashCommand(
 
 export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashCommand): boolean {
   switch (command.kind) {
+    case "continue":
     case "approvals":
     case "provider":
     case "model":

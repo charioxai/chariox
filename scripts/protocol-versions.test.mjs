@@ -7,7 +7,7 @@ test("generated protocol consumers match the two runtime constants", () => {
 
 import assert from "node:assert/strict"
 import { readFileSync, readdirSync } from "node:fs"
-import { repositoryRoot } from "./lib/protocol-versions.mjs"
+import { repositoryRoot, admittedPredecessorProtocols } from "./lib/protocol-versions.mjs"
 test("MP-08/MP-10/MP-11 protocol tests use the generated pair instead of landing-number literals", () => {
   const pins = []
   for (const directory of ["apps/kernel/src", "apps/cli/src", "packages/kernel-client/src"]) {
@@ -29,15 +29,26 @@ test("MP-08/MP-10/MP-11 mirror read ordering has a floor above the unordered tar
   assert.ok(pair.relayPeer >= 124, "paired peer allocation is 124, above target 121")
 })
 
-test("dictation603 retains594 and567 within the32-entry policy", () => {
+test("managed upgrades retain the current and previous releases and the target", () => {
   const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   const policy = JSON.parse(readFileSync(new URL("apps/kernel/managed-upgrade-protocol-transitions.json", repositoryRoot), "utf8"))
+  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  assert.deepEqual(policy.upgradeFrom, [...admittedPredecessorProtocols, pair.local])
+  assert.deepEqual(policy.rollbackTo, policy.upgradeFrom)
+})
+
+test("dictation603 keeps its allocated protocol floors", () => {
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
   assert.ok(pair.local >= 603)
   assert.ok(pair.relayPeer >= 209)
-  assert.ok(policy.upgradeFrom.includes(594))
-  assert.ok(policy.rollbackTo.includes(594))
-  assert.ok(policy.upgradeFrom.includes(567))
-  assert.ok(policy.rollbackTo.includes(567))
-  assert.ok(policy.upgradeFrom.length <= 32)
-  assert.ok(policy.rollbackTo.length <= 32)
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11: the process-control drill names the combined pair.
+test("process-control snapshot covers the generated protocol pair", () => {
+  const pair = JSON.parse(readFileSync(new URL("fixtures/protocol-versions.json", repositoryRoot), "utf8"))
+  const snapshot = JSON.parse(readFileSync(new URL("apps/kernel/src/local/api/tests/protocol_shapes/session-processes-800.json", repositoryRoot), "utf8"))
+  assert.equal(snapshot.protocol_version, pair.local)
+  assert.equal(snapshot.relay_peer_protocol_version, pair.relayPeer)
+  assert.ok(snapshot.shapes.some(shape => shape.StopSessionProcesses))
+  assert.ok(snapshot.shapes.some(shape => shape.SessionProcessesStopped))
 })

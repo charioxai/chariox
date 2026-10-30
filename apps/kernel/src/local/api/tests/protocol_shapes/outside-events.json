@@ -1,6 +1,6 @@
 {
-  "local_protocol": 636,
-  "peer_protocol": 239,
+  "local_protocol": 911,
+  "peer_protocol": 362,
   "requests": [
     {
       "SubscribeEvents": {
@@ -197,9 +197,30 @@
               "online": true,
               "reason": "connected"
             }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 8,
+            "summary": "error: overloaded, retryable",
+            "refs": {},
+            "cursor": 10,
+            "type": "agent",
+            "value": {
+              "run_state": "error",
+              "prompt_id": "prompt-1",
+              "turn_id": "prompt-1",
+              "outcome": {
+                "kind": "overloaded",
+                "retryable": true,
+                "reason": "Selected model is at capacity. Please try a different model."
+              }
+            }
           }
         ],
-        "next_cursor": 9,
+        "next_cursor": 10,
         "oldest_cursor": 1,
         "timed_out": false
       }

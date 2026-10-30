@@ -237,20 +237,25 @@ pub(super) async fn run_agent_command_lane(
             .as_deref()
             .map(|id| state.authorize_external_request(id, &envelope.command.local_request()))
             .transpose();
-        let result = match authorization {
-            Err(error) => Err(error),
-            Ok(_) => {
-                let executor = match envelope.external_grant_id {
-                    Some(id) => executor.with_external_authority(
-                        id,
-                        envelope.command.local_request(),
-                        envelope.sudo_binding,
-                    ),
-                    None => executor.clone(),
-                };
-                executor.execute(envelope.command).await
-            }
-        };
+        let result = envelope
+            .telemetry
+            .scope(async {
+                match authorization {
+                    Err(error) => Err(error),
+                    Ok(_) => {
+                        let executor = match envelope.external_grant_id {
+                            Some(id) => executor.with_external_authority(
+                                id,
+                                envelope.command.local_request(),
+                                envelope.sudo_binding,
+                            ),
+                            None => executor.clone(),
+                        };
+                        executor.execute(envelope.command).await
+                    }
+                }
+            })
+            .await;
         log_lane_completed(
             &envelope.telemetry,
             "agent",

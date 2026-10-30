@@ -208,7 +208,6 @@ impl SessionService {
         }
         let workflow_id = workflow_run.workflow_id().to_string();
         let dispatches = collect_ready_workflow_dispatches(
-            &mut self.next_workflow_node_run_number,
             session_id,
             &workflow_id,
             &context.workflow,

@@ -44,7 +44,7 @@ pub(crate) fn workspace_git_diff_text(
     compare_ref: &str,
     max_bytes: usize,
 ) -> Result<String, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args([
             "diff",
             "--no-ext-diff",
@@ -76,7 +76,7 @@ pub(crate) fn workspace_git_diff_text(
 pub(crate) fn workspace_git_status_by_path(
     worktree_path: &str,
 ) -> Result<HashMap<String, String>, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .current_dir(worktree_path)
         .output()
@@ -107,7 +107,7 @@ fn workspace_git_numstat(
     worktree_path: &str,
     compare_ref: &str,
 ) -> Result<Vec<WorkspaceGitFileChange>, DaemonError> {
-    let output = std::process::Command::new("git")
+    let output = crate::process_spawn::command("git")
         .args(["diff", "--numstat", "--find-renames", compare_ref, "--"])
         .current_dir(worktree_path)
         .output()

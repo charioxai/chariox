@@ -22,6 +22,7 @@ pub struct AgentServiceStore {
 pub(crate) enum ProviderResumeClearOutcome {
     Cleared,
     AlreadyAbsent,
+    Required,
     Superseded { current_provider_session_id: String },
 }
 
@@ -288,6 +289,10 @@ impl AgentServiceStore {
             account_profile,
             resume_state,
         )?;
+        // Every provider poll repeats the resume state; only a change is history.
+        if updated == previous {
+            return Ok(updated);
+        }
         let mut payload = serde_json::json!({ "agent": &updated });
         if let Some(provider_run_id) = provider_run_id {
             payload["provider_run_id"] = serde_json::Value::String(provider_run_id.to_string());
@@ -318,6 +323,9 @@ impl AgentServiceStore {
         let mut agents = self.write();
         let previous = agents.get_agent(agent_id)?;
         let updated = agents.set_agent_provider_resume_state(agent_id, resume_state)?;
+        if updated == previous {
+            return Ok(updated);
+        }
         if let Err(error) = durable_state_store.append_event(
             "agent.runtime_profile_updated",
             Some(updated.id().to_string()),
@@ -352,6 +360,13 @@ impl AgentServiceStore {
                 });
             }
             Some(_) => {}
+        }
+        if previous
+            .provider_resume_state()
+            .required_native_session()
+            .is_some()
+        {
+            return Ok(ProviderResumeClearOutcome::Required);
         }
         let replacement_resume_state = previous
             .provider_resume_state()

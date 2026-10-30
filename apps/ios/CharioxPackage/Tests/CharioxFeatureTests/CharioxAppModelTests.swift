@@ -842,3 +842,25 @@ import Testing
     #expect(CommandCenterCatalog.items(matching: "/provider", session: session).map(\.id).contains("provider-login"))
     #expect(CommandCenterCatalog.items(matching: "/view", session: session).map(\.id).contains("view-split"))
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: both kernel cancellation outcomes succeed.
+@MainActor
+@Test func stopAcceptsPromptAndParkedTaskCancellation() async {
+    for response in [LocalDaemonResponse.promptCancelled, .agentTaskUpdated(taskID: "parked-task")] {
+        let session = RuntimeSession.fixture(id: "session-1", lastUsedAtMs: 200)
+        let client = SequencedMockKernelClient(responses: [
+            .sessionAttached(RuntimeAttachment(id: "attachment-1", sessionID: session.id)),
+            response,
+        ])
+        let suite = "CharioxAppModelTests.stop"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let model = CharioxAppModel(client: client, defaults: defaults)
+        model.selectSession(session)
+        await model.attachSelectedSession()
+        await model.cancelActivePrompt()
+        #expect(model.connectionState == .connected)
+        #expect(model.statusMessage == (response == .promptCancelled
+            ? "Cancellation requested." : "Cancelled task parked-task."))
+    }
+}

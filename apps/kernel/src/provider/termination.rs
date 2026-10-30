@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::turn_outcome::{TurnOutcome, TurnOutcomeKind};
+
 const MAX_PROVIDER_TERMINATION_REASON_CHARS: usize = 256;
 const MAX_PROVIDER_TERMINATION_SIGNAL_CHARS: usize = 64;
 const REDACTED_DIAGNOSTIC_VALUE: &str = "[redacted]";
@@ -8,6 +10,8 @@ const REDACTED_DIAGNOSTIC_VALUE: &str = "[redacted]";
 #[serde(rename_all = "snake_case")]
 pub enum ProviderRunTerminationCategory {
     ProcessExit,
+    MemoryLimit,
+    OutsideEnd,
     Signal,
     ExplicitProviderError,
     RuntimeFailure,
@@ -20,41 +24,63 @@ pub struct ProviderRunTermination {
     pub category: ProviderRunTerminationCategory,
     pub reason: String,
     pub timestamp_ms: u64,
+    /// Why the turn failed, typed once from the harness's own error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<TurnOutcome>,
 }
 
 impl ProviderRunTermination {
-    pub fn process_exit(exit_code: u32, timestamp_ms: u64) -> Self {
-        Self {
-            category: ProviderRunTerminationCategory::ProcessExit,
-            reason: format!("provider process exited with status {exit_code}"),
+    pub fn outside_end(timestamp_ms: u64) -> Self {
+        Self::ended_by_kernel(
+            ProviderRunTerminationCategory::OutsideEnd,
+            "provider process tree stopped by a session controller".into(),
             timestamp_ms,
-        }
+        )
+    }
+
+    pub fn memory_limit(limit_bytes: u64, timestamp_ms: u64) -> Self {
+        Self::ended_by_kernel(
+            ProviderRunTerminationCategory::MemoryLimit,
+            format!("provider process tree exceeded its memory limit of {limit_bytes} bytes"),
+            timestamp_ms,
+        )
+    }
+
+    pub fn process_exit(exit_code: u32, timestamp_ms: u64) -> Self {
+        Self::crashed(
+            ProviderRunTerminationCategory::ProcessExit,
+            format!("provider process exited with status {exit_code}"),
+            timestamp_ms,
+        )
     }
 
     pub fn signal(signal_name: &str, timestamp_ms: u64) -> Self {
         let signal_name = sanitize_signal_name(signal_name).unwrap_or("unknown");
-        Self {
-            category: ProviderRunTerminationCategory::Signal,
-            reason: format!("provider process terminated by signal {signal_name}"),
+        Self::crashed(
+            ProviderRunTerminationCategory::Signal,
+            format!("provider process terminated by signal {signal_name}"),
             timestamp_ms,
-        }
+        )
     }
 
-    pub fn explicit_provider_error(reason: &str, timestamp_ms: u64) -> Self {
+    /// `reason` is the harness's own error; its words and the code its adapter
+    /// framed give the typed cause.
+    pub fn explicit_provider_error(adapter_key: &str, reason: &str, timestamp_ms: u64) -> Self {
         Self::bounded(
             ProviderRunTerminationCategory::ExplicitProviderError,
             reason,
             "provider reported an explicit error",
             timestamp_ms,
+            TurnOutcome::classify(adapter_key, reason),
         )
     }
 
     pub fn unknown_process_exit(timestamp_ms: u64) -> Self {
-        Self {
-            category: ProviderRunTerminationCategory::Unknown,
-            reason: "provider process exited without an available status".to_string(),
+        Self::crashed(
+            ProviderRunTerminationCategory::Unknown,
+            "provider process exited without an available status".to_string(),
             timestamp_ms,
-        }
+        )
     }
 
     pub fn runtime_failure(reason: &str, timestamp_ms: u64) -> Self {
@@ -62,6 +88,16 @@ impl ProviderRunTermination {
             ProviderRunTerminationCategory::RuntimeFailure,
             reason,
             "provider runtime failed",
+            timestamp_ms,
+            TurnOutcome::new(TurnOutcomeKind::Other, false, reason),
+        )
+    }
+
+    /// The provider process was gone when the kernel next looked and no exit was seen.
+    pub fn exit_unobserved(timestamp_ms: u64) -> Self {
+        Self::crashed(
+            ProviderRunTerminationCategory::RuntimeFailure,
+            "the provider process was no longer running and its exit was not observed".to_string(),
             timestamp_ms,
         )
     }
@@ -72,7 +108,39 @@ impl ProviderRunTermination {
             reason,
             "provider transport failed",
             timestamp_ms,
+            TurnOutcome::new(TurnOutcomeKind::Network, true, reason),
         )
+    }
+
+    /// The kernel itself ended the tree (resource limit or a controller stop):
+    /// the turn fails with that exact reason, and sending it again unchanged
+    /// would end the same way.
+    fn ended_by_kernel(
+        category: ProviderRunTerminationCategory,
+        reason: String,
+        timestamp_ms: u64,
+    ) -> Self {
+        let failure = TurnOutcome::new(TurnOutcomeKind::Other, false, &reason);
+        Self {
+            category,
+            reason,
+            timestamp_ms,
+            failure: Some(failure),
+        }
+    }
+
+    fn crashed(
+        category: ProviderRunTerminationCategory,
+        reason: String,
+        timestamp_ms: u64,
+    ) -> Self {
+        let failure = TurnOutcome::new(TurnOutcomeKind::ProviderCrashed, true, &reason);
+        Self {
+            category,
+            reason,
+            timestamp_ms,
+            failure: Some(failure),
+        }
     }
 
     fn bounded(
@@ -80,6 +148,7 @@ impl ProviderRunTermination {
         reason: &str,
         fallback: &str,
         timestamp_ms: u64,
+        failure: TurnOutcome,
     ) -> Self {
         let sanitized = sanitize_provider_diagnostic(reason);
         let sanitized = sanitized
@@ -95,6 +164,7 @@ impl ProviderRunTermination {
             category,
             reason: sanitized,
             timestamp_ms,
+            failure: Some(failure),
         }
     }
 }
@@ -137,7 +207,8 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
         |output: &mut String, token: &str| push_diagnostic_token(output, token, keep);
     // The shared secret shapes first, over the whole text: a PEM block spans
     // lines, so no single token below shows it.
-    let reason = crate::secret_redaction::redact_secrets_as(reason, REDACTED_DIAGNOSTIC_VALUE);
+    let reason = strip_terminal_sequences(reason);
+    let reason = crate::secret_redaction::redact_secrets_as(&reason, REDACTED_DIAGNOSTIC_VALUE);
     let normalized = reason
         .chars()
         .map(|character| {
@@ -214,6 +285,52 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
         .chars()
         .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
         .collect()
+}
+
+fn strip_terminal_sequences(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        let sequence = match character {
+            '\u{1b}' => chars.next(),
+            '\u{9b}' => Some('['),
+            '\u{9d}' => Some(']'),
+            '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => Some('P'),
+            _ => {
+                output.push(character);
+                continue;
+            }
+        };
+        match sequence {
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']' | 'P' | 'X' | '^' | '_') => {
+                while let Some(next) = chars.next() {
+                    if matches!(next, '\u{7}' | '\u{9c}') {
+                        break;
+                    }
+                    if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(' '..='/') => {
+                for next in chars.by_ref() {
+                    if ('0'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output
 }
 
 pub(crate) fn provider_launch_failure_diagnostic(
@@ -403,6 +520,18 @@ fn push_diagnostic_token(output: &mut String, token: &str, keep: fn(char) -> boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostics_strip_terminal_sequences_before_redaction() {
+        let input = "\u{1b}[2mstartup\u{1b}[0m \u{1b}[31mERROR\u{1b}[0m \u{1b}]8;;https://example.com\u{1b}\\detail\u{1b}]8;;\u{7} api_\u{1b}[32mkey=secret";
+        assert_eq!(
+            sanitize_provider_diagnostic(input),
+            "startup ERROR detail api_key[redacted]"
+        );
+        assert_eq!(
+            redact_provider_diagnostic(input),
+            "startup ERROR detail api_key=[redacted]"
+        );
+    }
     use super::*;
 
     #[test]
@@ -468,6 +597,7 @@ mod tests {
         );
 
         let explicit = ProviderRunTermination::explicit_provider_error(
+            "codex",
             "provider rejected request stderr=raw-stderr api_key=sk-live-secret prompt=private prompt command=rm -rf",
             8,
         );
@@ -511,7 +641,7 @@ mod tests {
 
     #[test]
     fn empty_and_large_secret_bearing_evidence_stays_bounded() {
-        let empty = ProviderRunTermination::explicit_provider_error("\n\0", 9);
+        let empty = ProviderRunTermination::explicit_provider_error("codex", "\n\0", 9);
         assert_eq!(empty.reason, "provider reported an explicit error");
 
         let unknown = ProviderRunTermination::unknown_process_exit(9);
@@ -519,6 +649,7 @@ mod tests {
         assert!(unknown.reason.contains("without an available status"));
 
         let large = ProviderRunTermination::explicit_provider_error(
+            "codex",
             &format!(
                 "authorization: Bearer {} stderr={} {}",
                 "secret-token".repeat(20),

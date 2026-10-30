@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },
@@ -28,6 +29,8 @@ pub enum LocalDaemonResponse {
     KernelSudoRequested { agent_id: String },
     KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
+    /// Protocol 641: the grant now covers this process by name.
+    KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
@@ -370,6 +373,7 @@ pub enum LocalDaemonResponse {
     ProviderAccountProfile { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileRemoved { profile: crate::account_profile::ProviderAccountProfile, },
     ProviderAccountProfileDataDeleted { profile: crate::account_profile::ProviderAccountProfile, },
+    ProviderAccountCopyOffers { offers: Vec<crate::provider_account_copy::ProviderAccountCopyOffer>, },
     ProviderAccountCopied { receipt: crate::provider_account_copy::ProviderAccountCopyReceipt, },
     ProviderAccountCredentialStored { provider: String, account_profile: String, credential_id: String, replaced: bool, },
     ProviderProcessesListed { processes: Vec<ProviderProcessInfo>, },
@@ -478,6 +482,7 @@ pub enum LocalDaemonResponse {
     },
     AgentMovedToRemote { agent: AgentInstance, },
     AgentMovedToLocal { agent: AgentInstance, },
+    AgentMoveAborted { agent: AgentInstance, },
     RemoteExtensionManifestSynced { agent: AgentInstance, },
     HomeExtensionAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
     SliceAuditListed { events: Vec<crate::durable_state::DurableStateEvent>, },
@@ -558,6 +563,8 @@ pub enum LocalDaemonResponse {
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
     EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
+    EventConnectionEvents { page: chariox_event_protocol::AegsReceivedEventPage, },
+    EventConnectionEventReplayed { result: chariox_event_protocol::AegsReceivedEventReplayResponse, },
     EventConnectionDependencies { connection_id: String, dependencies: Vec<EventConnectionDependency>, },
     EventConnectionRemoved { connection: EventConnection, },
     EventDeliveryStatus { status: EventDeliveryStatus, },

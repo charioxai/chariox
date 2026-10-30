@@ -602,3 +602,49 @@ fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
     assert_eq!(parsed["authority"], "home");
     assert_eq!(parsed["execution_location"], "home");
 }
+
+// MP-08 / MP-10: a web search has no status field; the started notification
+// is running and the completed one, with the final query, is completed.
+#[test]
+fn web_search_status_follows_the_started_and_completed_notifications() {
+    let mut active_turn_id = None;
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+    let mut apply = |notification| {
+        apply_notification(
+            notification,
+            &mut active_turn_id,
+            &mut turn_tracker,
+            &mut text_items,
+            &mut tool_items,
+            &mut chunks,
+            &mut completions,
+            &mut notices,
+            &mut prompt_completed,
+            &mut terminal_failure,
+            &mut resolved_usage,
+        )
+    };
+    apply(CodexNotification::ItemStarted {
+        item: json!({"type": "webSearch", "id": "ws-1", "query": ""}),
+    });
+    apply(CodexNotification::ItemCompleted {
+        item: json!({"type": "webSearch", "id": "ws-1", "query": "svg viewbox"}),
+    });
+
+    let snapshots = chunks
+        .iter()
+        .map(|chunk| serde_json::from_slice::<Value>(&chunk.bytes).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0]["status"], "running");
+    assert_eq!(snapshots[1]["status"], "completed");
+    assert_eq!(snapshots[1]["input"], json!({"query": "svg viewbox"}));
+}

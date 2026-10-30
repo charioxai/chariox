@@ -75,6 +75,9 @@ pub(super) async fn handle_daemon_request(
     }
 }
 
+/// A successful relay request is logged only when it took this long; failures always are.
+const RELAY_SLOW_REQUEST_LOG_MS: u64 = 500;
+
 pub(super) async fn handle_prepared_daemon_request(
     router: &CommandRouter,
     command_sequence: &AtomicU64,
@@ -454,18 +457,6 @@ pub(super) async fn handle_prepared_daemon_request(
             ("local_browser_connect", None, false, result)
         }
     };
-    let quiet_success_request =
-        crate::runtime::command_latency::is_quiet_success_command_type(request_kind);
-    if !quiet_success_request {
-        crate::logging::info_with_fields(
-            "daemon.relay_client",
-            "relay daemon request dispatching",
-            serde_json::json!({
-                "request_kind": request_kind,
-                "command_id": command_id,
-            }),
-        );
-    }
     match result {
         RelayDispatchOutcome::Response(mut response) => {
             let display_at = std::time::Instant::now();
@@ -505,15 +496,6 @@ pub(super) async fn handle_prepared_daemon_request(
                     display_at,
                 );
             }
-            if !quiet_success_request {
-                crate::logging::info_with_fields(
-                    "daemon.relay_client",
-                    "relay daemon request dispatched",
-                    serde_json::json!({
-                        "request_kind": request_kind,
-                    }),
-                );
-            }
             let serialized = if bind_import_response {
                 serde_json::to_vec(&BrowserImportRelayResponse {
                     request_nonce: encrypted_request.nonce.clone(),
@@ -541,13 +523,16 @@ pub(super) async fn handle_prepared_daemon_request(
                 received_at_ms,
                 plaintext.len(),
             );
-            if !quiet_success_request {
+            let elapsed_ms = crate::session::unix_epoch_ms().saturating_sub(received_at_ms);
+            if elapsed_ms >= RELAY_SLOW_REQUEST_LOG_MS {
                 crate::logging::info_with_fields(
                     "daemon.relay_client",
-                    "relay daemon response serialized",
+                    "relay daemon request slow",
                     serde_json::json!({
                         "request_kind": request_kind,
+                        "command_id": command_id,
                         "byte_len": plaintext.len(),
+                        "elapsed_ms": elapsed_ms,
                     }),
                 );
             }
@@ -556,23 +541,11 @@ pub(super) async fn handle_prepared_daemon_request(
                 &client_public_key,
                 &plaintext,
             ) {
-                Ok(encrypted_response) => {
-                    if !quiet_success_request {
-                        crate::logging::info_with_fields(
-                            "daemon.relay_client",
-                            "relay daemon response encrypted",
-                            serde_json::json!({
-                                "request_kind": request_kind,
-                                "byte_len": plaintext.len(),
-                            }),
-                        );
-                    }
-                    RelayRequestOutcome {
-                        display_event,
-                        encrypted_response: Some(encrypted_response),
-                        error: None,
-                    }
-                }
+                Ok(encrypted_response) => RelayRequestOutcome {
+                    display_event,
+                    encrypted_response: Some(encrypted_response),
+                    error: None,
+                },
                 Err(error) => RelayRequestOutcome {
                     display_event: None,
                     encrypted_response: None,
@@ -584,11 +557,22 @@ pub(super) async fn handle_prepared_daemon_request(
                 },
             }
         }
-        RelayDispatchOutcome::RelayError(error) => RelayRequestOutcome {
-            display_event: None,
-            encrypted_response: None,
-            error: Some(error),
-        },
+        RelayDispatchOutcome::RelayError(error) => {
+            crate::logging::info_with_fields(
+                "daemon.relay_client",
+                "relay daemon request failed",
+                serde_json::json!({
+                    "request_kind": request_kind,
+                    "command_id": command_id,
+                    "code": error.code,
+                }),
+            );
+            RelayRequestOutcome {
+                display_event: None,
+                encrypted_response: None,
+                error: Some(error),
+            }
+        }
     }
 }
 
@@ -921,12 +905,9 @@ async fn dispatch_on_behalf_of(
         );
         return remote_sudo_outcome(router, &command, on_behalf_of, &request).await;
     }
-    if !is_repeatable(&request) {
-        router.runtime_state().audit_gateway_request(
-            on_behalf_of,
-            &crate::runtime::kernel_gateway::ledger::variant_name(&request),
-        );
-    }
+    router
+        .runtime_state()
+        .audit_gateway_request(on_behalf_of, &request);
     if is_repeatable(&request) {
         return dispatch_relay_client_request(
             router,

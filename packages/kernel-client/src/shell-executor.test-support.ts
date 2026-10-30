@@ -272,7 +272,11 @@ export function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): D
         issues: [],
       },
     },
+    request_timings: [],
+    sample_counts: {},
     projection_invariants: {
+      mismatch_count: 0,
+      mismatch_counts_by_kind: {},
       checked_sessions: 1,
       checked_agents: 1,
       mismatches: [],

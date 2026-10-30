@@ -51,6 +51,8 @@ pub struct AgentRuntimeProjectionHealthSnapshot {
 pub struct ProjectionInvariantHealthSnapshot {
     pub checked_sessions: usize,
     pub checked_agents: usize,
+    pub mismatch_count: usize,
+    pub mismatch_counts_by_kind: std::collections::BTreeMap<String, usize>,
     pub mismatches: Vec<ProjectionInvariantMismatch>,
 }
 
@@ -743,8 +745,11 @@ pub struct DaemonHealthProjection {
     pub workspace_coordination: WorkspaceCoordinationHealthSnapshot,
     pub workspace_live_sync: WorkspaceLiveSyncHealthSnapshot,
     pub projection_invariants: ProjectionInvariantHealthSnapshot,
+    pub request_timings: Vec<crate::runtime::request_metrics::RequestKindTiming>,
+    pub sample_counts: std::collections::BTreeMap<String, usize>,
     #[serde(default)]
     pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,
+    pub durable_writer: crate::durable_state::DurableWriterHealthSnapshot,
 }
 
 impl DaemonHealthProjection {
@@ -802,7 +807,10 @@ impl DaemonHealthProjection {
             workspace_coordination,
             workspace_live_sync,
             projection_invariants,
+            request_timings: Vec::new(),
+            sample_counts: Default::default(),
             app_lock: crate::runtime::app_lock::AppLockHealthSnapshot::default(),
+            durable_writer: Default::default(),
         }
     }
 }

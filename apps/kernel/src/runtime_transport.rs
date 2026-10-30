@@ -66,7 +66,7 @@ pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
-pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 300;
+pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
 const RELAY_DISCOVERY_INTERVAL_TICKS: u64 = 150;
 const WAITING_ROOM_INVENTORY_INTERVAL_TICKS: u64 = 100;
@@ -707,6 +707,7 @@ where
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
                 _ = pump_router.wait_for_started_app_refreshes() => {}
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
+                _ = pump_state.wait_for_kernel_access_holder_exit() => {}
             }
         }
     });

@@ -18,6 +18,7 @@ mod delivery_waits;
 #[cfg(test)]
 mod fault_tests;
 pub(crate) mod faults;
+mod goal_evidence;
 #[cfg(test)]
 mod goal_tests;
 pub(crate) mod goals;
@@ -102,6 +103,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
         db.execute_batch("ALTER TABLE agent_source_occurrences ADD COLUMN public_answer TEXT")
             .map_err(sql)?;
     }
+    index_task_lookups(db)?;
     outside::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
@@ -111,6 +113,13 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
 }
 impl DurableKernelStateStore {
     pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> {
+        self.enqueue_agent_lifecycle(operation)?.wait()
+    }
+
+    pub(crate) fn enqueue_agent_lifecycle(
+        &self,
+        operation: Operation,
+    ) -> Result<PendingLifecycleOutcome, DaemonError> {
         let (response, receive) = mpsc::channel();
         self.writer
             .enqueue(DurableWriterRequest::AgentLifecycle(Box::new(Request {
@@ -118,19 +127,82 @@ impl DurableKernelStateStore {
                 operation,
                 response,
             })))?;
-        receive
-            .recv()
-            .map_err(|_| error("writer response lost; intent uncertain"))?
+        Ok(PendingLifecycleOutcome(receive))
     }
     pub(crate) fn agent_tasks(
         &self,
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.tasks")?;
-        let mut q=db.prepare("SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE (?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2) ORDER BY rowid").map_err(sql)?;
+        self.read_tasks(
+            "agent.lifecycle.tasks",
+            "(?1 IS NULL OR room_id=?1) AND (?2 IS NULL OR agent_id=?2)",
+            params![room, agent],
+        )
+    }
+    /// The agent's task for one turn. Tasks are kept after they finish, so the reads made on
+    /// every turn take it by index instead of decoding the agent's whole history.
+    pub(crate) fn agent_turn_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks(
+                "agent.lifecycle.turn_task",
+                "room_id=?1 AND agent_id=?2 AND prompt_id=?3",
+                params![room, agent, prompt],
+            )?
+            .pop())
+    }
+    /// The agent's first task running `prompt` or holding it as its pending continuation.
+    pub(crate) fn agent_turn_or_continuation_task(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks(
+                "agent.lifecycle.turn_task",
+                "rowid IN (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND prompt_id=?3 \
+                 UNION SELECT rowid FROM agent_tasks WHERE pending_prompt_id=?3 AND room_id=?1 AND agent_id=?2)",
+                params![room, agent, prompt],
+            )?
+            .into_iter()
+            .next())
+    }
+    /// Whether the agent has an unfinished task other than `task`; an unreadable one counts.
+    pub(crate) fn agent_has_other_unfinished_task(
+        &self,
+        room: &str,
+        agent: &str,
+        task: &str,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.unfinished")?;
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
+             AND (state IS NULL OR state NOT IN ('done','cancelled')))",
+            params![room, agent, task],
+            |r| r.get(0),
+        )
+        .map_err(sql)
+    }
+    fn read_tasks(
+        &self,
+        operation: &'static str,
+        filter: &str,
+        values: impl rusqlite::Params,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        let db = self.lock_connection(operation)?;
+        let mut q = db
+            .prepare_cached(&format!(
+                "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+            ))
+            .map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| {
+            .query_map(values, |r| {
                 Ok((
                     r.get::<_, String>(0)?,
                     r.get::<_, String>(1)?,
@@ -146,6 +218,56 @@ impl DurableKernelStateStore {
                 .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
         })
         .collect()
+    }
+    /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
+    /// order. Older finished tasks are not read, so a long room costs a read no more.
+    pub(crate) fn visible_agent_tasks(
+        &self,
+        room: &str,
+        finished: usize,
+    ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.visible_tasks")?;
+        // An unreadable payload counts as unfinished; decoding quarantines it below.
+        let mut q = db
+            .prepare(
+                "WITH t AS (SELECT rowid AS r,task_id,room_id,agent_id,prompt_id,payload,\
+                 CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') END \
+                 IN ('done','cancelled') AS finished FROM agent_tasks WHERE room_id=?1) \
+                 SELECT task_id,room_id,agent_id,prompt_id,payload FROM t WHERE finished IS NOT 1 \
+                 OR r IN (SELECT r FROM t WHERE finished ORDER BY r DESC LIMIT ?2) ORDER BY r",
+            )
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, sql_integer(finished as u64)?], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+        })
+        .collect()
+    }
+    /// Whether the task's terminal outcome is recorded. It is published only once the task's
+    /// resources are settled, so a cancelled task that has it needs no further cancellation.
+    pub(crate) fn agent_task_terminal_recorded(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.terminal_recorded")?;
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_source_occurrences WHERE room_id=?1 AND source_id=?2 AND occurrence_id=?3)",
+            params![task.room_id, task.task_id, format!("task-terminal-{}", task.task_id)],
+            |r| r.get(0),
+        )
+        .map_err(sql)
     }
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
@@ -188,7 +310,8 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.reply_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT i.room_id,i.agent_id FROM agent_inbox i WHERE json_valid(i.payload) AND json_extract(i.payload,'$.reply_requested')=1 AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=i.room_id AND o.source_id='agent-event-' || i.agent_id || '-' || i.sequence) ORDER BY i.room_id,i.agent_id").map_err(sql)?;
+        // Outside recipients (room '') neither request replies nor take deliveries.
+        let mut q = db.prepare("SELECT DISTINCT i.room_id,i.agent_id FROM agent_inbox i WHERE i.room_id>'' AND json_valid(i.payload) AND json_extract(i.payload,'$.reply_requested')=1 AND NOT EXISTS(SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=i.room_id AND o.source_id='agent-event-' || i.agent_id || '-' || i.sequence) ORDER BY i.room_id,i.agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
@@ -199,7 +322,7 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
@@ -253,7 +376,12 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
-pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::AgentFaults) -> bool {
+pub(super) fn execute(
+    db: &mut Connection,
+    request: Request,
+    faults: &faults::AgentFaults,
+    followed: &outside::Followed,
+) -> bool {
     // MP-08 / MP-09 / MP-10 / MP-11 A12-S02: no objective or operation payload in diagnostics.
     let trace = match &request.operation {
         Operation::ControlGoal { task, action, .. } => match action.as_str() {
@@ -264,6 +392,10 @@ pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::Ag
             "edit" => Some((task.clone(), "edit")),
             _ => None,
         },
+        _ => None,
+    };
+    let changes_targets = match &request.operation {
+        Operation::Outside(mutation) => Some(mutation.changes_targets()),
         _ => None,
     };
     let started = std::time::Instant::now();
@@ -312,6 +444,11 @@ pub(super) fn execute(db: &mut Connection, request: Request, faults: &faults::Ag
         }
         Ok(value)
     })();
+    // Publishers re-read the followed targets and offer every run state again after a
+    // target change, and after an outside mutation nobody may be waiting for that failed.
+    if changes_targets.is_some_and(|changes| changes || result.is_err()) {
+        followed.changed();
+    }
     let _ = request.response.send(result);
     uncertain
 }
@@ -349,6 +486,11 @@ fn for_turn(
     row.map(|(id, payload)| decode_task(&id, room, agent, prompt, &payload))
         .transpose()
 }
+#[cfg(test)]
+thread_local! {
+    /// Tasks decoded on this thread, so a test can bound what one operation reads.
+    pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 fn decode_task(
     id: &str,
     room: &str,
@@ -356,6 +498,8 @@ fn decode_task(
     prompt: &str,
     payload: &str,
 ) -> Result<AgentTaskExecution, DaemonError> {
+    #[cfg(test)]
+    DECODED_TASKS.with(|n| n.set(n.get() + 1));
     let t: AgentTaskExecution = decode(payload)?;
     if t.task_id != id || t.room_id != room || t.agent_id != agent || t.prompt_id != prompt {
         return Err(error("task identity corrupt; quarantine required"));
@@ -399,7 +543,7 @@ fn decode_task(
     if t.state == ExecutionState::Done
         && t.obligations
             .iter()
-            .any(|o| matches!(o.status.as_str(), "open" | "failed" | "settling"))
+            .any(AgentObligation::requires_resolution)
     {
         return Err(error(
             "done has unfinished obligations; quarantine required",
@@ -425,14 +569,141 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
     }
     Ok(())
 }
-fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
-    let mut q = tx
-        .prepare(
-            "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks ORDER BY rowid",
+/// Tasks are kept after they finish, so the lookups that run on every turn and every sweep
+/// read an index instead of decoding the whole ledger. An unreadable payload indexes as NULL.
+fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
+    let columns: Vec<String> = db
+        .prepare("PRAGMA table_xinfo(agent_tasks)")
+        .map_err(sql)?
+        .query_map([], |r| r.get(1))
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    for (column, value) in [
+        ("state", "TEXT", "json_extract(payload,'$.state')"),
+        ("pending_prompt_id", "TEXT", "json_extract(payload,'$.pending_prompt_id')"),
+        (
+            "obligated",
+            "INTEGER",
+            "json_array_length(payload,'$.obligations')>0",
+        ),
+    ]
+    .map(|(column, kind, value)| (column, format!("{kind} GENERATED ALWAYS AS (CASE WHEN json_valid(payload) THEN {value} END) VIRTUAL")))
+    {
+        if !columns.iter().any(|c| c == column) {
+            db.execute_batch(&format!("ALTER TABLE agent_tasks ADD COLUMN {column} {value}"))
+                .map_err(sql)?;
+        }
+    }
+    let registration_columns: Vec<String> = db
+        .prepare("PRAGMA table_xinfo(agent_registrations)")
+        .map_err(sql)?
+        .query_map([], |r| r.get(1))
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    if !registration_columns.iter().any(|c| c == "source_id") {
+        db.execute_batch(
+            "ALTER TABLE agent_registrations ADD COLUMN source_id TEXT GENERATED ALWAYS AS \
+             (CASE WHEN json_valid(payload) THEN json_extract(payload,'$.source_id') END) VIRTUAL",
         )
         .map_err(sql)?;
+    }
+    db.execute_batch(
+        "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);
+         CREATE INDEX IF NOT EXISTS agent_tasks_obligated ON agent_tasks(room_id,obligated,state);
+         CREATE INDEX IF NOT EXISTS agent_registrations_task ON agent_registrations(task_id);
+         CREATE INDEX IF NOT EXISTS agent_registrations_source ON agent_registrations(source_id);",
+    )
+    .map_err(sql)
+}
+fn tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, "1", [])
+}
+/// Waiting tasks, and unreadable ones so they are quarantined as before.
+fn waiting_tasks(tx: &Transaction<'_>) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, "state='waiting' OR state IS NULL", [])
+}
+/// An agent's unfinished tasks, and unreadable ones so they are quarantined.
+fn live_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2 AND (state IN ('working','waiting','blocked') OR state IS NULL)",
+        params![room, agent],
+    )
+}
+/// The room's tasks a terminal outcome of `source` can change, in ledger order: those
+/// registered on it, those holding obligations, and unreadable ones so they are quarantined.
+/// Plain turns stay in the ledger, so the outcome of every turn would otherwise read them all.
+const SOURCE_TASKS: &str = "rowid IN (\
+    SELECT t.rowid FROM agent_registrations r CROSS JOIN agent_tasks t ON t.task_id=r.task_id \
+    WHERE (r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1 \
+    UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
+    UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
+fn source_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    source: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(tx, SOURCE_TASKS, params![room, source])
+}
+/// A room's tasks (one agent's when given), in ledger order.
+fn room_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: Option<&str>,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND (?2 IS NULL OR agent_id=?2)",
+        params![room, agent],
+    )
+}
+/// An agent's tasks that hold a pending continuation.
+fn continuing_tasks(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    tasks_where(
+        tx,
+        "room_id=?1 AND agent_id=?2 AND pending_prompt_id IS NOT NULL",
+        params![room, agent],
+    )
+}
+/// The task that holds `prompt` as its pending continuation.
+fn pending_continuation(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<Option<AgentTaskExecution>, DaemonError> {
+    Ok(tasks_where(
+        tx,
+        "pending_prompt_id=?1 AND room_id=?2 AND agent_id=?3",
+        params![prompt, room, agent],
+    )?
+    .into_iter()
+    .next())
+}
+fn tasks_where(
+    tx: &Transaction<'_>,
+    filter: &str,
+    values: impl rusqlite::Params,
+) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+    let mut q = tx
+        .prepare(&format!(
+            "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
+        ))
+        .map_err(sql)?;
     let rows = q
-        .query_map([], |r| {
+        .query_map(values, |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -869,5 +1140,23 @@ pub(crate) fn finish_provider_event_submit(
             notice: Some(receipt_notice(&settled)),
         })),
         _ => Err(error("receipt outcome mismatch")),
+    }
+}
+
+pub(crate) struct PendingLifecycleOutcome(mpsc::Receiver<Result<Outcome, DaemonError>>);
+impl PendingLifecycleOutcome {
+    pub(crate) fn try_result(&self) -> Option<Result<(), DaemonError>> {
+        match self.0.try_recv() {
+            Ok(result) => Some(result.map(|_| ())),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(error("writer response lost; intent uncertain")))
+            }
+        }
+    }
+
+    pub(crate) fn wait(self) -> Result<Outcome, DaemonError> {
+        crate::durable_state::await_writer_response(self.0)
+            .map_err(|_| error("writer response lost; intent uncertain"))?
     }
 }

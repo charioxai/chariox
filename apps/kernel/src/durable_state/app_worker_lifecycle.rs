@@ -177,7 +177,8 @@ impl DurableKernelStateStore {
                 AppWorkerLifecycleRequest { command, response },
             )))
             .map_err(|_| LifecycleStoreError::Storage)?;
-        receiver.recv().map_err(|_| LifecycleStoreError::Storage)?
+        crate::durable_state::await_writer_response(receiver)
+            .map_err(|_| LifecycleStoreError::Storage)?
     }
     pub(crate) fn claim_active_app_start(
         &self,
