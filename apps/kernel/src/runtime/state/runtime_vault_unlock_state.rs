@@ -398,6 +398,10 @@ impl KernelRuntimeState {
         agent_id: Option<&str>,
         operation: &'static str,
     ) -> Result<VaultUnlockGuard, DaemonError> {
+        if let Some(path) = self.client_single_use_unlock_path()? {
+            // "Ask every time": the owner's client unlocked for this one operation.
+            return Ok(VaultUnlockGuard::unlocked_for_operation(path));
+        }
         let Some((session_id, agent_id)) = self
             .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
             .await?
@@ -406,6 +410,22 @@ impl KernelRuntimeState {
         };
         self.ensure_vault_unlocked_for_agent(&session_id, &agent_id, operation)
             .await
+    }
+
+    /// The Vault's path while the owner's client holds it open on a single-use
+    /// unlock ("ask every time"), which the next operation uses up.
+    fn client_single_use_unlock_path(&self) -> Result<Option<std::path::PathBuf>, DaemonError> {
+        let vault = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        if vault.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
+            return Ok(None);
+        }
+        let path = expand_vault_path(&vault.path);
+        Ok(crate::secret::chariox_vault_single_use_unlocked(&path)?.then_some(path))
     }
 
     /// Validate where an unlock interaction can be shown without acquiring a
@@ -429,6 +449,9 @@ impl KernelRuntimeState {
             != crate::config::CredentialVaultUnlockPolicy::Always
             && crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked
         {
+            return Ok(None);
+        }
+        if self.client_single_use_unlock_path()?.is_some() {
             return Ok(None);
         }
         let session_id = session_id

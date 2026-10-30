@@ -789,3 +789,34 @@ async fn an_agent_may_save_a_token_it_was_given_but_not_start_the_login() {
         assert!(refused_as_owner_only(f.send_as(agent, sign_in(true)).await));
     }
 }
+
+fn set_secret(value: &str) -> LocalDaemonRequest {
+    LocalDaemonRequest::SetCredentialSecret(crate::local::SetCredentialSecretRequest {
+        session_id: None,
+        agent_id: None,
+        key: "login".into(),
+        value: value.into(),
+    })
+}
+
+#[tokio::test]
+async fn under_ask_every_time_the_client_unlock_covers_the_next_write_only() {
+    let f = Fixture::new(CredentialVaultUnlockPolicy::Always, true);
+    f.unlock(PASSPHRASE).await.unwrap();
+    f.send(set_secret("first")).await.unwrap();
+    assert!(!f.status().await.unlocked, "the write used the unlock up");
+    let (code, _) = code_of(f.send(set_secret("second")).await);
+    assert_eq!(code, "vault_locked");
+
+    f.unlock(PASSPHRASE).await.unwrap();
+    f.send(LocalDaemonRequest::DeleteCredentialSecret(
+        crate::local::DeleteCredentialSecretRequest {
+            session_id: None,
+            agent_id: None,
+            key: "login".into(),
+        },
+    ))
+    .await
+    .unwrap();
+    assert!(!f.status().await.unlocked);
+}

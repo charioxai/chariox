@@ -290,7 +290,14 @@ pub fn unlock_chariox_encrypted_vault(
     unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
-        .insert(path.clone(), UnlockedVault { key, expires_at_ms });
+        .insert(
+            path.clone(),
+            UnlockedVault {
+                key,
+                expires_at_ms,
+                single_use: lease == VaultUnlockLease::SingleUse,
+            },
+        );
     Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: true,
@@ -320,7 +327,14 @@ pub fn unlock_existing_chariox_encrypted_vault(
     unlocked_vaults()
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
-        .insert(path.clone(), UnlockedVault { key, expires_at_ms });
+        .insert(
+            path.clone(),
+            UnlockedVault {
+                key,
+                expires_at_ms,
+                single_use: lease == VaultUnlockLease::SingleUse,
+            },
+        );
     Ok(Some(CharioxVaultUnlockStatus {
         path,
         unlocked: true,
@@ -552,11 +566,25 @@ pub fn extend_chariox_encrypted_vault(
         VaultUnlockLease::TtlMinutes(minutes) => Some(now_ms + minutes.saturating_mul(60_000)),
         VaultUnlockLease::KernelShutdown => None,
     };
+    vault.single_use = lease == VaultUnlockLease::SingleUse;
     Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: true,
         expires_at_ms: vault.expires_at_ms,
     })
+}
+
+/// Whether the Vault is open on the owner client's single-use unlock, which
+/// the next credential operation uses up.
+pub fn chariox_vault_single_use_unlocked(path: impl AsRef<Path>) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    Ok(unlocked
+        .get(&path)
+        .is_some_and(|vault| vault.single_use && !vault.is_expired(now_ms)))
 }
 
 pub fn chariox_encrypted_vault_status(
@@ -1517,6 +1545,7 @@ fn remember_transferred_vault_key(
             UnlockedVault {
                 key,
                 expires_at_ms: None,
+                single_use: false,
             },
         );
     Ok(())
@@ -1829,6 +1858,7 @@ struct VaultPlaintext {
 struct UnlockedVault {
     key: Zeroizing<[u8; KEY_LEN]>,
     expires_at_ms: Option<u64>,
+    single_use: bool,
 }
 
 impl UnlockedVault {
@@ -1918,6 +1948,7 @@ mod tests {
                 UnlockedVault {
                     key: Zeroizing::new([42; KEY_LEN]),
                     expires_at_ms: Some(0),
+                    single_use: false,
                 },
             );
             let result = extend_chariox_encrypted_vault(&path, lease);
@@ -1944,6 +1975,7 @@ mod tests {
             UnlockedVault {
                 key: Zeroizing::new([42; KEY_LEN]),
                 expires_at_ms: None,
+                single_use: false,
             },
         );
         let result = extend_chariox_encrypted_vault(&path, VaultUnlockLease::TtlMinutes(30));
