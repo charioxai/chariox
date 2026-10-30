@@ -2219,38 +2219,6 @@ pub(in crate::runtime::state) mod tests {
             })
             .await
             .expect("workflow vault unlock interaction should appear");
-        runtime
-            .resolve_terminal_runtime_interaction(
-                session.id(),
-                passphrase_interaction.id(),
-                "passphrase",
-                Some("correct horse battery staple"),
-                Some(crate::session::DEFAULT_LOCAL_USER_ID),
-            )
-            .await
-            .expect("vault passphrase interaction should resolve");
-        let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Some(interaction) = runtime
-                    .owned
-                    .session_store
-                    .get_session(session.id())
-                    .expect("session should remain available")
-                    .active_interaction_for_agent(workflow_agent.id())
-                {
-                    if interaction
-                        .choices()
-                        .iter()
-                        .any(|choice| choice.id() == "unlock_operation")
-                    {
-                        break interaction.clone();
-                    }
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("workflow vault unlock duration interaction should appear");
         let ended = runtime
             .owned
             .provider_store
@@ -2263,13 +2231,13 @@ pub(in crate::runtime::state) mod tests {
         runtime
             .resolve_terminal_runtime_interaction(
                 session.id(),
-                interaction.id(),
-                "unlock_operation",
-                None,
+                passphrase_interaction.id(),
+                "passphrase",
+                Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
             .await
-            .expect("vault unlock interaction should resolve");
+            .expect("vault passphrase interaction should resolve");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if !runtime
@@ -2451,17 +2419,6 @@ pub(in crate::runtime::state) mod tests {
             )
             .await
             .expect("vault passphrase interaction should resolve");
-        let duration = wait_for_choice("unlock_operation").await;
-        runtime
-            .resolve_terminal_runtime_interaction(
-                session.id(),
-                &duration,
-                "unlock_operation",
-                None,
-                Some(crate::session::DEFAULT_LOCAL_USER_ID),
-            )
-            .await
-            .expect("vault unlock interaction should resolve");
         let submission = tokio::time::timeout(std::time::Duration::from_secs(10), submit)
             .await
             .expect("the prompt must finish after the unlock")

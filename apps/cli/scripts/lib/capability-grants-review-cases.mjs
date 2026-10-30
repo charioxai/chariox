@@ -30,16 +30,7 @@ export async function runCapabilityReviewCase(kind, ctx) {
     await automation.send('interaction_custom_reply', { interactionId: unlock.id, reply: passkey })
     await automation.send('interaction_move', { delta: 1 })
     await automation.send('interaction_submit')
-    let duration
-    await until(async () => {
-      duration = (await snapshot()).interactions.find(i => i.title === 'Choose Vault Unlock Duration')
-      return Boolean(duration) || (await client.send(requests.getCredentialVaultStatusRequest())).CredentialVaultStatus.status.unlocked
-    }, 30_000)
-    if (duration) {
-      const delta = duration.choices.findIndex(c => c.id === 'unlock_kernel') - (duration.selectedChoiceIndex ?? 0)
-      if (delta) await automation.send('interaction_move', { delta })
-      await automation.send('interaction_submit')
-    }
+    await until(async () => (await client.send(requests.getCredentialVaultStatusRequest())).CredentialVaultStatus.status.unlocked, 30_000)
     await manage
     const vault = await client.send(requests.getCredentialVaultStatusRequest())
     requireValue(vault.CredentialVaultStatus.status.unlocked === true)

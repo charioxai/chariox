@@ -208,6 +208,65 @@ fn http_request_with_credential_injects_header_without_returning_secret() {
 }
 
 #[test]
+fn http_request_with_credential_does_not_forward_the_credential_to_a_redirect_target() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let allowed = TcpListener::bind("127.0.0.1:0").expect("allowed server should bind");
+    let other = TcpListener::bind("127.0.0.1:0").expect("redirect target should bind");
+    other.set_nonblocking(true).unwrap();
+    let allowed_port = allowed.local_addr().unwrap().port();
+    let other_port = other.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = allowed.accept().expect("request should arrive");
+        let mut buffer = [0_u8; 4096];
+        let _ = stream.read(&mut buffer).expect("request should read");
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:{other_port}/stolen\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    std::env::set_var("CHARIOX_TEST_SECRET_REDIRECT_TOKEN", "redirect-secret");
+    let service = RuntimeSecretService::new(vec![UserCredentialConfig {
+        id: "demo".to_string(),
+        description: None,
+        source: UserCredentialSourceConfig::Env {
+            name: "CHARIOX_TEST_SECRET_REDIRECT_TOKEN".to_string(),
+        },
+        allowed_hosts: vec![format!("127.0.0.1:{allowed_port}")],
+        allowed_uses: vec![UserCredentialUse::Http],
+        injection: UserCredentialInjectionConfig::Header {
+            name: "x-api-key".to_string(),
+            value: "${secret}".to_string(),
+        },
+        metadata: None,
+    }]);
+    let error = service
+        .http_request_with_credential(CredentialHttpRequest {
+            credential_id: "demo".to_string(),
+            method: "GET".to_string(),
+            url: format!("http://127.0.0.1:{allowed_port}/demo"),
+            headers: BTreeMap::new(),
+            body_text: None,
+            body_json: None,
+            timeout_ms: 30_000,
+            max_response_bytes: 1_048_576,
+        })
+        .expect_err("a redirect must not be followed with the credential");
+    std::env::remove_var("CHARIOX_TEST_SECRET_REDIRECT_TOKEN");
+    server.join().expect("server should finish");
+
+    assert!(
+        other.accept().is_err(),
+        "the redirect target received a request"
+    );
+    let message = error.to_string();
+    assert!(message.contains("redirect"), "{message}");
+    assert!(message.contains("/stolen"), "{message}");
+    assert!(!message.contains("redirect-secret"));
+}
+
+#[test]
 fn http_request_with_credential_rejects_wrong_host_before_secret_read() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();

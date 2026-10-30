@@ -56,13 +56,6 @@ impl KernelRuntimeState {
         let target = self
             .computer_secret_input_target(session_id, agent_id)
             .await?;
-        self.ensure_computer_secret_input_approved(
-            session_id,
-            agent_id,
-            &args.credential_id,
-            &target,
-        )
-        .await?;
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 session_id,

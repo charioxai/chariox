@@ -313,7 +313,8 @@ async fn check(native: bool) {
     )
     .await
     .unwrap();
-    assert!(matches!(
+    // A Vault fill needs the grant, not focus: invalid arguments fail on their own.
+    assert!(!matches!(
         tool(
             &router,
             token,
