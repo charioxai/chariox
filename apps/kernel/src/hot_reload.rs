@@ -192,6 +192,13 @@ pub fn finish() -> Option<String> {
             "terminals": inherited.len(),
         }),
     );
+    let kept: Vec<u32> = prepared
+        .handover
+        .terminals
+        .iter()
+        .map(TerminalHandover::pid)
+        .collect();
+    end_children_except(&kept);
     let mut command = Command::new(&start.program);
     command
         .args(&start.args)
@@ -201,6 +208,50 @@ pub fn finish() -> Option<String> {
     let error = crate::process_spawn::exec_in_place(command, inherited);
     let _ = std::fs::remove_file(&prepared.path);
     Some(error.to_string())
+}
+
+/// A planned restart leaves what the kernel did not stop to its service
+/// manager (`KillMode=mixed` ends the rest of the unit). The exec keeps the
+/// PID, so the kernel ends and reaps those children itself.
+fn end_children_except(kept: &[u32]) {
+    let own = std::process::id();
+    let listed = Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .output();
+    let Ok(listed) = listed else {
+        crate::logging::warn_with_fields(
+            "hot_reload",
+            "child processes could not be listed; leftovers keep running",
+            serde_json::json!({}),
+        );
+        return;
+    };
+    let children: Vec<u32> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse::<u32>().ok()?;
+            let parent = fields.next()?.parse::<u32>().ok()?;
+            (parent == own && pid > 1 && !kept.contains(&pid)).then_some(pid)
+        })
+        .collect();
+    for pid in &children {
+        crate::runtime::process_health::terminate_process_tree(*pid);
+        for _ in 0..50 {
+            let mut status = 0;
+            if unsafe { libc::waitpid(*pid as libc::pid_t, &mut status, libc::WNOHANG) } != 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    if !children.is_empty() {
+        crate::logging::info_with_fields(
+            "hot_reload",
+            "ended the children a planned restart leaves to the service manager",
+            serde_json::json!({ "processes": children.len() }),
+        );
+    }
 }
 
 /// The new program must run here and take this handover format. Its release

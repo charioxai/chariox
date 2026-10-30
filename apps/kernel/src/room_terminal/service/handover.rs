@@ -29,6 +29,10 @@ impl TerminalHandover {
         self.pty.master_fd
     }
 
+    pub(crate) fn pid(&self) -> u32 {
+        self.pty.pid
+    }
+
     pub(crate) fn retained_output(&self) -> Vec<u8> {
         base64::engine::general_purpose::STANDARD
             .decode(&self.output_base64)

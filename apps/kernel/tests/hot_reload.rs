@@ -330,3 +330,63 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
         );
     });
 }
+
+#[test]
+fn work_that_is_not_handed_over_stops_as_for_a_restart() {
+    let scratch = std::env::temp_dir().join(format!("hr-exec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let pid_file = scratch.join("exec.pid");
+    let exec_pid = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // A Room exec has no PTY to hand over.
+        let script = format!("echo $$ > {}; exec sleep 120", pid_file.display());
+        terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "exec_open", "command": ["/bin/sh", "-c", script]}),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let exec_pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+            {
+                break pid;
+            }
+            assert!(Instant::now() < deadline, "the exec did not start");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        drop(socket);
+        connect(&kernel, Duration::from_secs(60)).await;
+        exec_pid
+    });
+    // Not left running unmanaged: ended (and reaped) as on a planned restart.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Path::new(&format!("/proc/{exec_pid}")).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the exec kept running after the hot reload"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
