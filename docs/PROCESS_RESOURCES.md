@@ -51,7 +51,7 @@ and kernel, with Project - Room - Agent/Terminal owners and expandable totals.
 Its collapse/expand state belongs to the viewer; process authority remains in
 the kernel.
 
-The combined sidebar/process protocol is local **800**, peer **350**. Its shape
+The process protocol lands in the union local **911**, peer **362**. Its shape
 fixture is `session-processes-800.json`; regenerate protocol consumers with
 `node scripts/generate-protocol-versions.mjs` when the coordinator renumbers it.
 The focused shape check is

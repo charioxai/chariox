@@ -15,7 +15,7 @@ fn client_catalog_revisions_534_142_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(include_str!("../../types/provider_control.rs").as_bytes())
         ),
-        "a7aeae96574e46d052b03c53aa9132f3d398f13e7c2ad061b7b13d27e5b14701"
+        "ef81436c58a7185d77f9e787e462f7cc1c74b69656fd3b4d502ad3a6636cd002"
     );
     let request =
         LocalDaemonRequest::GetClientCatalogRevisions(crate::local::GetProviderCatalogRequest {

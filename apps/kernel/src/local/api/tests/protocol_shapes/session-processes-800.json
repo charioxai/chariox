@@ -1,6 +1,6 @@
 {
-  "protocol_version": 800,
-  "relay_peer_protocol_version": 350,
+  "protocol_version": 911,
+  "relay_peer_protocol_version": 362,
   "shapes": [
     {
       "event": "session_processes_changed",
@@ -24,7 +24,12 @@
     {
       "category": "memory_limit",
       "reason": "provider process tree exceeded its memory limit of 33554432 bytes",
-      "timestamp_ms": 10000
+      "timestamp_ms": 10000,
+      "failure": {
+        "kind": "other",
+        "retryable": false,
+        "reason": "provider process tree exceeded its memory limit of 33554432 bytes"
+      }
     },
     {
       "reason": "memory_limit",
@@ -56,7 +61,12 @@
     {
       "category": "outside_end",
       "reason": "provider process tree stopped by a session controller",
-      "timestamp_ms": 10000
+      "timestamp_ms": 10000,
+      "failure": {
+        "kind": "other",
+        "retryable": false,
+        "reason": "provider process tree stopped by a session controller"
+      }
     }
   ]
 }

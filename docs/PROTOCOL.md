@@ -5859,7 +5859,7 @@ snapshot: `moving` while the Move runs, and
 cancelled wait remove the status. A kernel restart ends a wait for a turn. A
 Move requested while the agent is idle still answers when it is done.
 
-### Integration received events — local 880 / relay peer 430
+### Integration received events — local 911 / relay peer 362
 
 `ListEventConnectionEvents { connection_id, limit }` returns
 `EventConnectionEvents { page }` with the webhooks the integration's generator
@@ -5877,9 +5877,9 @@ already holds starts no second run. A replay of an event that another attempt is
 publishing right now is refused with a conflict; an unknown delivery id, or one of
 another owner, answers not found.
 Both are served by the generator's `POST /v1/events/query` and `/v1/events/replay`
-management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥880
-(`integrationReceivedEventsMinimumProtocolVersion`). Relay peer 430 only pairs the
-embedded local response union with local 880. The managed-upgrade predecessor list
+management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥911
+(`integrationReceivedEventsMinimumProtocolVersion`). Relay peer 362 only pairs the
+embedded local response union with local 911. The managed-upgrade predecessor list
 holds the current release (636) and the one before it (629).
 
 ### Bounded daemon health diagnostics (local 790)
@@ -5904,3 +5904,17 @@ requests share the batch's commit/sync time. Response size measures the JSON res
 Metrics contain no request payloads, identifiers, paths or credentials. The health
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
+
+### MP-08 / MP-09 / MP-10 / MP-11: landing union 911 / peer 362
+
+The integration lands one pair, local 911 / relay peer 362, over 910 / 361. It
+carries integration received events (branch 880 / 430), session process samples,
+controls and the `memory_limit` / `outside_end` terminations (branch 800 / 350)
+and daemon health request timings (branch 890). A `memory_limit` or `outside_end`
+provider termination carries the typed turn outcome in `failure` (`kind: other`,
+not retryable, the termination reason with its byte limit), so the turn's outcome
+and the termination name the same cause. The managed-upgrade list is
+[629, 636, 911]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
+(including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
+`local_daemon_protocol_received_event_shape_is_versioned`) and
+`node --test scripts/protocol-versions.test.mjs`.

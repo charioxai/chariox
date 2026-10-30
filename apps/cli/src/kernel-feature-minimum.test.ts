@@ -84,11 +84,11 @@ test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 
   assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
 })
 
-test("integration received-event listing and replay require protocol 880", () => {
+test("integration received-event listing and replay require protocol 911", () => {
   for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
     { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
-    assert.throws(() => requireKernelFeatureProtocol(request, 636), /Integration received events needs protocol ≥880/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 880))
+    assert.throws(() => requireKernelFeatureProtocol(request, 910), /Integration received events needs protocol ≥911/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 911))
   }
 })
 
