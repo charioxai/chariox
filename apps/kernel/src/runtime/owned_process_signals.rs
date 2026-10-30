@@ -353,24 +353,29 @@ mod tests {
             start: start.into(),
         }
     }
+    /// A process can only rename itself, so a shell does it and then waits.
     #[cfg(target_os = "linux")]
-    fn spawn_named_sleeper(name: &'static [u8]) -> std::process::Child {
-        use std::os::unix::process::CommandExt;
-        let mut command = std::process::Command::new("sleep");
-        command.arg("30");
-        unsafe {
-            command.pre_exec(move || {
-                libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
-                Ok(())
-            });
+    fn spawn_shell_named_invalidly() -> std::process::Child {
+        use std::process::Stdio;
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"printf '\377\376' > /proc/$$/comm; read line; true"#,
+            ])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stat = format!("/proc/{}/stat", child.id());
+        while !std::fs::read(&stat).unwrap().contains(&0xff) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        command.spawn().unwrap()
+        child
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn a_foreign_process_with_a_non_utf8_name_does_not_block_a_witness() {
-        let mut foreign = spawn_named_sleeper(b"\xff\xfe\0");
+        let mut foreign = spawn_shell_named_invalidly();
         let mut own = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
