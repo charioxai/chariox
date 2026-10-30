@@ -193,14 +193,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
                             *changed = true;
                         }
                     } else if previous != state.state || unheard.is_some() {
-                        append_run_state(
-                            tx,
-                            part,
-                            &key,
-                            state.state,
-                            state.turn.as_ref(),
-                            &event,
-                        )?;
+                        append_run_state(tx, part, &key, state.state, state.turn.as_ref(), &event)?;
                         *changed = true;
                     }
                 }

@@ -415,7 +415,15 @@ fn bounded_provider_tool_json(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let mut fallback = serde_json::Map::new();
     if let Value::Object(object) = &value {
-        for key in ["id", "tool", "status", "name", "command", "images_omitted", "error"] {
+        for key in [
+            "id",
+            "tool",
+            "status",
+            "name",
+            "command",
+            "images_omitted",
+            "error",
+        ] {
             if let Some(value) = object.get(key) {
                 if key == "error" && !value.is_string() {
                     continue;
