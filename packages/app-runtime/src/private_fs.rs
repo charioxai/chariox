@@ -91,6 +91,31 @@ impl Dir {
         Ok(parent)
     }
 
+    /// The kernel's own installation: a system install belongs to root, a user
+    /// install to the kernel's user. Others must not be able to write either.
+    pub(crate) fn open_installed_parent(path: &Path) -> Result<Self> {
+        let parent = Self::open_real(path)?;
+        let metadata = parent.0.metadata()?;
+        if ![0, unsafe { libc::geteuid() }].contains(&metadata.uid())
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(FsError::UnsafeEntry);
+        }
+        Ok(parent)
+    }
+    /// Opens an installed program, not private data: its caller decides which
+    /// owners and modes it trusts.
+    pub(crate) fn open_installed(&self, name: &OsStr) -> Result<File> {
+        let name = cstring(name)?;
+        file(unsafe {
+            libc::openat(
+                self.0.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })
+    }
+
     fn open_real(path: &Path) -> Result<Self> {
         if !path.is_absolute() {
             return Err(FsError::UnsafeEntry);

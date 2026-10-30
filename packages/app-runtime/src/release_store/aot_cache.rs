@@ -36,6 +36,8 @@ pub enum AotError {
     Busy,
     #[error("app_aot_compile: {0}")]
     Compile(String),
+    #[error("app_wasm_runtime: the native App worker beside the kernel is missing, not owned by root or the kernel's user, or writable by the kernel's user; reinstall Chariox")]
+    Runtime,
     #[error("app_wasm_containment_pending: install the R5 native worker runtime")]
     ContainmentPending,
 }

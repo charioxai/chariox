@@ -23,6 +23,10 @@ test("cache contention, capacity and storage failures explain recovery", () => {
   assert.match(formatInstallFailure("app_aot_limit"), /Rebuild a smaller/)
   assert.match(formatInstallFailure("app_aot_store"), /disk space and permissions/)
 })
+test("an untrusted native App worker points at the installation, not the disk", () => {
+  assert.match(formatInstallFailure("app_wasm_runtime"), /must belong to root, or be read-only to your user/)
+  assert.doesNotMatch(formatInstallFailure("app_wasm_runtime"), /disk space/)
+})
 test("migration checkpoint failures explain storage recovery", () => {
   assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /Free disk space and check storage permissions/)
   assert.match(formatInstallFailure("app_wasm_migration_snapshot"), /retry the update/)

@@ -32,16 +32,16 @@ impl WasmRuntime {
     /// The path comes from the kernel's native installation, never an App or
     /// client request. The executable hash is the exact worker-build cache key.
     pub fn open(program: &Path) -> Result<Self, AotError> {
-        let directory = Dir::open_owned_parent(program.parent().ok_or(AotError::Integrity)?)?;
-        let mut executable =
-            directory.read_file(program.file_name().ok_or(AotError::Integrity)?, true)?;
+        let directory = Dir::open_installed_parent(program.parent().ok_or(AotError::Runtime)?)
+            .map_err(|_| AotError::Runtime)?;
+        let mut executable = directory
+            .open_installed(program.file_name().ok_or(AotError::Runtime)?)
+            .map_err(|_| AotError::Runtime)?;
         let metadata = executable.metadata()?;
         if !metadata.is_file()
-            || metadata.mode() & 0o022 != 0
-            || metadata.mode() & 0o111 == 0
-            || ![0, unsafe { libc::geteuid() }].contains(&metadata.uid())
+            || !trusted_runtime(metadata.uid(), metadata.mode(), unsafe { libc::geteuid() })
         {
-            return Err(AotError::Integrity);
+            return Err(AotError::Runtime);
         }
         let mut hash = Sha256::new();
         let mut buffer = [0; 64 * 1024];
@@ -287,6 +287,15 @@ impl PreparedWorker {
     }
 }
 
+/// The worker is part of the kernel's runtime, not user data. A system install
+/// belongs to root; one owned by the kernel's user must be read-only to it, so
+/// nothing running as that user can rewrite the code it executes.
+fn trusted_runtime(owner: u32, mode: u32, kernel_user: u32) -> bool {
+    mode & 0o111 != 0
+        && mode & 0o022 == 0
+        && (owner == kernel_user && mode & 0o200 == 0 || owner == 0 && kernel_user != 0)
+}
+
 pub fn aot_error_code(error: &AotError) -> &'static str {
     match error {
         AotError::Integrity => "app_aot_integrity",
@@ -295,6 +304,7 @@ pub fn aot_error_code(error: &AotError) -> &'static str {
         AotError::Busy => "app_aot_busy",
         AotError::Limit => "app_aot_limit",
         AotError::ContainmentPending => "app_wasm_containment_pending",
+        AotError::Runtime => "app_wasm_runtime",
         _ => "app_aot_store",
     }
 }
@@ -361,4 +371,28 @@ fn executable_path(descriptor: i32) -> PathBuf {
 fn aot_error(error: AotError) -> WorkerError {
     eprintln!("App WASM preparation failed: {error}");
     WorkerError::Storage(aot_error_code(&error))
+}
+
+#[cfg(test)]
+mod runtime_trust_tests {
+    use super::{aot_error_code, trusted_runtime, AotError};
+
+    #[test]
+    fn a_system_installed_worker_is_trusted_by_an_ordinary_user_kernel() {
+        // Package managers install root:root 0755; the kernel runs as uid 1000.
+        assert!(trusted_runtime(0, 0o100755, 1000));
+        assert!(trusted_runtime(1000, 0o100555, 1000));
+        assert!(trusted_runtime(0, 0o100555, 0));
+    }
+
+    #[test]
+    fn a_worker_the_kernel_user_or_others_can_rewrite_is_refused() {
+        assert!(!trusted_runtime(1000, 0o100755, 1000));
+        assert!(!trusted_runtime(0, 0o100755, 0));
+        assert!(!trusted_runtime(0, 0o100775, 1000));
+        assert!(!trusted_runtime(0, 0o100757, 1000));
+        assert!(!trusted_runtime(1001, 0o100555, 1000));
+        assert!(!trusted_runtime(0, 0o100644, 1000));
+        assert_eq!(aot_error_code(&AotError::Runtime), "app_wasm_runtime");
+    }
 }

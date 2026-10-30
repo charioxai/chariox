@@ -336,6 +336,7 @@ const installFailures: Record<string, string> = {
   app_aot_compile: "The App could not be compiled with the current runtime. Retry after updating the runtime; your App data is retained.",
   app_wasm_migration_snapshot: "The App migration could not save or restore its private files. Free disk space and check storage permissions, then retry the update.",
   app_wasm_migration_unavailable: "This App needs migration support from a newer runtime. Your App data is retained.",
+  app_wasm_runtime: "The native App worker installed with the kernel is missing or unsafe: it must belong to root, or be read-only to your user. Reinstall Chariox, then retry.",
   app_wasm_containment_pending: "Install the native App worker runtime with containment support before starting this App.",
   app_lifecycle_notification: "The App did not complete preparation for the update; the installed version is unchanged (app_lifecycle_notification).",
   app_install_publisher_not_enrolled: "This publisher must be enrolled in the kernel before installation.",
