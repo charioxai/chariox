@@ -47,26 +47,43 @@ impl Grant {
         self.clock.is_none()
     }
 
+    /// What is left of a timed grant, if it is timed.
+    pub(crate) fn time_left(&self, now: Instant) -> Option<Duration> {
+        time_left(
+            self.clock.as_ref().map(|clock| clock.deadline),
+            self.summary.expires_at_ms,
+            now,
+        )
+    }
+
     /// Why the grant has ended at `now`, if it has: its deadline passed or
     /// its holder (or a process reusing its identity) is gone.
     pub(crate) fn ended_reason(&self, now: Instant) -> Option<&'static str> {
-        // The monotonic deadline does not count host sleep; the expiry clients
-        // display does.
-        if self
-            .clock
-            .as_ref()
-            .is_some_and(|clock| now >= clock.deadline)
-            || self
-                .summary
-                .expires_at_ms
-                .is_some_and(|expires_at_ms| crate::session::unix_epoch_ms() >= expires_at_ms)
-        {
+        if self.time_left(now) == Some(Duration::ZERO) {
             Some("expiry")
         } else if !self.holder.alive() {
             Some("process_exit")
         } else {
             None
         }
+    }
+}
+
+/// What is left until the earlier of a monotonic deadline and the expiry
+/// clients display. The monotonic clock does not count host sleep; the
+/// displayed expiry does, so only the earlier of the two tells the owner the truth.
+pub(crate) fn time_left(
+    deadline: Option<Instant>,
+    expires_at_ms: Option<u64>,
+    now: Instant,
+) -> Option<Duration> {
+    let monotonic = deadline.map(|deadline| deadline.saturating_duration_since(now));
+    let displayed = expires_at_ms.map(|expires_at_ms| {
+        Duration::from_millis(expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()))
+    });
+    match (monotonic, displayed) {
+        (Some(monotonic), Some(displayed)) => Some(monotonic.min(displayed)),
+        (monotonic, displayed) => monotonic.or(displayed),
     }
 }
 
