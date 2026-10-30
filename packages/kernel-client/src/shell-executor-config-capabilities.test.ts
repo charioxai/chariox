@@ -263,6 +263,31 @@ test("executeShellCommand manages encrypted credential vault state", async () =>
   ])
 })
 
+test("executeShellCommand unlocks the Vault with a hidden passphrase and no session", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { CredentialVaultUnlocked: { action: "unlocked", status: { unlocked: true } } }
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
+  const prompts: string[] = []
+  const readSecret = async (prompt: string) => { prompts.push(prompt); return "correct horse" }
+
+  const unlocked = await executeShellCommand(parseShellCommand("credential vault unlock"), context, { client, readSecret })
+  assert.equal(unlocked.ok, true)
+  assert.equal(unlocked.message, "vault unlocked")
+  assert.deepEqual(prompts, ["Vault passphrase: "])
+  assert.deepEqual(requests, [{ UnlockCredentialVault: { passphrase: "correct horse" } }])
+  assert.equal(JSON.stringify(unlocked).includes("correct horse"), false)
+
+  const hidden = await executeShellCommand(parseShellCommand("credential vault unlock"), context, { client })
+  assert.equal(hidden.ok, false)
+  assert.match(hidden.message ?? "", /hidden input/)
+  assert.equal(requests.length, 1)
+})
+
 test("executeShellCommand installs and updates MCP servers", async () => {
   const installed: CharioxMcpServerConfig = {
     name: "playwright",
