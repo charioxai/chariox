@@ -238,10 +238,10 @@ pub(crate) fn tcp_listener(
 fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
     use std::io::Read;
     use std::os::fd::FromRawFd;
-    // SAFETY: the previous program named this pipe for this handover alone.
-    let mut pipe = unsafe { std::fs::File::from_raw_fd(fd) };
+    // SAFETY: the previous program named this file for this handover alone.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
     let mut body = zeroize::Zeroizing::new(Vec::new());
-    if pipe.read_to_end(&mut body).is_err() {
+    if file.read_to_end(&mut body).is_err() {
         return;
     }
     let Ok(mut runs) = serde_json::from_slice::<BTreeMap<String, BTreeMap<String, String>>>(&body)
@@ -259,10 +259,10 @@ fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
     }
 }
 
-/// Writes the providers' credentials into a pipe the next program inherits.
+/// Hands the providers' credentials to the next program in a descriptor it
+/// inherits. Nothing reads it before `exec`, so writing must never wait for a
+/// reader.
 fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i32>> {
-    use std::io::Write;
-    use std::os::fd::{FromRawFd, IntoRawFd};
     if providers.is_empty() {
         return Ok(None);
     }
@@ -276,6 +276,40 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
         })
         .collect();
     let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
+    credentials_for_next_program(&body).map(Some)
+}
+
+/// A file only in memory, of any size, read from its start.
+#[cfg(target_os = "linux")]
+fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+    use std::io::{Seek, Write};
+    use std::os::fd::{FromRawFd, IntoRawFd};
+    let fd =
+        unsafe { libc::memfd_create(c"chariox-handover-credentials".as_ptr(), libc::MFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor was just created here.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    file.write_all(body)?;
+    file.rewind()?;
+    Ok(file.into_raw_fd())
+}
+
+/// Without memory-only files: a pipe, which must hold the whole body since
+/// nothing reads it before `exec`. A larger body fails the hot reload instead
+/// of waiting for ever.
+#[cfg(not(target_os = "linux"))]
+fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+    use std::io::Write;
+    use std::os::fd::{FromRawFd, IntoRawFd};
+    const PIPE_CAPACITY: usize = 16 << 10;
+    if body.len() > PIPE_CAPACITY {
+        return Err(std::io::Error::other(format!(
+            "{} bytes of launch credentials do not fit a pipe",
+            body.len()
+        )));
+    }
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error());
@@ -283,16 +317,16 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
     for fd in fds {
         set_close_on_exec(fd, true);
     }
-    // SAFETY: both ends were just created here. The body fits the pipe buffer.
+    // SAFETY: both ends were just created here.
     let (read, mut write) = unsafe {
         (
             std::fs::File::from_raw_fd(fds[0]),
             std::fs::File::from_raw_fd(fds[1]),
         )
     };
-    write.write_all(&body)?;
+    write.write_all(body)?;
     drop(write);
-    Ok(Some(read.into_raw_fd()))
+    Ok(read.into_raw_fd())
 }
 
 /// The launch credentials of the agent's handed-over turn: its launch needs no
