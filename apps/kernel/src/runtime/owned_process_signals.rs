@@ -390,19 +390,19 @@ mod tests {
     fn an_unreadable_process_still_counts_as_a_group_member_but_is_never_owned() {
         let denied = || Err(io::Error::from_raw_os_error(libc::EACCES));
         let own = std::process::id();
-        let row = linux_row(own, denied())
+        let hidden = linux_row(own, denied())
             .unwrap()
             .expect("row for a live process");
-        assert!(row.start.is_empty());
-        assert_eq!(row.group, unsafe { libc::getpgrp() } as u32);
+        assert!(hidden.start.is_empty());
+        assert_eq!(hidden.group, unsafe { libc::getpgrp() } as u32);
         let mut guard = OwnedProcessSignals {
-            root: row.group,
+            root: hidden.group,
             exclusive_session: None,
-            owned: BTreeMap::from([(row.group, "root".into())]),
+            owned: BTreeMap::from([(hidden.group, "root".into())]),
         };
-        let leader = row(row.group, 1, row.group, "root");
+        let leader = row(hidden.group, 1, hidden.group, "root");
         assert!(guard
-            .group_with(&[leader, row], |_| panic!("unreadable member signalled"))
+            .group_with(&[leader, hidden], |_| panic!("unreadable member signalled"))
             .is_err());
     }
 
