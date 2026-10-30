@@ -39,6 +39,8 @@ struct OwnedChild {
     leader_status: Option<std::process::ExitStatus>,
     settle_failures: u8,
     lost: bool,
+    /// Counted under the agent's share of the memory ceiling and listed in Health.
+    resources: Option<crate::runtime::process_resources::ProcessDomain>,
 }
 
 impl OwnedChild {
@@ -52,6 +54,7 @@ impl OwnedChild {
                 leader_status: None,
                 settle_failures: 0,
                 lost: false,
+                resources: None,
             }),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
@@ -200,13 +203,15 @@ fn signal_owned_session(child: &Owned, signal: libc::c_int) -> bool {
 }
 
 /// Builds the launch through the same managed isolation every other
-/// agent-launched command uses, then adds kernel session ownership.
+/// agent-launched command uses, then adds kernel session ownership and the
+/// agent's resource domain.
 fn command(
     wake: &str,
     argv: &[String],
     cwd: &Path,
     env: &BTreeMap<String, String>,
     removed: &[String],
+    resources: &crate::runtime::process_resources::PreparedDomain,
 ) -> std::io::Result<Command> {
     let mut environment = BTreeMap::new();
     for key in ENV_ALLOW {
@@ -232,9 +237,10 @@ fn command(
     let program = launch
         .pty_program
         .ok_or_else(|| std::io::Error::other("watched process launch has no executable"))?;
+    let (program, args) = resources.command(program, launch.pty_args);
     let mut command = crate::process_spawn::command(program);
     command
-        .args(launch.pty_args)
+        .args(args)
         .env_clear()
         // Isolation already scrubbed pty_env; its remove list names only
         // inherited variables, which env_clear drops.
@@ -254,8 +260,9 @@ fn spawn(
     cwd: &Path,
     env: &BTreeMap<String, String>,
     removed: &[String],
+    resources: &crate::runtime::process_resources::PreparedDomain,
 ) -> std::io::Result<Child> {
-    let mut command = command(wake, argv, cwd, env, removed)?;
+    let mut command = command(wake, argv, cwd, env, removed, resources)?;
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe; the child dies with the kernel.
@@ -305,7 +312,26 @@ impl KernelRuntimeState {
             );
             return Err(error);
         }
-        let mut child = match spawn(&wake.id, &argv, &cwd, run.pty_env(), run.pty_env_remove()) {
+        let resources = match crate::runtime::process_resources::PreparedDomain::new(
+            run.agent_instance_id().unwrap_or(run.id()),
+        ) {
+            Ok(resources) => resources,
+            Err(e) => {
+                self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
+                return Err(crate::durable_state::agent_lifecycle::error(format!(
+                    "process launch failed: {e}"
+                )));
+            }
+        };
+        let spawned = spawn(
+            &wake.id,
+            &argv,
+            &cwd,
+            run.pty_env(),
+            run.pty_env_remove(),
+            &resources,
+        );
+        let mut child = match spawned {
             Ok(child) => child,
             Err(e) => {
                 self.settle_failed_process_launch(&wake, format!("launch failed: {e}"));
@@ -374,7 +400,31 @@ impl KernelRuntimeState {
         let pid = child.id();
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             match OwnedChild::new(child, &wake.id) {
-                Ok(child) => child,
+                Ok(mut child) => {
+                    child.resources = match resources.start(pid) {
+                        Ok(domain) => {
+                            domain.bind_key(&wake.id);
+                            if let Some(agent) = run.agent_instance_id() {
+                                domain.list_as(
+                                    run.session_id(),
+                                    crate::runtime::process_resources::SessionProcessOwner::Agent(
+                                        agent.to_string(),
+                                    ),
+                                );
+                            }
+                            Some(domain)
+                        }
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "agent_process_watch.resources",
+                                "watched process resource monitoring could not start",
+                                serde_json::json!({"error": error.to_string()}),
+                            );
+                            None
+                        }
+                    };
+                    child
+                }
                 Err(_) => {
                     self.settle_failed_process_launch(
                         &wake,
@@ -585,6 +635,10 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    pub(super) fn test_resources() -> crate::runtime::process_resources::PreparedDomain {
+        crate::runtime::process_resources::PreparedDomain::for_tests()
+    }
+
     use super::*;
 
     /// Wake markers are host-wide; concurrent tests must not share one.
@@ -644,7 +698,16 @@ mod tests {
         let (scratch, _home, workspace) = managed_isolation_fixture();
         let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
         let removed: Vec<String> = ENV_ALLOW.iter().map(|k| k.to_string()).collect();
-        let watched = command(&w(), &argv, &workspace, &BTreeMap::new(), &removed).unwrap();
+        let resources = test_resources();
+        let watched = command(
+            &w(),
+            &argv,
+            &workspace,
+            &BTreeMap::new(),
+            &removed,
+            &resources,
+        )
+        .unwrap();
         let managed = crate::provider::managed_isolated_utility_command(
             "/bin/sh",
             argv[1..].to_vec(),
@@ -658,10 +721,19 @@ mod tests {
         .unwrap();
         std::env::remove_var("CHARIOX_MANAGED_PROVIDER_ISOLATION");
         let _ = std::fs::remove_dir_all(&scratch);
-        assert_eq!(watched.get_program(), "/usr/bin/bwrap");
+        let args = watched.get_args().collect::<Vec<_>>();
+        let managed_args = managed.get_args().collect::<Vec<_>>();
         assert_eq!(
-            watched.get_args().collect::<Vec<_>>(),
-            managed.get_args().collect::<Vec<_>>(),
+            watched.get_program(),
+            "/bin/sh",
+            "it joins its resource domain first"
+        );
+        assert_eq!(
+            args[args.len() - managed_args.len() - 1..],
+            [std::ffi::OsStr::new("/usr/bin/bwrap")]
+                .into_iter()
+                .chain(managed_args.iter().copied())
+                .collect::<Vec<_>>(),
             "a watched process gets exactly the managed command isolation boundary"
         );
         assert_eq!(watched.get_current_dir(), managed.get_current_dir());
@@ -677,7 +749,8 @@ mod tests {
             ("GH_CONFIG_DIR".to_string(), "/srv/gh".to_string()),
         ]);
         let argv: Vec<String> = vec!["/bin/sh".into(), "-c".into(), "true".into()];
-        let watched = command(&w(), &argv, &std::env::temp_dir(), &env, &[]).unwrap();
+        let resources = test_resources();
+        let watched = command(&w(), &argv, &std::env::temp_dir(), &env, &[], &resources).unwrap();
         let envs: BTreeMap<_, _> = watched
             .get_envs()
             .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
@@ -705,6 +778,7 @@ mod tests {
             &workspace,
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -746,6 +820,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -898,7 +973,7 @@ mod tests {
                 node: "node".into(),
             })
             .unwrap();
-        let mut process = spawn(&wake.id, &["python3".into(), "-c".into(), "import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); signal.pause()".into()], worktree.path(), &BTreeMap::new(), &[]).unwrap();
+        let mut process = spawn(&wake.id, &["python3".into(), "-c".into(), "import signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); signal.pause()".into()], worktree.path(), &BTreeMap::new(), &[], &test_resources()).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(
             &mut std::io::BufReader::new(process.stdout.take().unwrap()),
@@ -1082,6 +1157,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1112,6 +1188,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1156,6 +1233,7 @@ mod tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut line = String::new();
@@ -1231,6 +1309,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let stopped = reap_orphans(&BTreeMap::from([(wake, 0)])).unwrap();
@@ -1256,6 +1335,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut owned = OwnedChild::new(child, &wake).unwrap();
@@ -1290,6 +1370,7 @@ mod security_tests {
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
+            &super::tests::test_resources(),
         )
         .unwrap();
         let mut owned = OwnedChild::new(child, &wake).unwrap();

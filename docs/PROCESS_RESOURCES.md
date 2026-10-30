@@ -3,31 +3,65 @@
 MP-08 / MP-09 / MP-10 / MP-11: providers and Room terminals share the kernel's
 process resource policy on ordinary and managed machines.
 
-Each launched process tree defaults to **16 GiB**. Set
-`CHARIOX_PROCESS_MEMORY_LIMIT_MIB` on the kernel to change that limit for every
-provider and terminal it subsequently launches. The value must be an integer of
-at least 16 MiB; invalid values refuse the launch with an explanation. For
-example, `CHARIOX_PROCESS_MEMORY_LIMIT_MIB=8192` sets an 8 GiB limit. There are no
-separate provider or terminal settings. The default accommodates kernel builds
-that need 8–12 GiB; a larger workload can use this override.
+All agents and terminals share **one memory ceiling**: the machine's memory (or
+the finite limit of the cgroup the kernel's workloads live in) minus a reserve of
+10% (at least 512 MiB) for the kernel, the OS and the user's own apps. There is no
+default per-agent limit: one agent alone can use nearly all of the ceiling, and
+nothing is stopped while it has room, however far one owner is above its fair
+share. Launching an agent never interrupts a running one. Everything one agent
+starts (its provider runs, the jobs they leave running and the processes it starts
+through `chariox.events.process`) is one owner; each Room terminal is another.
 
-On Linux, when the existing cgroup-v2 hierarchy permits delegation, each tree
-joins a separate child cgroup before executing its workload. `memory.max` bounds
-its memory, swap is disabled for that tree, and `memory.oom.group` ends the whole
-tree together. Workload children clear inherited OOM protection. The kernel stays
-outside the workload cgroups. Their shared parent budget leaves 10% of physical
-memory (at least 512 MiB) outside the workloads, respecting a finite parent limit.
+Only under real memory pressure does the kernel act: when less than a margin
+(5% of the ceiling, at least min(512 MiB, 10%)) is left under the ceiling, when
+the host's own available memory falls below that margin (user apps took it;
+macOS: critical memory pressure), or when workloads stall on memory (Linux PSI
+`full avg10` of 10% or more). It then stops ONE command: a command growing at
+128 MiB/s or more (a runaway) first; otherwise the largest command of the owner
+furthest above its fair share (ceiling / owners, recomputed at every start and
+stop). A command is one subtree under the provider or terminal process, that
+process itself, or a job it left running. It is killed at once, without a grace
+period in which a runaway keeps growing, and no second command is stopped for
+the same cause within one second. The owner keeps running.
 
-A resident-memory watchdog covers Linux without delegation and macOS. It samples
-owned roots and descendants every 250 ms and checks the same aggregate reserve;
-Linux additionally checks available host memory. This sampled watchdog is a
-best-effort limit and can overshoot between samples. It retains process start
-identities across exec and checks them before signalling, so a recycled PID does
-not authorize a signal. A single cached process-table sample is shared between
-watchdogs. App workers retain their existing 512 MiB sandbox resource domains.
+`CHARIOX_PROCESS_MEMORY_LIMIT_MIB` sets an optional owner-set hard cap per agent
+and per terminal (an integer of at least 16 MiB; invalid values refuse the launch
+with an explanation). Over its cap, one command of that owner is stopped the same
+way. Unset, no cap applies.
 
-A memory termination produces the typed `memory_limit` provider termination or
-terminal outcome. Terminal watches also receive the typed memory-limit event,
+On Linux, when the existing cgroup-v2 hierarchy permits delegation, the kernel
+creates a budget cgroup `chariox-<pid>-<id>` beside its own: `memory.max` is the
+ceiling (a backstop the controller acts before), `memory.high` sits half a margin
+below it to slow allocations near the line, swap is disabled, and with a delegated
+`cpu` controller `cpu.weight` is 50 so the kernel and the user's apps keep more
+CPU (CPU is never a reason to stop anything). Each owner is a `unit-*` cgroup
+with `memory.low` set to its fair share; an owner-set cap adds `memory.high` (the
+cap) and `memory.max` (the cap plus the greater of 25% or 64 MiB). Each workload
+is a `process-*` leaf. There is no `memory.oom.group`. Workload children clear
+inherited OOM protection; the kernel stays outside the workload cgroups. A new
+budget removes the empty budgets of kernels whose process is gone, and a budget
+removes its empty descendants when its last workload ends.
+
+A resident-memory watchdog covers Linux without delegation and macOS with the
+same decision on the sum of resident memory. It samples owned roots and
+descendants every 250 ms and can overshoot between samples. It retains process
+start identities across exec and checks them before signalling, so a recycled
+PID does not authorize a signal. A single cached process-table sample is shared
+between watchdogs. App workers retain their existing 512 MiB sandbox resource
+domains.
+
+A stopped command learns why: the kernel writes one line to its error stream
+(when that is a pipe or terminal it can write to), for example
+`chariox: stopped this command under memory pressure: 3100 MiB resident, 3300 MiB
+for its owner, fair share 1400 MiB of the 8600 MiB shared ceiling`, so the agent
+reads the reason in its tool output; the kernel logs the same record
+(`process_resources.memory_stop`).
+When the command is the workload's own process (a terminal command, a watched
+process, the provider process itself), the workload ends with the typed
+`memory_limit` outcome, whose `limit_bytes` is the owner-set cap or the fair share
+at the stop.
+
+That `memory_limit` is the provider termination or terminal outcome. Terminal watches also receive the typed memory-limit event,
 including the byte limit, instead of remaining pending after the process exits.
 
 `/processes` in the TUI opens a live read-only panel showing the current session's launch-owned processes:
@@ -112,12 +146,11 @@ joining its domain or executing bubblewrap. Failure to read or raise a negative
 adjustment refuses the launch. Bootstrap kernel
 replacement launches retain service policy; they are kernels, not workloads.
 
-Provider and terminal domains throttle at the configured limit using
-`memory.high`. The monitor observes charged memory and high-limit events, records
-`memory_limit`, then ends the owned domain. `memory.max` adds the greater of
-25 percent or 64 MiB as a killable burst backstop. It does not replace the
-configured user limit. The kernel and its other domains stay outside that tree.
-The watchdog remains the enforcement path when cgroups are unavailable.
+An owner-set cap throttles at the cap using `memory.high`; the monitor observes
+the unit's charged memory and stops one command there. `memory.max` adds the
+greater of 25 percent or 64 MiB as a killable burst backstop. The kernel and its
+other domains stay outside that tree. The watchdog remains the enforcement path
+when cgroups are unavailable.
 
 Regressions:
 - `spawned_trees_are_killable_when_the_kernel_is_oom_protected` runs an isolated
@@ -130,9 +163,15 @@ Regressions:
   +350. A root launcher establishes the positive minimum, then drops to nobody
   before the child runs; ordinary users also exercise preservation without
   requiring privilege.
-- `linux_controller_ends_a_runaway_before_the_oom_killer` requires the configured
+- `linux_controller_ends_a_runaway_before_the_oom_killer` requires the owner-set
   typed limit, actual controller termination, zero `oom`/`oom_kill` events and
   complete cgroup cleanup. Run with `--ignored` on a delegated Linux host.
+- `process_resources::pressure_tests` covers the shared ceiling (PC-06, PC-07) in
+  watchdog mode and, with `--ignored` on a delegated host, in cgroup mode: a lone
+  owner at 83% of the ceiling untouched, six owners starting without interrupting
+  one above its new share, one command of the owner furthest above its share
+  stopped under pressure, a 512 MiB/s runaway stopped first with zero `oom_kill`,
+  and an owner-set cap stopping one command.
 - `apps/app-worker/tests/oom-protection.test.mjs` executes the real native App
   admission entry under inherited protection and verifies it clears that policy
   even when admission subsequently refuses invalid descriptors. Its positive
