@@ -117,7 +117,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const checkedClosed = new WeakMap(), closedTodo = new Set();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
-    // The HTML document mode; limited-quirks (CSS1Compat) is told apart by its doctype, as the parser chose it.
+    // The HTML document mode, on snapshots only; limited-quirks (CSS1Compat) is told apart by its doctype, as the parser chose it.
     const documentMode = () => document.compatMode === 'BackCompat' ? 'quirks'
       : /^-\/\/W3C\/\/DTD XHTML 1\.0 (Frameset|Transitional)\/\//i.test(document.doctype?.publicId ?? '')
         || !!document.doctype?.systemId && /^-\/\/W3C\/\/DTD HTML 4\.01 (Frameset|Transitional)\/\//i.test(document.doctype.publicId) ? 'limited-quirks' : 'no-quirks';
@@ -766,7 +766,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const header = () => {
       const { focused, selection, range } = focusState(); reported = JSON.stringify([focused, selection, range]);
       reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState === 'complete' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), document_mode: documentMode(), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      return { snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState === 'complete' } : {}), font_failures, scroll: [scrollX, scrollY], focused, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -794,7 +794,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // by time after 256 visits, with the same byte/document bounds.
       const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
-      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header() };
+      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header(), document_mode: documentMode() };
     };
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
