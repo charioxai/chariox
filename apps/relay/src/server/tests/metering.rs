@@ -305,3 +305,103 @@ async fn a_binary_daemon_reply_is_counted_once_at_its_wire_size() {
     let _ = shutdown_tx.send(());
     let _ = server_task.await;
 }
+
+/// Two accounts on one relay are counted apart: each connection's bytes land under the realm its own token names.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_realms_on_one_relay_are_counted_apart() {
+    let issuer_secret = "hosted-issuer-secret";
+    let mut issuers = BTreeMap::new();
+    issuers.insert("hosted-cloud".to_string(), issuer_secret.to_string());
+    let server = RelayServer::with_auth_verifier(
+        RelayConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            shared_token: None,
+        },
+        RelayAuthVerifier::scoped_hmac(issuers, Some(10_000)),
+    );
+    let meter = server.usage_meter();
+    let listener = server.bind_listener().await.expect("relay listener");
+    let addr = listener.local_addr().expect("relay address");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+
+    let mut sent = BTreeMap::new();
+    let mut sockets = Vec::new();
+    for (realm, heartbeats) in [("realm-a", 3), ("realm-b", 1)] {
+        let public_key = format!("{realm}-public-key");
+        let mut claims = scoped_claim(
+            &format!("{realm}-token"),
+            &format!("{realm}-kernel"),
+            RelaySubjectKind::Kernel,
+            realm,
+            vec![RelayAction::DaemonRegister],
+            None,
+        );
+        claims.issuer = "hosted-cloud".to_string();
+        claims.expires_at_ms = 20_000;
+        claims.account_id = Some(format!("account-{realm}"));
+        claims.user_id = Some("user".to_string());
+        claims.machine_id = Some("machine".to_string());
+        claims.public_key_thumbprint = Some({
+            use sha2::Digest;
+            Sha256::digest(public_key.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        });
+        let mut registration =
+            test_registration(&format!("{realm}-kernel"), "machine", "Linux", 10);
+        registration.auth_token = hosted_kernel_jwt(&claims, issuer_secret);
+        registration.public_key = public_key;
+        let mut tally = Tally {
+            sent: 0,
+            received: 0,
+        };
+        let (mut socket, _) = connect_async_with_retry(&url)
+            .await
+            .expect("daemon connects");
+        send(
+            &mut socket,
+            &mut tally,
+            &RelayEnvelope::DaemonRegister { registration },
+        )
+        .await;
+        for _ in 0..heartbeats {
+            send(
+                &mut socket,
+                &mut tally,
+                &RelayEnvelope::DaemonHeartbeat {
+                    daemon_id: format!("{realm}-kernel"),
+                    registration: None,
+                },
+            )
+            .await;
+        }
+        sent.insert(realm.to_string(), tally.sent);
+        sockets.push(socket);
+    }
+
+    sleep(Duration::from_millis(200)).await;
+    let counted = meter.snapshot();
+    let realms: Vec<_> = counted.keys().map(|(realm, _)| realm.as_str()).collect();
+    assert_eq!(realms, ["realm-a", "realm-b"]);
+    for (realm, bytes) in sent {
+        let total: u64 = counted
+            .iter()
+            .filter(|((r, _), _)| *r == realm)
+            .map(|(_, c)| c.bytes_in)
+            .sum();
+        assert_eq!(total, bytes, "bytes counted for {realm}");
+    }
+    let _ = shutdown_tx.send(());
+    let _ = server_task.await;
+}
