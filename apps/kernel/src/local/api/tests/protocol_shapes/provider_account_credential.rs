@@ -193,12 +193,11 @@ fn account_copy_recipient_offer_requests_are_admitted() {
     assert_eq!(serde_json::to_value(request.unwrap()).unwrap(), value);
 }
 
+// The session_id/agent_id on CopyProviderAccountFromKernel are protocol 711.
+const _: () = assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 711);
+
 #[test]
 fn account_copy_recipient_protocol_711_peer_274_snapshot_and_hash() {
-    assert!(
-        LOCAL_DAEMON_PROTOCOL_VERSION >= 711,
-        "the session_id/agent_id on CopyProviderAccountFromKernel are protocol 711"
-    );
     let list: LocalDaemonRequest =
         serde_json::from_value(serde_json::json!({"ListProviderAccountCopyOffers":{}})).unwrap();
     let receive: LocalDaemonRequest =

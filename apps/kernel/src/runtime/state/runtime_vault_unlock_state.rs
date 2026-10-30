@@ -426,7 +426,7 @@ impl KernelRuntimeState {
             .user_config
             .credential_vault;
         if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
-            && crate::secret::chariox_encrypted_vault_status(&expand_vault_path(&vault.path))?
+            && crate::secret::chariox_encrypted_vault_status(expand_vault_path(&vault.path))?
                 .unlocked
         {
             return Ok(VaultUnlockGuard::not_required());
