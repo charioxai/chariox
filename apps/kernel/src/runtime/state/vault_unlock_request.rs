@@ -75,6 +75,8 @@ impl KernelRuntimeState {
 
     /// The Vault menu opens on an open Vault. A locked one is unlocked by the
     /// client first (`UnlockCredentialVault`), not through an agent's prompt.
+    /// A kernel with no Vault file yet still gets the first-time prompt that
+    /// creates it.
     pub(crate) fn require_unlocked_vault(&self) -> Result<(), DaemonError> {
         let config = self
             .owned
@@ -82,9 +84,10 @@ impl KernelRuntimeState {
             .snapshot()
             .user_config
             .credential_vault;
+        let path = expand_vault_path(&config.path);
         if config.backend == CredentialVaultBackend::CharioxEncrypted
-            && !crate::secret::chariox_encrypted_vault_status(expand_vault_path(&config.path))?
-                .unlocked
+            && path.exists()
+            && !crate::secret::chariox_encrypted_vault_status(&path)?.unlocked
         {
             return Err(vault_locked_error());
         }

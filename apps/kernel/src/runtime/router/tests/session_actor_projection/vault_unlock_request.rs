@@ -132,6 +132,12 @@ impl Fixture {
                 .manage_credential_vault_unlock(&session, &agent)
                 .await
         });
+        self.answer_the_unlock_prompt(passphrase).await;
+        operation.await.unwrap().map(|_| ())
+    }
+
+    /// The person answers the unlock prompt that appeared in the agent's terminal.
+    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
         let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let snapshot = self
@@ -158,7 +164,6 @@ impl Fixture {
                 passkey_remember_minutes: None,
             });
         self.send(answer).await.unwrap();
-        operation.await.unwrap().map(|_| ())
     }
 }
 
@@ -453,4 +458,24 @@ async fn the_vault_menu_on_a_locked_vault_asks_the_client_to_unlock_and_raises_n
         snapshot.active_interaction_for_agent(&f.agent).is_none(),
         "no unlock prompt is raised"
     );
+}
+
+#[tokio::test]
+async fn the_vault_menu_on_a_kernel_with_no_vault_still_makes_the_first_one() {
+    let f = Fixture::new(CredentialVaultUnlockPolicy::Ttl, false);
+    let runtime = f.router.runtime_state.clone();
+    let request = crate::local::ManageCredentialVaultRequest {
+        session_id: f.session.clone(),
+        agent_id: Some(f.agent.clone()),
+    };
+    let operation = tokio::spawn(async move {
+        crate::runtime::user_config_executor::execute_manage_credential_vault_request(
+            &runtime, request,
+        )
+        .await
+    });
+    f.answer_the_unlock_prompt(PASSPHRASE).await;
+    operation.await.unwrap().unwrap();
+    assert!(f.vault.exists(), "the first-time prompt created the Vault");
+    assert!(f.status().await.unlocked);
 }
