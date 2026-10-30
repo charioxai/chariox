@@ -805,9 +805,12 @@ export class KernelBrowserHost {
     if(command.op==='display_park'){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
       const stream=this.displaySessions.require(command.subscription_id,scope,command.generation);
-      if(!stream.tabDisplay||typeof command.parked!=='boolean')throw new UserDomainRefusal('stale_reference','display_retired');
-      stream.park(command.parked);stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
-      return {generation:this.generation,parked:stream.parked};
+      if(typeof command.parked!=='boolean')throw new UserDomainRefusal('stale_reference','display_retired');
+      // An unwatched display parks here (no capture, source paused) and each park renews the host binding's 60 s expiry.
+      // The owned desktop has no source to pause: it only keeps its binding.
+      if(stream.source_kind!=='desktop')stream.park(command.parked);
+      stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
+      return {generation:this.generation,parked:Boolean(stream.parked)};
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
