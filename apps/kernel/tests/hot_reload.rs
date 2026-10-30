@@ -1179,9 +1179,38 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         closed_by_the_old_program(socket).await;
 
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        // A viewer that attaches after the swap, as a browser does.
+        let late = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "late-viewer", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let late_id = late["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{late}"))
+            .to_string();
+        let mut live_parts = 0;
+        let mut live_before_result = 0;
         std::fs::write(record.join("go"), "").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
+            let pumped = request(
+                &mut socket,
+                json!({"PumpTerminalOutput": {"session_id": session_id, "attachment_id": late_id}}),
+            )
+            .await;
+            let bytes: Vec<u8> = pumped["TerminalOutput"]["records"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .flat_map(|record| record["bytes"].as_array().cloned().unwrap_or_default())
+                .filter_map(|byte| byte.as_u64().map(|byte| byte as u8))
+                .collect();
+            live_parts += String::from_utf8_lossy(&bytes).matches("turn-1-part-").count();
+            if lines(&record.join("parts")).last().map(String::as_str) != Some("result 1") {
+                live_before_result = live_parts;
+            }
             note_shown_parts(&mut socket, &session_id, &agent_id, started, &mut shown).await;
             let state = request(
                 &mut socket,
@@ -1203,6 +1232,11 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         if !finish_in_gap {
+            // The late viewer gets the parts live, not only once the turn ends.
+            assert!(
+                live_before_result >= 50,
+                "a viewer attached after the swap got {live_before_result} parts live ({live_parts} in all)"
+            );
             // The swap: from the signal until the new program continues the
             // turn (the old program stops, the new one starts and adopts it).
             let continued = logged_at(&scratch, "continuing a handed-over Codex turn");
