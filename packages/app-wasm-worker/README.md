@@ -77,9 +77,11 @@ Native process death and OS quotas remain the kernel supervisor/R5 boundary.
 
 `serve` reads the bounded supervisor config and component, discards every FD
 above 4, then installs containment before the ready reply, compiler, epoch ticker
-or Tokio threads. There is no switch or environment variable to bypass it. The
-native worker has no filesystem paths at all: installation data/tmp, network and
-process requests go through kernel brokers. R6 must not add ambient native WASI.
+or Tokio threads. There is no switch or environment variable to bypass it. Both
+the path-based `serve` and the installed `serve-supervised` entry enter it after
+reading every supervisor input. Network and process requests go through kernel
+brokers. The only native file authority left is an installed App's real `data`
+and `tmp` directories (R6's preopens), confined by Landlock.
 Offline `check`/`precompile` compile without instantiating; they do not assert a
 contained installation or run any App export.
 
@@ -90,8 +92,15 @@ clone3-to-ENOSYS and self-query-only prlimit checks from
 `apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
 The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
 delegated cgroup or privileged host change is required for the WASM entry.
-Landlock is not required: all path syscalls are already refused by seccomp,
-and inherited descriptors are closed before that boundary.
+Without installation directories every path syscall is refused by seccomp and
+Landlock is not used. With them, Landlock (Linux 5.13+) grants file rights only
+beneath `data` and `tmp` (no execute, devices, sockets or FIFOs), and only then
+does seccomp admit the path syscalls those preopens need; mode, owner and
+timestamp changes stay refused because Landlock does not mediate them. Stat and
+readlink on other paths remain possible (Landlock does not cover metadata). A
+host without Landlock refuses installed Apps with `APP_SANDBOX_LANDLOCK`.
+macOS refuses installed App files until its Seatbelt profile grants them.
+Inherited descriptors are closed before that boundary.
 Unsupported containment fails with `APP_SANDBOX_UNAVAILABLE` before ready.
 On aarch64 Linux only, seccomp admits the private code-cache membarrier commands
 32/64 with zero flags for Wasmtime publication; other commands remain denied.
@@ -238,7 +247,8 @@ Nonempty request trailers are rejected because the
 broker has no trailers operation; they are never silently discarded.
 
 The supervisor opens `InstallationDirectories::open(root)` after establishing
-installation/generation authority and OS containment, then passes it to
+installation/generation authority and before entering OS containment, which then
+confines native file access to those two directories, and passes it to
 `AppWorker::with_directories`. `root/data` and `root/tmp` must already be real
 directories. Only those two names are preopened; no host root, cwd, environment
 or inherited descriptors are exposed. Without this explicit configuration there
