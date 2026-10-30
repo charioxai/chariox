@@ -1594,3 +1594,87 @@ async fn sudo_extension_retry_has_a_fresh_interaction_without_changing_the_windo
         .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
         .unwrap();
 }
+
+/// The host slept: the monotonic deadline is still about an hour away while
+/// the expiry every client shows is `minutes` away.
+fn sleep_until_minutes_before_expiry(f: &Fixture, window: &KernelSudoTurn, minutes: u64) {
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .get_mut(&window.entry_id)
+        .unwrap()
+        .expires_at_ms = Some(crate::session::unix_epoch_ms() + minutes * 60_000);
+}
+
+fn expiry_warnings(f: &Fixture) -> Vec<String> {
+    f.state
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&f.request.session_id, None)
+        .unwrap()
+        .iter()
+        .map(|entry| format!("{entry:?}"))
+        .filter(|entry| entry.contains(" expires in "))
+        .collect()
+}
+
+#[tokio::test]
+async fn sudo_warns_before_the_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    sleep_until_minutes_before_expiry(&f, &window, 9);
+    f.state.pump_sudo_windows(None);
+    f.state.pump_sudo_windows(None);
+    assert_eq!(
+        outcomes(&f, &window.entry_id)
+            .iter()
+            .filter(|o| *o == "warning")
+            .count(),
+        1,
+        "the ten-minute warning must follow the earlier of both clocks"
+    );
+    let notices = expiry_warnings(&f);
+    assert!(
+        notices.len() == 1 && notices[0].contains("expires in 9 minutes"),
+        "{notices:?}"
+    );
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn the_sudo_timer_wakes_for_the_displayed_expiry_after_host_sleep() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f
+            .state
+            .owned
+            .sudo_timers
+            .lock()
+            .unwrap()
+            .get(&window.entry_id)
+            != Some(&(1, 0))
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    sleep_until_minutes_before_expiry(&f, &window, 9);
+    f.state.owned.sudo_timer_changes.record_change();
+    // No pump: the armed timer alone must schedule the warning.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !f.state.list_sudo_turns("local")[0].warning_sent {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the timer kept sleeping towards the monotonic deadline");
+    f.state
+        .revoke_sudo(Some("local"), Some(&window.entry_id), "fixture_cleanup")
+        .unwrap();
+}

@@ -154,6 +154,12 @@ impl KernelRuntimeState {
                         clock.notice = Instant::now() - Duration::from_millis(1);
                     }
                 }
+                // The host slept: the displayed expiry is near, the monotonic
+                // deadline and notice are not.
+                "slept" => {
+                    grant.summary.expires_at_ms =
+                        Some(crate::session::unix_epoch_ms() + 4 * 60_000);
+                }
                 "reuse" => grant.holder.start = grant.holder.start.wrapping_add(1),
                 _ => panic!("unknown test control"),
             }
