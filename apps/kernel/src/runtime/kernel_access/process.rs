@@ -253,7 +253,7 @@ pub(crate) fn inspect(pid: u32) -> io::Result<(ProcessIdentity, u32)> {
             let error = failed();
             return Err(if error.kind() == io::ErrorKind::NotFound {
                 error
-            } else if info.pbi_uid == unsafe { libc::geteuid() } {
+            } else if info.pbi_uid == libc::geteuid() {
                 invalid()
             } else {
                 io::Error::from(io::ErrorKind::PermissionDenied)
