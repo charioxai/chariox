@@ -261,10 +261,36 @@ pub async fn run_usage_report(
         .await
         .expect("usage report task does not panic");
         reporter = returned;
-        if let Err(error) = outcome {
-            log_report_error(&error);
+        match outcome {
+            Ok(Some(batch)) => log_report_sent(&batch),
+            Ok(None) => {}
+            Err(error) => log_report_error(&error),
         }
     }
+}
+
+fn log_report_sent(batch: &UsageBatch) {
+    let sum = |select: fn(&UsageCounters) -> u64| {
+        batch
+            .entries
+            .iter()
+            .map(|entry| select(&entry.counters))
+            .sum::<u64>()
+    };
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "component": "chariox-relay",
+            "level": "info",
+            "event": "usage_report_acknowledged",
+            "fields": {
+                "batch_id": batch.batch_id,
+                "entries": batch.entries.len(),
+                "bytes_in": sum(|c| c.bytes_in),
+                "bytes_out": sum(|c| c.bytes_out),
+            },
+        })
+    );
 }
 
 fn log_report_error(message: &str) {
