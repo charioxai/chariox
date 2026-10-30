@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: account and agent references at local 912 / peer 363.
+//! MP-08/MP-10/MP-11: account and agent references at local 923 / peer 374.
 use super::*;
 use sha2::{Digest, Sha256};
 

@@ -5921,7 +5921,7 @@ and the termination name the same cause. The managed-upgrade list is
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
 
-### Session-less Vault unlock — local 912 / relay peer 363
+### Session-less Vault unlock — local 923 / relay peer 374
 
 `UnlockCredentialVault { passphrase }` answers `CredentialVaultUnlocked { status, action }`
 with `action` one of `unlocked`, `already_unlocked` or `not_required` (a plain backend). It
@@ -5941,6 +5941,6 @@ while it is locked answers `vault_locked`, so a client unlocks and repeats the s
 `ManageCredentialVault` on a locked Vault answers it too and raises no prompt. Wrong passphrases are
 counted per owner in kernel memory (5 free, then 30 s doubling to 15 min, one check at a
 time), shared by this request, the passkey check and the unlock prompt an agent's run raises.
-Clients need kernel protocol >=912 (`credentialVaultUnlockMinimumProtocolVersion` in the
-web). The managed-upgrade list is [629, 636, 912]. Focused checks:
+Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
+web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
