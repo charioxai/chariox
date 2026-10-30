@@ -570,12 +570,12 @@ test("lifecycle update failures retain their kernel cause in operation output", 
 })
 
 test("a failed data migration names its own cause in plain words", () => {
-  assert.equal(formatInstallFailure("app_update_migration_failed:NOTES_BAD_ROW"),
+  assert.equal(formatInstallFailure("app_update_migration_failed_NOTES_BAD_ROW"),
     "The App could not move its data to the new version, so the update was not applied. The App reported: NOTES_BAD_ROW. The installed version and its data are unchanged.")
-  assert.match(formatInstallFailure("app_update_migration_failed:DEADLINE_EXCEEDED"), /The migration ran out of time\./)
-  assert.match(formatInstallFailure("app_update_migration_failed:APP_TRAPPED"), /The migration crashed\./)
+  assert.match(formatInstallFailure("app_update_migration_failed_DEADLINE_EXCEEDED"), /The migration ran out of time\./)
+  assert.match(formatInstallFailure("app_update_migration_failed_APP_TRAPPED"), /The migration crashed\./)
   assert.doesNotMatch(formatInstallFailure("app_update_migration_failed"), /reported|migration (ran|crashed|used)/)
-  assert.equal(formatInstallFailure("app_update_migration_failed:bad code"), "The kernel could not complete the App operation.")
+  assert.equal(formatInstallFailure("app_update_migration_failed_bad code"), "The kernel could not complete the App operation.")
 })
 
 // Shared by standalone CLI operation output and TUI /app operation notices.

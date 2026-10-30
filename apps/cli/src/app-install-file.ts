@@ -391,7 +391,7 @@ const migrationCauses: Record<string, string> = {
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
 export function formatInstallFailure(failure: string): string {
   if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
-  const migration = /^app_update_migration_failed(?::([A-Z0-9_]{1,48}))?$/.exec(failure)
+  const migration = /^app_update_migration_failed(?:_([A-Z0-9][A-Z0-9_]{0,47}))?$/.exec(failure)
   if (migration) {
     const cause = migration[1] === undefined ? "" : Object.hasOwn(migrationCauses, migration[1]) ? ` The migration ${migrationCauses[migration[1]]}.` : ` The App reported: ${migration[1]}.`
     return `The App could not move its data to the new version, so the update was not applied.${cause} The installed version and its data are unchanged.`

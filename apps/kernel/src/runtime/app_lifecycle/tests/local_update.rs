@@ -320,6 +320,15 @@ fn a_failed_migration_keeps_the_old_generation_and_restores_its_data() {
             .phase
             == InstallPhase::Failed
     });
+    // The person is told the migration's own code, not a generic readiness failure.
+    assert_eq!(
+        store
+            .first_app_install_status("alice", "failed_migration")
+            .unwrap()
+            .failure
+            .as_deref(),
+        Some("app_update_migration_failed_NOTES_BAD_ROW")
+    );
     let installation = store.get_app_installation("alice", &id).unwrap();
     assert_eq!(installation.generation, 1);
     assert_eq!(installation.pending_generation, None);

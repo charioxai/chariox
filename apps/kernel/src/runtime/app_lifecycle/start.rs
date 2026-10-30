@@ -590,7 +590,7 @@ mod registration_failure_tests {
                 crate::runtime::app_worker::MigrationFailure::from_worker("NOTES_V2_BAD_ROW")
             ))
             .to_string(),
-            "app_update_migration_failed:NOTES_V2_BAD_ROW"
+            "app_update_migration_failed_NOTES_V2_BAD_ROW"
         );
         // Untrusted worker text never reaches a stored failure.
         for code in ["", "lower", "HAS SPACE", "A\nB", &"X".repeat(49)] {

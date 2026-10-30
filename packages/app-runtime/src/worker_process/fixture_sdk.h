@@ -164,7 +164,12 @@ static int fixture_sdk_migrate(const char* mode, char response[8193]) {
       "{\"schemaVersion\":1,\"checks\":[],\"writes\":[{\"key\":\"migrated\",\"value\":true}]}") != 1 ||
       fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
       !strstr(response, "\"id\":\"migrate-write\",\"result\":{") || !strstr(response, "\"revision\":")) return 126;
-  if (!strcmp(mode, "sdk_bad_migration")) return 127;
+  if (!strcmp(mode, "sdk_bad_migration")) {
+    /* A real worker names the migration's code to the kernel before it exits. */
+    if (fixture_sdk_request("migrate-failed", "migration.failed", "{\"code\":\"NOTES_BAD_ROW\"}") != 1 ||
+        fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1) return 129;
+    return 127;
+  }
   if (fixture_sdk_request("migrate-step", "migration.step", "{\"to\":1}") != 1 ||
       fixture_sdk_receive(response, cx_monotonic_ms() + 5000) != 1 ||
       strcmp(response, "{\"kind\":\"response\",\"version\":1,\"generation\":\"1\",\"id\":\"migrate-step\",\"result\":null}")) return 128;

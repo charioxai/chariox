@@ -78,10 +78,10 @@ impl std::fmt::Display for MigrationFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("app_update_migration_failed")?;
         if self.len > 0 {
-            // Constructed only from ASCII.
+            // Constructed only from ASCII; a stored failure allows no ':'.
             write!(
                 f,
-                ":{}",
+                "_{}",
                 String::from_utf8_lossy(&self.code[..usize::from(self.len)])
             )?;
         }

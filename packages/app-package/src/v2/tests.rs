@@ -664,7 +664,7 @@ fn signed_migrations_cannot_import_the_app_http_surface() {
     let Err(error) = verify(&bytes, &policy) else {
         panic!("network-capable migration was accepted");
     };
-    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert_eq!(error.code, ErrorCode::ImportNotAllowed);
     assert!(
         error.message.contains("migrations/001.wasm"),
         "{}",
