@@ -264,7 +264,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     browser_import_admission: crate::runtime::browser_import_admission::BrowserImportAdmission,
     human_control_task_waits: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
-    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
+    uncertain_leased_tasks: Arc<std::sync::Mutex<BTreeMap<(String, String, String), u64>>>,
     room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,

@@ -501,7 +501,7 @@ impl KernelRuntimeState {
         completed: &crate::session::PromptQueueItem,
         leased_agent_id: &str,
         worker_provider_run_id: &str,
-        failure: Option<&str>,
+        failure: Option<&crate::provider::TurnOutcome>,
     ) {
         let run = crate::provider::projected_leased_provider_run_id(
             leased_agent_id,
@@ -546,9 +546,9 @@ impl KernelRuntimeState {
                 }
             }
             match failure {
-                Some(reason) => self
+                Some(outcome) => self
                     .owned
-                    .end_failed_agent_task(session_id, agent_id, completed, &run, reason),
+                    .end_failed_agent_task(session_id, agent_id, completed, &run, outcome),
                 None => self.owned.settle_agent_task_answered_by(
                     session_id,
                     agent_id,
@@ -561,7 +561,10 @@ impl KernelRuntimeState {
         })();
         let settled = match settlement {
             Ok(settlement) => {
-                Box::pin(self.finish_agent_task_settlement(settlement, completed)).await
+                Box::pin(
+                    self.finish_agent_task_settlement_with_failure(settlement, completed, failure),
+                )
+                .await
             }
             Err(error) => Err(error),
         };
@@ -842,21 +845,22 @@ impl KernelRuntimeState {
             Some((prompt_id, remote_execution)),
         )?;
         // A10: home alone commits the leased task outcome.
+        let task_failure = provider_failure.clone().or_else(|| {
+            provider_termination.as_ref().map(|termination| {
+                crate::provider::TurnOutcome::new(
+                    crate::provider::TurnOutcomeKind::ProviderCrashed,
+                    true,
+                    &termination.reason,
+                )
+            })
+        });
         self.settle_leased_agent_task(
             session_id,
             target_agent_id,
             &completion.completed,
             &remote_execution.leased_agent_id,
             remote_provider_run_id,
-            provider_termination
-                .as_ref()
-                .map(|termination| termination.reason.as_str())
-                .or_else(|| {
-                    provider_failure
-                        .as_ref()
-                        .map(|failure| failure.reason.as_str())
-                })
-                .or(provider_diagnostic.as_deref()),
+            task_failure.as_ref(),
         )
         .await;
         if completion.completed.workflow_run_id().is_some() {

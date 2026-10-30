@@ -284,14 +284,17 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         prompt: &crate::session::PromptQueueItem,
         run: &str,
-        reason: &str,
+        outcome: &crate::provider::TurnOutcome,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
         self.end_failed_agent_task_with_reason(
             room,
             agent,
             prompt,
             run,
-            &format!("Provider run failed: {reason}. Owner must reconcile and resume or cancel"),
+            &format!(
+                "Provider run failed: {}. Owner must reconcile and resume or cancel",
+                outcome.reason
+            ),
         )
     }
 
@@ -688,6 +691,16 @@ impl KernelRuntimeState {
         settlement: Option<(AgentTaskExecution, bool)>,
         source: &crate::session::PromptQueueItem,
     ) -> Result<(), DaemonError> {
+        self.finish_agent_task_settlement_with_failure(settlement, source, None)
+            .await
+    }
+    /// `failure` is why the turn behind a task that ends cancelled failed.
+    pub(super) async fn finish_agent_task_settlement_with_failure(
+        &self,
+        settlement: Option<(AgentTaskExecution, bool)>,
+        source: &crate::session::PromptQueueItem,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<(), DaemonError> {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
@@ -707,7 +720,25 @@ impl KernelRuntimeState {
                 message,
             );
         }
-        let public_answer = self.owned.public_agent_task_answer(&task)?;
+        // A task that ends without finishing tells its waiters why, typed once
+        // as the turn outcome, so a failed helper never reads like a finished one.
+        let public_answer = match failure {
+            Some(outcome) if task.state == ExecutionState::Cancelled => {
+                let host = self
+                    .owned
+                    .agent_store
+                    .get_agent(&task.agent_id)
+                    .ok()
+                    .and_then(|agent| agent.remote_execution().cloned())
+                    .map(|binding| self.leased_host_name(&binding));
+                Some(super::agent_task_projection::failed_task_answer(
+                    &task,
+                    outcome,
+                    host.as_deref(),
+                ))
+            }
+            _ => self.owned.public_agent_task_answer(&task)?,
+        };
         if task.state == ExecutionState::Cancelled {
             Box::pin(self.cancel_agent_task_resources(&task)).await?;
         }
@@ -913,10 +944,13 @@ impl KernelRuntimeState {
         Ok(())
     }
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
+        self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
+            .await
+    }
+    async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
-        let now = crate::session::unix_epoch_ms();
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
@@ -954,7 +988,7 @@ impl KernelRuntimeState {
             }
         }
         let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
-        self.check_leased_task_connections(&tasks).await?;
+        Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks(None, None)? {
@@ -1324,5 +1358,12 @@ impl KernelRuntimeState {
 impl KernelRuntimeState {
     pub(crate) async fn sweep_agent_lifecycle_for_test(&self) -> Result<(), DaemonError> {
         self.sweep_agent_lifecycle().await
+    }
+
+    pub(crate) async fn sweep_agent_lifecycle_at_for_test(
+        &self,
+        now: u64,
+    ) -> Result<(), DaemonError> {
+        self.sweep_agent_lifecycle_at(now).await
     }
 }

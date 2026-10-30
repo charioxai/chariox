@@ -1,5 +1,7 @@
-// MP-08 / MP-10 / MP-11 G03: connection loss is visible without changing
-// the home task, its source, or the worker's lease. Regression, not acceptance.
+// MP-08 / MP-10 / MP-11 G03: a short connection loss is visible without
+// changing the home task, its source, or the worker's lease. A10-S04: a worker
+// the relay reports offline for the grace period ends its turn as failed.
+// Regression, not acceptance.
 use super::*;
 
 #[test]
@@ -198,5 +200,98 @@ async fn waiting_leased_task_reports_disconnect_and_recovery() {
             &after_binding.active_worker_provider_run_id
         ),
         "reconnection must not replace the execution lease"
+    );
+}
+
+#[test]
+fn mp10_a10s04_offline_worker_ends_the_leased_turn_failed_and_wakes_the_delegator() {
+    run_test(offline_worker_ends_the_leased_turn_failed_and_wakes_the_delegator);
+}
+
+/// A helper whose worker kernel dies mid-turn is resolved by the sweep within
+/// seconds, not at its delegator's deadline: the turn ends as a typed provider
+/// crash that names the worker, and the delegator wakes with that failure.
+async fn offline_worker_ends_the_leased_turn_failed_and_wakes_the_delegator() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    let attachment = owner_attachment(&fixture, &room).await;
+    run_turn(&fixture, &room, &attachment, &agent, "A10-S04 hold").await;
+    let store = store(&fixture).await;
+    let delegator = local_agent(&fixture, &room, &agent).await;
+    delegator_waiting_on(&store, &room, &delegator, &agent);
+    let running = eventually("the leased turn runs", || {
+        store
+            .agent_tasks(Some(&room), Some(&agent))
+            .unwrap()
+            .into_iter()
+            .find(|t| t.state == ledger::ExecutionState::Working)
+    })
+    .await;
+    let runtime = fixture.home.runtime_state();
+    let start = crate::session::unix_epoch_ms();
+    runtime
+        .sweep_agent_lifecycle_at_for_test(start)
+        .await
+        .unwrap();
+
+    let AgentWorker { stop, task, .. } = worker;
+    stop.send(true).unwrap();
+    timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    runtime
+        .sweep_agent_lifecycle_at_for_test(start + 1_000)
+        .await
+        .unwrap();
+    let just_lost = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == running.task_id)
+        .unwrap();
+    runtime
+        .sweep_agent_lifecycle_at_for_test(start + 45_000)
+        .await
+        .unwrap();
+    let ended = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .into_iter()
+        .find(|t| t.task_id == running.task_id)
+        .unwrap();
+    let woken: Vec<_> = store
+        .agent_inbox(&room, &delegator, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.source_id == agent)
+        .collect();
+    fixture.stop().await;
+
+    assert_eq!(
+        just_lost.state,
+        ledger::ExecutionState::Working,
+        "a short loss must not end the turn"
+    );
+    assert_eq!(
+        ended.state,
+        ledger::ExecutionState::Cancelled,
+        "the lost worker's turn stayed {:?}: {}",
+        ended.state,
+        ended.reason
+    );
+    assert_eq!(woken.len(), 1, "one wake for the delegator: {woken:?}");
+    assert_eq!(woken[0].kind, "source_lost", "{woken:?}");
+    let answer = &woken[0].payload["public_answer"];
+    assert_eq!(answer["outcome"]["kind"], "provider_crashed", "{answer}");
+    assert!(
+        answer["outcome"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("worker kernel")),
+        "the failure names the lost worker: {answer}"
     );
 }

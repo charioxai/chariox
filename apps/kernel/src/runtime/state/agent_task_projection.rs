@@ -103,6 +103,28 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+/// What a waiter reads when a task ends because its turn failed: the typed
+/// outcome (the same one the turn's event, history and state carry) and what to
+/// do next. `public_agent_task_answer` is for tasks that finished.
+pub(super) fn failed_task_answer(
+    task: &AgentTaskExecution,
+    outcome: &crate::provider::TurnOutcome,
+    host: Option<&str>,
+) -> serde_json::Value {
+    let mut answer = serde_json::json!({
+        "agent_id": task.agent_id,
+        "task_id": task.task_id,
+        "prompt_id": task.prompt_id,
+        "outcome": outcome,
+        "recovery": outcome.notice(),
+    });
+    if let Some(host) = host {
+        answer["host"] = host.into();
+    }
+    crate::secret_redaction::redact_json_secrets(&mut answer);
+    answer
+}
+
 /// Finished tasks a snapshot still carries; a long room must not grow every
 /// snapshot by one task per turn.
 pub(super) const VISIBLE_FINISHED_TASKS: usize = 32;

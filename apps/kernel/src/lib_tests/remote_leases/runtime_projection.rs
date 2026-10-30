@@ -358,7 +358,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
         "next review",
         PromptStatus::Queued,
     );
-    assert!(outcome.provider_failed);
+    assert!(outcome.failure.is_some());
     assert!(
         matches!(
             app.prompt_owner_submit_prepared_prompt(session.id(), followup, false)
