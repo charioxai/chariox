@@ -249,11 +249,8 @@ impl KernelRuntimeOwnedState {
         let mut prompt_metadata_cache =
             std::collections::BTreeMap::<Option<String>, ActivePromptTranscriptMetadata>::new();
         let mut terminal_outputs = Vec::with_capacity(outputs.len());
-        for mut output in outputs {
+        for output in outputs {
             self.collect_private_assessment(session_id, &output);
-            output.bytes = self
-                .room_secret_observations
-                .protect_unframed_bytes(session_id, &output.bytes);
             let agent_id = output.agent_id;
             let delta_bytes = terminal_output_delta_bytes(
                 session_id,
@@ -364,16 +361,13 @@ impl KernelRuntimeOwnedState {
             .and_then(|run| run.agent_instance_id().map(str::to_string));
         let prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id.as_deref());
-        let bytes = self
-            .room_secret_observations
-            .protect_unframed_bytes(session_id, bytes);
         let delta_bytes = terminal_output_delta_bytes(
             session_id,
             provider_run_id,
             agent_id.as_deref(),
             &kind,
             &merge_key,
-            &bytes,
+            bytes,
         );
         let bounded_bytes = bounded_terminal_output_bytes(&kind, &delta_bytes);
         self.log_provider_output_truncation(

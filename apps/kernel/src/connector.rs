@@ -211,20 +211,35 @@ pub fn adapter_response_to_execution(
     prepared: PreparedConnectorCall,
     response: ConnectorAdapterResponse,
 ) -> Result<ConnectorExecution, DaemonError> {
+    // The adapter ran with the Vault value injected; what comes back reaches the model.
+    let boundary = credential_boundary(prepared.request.credential.as_ref());
     if !response.ok {
-        return Err(connector_error(
-            "connector.execute",
-            response
-                .error
-                .unwrap_or_else(|| "connector adapter call failed".to_string()),
-        ));
+        let error = response
+            .error
+            .unwrap_or_else(|| "connector adapter call failed".to_string());
+        return Err(connector_error("connector.execute", boundary.scrub(&error)));
     }
+    let mut result = response.result.unwrap_or(Value::Null);
+    boundary.scrub_json(&mut result);
     Ok(ConnectorExecution {
         connector: prepared.connector,
         operation: prepared.operation,
         safety: prepared.safety,
-        result: response.result.unwrap_or(Value::Null),
+        result,
     })
+}
+
+fn credential_boundary(
+    credential: Option<&ConnectorAdapterCredential>,
+) -> crate::secret::HttpSecretBoundary {
+    let mut boundary = crate::secret::HttpSecretBoundary::new("");
+    if let Some(credential) = credential {
+        boundary.add(&credential.secret);
+        if let UserCredentialInjectionConfig::Basic { username } = &credential.injection {
+            boundary.add(&format!("{username}:{}", credential.secret));
+        }
+    }
+    boundary
 }
 
 fn adapter_response_to_prepare_result(

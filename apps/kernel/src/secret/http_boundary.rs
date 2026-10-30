@@ -4,18 +4,18 @@ use super::*;
 const OPERATION: &str = "http_request_with_credential";
 const MAX_BODY_BYTES: u64 = 16 * 1024 * 1024;
 
-pub(super) struct HttpSecretBoundary {
+pub(crate) struct HttpSecretBoundary {
     values: Vec<Zeroizing<String>>,
 }
 
 impl HttpSecretBoundary {
-    pub(super) fn new(secret: &str) -> Self {
+    pub(crate) fn new(secret: &str) -> Self {
         let mut boundary = Self { values: Vec::new() };
         boundary.add(secret);
         boundary
     }
 
-    pub(super) fn add(&mut self, value: &str) {
+    pub(crate) fn add(&mut self, value: &str) {
         if value.is_empty() {
             return;
         }
@@ -47,7 +47,7 @@ impl HttpSecretBoundary {
             .sort_by_key(|value| std::cmp::Reverse(value.len()));
     }
 
-    fn scrub(&self, input: &str) -> String {
+    pub(crate) fn scrub(&self, input: &str) -> String {
         // Consume the original once, so a short secret never rewrites our marker.
         let mut output = String::with_capacity(input.len());
         let mut rest = input;
@@ -68,7 +68,7 @@ impl HttpSecretBoundary {
         output
     }
 
-    fn scrub_json(&self, value: &mut serde_json::Value) {
+    pub(crate) fn scrub_json(&self, value: &mut serde_json::Value) {
         match value {
             serde_json::Value::String(text) => *text = self.scrub(text),
             serde_json::Value::Array(items) => {

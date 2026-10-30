@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use chariox_adapters::connector_adapter_util::run_adapter;
+use chariox_adapters::connector_adapter_util::{http_call_error, run_adapter};
 use chariox_adapters::protocol::{
     ConnectorAdapterCredentialTarget, ConnectorAdapterPrepareResult, ConnectorAdapterRequest,
     UserCredentialInjectionConfig,
@@ -127,7 +127,7 @@ fn call_request(request: ConnectorAdapterRequest) -> Result<Value, String> {
             return Err("body_text and body_json are mutually exclusive".to_string())
         }
     }
-    .map_err(|error| error.to_string())?;
+    .map_err(http_call_error)?;
     decode_response(response, request.max_response_bytes)
 }
 

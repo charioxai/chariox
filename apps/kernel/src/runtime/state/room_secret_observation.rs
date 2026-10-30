@@ -634,18 +634,10 @@ impl RoomSecretObservations {
         &self,
         mut entry: crate::history::SessionHistoryEntry,
     ) -> crate::history::SessionHistoryEntry {
-        use crate::history::SessionHistoryEntryKind;
         if self.withholds_history(&entry.session_id, entry.timestamp_ms) {
             entry.text = "[recovered sensitive Room history withheld]".into();
             entry.attachments.clear();
             return entry;
-        }
-        if matches!(
-            entry.kind,
-            SessionHistoryEntryKind::ProviderOutput | SessionHistoryEntryKind::ProviderReasoning
-        ) && self.protects_bytes(&entry.session_id)
-        {
-            entry.text = "[sensitive Room terminal stream withheld]".into();
         }
         match self.scrub(&entry.session_id, entry.clone()) {
             Ok(entry) => entry,
@@ -673,16 +665,6 @@ impl RoomSecretObservations {
             });
         }
         self.scrub(room, value)
-    }
-
-    pub(super) fn protect_unframed_bytes(&self, room: &str, bytes: &[u8]) -> Vec<u8> {
-        if self.protects_bytes(room) {
-            // Matching individual chunks cannot catch a secret split across chunks.
-            // Retain the fence for the session lifetime, without a human clearance.
-            b"[sensitive Room terminal stream withheld]".to_vec()
-        } else {
-            bytes.to_vec()
-        }
     }
 
     pub(super) fn scrub_response(
@@ -729,15 +711,6 @@ impl RoomSecretObservations {
                 event.content = Some("[recovered sensitive Room history withheld]".into());
                 event.content_ref = None;
                 event.metadata.clear();
-            } else if matches!(
-                event.kind,
-                crate::history::HistoryEventKind::ProviderOutput
-                    | crate::history::HistoryEventKind::ProviderReasoning
-            ) && self.protects_bytes(room)
-            {
-                event.content = Some("[sensitive Room terminal stream withheld]".into());
-                event.content_ref = None;
-                event.metadata.clear();
             } else if let Ok(scrubbed) = self.scrub(room, event.clone()) {
                 *event = scrubbed;
             } else {
@@ -746,7 +719,64 @@ impl RoomSecretObservations {
                 event.metadata.clear();
             }
         }
+        self.scrub_split_values(&mut events);
         events
+    }
+
+    /// A value streamed in several chunks is stored as several consecutive events
+    /// of one run; scrubbing each alone would miss it. Scan each run's joined text.
+    fn scrub_split_values(&self, events: &mut [crate::history::HistoryEvent]) {
+        let mut start = 0;
+        while start < events.len() {
+            let head = &events[start];
+            let end = start
+                + events[start..]
+                    .iter()
+                    .take_while(|event| {
+                        event.kind == head.kind
+                            && event.session_id == head.session_id
+                            && event.agent_id == head.agent_id
+                            && event.provider_run_id == head.provider_run_id
+                    })
+                    .count();
+            let streamed = matches!(
+                head.kind,
+                crate::history::HistoryEventKind::ProviderOutput
+                    | crate::history::HistoryEventKind::ProviderReasoning
+            );
+            if let (true, true, Some(room)) =
+                (streamed, end - start > 1, head.session_id.as_deref())
+            {
+                let variants = self.scrub_variants(room);
+                let mut parts: Vec<String> = events[start..end]
+                    .iter()
+                    .map(|event| event.content.clone().unwrap_or_default())
+                    .collect();
+                if redact_split_values(&mut parts, &variants) {
+                    for (event, part) in events[start..end].iter_mut().zip(parts) {
+                        event.content = Some(part);
+                    }
+                }
+            }
+            start = end;
+        }
+    }
+
+    fn scrub_variants(&self, room: &str) -> Vec<Zeroizing<String>> {
+        let room = self.room_key(room);
+        let Ok(rooms) = self.rooms.lock() else {
+            return Vec::new();
+        };
+        let protection = &rooms[room];
+        let mut variants = protection
+            .values
+            .iter()
+            .chain(&protection.retired_values)
+            .chain(&protection.stored_values)
+            .flat_map(|secret| secret_variants(secret))
+            .collect::<Vec<_>>();
+        variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
+        variants
     }
 
     fn withholds_history(&self, room: &str, timestamp_ms: u64) -> bool {
@@ -794,6 +824,49 @@ fn scrub_value(value: &mut serde_json::Value, secrets: &[Zeroizing<String>]) {
     }
 }
 
+/// Replaces every variant occurrence in the parts joined together; a match that
+/// crosses parts becomes one marker in the part where it starts. Returns whether
+/// anything was replaced.
+fn redact_split_values(parts: &mut [String], variants: &[Zeroizing<String>]) -> bool {
+    let joined = parts.concat();
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while at < joined.len() {
+        if let Some(variant) = variants
+            .iter()
+            .find(|variant| joined[at..].starts_with(variant.as_str()))
+        {
+            spans.push((at, at + variant.len()));
+            at += variant.len();
+        } else {
+            at += joined[at..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    if spans.is_empty() {
+        return false;
+    }
+    let mut part_start = 0;
+    for part in parts.iter_mut() {
+        let part_end = part_start + part.len();
+        let mut rebuilt = String::new();
+        let mut cursor = part_start;
+        for &(start, end) in &spans {
+            if end <= part_start || start >= part_end {
+                continue;
+            }
+            rebuilt.push_str(&joined[cursor..start.max(part_start)]);
+            if start >= part_start {
+                rebuilt.push_str("[redacted]");
+            }
+            cursor = end.min(part_end);
+        }
+        rebuilt.push_str(&joined[cursor..part_end]);
+        *part = rebuilt;
+        part_start = part_end;
+    }
+    true
+}
+
 fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
     let percent = secret
         .bytes()
@@ -827,6 +900,8 @@ fn secret_variants(secret: &str) -> Vec<Zeroizing<String>> {
         html,
         json[1..json.len().saturating_sub(1)].to_string(),
         base64::engine::general_purpose::STANDARD.encode(secret),
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(secret),
+        base64::engine::general_purpose::URL_SAFE.encode(secret),
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret),
     ]
     .into_iter()

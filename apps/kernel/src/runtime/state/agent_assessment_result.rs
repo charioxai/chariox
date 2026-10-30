@@ -216,9 +216,7 @@ impl KernelRuntimeOwnedState {
         {
             return;
         }
-        let bytes = self
-            .room_secret_observations
-            .protect_unframed_bytes(room, final_answer.as_bytes());
+        let bytes = final_answer.into_bytes();
         // Prompt-owned history needs a source attachment; the check turn still
         // being active supplies the requester's.
         let source = self
