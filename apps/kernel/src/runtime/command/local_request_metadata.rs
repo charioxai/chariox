@@ -230,8 +230,10 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::ListProviderAccountCopyOffers(_) => {
             LocalRequestMetadata::new("provider_account.copy_offers", Normal)
         }
-        LocalDaemonRequest::CopyProviderAccountFromKernel(_) => {
+        LocalDaemonRequest::CopyProviderAccountFromKernel(request) => {
             LocalRequestMetadata::new("provider_account.copy_from", Interactive)
+                .optional_session(request.session_id.as_deref())
+                .optional_agent(request.agent_id.as_deref())
         }
         LocalDaemonRequest::CopyProviderAccountToKernel(_) => {
             LocalRequestMetadata::new("provider_account.copy", Normal)

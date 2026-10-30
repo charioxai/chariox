@@ -80,4 +80,8 @@ test("recipient account copy carries metadata and an exact operation only", asyn
   assert.deepEqual(copyProviderAccountFromKernelRequest({ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }, "op"), {
     CopyProviderAccountFromKernel: { provider: "claude", account_profile: "work", source_kernel_id: "a", source_key_thumbprint: "pin", operation_id: "op", replace: false },
   })
+  // A locked or never-created Vault is opened in the session the person copies from.
+  assert.deepEqual(copyProviderAccountFromKernelRequest({ source_kernel_id: "a", source_machine_id: "ma", source_label: "A", source_key_thumbprint: "pin", target_kernel_id: "b", provider: "claude", account_profile: "work", label: "Work" }, "op", { sessionId: "s1", agentId: "agent-1" }), {
+    CopyProviderAccountFromKernel: { session_id: "s1", agent_id: "agent-1", provider: "claude", account_profile: "work", source_kernel_id: "a", source_key_thumbprint: "pin", operation_id: "op", replace: false },
+  })
 })

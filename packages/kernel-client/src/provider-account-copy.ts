@@ -22,8 +22,10 @@ export const providerAccountCopyMinimumProtocolVersion = 710
 export function listProviderAccountCopyOffersRequest() {
   return { ListProviderAccountCopyOffers: {} }
 }
-export function copyProviderAccountFromKernelRequest(offer: ProviderAccountCopyOffer, operationId: string, replace = false) {
+/** `scope` is where the kernel shows its Vault unlock or create prompt, when the copy needs one. */
+export function copyProviderAccountFromKernelRequest(offer: ProviderAccountCopyOffer, operationId: string, scope: { sessionId?: string; agentId?: string } = {}, replace = false) {
   return { CopyProviderAccountFromKernel: {
+    ...(scope.sessionId ? { session_id: scope.sessionId } : {}), ...(scope.agentId ? { agent_id: scope.agentId } : {}),
     provider: offer.provider, account_profile: offer.account_profile,
     source_kernel_id: offer.source_kernel_id, source_key_thumbprint: offer.source_key_thumbprint,
     operation_id: operationId, replace,

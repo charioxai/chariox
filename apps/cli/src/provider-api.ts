@@ -367,10 +367,10 @@ export async function listProviderAccountCopyOffers(client: LocalIpcClient): Pro
   const response = await client.send<Record<string, unknown>>(listProviderAccountCopyOffersRequest())
   return expectVariant<{ offers: ProviderAccountCopyOffer[] }>(response, "ProviderAccountCopyOffers").offers
 }
-export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string): Promise<ProviderAccountCopyReceipt> {
+export async function copyProviderAccountFromKernel(client: LocalIpcClient, offer: ProviderAccountCopyOffer, operationId: string, scope: { sessionId?: string; agentId?: string } = {}): Promise<ProviderAccountCopyReceipt> {
   const status = expectVariant<{status: {daemon_id: string}}>(await client.send<Record<string, unknown>>({RelayStatus: null}), "RelayStatus").status
   if (status.daemon_id !== offer.target_kernel_id) throw new Error("This login copy belongs to the previous machine. Open Account again.")
-  const response = await client.send<Record<string, unknown>>(copyProviderAccountFromKernelRequest(offer, operationId))
+  const response = await client.send<Record<string, unknown>>(copyProviderAccountFromKernelRequest(offer, operationId, scope))
   const receipt = expectVariant<{ receipt: ProviderAccountCopyReceipt }>(response, "ProviderAccountCopied").receipt
   if (receipt.operation_id !== operationId || receipt.target_kernel_id !== offer.target_kernel_id || receipt.source_profile_id !== offer.account_profile) throw new Error("The kernel did not confirm this login copy")
   return receipt

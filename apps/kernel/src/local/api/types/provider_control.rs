@@ -413,6 +413,11 @@ pub struct ListProviderAccountCopyOffersRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopyProviderAccountFromKernelRequest {
+    /// Where a Vault unlock or create prompt is shown when the copy needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub provider: String,
     pub account_profile: String,
     pub operation_id: String,

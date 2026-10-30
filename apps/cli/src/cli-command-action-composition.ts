@@ -616,7 +616,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       const key = JSON.stringify([offer.target_kernel_id, offer.source_kernel_id, offer.source_key_thumbprint, offer.account_profile])
       const operation = operations.get(key) ?? `account-copy-${randomUUID()}`
       operations.set(key, operation)
-      return copyProviderAccountFromKernel(source, offer, operation).then(receipt => { operations.delete(key); return receipt })
+      return copyProviderAccountFromKernel(source, offer, operation, isAttached() ? { sessionId: sessionState().id, agentId: focusedAgentId() } : {}).then(receipt => { operations.delete(key); return receipt })
     },
     listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
     createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),

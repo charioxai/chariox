@@ -5656,5 +5656,8 @@ kernel operation interaction, answered through `AnswerUserDomainInteraction`.
 Peer v274 adds `RequestProviderAccountCopy`, bound to the authenticated
 same-owner recipient's kernel identity and key. It reuses the independent
 Vault-backed account transfer and `ProviderAccountCopyReceipt`; it does not
-create a worker lease or enable synchronization. See
-[provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).
+create a worker lease or enable synchronization. `CopyProviderAccountFromKernel`
+takes optional `session_id` and `agent_id`: when the receiving kernel's Vault is
+locked or was never created, the kernel asks for it with the usual Vault
+interaction in that session after the owner consents, then continues the same
+copy. See [provider account copy](drills/PROVIDER_ACCOUNT_COPY.md).

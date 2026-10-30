@@ -166,6 +166,12 @@ fn account_copy_recipient_offer_requests_are_admitted() {
             "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
             "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
         }}),
+        // The session that shows the Vault prompt a locked or new Vault needs.
+        serde_json::json!({"CopyProviderAccountFromKernel": {
+            "session_id":"session-1", "agent_id":"agent-1",
+            "provider":"claude", "account_profile":"work", "operation_id":"receive-1",
+            "source_kernel_id":"source", "source_key_thumbprint":"a".repeat(64), "replace":false
+        }}),
     ] {
         let request = serde_json::from_value::<LocalDaemonRequest>(value.clone());
         assert!(

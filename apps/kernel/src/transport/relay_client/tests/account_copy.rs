@@ -295,6 +295,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             .await
             .provider_account_profile_registry()
             .clone();
+        let workspace = crate::test_support::TestWorktree::new("account-copy-workspace");
+        let (target_session, target_agent) = {
+            let mut app = target_app.lock().await;
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(workspace.session_request())
+                .unwrap();
+            (session.id().to_owned(), agent.id().to_owned())
+        };
         let source_router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
             source_app, 16,
         ));
@@ -625,6 +633,132 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     .is_ok());
                     assert_native_files_clean(&root.join("native-home"), canary);
                 }
+            }
+            // A receiver whose Vault is locked, or was never created, asks for it
+            // in the requesting session and then finishes the same copy.
+            for (operation, first_use) in [("receive-locked", false), ("receive-first-use", true)] {
+                crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+                if first_use {
+                    std::fs::remove_file(&target_vault).unwrap();
+                }
+                let mut request = receive.clone();
+                request["CopyProviderAccountFromKernel"]["operation_id"] = operation.into();
+                request["CopyProviderAccountFromKernel"]["session_id"] =
+                    target_session.clone().into();
+                request["CopyProviderAccountFromKernel"]["agent_id"] = target_agent.clone().into();
+                let router = target_router.clone();
+                let pending = tokio::spawn(async move { source_request(&router, request).await });
+                let consent = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let response = source_request(
+                            &target_router,
+                            serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+                        )
+                        .await
+                        .unwrap();
+                        if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                            .as_array()
+                            .unwrap()
+                            .first()
+                        {
+                            break interaction.clone();
+                        }
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("copy needs the existing kernel-owned consent");
+                source_request(
+                    &target_router,
+                    serde_json::json!({"AnswerUserDomainInteraction":{
+                        "interaction_id":consent["id"], "choice_id":"copy"
+                    }}),
+                )
+                .await
+                .unwrap();
+                let mut asked = Vec::new();
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while !pending.is_finished() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{operation}: the copy neither asked for the Vault nor finished"
+                    );
+                    let state = source_request(
+                        &target_router,
+                        serde_json::json!({"GetSessionState":{"session_id":target_session}}),
+                    )
+                    .await
+                    .unwrap();
+                    let card = state["SessionState"]["session"]["active_interactions"]
+                        .as_array()
+                        .and_then(|cards| {
+                            cards.iter().find(|card| {
+                                card["id"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with("vault-unlock"))
+                            })
+                        })
+                        .cloned();
+                    if let Some(card) = card {
+                        let (choice, reply) = if card["custom_choice"].is_null() {
+                            ("unlock_operation", serde_json::Value::Null)
+                        } else {
+                            ("passphrase", "fixture-pass".into())
+                        };
+                        asked.push(choice);
+                        source_request(
+                            &target_router,
+                            serde_json::json!({"RespondToInteraction":{
+                                "session_id":target_session, "interaction_id":card["id"],
+                                "choice_id":choice, "custom_reply":reply
+                            }}),
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    sleep(Duration::from_millis(10)).await;
+                }
+                assert_eq!(
+                    asked.first(),
+                    Some(&"passphrase"),
+                    "{operation}: Vault prompt"
+                );
+                let copied = tokio::time::timeout(Duration::from_secs(10), pending)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{operation}: {error}"));
+                let installed = copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    crate::provider::resolve_provider_account_credentials(
+                        &target, "local", "claude", installed
+                    )
+                    .is_err(),
+                    "{operation}: an operation-scoped unlock locks the Vault again"
+                );
+                crate::secret::unlock_chariox_encrypted_vault(
+                    &target_vault,
+                    "fixture-pass",
+                    crate::secret::VaultUnlockLease::KernelShutdown,
+                )
+                .unwrap();
+                assert!(
+                    crate::provider::resolve_provider_account_credentials(
+                        &target, "local", "claude", installed
+                    )
+                    .is_ok(),
+                    "{operation}: the copied login is in the Vault"
+                );
+                source_request(
+                    &target_router,
+                    serde_json::json!({"RemoveProviderAccountProfile":{
+                        "provider":"claude", "account_profile":installed
+                    }}),
+                )
+                .await
+                .unwrap();
             }
             let _ = stop_target.send(true);
             let _ = stop_source.send(true);

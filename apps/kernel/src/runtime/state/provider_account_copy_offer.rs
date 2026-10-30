@@ -167,6 +167,7 @@ impl KernelRuntimeState {
 
     pub(crate) async fn copy_provider_account_from_kernel(
         &self,
+        command: &crate::runtime::command::KernelCommand,
         caller: &str,
         request: CopyProviderAccountFromKernelRequest,
     ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
@@ -241,6 +242,12 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_cancelled"));
         }
+        // The install runs on this kernel's own peer handler, so its Vault is
+        // opened here, through the prompt every Vault-needing action uses.
+        let _vault = self
+            .ensure_vault_unlocked_for_command_context(command, None, None, "provider account copy")
+            .await
+            .map_err(|_| failure("provider_account_copy_vault_locked"))?;
         let current = self.config_snapshot().await;
         if enrolled_owner(&current, caller)? != owner
             || current.daemon_id != config.daemon_id
