@@ -389,11 +389,7 @@ mod tests {
                 },
             ),
         ]);
-        group
-            .known
-            .lock()
-            .unwrap()
-            .insert(42, "root".to_string());
+        group.known.lock().unwrap().insert(42, "root".to_string());
         group.remember(&processes);
         assert!(group.owns(43, &processes));
         assert!(!group.owns(44, &processes));
