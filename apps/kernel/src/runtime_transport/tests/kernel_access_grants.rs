@@ -1078,7 +1078,7 @@ async fn kernel_access_grants_expire_revoke_on_pid_reuse_and_real_rotation() {
             assert_eq!(ended["error"]["code"], "kernel_access_ended", "{ended}");
             assert_eq!(
                 ended["error"]["message"],
-                crate::runtime::kernel_access::Refusal::Ended.message()
+                crate::runtime::kernel_access::Refusal::EndedExpired.message()
             );
         }
         let mut reconnect = Client::start(&kernel.root);

@@ -1064,7 +1064,9 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     if crate::runtime::kernel_access::Refusal::grant_ended(error) {
-        return crate::runtime::kernel_access::Refusal::Ended.transport_error();
+        return crate::runtime::kernel_access::Refusal::exact(error)
+            .unwrap_or(crate::runtime::kernel_access::Refusal::Ended)
+            .transport_error();
     }
     match error {
         DaemonError::ProviderAccountNameTaken { .. } => {
