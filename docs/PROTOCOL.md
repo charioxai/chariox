@@ -5398,7 +5398,17 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
   summary.
 - A tab the user typed in, resized or opened can be closed only by the user.
 - Closing a terminal, or its shell exiting, ends every process left in the shell's
-  session (background jobs included). The shell keeps the kernel user's SSH agent and
+  session (background jobs included). A process that left that session
+  (`setsid nohup job >log 2>&1 </dev/null &`) keeps running after its shell or command
+  exits, in the same resource domain (memory limit and the kernel's memory accounting),
+  until it ends. It stays the terminal's: the session's process list (Health) shows it
+  with that terminal as owner, `StopSessionProcesses` stops it, and it ends with its
+  Room, at kernel stop and when a terminal whose program still runs is closed. An
+  agent's own tools behave the same way: a job they detached from the provider's
+  session survives a provider restart (cancel, model change, stall recovery) under that
+  agent, and ends when the agent is stopped or deleted. A terminal command starts with SIGHUP ignored (like `nohup`),
+  and what stays in the session ends half a second after the program exits, so a job
+  may still be detaching when its command returns. The shell keeps the kernel user's SSH agent and
   Git settings and does not inherit the kernel's own relay and local-auth tokens.
 - An operation for an agent that is leased to a worker (leased worker or slice) runs
   on that worker as `RelayPeerRequest::RoomTerminal`, keyed by the lease; `host_agent`
@@ -5904,6 +5914,17 @@ requests share the batch's commit/sync time. Response size measures the JSON res
 Metrics contain no request payloads, identifiers, paths or credentials. The health
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
+
+### MP-08 / MP-09 / MP-10 / MP-11: process rows in `SessionState` — local 913 / relay peer 364
+
+The `SessionState` response (`GetSessionState`, and the `state` of
+`AttachSessionView`) carries `processes`: the same rows the live
+`session_processes_changed` event carries (`owner`, `process_id`, `pid`,
+`command`, `resident_set_bytes`, `cpu_millis`, `sampled_at_ms`, `age_ms`), read
+when the request is answered. A one-shot `chariox request` therefore reads what
+Health shows, with no subscription. Clients need no minimum raise unless they
+read the field; the CLI/TUI puts it on the session it returns, so Health shows
+the rows from attach. The managed-upgrade list is [629, 636, 913].
 
 ### MP-08 / MP-09 / MP-10 / MP-11: landing union 911 / peer 362
 

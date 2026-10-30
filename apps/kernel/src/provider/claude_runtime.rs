@@ -84,6 +84,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     let output_notifier = crate::provider::output_ready::ProviderEventNotifier::default();
     let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
+        run.agent_instance_id().unwrap_or(run.id()),
         &program,
         &args,
         &env,
@@ -498,15 +499,45 @@ fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
     }
 }
 
+/// A restart does not end the agent: jobs its tools detached (`setsid nohup
+/// job &`) stay the agent's, under the same limit, until they end; Claude's own
+/// tree and session, including a cancelled tool command, end with it.
+fn release_detached_jobs(
+    run: &RuntimeProviderRun,
+    state: &mut ClaudeRuntimeState,
+    identity: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
+) {
+    let (Some(mut resources), Some(agent_id), Some(identity)) =
+        (state.resources.take(), run.agent_instance_id(), identity)
+    else {
+        return;
+    };
+    // Claude leads its own session (setsid at spawn). Sweep it only while that
+    // exact process still holds its PID, so no other process has the session id.
+    let leader = crate::runtime::kernel_access::process::inspect(identity.pid)
+        .ok()
+        .filter(|(current, _)| current.start == identity.start)
+        .and_then(|_| i32::try_from(identity.pid).ok());
+    if let Some(leader) = leader {
+        crate::runtime::process_resources::SessionSweep::capture(leader).stop_with_descendants();
+    }
+    resources.release(
+        run.session_id(),
+        crate::runtime::process_resources::SessionProcessOwner::Agent(agent_id.to_string()),
+    );
+}
+
 fn restart_claude_runtime(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
-    *state
+    let identity = state
         .process_identity
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    release_detached_jobs(run, state, identity);
     stop_child(&mut state.child);
     let base_args = claude_args_with_execution_config(
         &claude_args_without_resume(&state.args),
@@ -526,6 +557,7 @@ fn restart_claude_runtime(
     let output_notifier = state.output_notifier.clone();
     let (child, stdin, receiver, resources) = spawn_claude_child(
         run.id(),
+        run.agent_instance_id().unwrap_or(run.id()),
         &state.program,
         &args,
         &env,

@@ -1,4 +1,5 @@
 //! Linux memory controller domains. Only newly created directories are changed.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -11,38 +12,95 @@ impl Drop for Budget {
         let _ = std::fs::remove_dir(&self.path);
     }
 }
-pub(super) struct Domain {
+/// Everything one owner started, however many times its provider restarted, is
+/// one accounting unit: one cgroup that carries the limit, with a leaf per
+/// workload under it. A leaf only tells the workloads apart; its memory is
+/// charged to the unit.
+struct Unit {
     path: PathBuf,
     _budget: Arc<Budget>,
     limit: u64,
 }
+impl Drop for Unit {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.path);
+    }
+}
+/// How often the unit's limit events had fired when a leaf joined it, so a
+/// breach that ended earlier workloads does not end a later one.
+#[derive(Clone, Copy, Default)]
+struct Events {
+    high: u64,
+    oom: u64,
+    oom_kill: u64,
+}
+impl Unit {
+    fn events(&self) -> Option<Events> {
+        let events = std::fs::read_to_string(self.path.join("memory.events")).ok()?;
+        let count = |key: &str| {
+            events
+                .lines()
+                .find_map(|line| line.strip_prefix(key))
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        Some(Events {
+            high: count("high "),
+            oom: count("oom "),
+            oom_kill: count("oom_kill "),
+        })
+    }
+}
+fn unit(key: &str, limit: u64) -> Option<Arc<Unit>> {
+    static UNITS: OnceLock<Mutex<BTreeMap<String, Weak<Unit>>>> = OnceLock::new();
+    let mut units = UNITS.get_or_init(Mutex::default).lock().ok()?;
+    units.retain(|_, unit| unit.strong_count() > 0);
+    if let Some(unit) = units.get(key).and_then(Weak::upgrade) {
+        return Some(unit);
+    }
+    let budget = budget()?;
+    let path = budget.path.join(format!("unit-{}", rand::random::<u128>()));
+    std::fs::create_dir(&path).ok()?;
+    let unit = Arc::new(Unit {
+        path,
+        _budget: budget,
+        limit,
+    });
+    (|| -> std::io::Result<()> {
+        // Throttle at the user limit so the controller can record the typed
+        // outcome and end the tree. The killable hard ceiling is a backstop
+        // for bursts between observations, not the normal termination path.
+        let hard_limit = limit
+            .checked_add((limit / 4).max(64 * 1024 * 1024))
+            .ok_or_else(|| std::io::Error::other("process memory limit overflow"))?;
+        std::fs::write(unit.path.join("memory.high"), limit.to_string())?;
+        std::fs::write(unit.path.join("memory.max"), hard_limit.to_string())?;
+        std::fs::write(unit.path.join("memory.swap.max"), "0")?;
+        std::fs::write(unit.path.join("memory.oom.group"), "1")?;
+        Ok(())
+    })()
+    .ok()?;
+    units.insert(key.to_string(), Arc::downgrade(&unit));
+    Some(unit)
+}
+pub(super) struct Domain {
+    path: PathBuf,
+    unit: Arc<Unit>,
+    baseline: Events,
+}
 impl Domain {
-    pub fn create(limit: u64) -> Option<Self> {
-        let budget = budget()?;
-        let path = budget
+    pub fn create(unit_key: &str, limit: u64) -> Option<Self> {
+        let unit = unit(unit_key, limit)?;
+        let path = unit
             .path
             .join(format!("process-{}", rand::random::<u128>()));
         std::fs::create_dir(&path).ok()?;
-        let group = Self {
+        let baseline = unit.events().unwrap_or_default();
+        Some(Self {
             path,
-            _budget: budget,
-            limit,
-        };
-        let configured = (|| -> std::io::Result<()> {
-            // Throttle at the user limit so the controller can record the typed
-            // outcome and end the tree. The killable hard ceiling is a backstop
-            // for bursts between observations, not the normal termination path.
-            let hard_limit = limit
-                .checked_add((limit / 4).max(64 * 1024 * 1024))
-                .ok_or_else(|| std::io::Error::other("process memory limit overflow"))?;
-            std::fs::write(group.path.join("memory.high"), limit.to_string())?;
-            std::fs::write(group.path.join("memory.max"), hard_limit.to_string())?;
-            std::fs::write(group.path.join("memory.swap.max"), "0")?;
-            std::fs::write(group.path.join("memory.oom.group"), "1")?;
-            Ok(())
-        })();
-        configured.ok()?;
-        Some(group)
+            unit,
+            baseline,
+        })
     }
     pub fn pids(&self) -> std::io::Result<Vec<u32>> {
         Ok(std::fs::read_to_string(self.path.join("cgroup.procs"))?
@@ -67,25 +125,20 @@ impl Domain {
         &self.path
     }
     pub fn failure_limit(&self) -> Option<u64> {
-        let events = std::fs::read_to_string(self.path.join("memory.events")).ok()?;
-        let count = |key: &str| {
-            events
-                .lines()
-                .find_map(|line| line.strip_prefix(key))
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0)
-        };
-        let charged = std::fs::read_to_string(self.path.join("memory.current"))
+        let events = self.unit.events()?;
+        let limit = self.unit.limit;
+        let charged = std::fs::read_to_string(self.unit.path.join("memory.current"))
             .ok()
             .and_then(|value| value.trim().parse::<u64>().ok());
-        if count("high ") > 0 || charged.is_some_and(|bytes| bytes > self.limit) {
-            return Some(self.limit);
+        if events.high > self.baseline.high || charged.is_some_and(|bytes| bytes > limit) {
+            return Some(limit);
         }
-        (count("oom_kill ") > 0).then(|| {
-            if count("oom ") > 0 {
-                self.limit
+        (events.oom_kill > self.baseline.oom_kill).then(|| {
+            if events.oom > self.baseline.oom {
+                limit
             } else {
-                self._budget
+                self.unit
+                    ._budget
                     .limit
                     .load(std::sync::atomic::Ordering::Relaxed)
             }

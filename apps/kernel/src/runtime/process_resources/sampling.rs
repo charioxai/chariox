@@ -126,12 +126,9 @@ impl ProcessTree {
                     "the process already ended or changed ownership; refresh Health".to_string()
                 })?,
         };
-        let identity = self
-            .owned
-            .get(&target)
-            .ok_or_else(|| "the process already ended; refresh Health".to_string())?;
-        if !same_process(target, identity) {
-            return Err("the process identity changed; refresh Health".into());
+        // Once the root ended, the whole tree is what it left running.
+        if self.owned.is_empty() || (target != self.root && !self.owned.contains_key(&target)) {
+            return Err("the process already ended; refresh Health".into());
         }
         let mut selected = if target == self.root {
             self.owned.keys().copied().collect()

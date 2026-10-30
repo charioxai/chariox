@@ -6,12 +6,16 @@ use std::time::Duration;
 
 mod control;
 use control::WatchCommand;
-pub(crate) use control::{outside_ended_for_key, stop_for_key};
+pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 mod projection;
 mod sampling;
+mod session_sweep;
+#[cfg(test)]
+pub(crate) use projection::released_keys_for_session;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
+pub(crate) use session_sweep::SessionSweep;
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(test)]
@@ -53,29 +57,32 @@ pub(crate) fn validate_executable(
 }
 
 pub(crate) struct PreparedDomain {
+    unit: String,
     limit: u64,
     #[cfg(target_os = "linux")]
     cgroup: Option<Arc<cgroup::Domain>>,
 }
 
 impl PreparedDomain {
-    pub(crate) fn new() -> std::io::Result<Self> {
+    /// `unit` names whose accounting unit the workload joins: everything one
+    /// owner started shares a single limit, however often it restarted.
+    pub(crate) fn new(unit: &str) -> std::io::Result<Self> {
         let limit = configured_limit(
             std::env::var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB")
                 .ok()
                 .as_deref(),
         )?;
-        Self::with_limit(limit)
+        Self::with_limit(unit, limit)
     }
 
-    fn with_limit(limit: u64) -> std::io::Result<Self> {
+    fn with_limit(unit: &str, limit: u64) -> std::io::Result<Self> {
         if limit < 16 * MIB {
             return Err(std::io::Error::other(
                 "process memory limit must be at least 16 MiB",
             ));
         }
         #[cfg(target_os = "linux")]
-        let cgroup = cgroup::Domain::create(limit).map(Arc::new);
+        let cgroup = cgroup::Domain::create(unit, limit).map(Arc::new);
         #[cfg(target_os = "linux")]
         if cgroup.is_none() {
             static NOTICE: std::sync::Once = std::sync::Once::new();
@@ -88,10 +95,22 @@ impl PreparedDomain {
             });
         }
         Ok(Self {
+            unit: unit.to_string(),
             limit,
             #[cfg(target_os = "linux")]
             cgroup,
         })
+    }
+
+    /// The portable resident-memory watchdog, whatever the host's cgroups allow.
+    #[cfg(test)]
+    fn watchdog(unit: &str, limit: u64) -> Self {
+        Self {
+            unit: unit.to_string(),
+            limit,
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+        }
     }
 
     /// Join before executing the workload, so even its first fork inherits the
@@ -141,10 +160,14 @@ impl PreparedDomain {
         }
         #[cfg(target_os = "linux")]
         let cgroup = self.cgroup.clone();
-        let state = Arc::new(Mutex::new(Observation::default()));
+        let state = Arc::new(Mutex::new(Observation {
+            unit: self.unit.clone(),
+            ..Observation::default()
+        }));
         let watched = state.clone();
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
+        let mut released = false;
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -161,6 +184,16 @@ impl PreparedDomain {
                     }
                 };
                 let resident = samples.iter().map(|p| p.resident_set_bytes).sum::<u64>();
+                // A job that left soon after its parent may not be observed yet;
+                // its cgroup still holds it, and ending the watch would kill it.
+                #[cfg(target_os = "linux")]
+                let ended = samples.is_empty()
+                    && self
+                        .cgroup
+                        .as_ref()
+                        .is_none_or(|group| group.pids().is_ok_and(|pids| pids.is_empty()));
+                #[cfg(not(target_os = "linux"))]
+                let ended = samples.is_empty();
                 #[cfg(target_os = "linux")]
                 let oom = self.cgroup.as_ref().and_then(|group| group.failure_limit());
                 #[cfg(not(target_os = "linux"))]
@@ -170,8 +203,14 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let use_watchdog = true;
                 let reserve_limit = reserve_limit_for(&watched, resident, use_watchdog);
+                // Everything the owner started shares the limit, however often it restarted.
+                let unit_resident = if use_watchdog {
+                    unit_resident_for(&watched, resident)
+                } else {
+                    resident
+                };
                 let exceeded = oom.is_some()
-                    || (use_watchdog && resident > self.limit)
+                    || (use_watchdog && unit_resident > self.limit)
                     || reserve_limit.is_some();
                 {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
@@ -188,7 +227,11 @@ impl PreparedDomain {
                     }
                     tree.terminate();
                 }
+                if released && ended {
+                    break;
+                }
                 match stopped.recv_timeout(INTERVAL) {
+                    Ok(WatchCommand::Release) => released = true,
                     Ok(WatchCommand::Stop { process_id, reply }) => {
                         let result = tree.stop(
                             process_id.as_deref(),
@@ -218,6 +261,8 @@ impl PreparedDomain {
             state,
             stop,
             worker: Some(worker),
+            released: false,
+            started: control::domain_started(),
             #[cfg(target_os = "linux")]
             cgroup,
         })
@@ -242,20 +287,50 @@ fn configured_limit(value: Option<&str>) -> std::io::Result<u64> {
 
 #[derive(Default)]
 struct Observation {
+    /// The accounting unit the workload belongs to (its agent, or itself).
+    unit: String,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     memory_limit_bytes: Option<u64>,
+    /// Set once the workload's own process ended: what it left running is
+    /// still this owner's, listed, counted and stoppable until it ends.
+    released_to: Option<(String, SessionProcessOwner)>,
 }
 
 pub(crate) struct ProcessDomain {
     state: Arc<Mutex<Observation>>,
     stop: mpsc::Sender<WatchCommand>,
     worker: Option<JoinHandle<()>>,
+    released: bool,
+    started: u64,
     #[cfg(target_os = "linux")]
     cgroup: Option<Arc<cgroup::Domain>>,
 }
 impl ProcessDomain {
+    /// The workload's own process ended and its owner swept what it still
+    /// owns. Processes that left on purpose (`setsid nohup job &`) are not
+    /// ended with it: the memory watch stays until the last of them exits.
+    /// An owner already gone for good gets nothing: they end with the domain.
+    pub(crate) fn release(&mut self, session_id: &str, owner: SessionProcessOwner) {
+        let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if control::owner_ended(self.started, session_id, &owner) {
+            return;
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .released_to = Some((session_id.to_string(), owner));
+        // A new workload of the same owner may bind the same key; the released
+        // processes keep their own entry until the last of them ends.
+        registry.retain(|_, state| !state.ptr_eq(&Arc::downgrade(&self.state)));
+        registry.insert(
+            format!("released-{:032x}", rand::random::<u128>()),
+            Arc::downgrade(&self.state),
+        );
+        drop(registry);
+        self.released = self.stop.send(WatchCommand::Release).is_ok();
+    }
     pub(crate) fn memory_limit_bytes(&self) -> Option<u64> {
         #[cfg(target_os = "linux")]
         if let Some(limit) = self.cgroup.as_ref().and_then(|group| group.failure_limit()) {
@@ -283,9 +358,18 @@ impl ProcessDomain {
 }
 impl Drop for ProcessDomain {
     fn drop(&mut self) {
-        let _ = self.stop.send(WatchCommand::Shutdown);
+        control::domain_dropped(self.started);
+        if self.released {
+            // The watch thread owns the domain from here and ends with its last process.
+            self.worker.take();
+        } else {
+            let _ = self.stop.send(WatchCommand::Shutdown);
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+        if self.released {
+            return;
         }
         registry()
             .lock()
@@ -321,6 +405,39 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
             crate::session::unix_epoch_ms().saturating_sub(sample.sampled_at_ms) <= 5000
         })
         .collect()
+}
+
+/// Resident memory of every workload in `current`'s accounting unit.
+fn unit_resident_for(current: &Arc<Mutex<Observation>>, resident: u64) -> u64 {
+    let unit = current
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .unit
+        .clone();
+    let entries = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect::<Vec<_>>();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut total = resident;
+    for state in entries {
+        if Arc::ptr_eq(current, &state) || !seen.insert(Arc::as_ptr(&state) as usize) {
+            continue;
+        }
+        let state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.unit == unit {
+            total = total.saturating_add(
+                state
+                    .samples
+                    .iter()
+                    .map(|p| p.resident_set_bytes)
+                    .sum::<u64>(),
+            );
+        }
+    }
+    total
 }
 
 fn reserve_limit_for(

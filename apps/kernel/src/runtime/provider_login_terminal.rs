@@ -69,6 +69,7 @@ pub(super) async fn spawn(
             app.pty_mut()
                 .spawn_with_output_filter(
                     PtySpawnRequest {
+                        agent: None,
                         process_key: record.login_id.clone(),
                         provider_run_id: record.login_id.clone(),
                         program,

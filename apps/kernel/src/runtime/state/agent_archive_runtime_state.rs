@@ -258,6 +258,7 @@ impl KernelRuntimeState {
         }
         owned.withdraw_agent_interactions(room, Some(agent_id))?;
         owned.room_terminals.stop_agent(room, agent_id)?;
+        stop_released_agent_processes(room, agent_id).await?;
         owned.await_owned_wakes_settled(room, agent_id).await?;
         owned.agent_store.set_agent_processing(agent_id, false)?;
         let agent = owned
@@ -266,4 +267,47 @@ impl KernelRuntimeState {
         self.record_agent_durable_event("agent.updated", &agent, None)?;
         Ok(())
     }
+}
+
+/// What the agent's shells left running (`setsid nohup job &`) ends with its work.
+pub(super) async fn stop_released_agent_processes(
+    session_id: &str,
+    agent_id: &str,
+) -> Result<(), DaemonError> {
+    agent_processes(
+        session_id,
+        agent_id,
+        crate::runtime::process_resources::stop_released,
+    )
+    .await
+}
+
+/// A deleted agent's jobs end, including those of a provider process removed later.
+pub(super) async fn end_agent_processes(
+    session_id: &str,
+    agent_id: &str,
+) -> Result<(), DaemonError> {
+    agent_processes(
+        session_id,
+        agent_id,
+        crate::runtime::process_resources::end_owner,
+    )
+    .await
+}
+
+async fn agent_processes(
+    session_id: &str,
+    agent_id: &str,
+    end: fn(Option<&str>, Option<&crate::runtime::process_resources::SessionProcessOwner>),
+) -> Result<(), DaemonError> {
+    let (session_id, owner) = (
+        session_id.to_string(),
+        crate::runtime::process_resources::SessionProcessOwner::Agent(agent_id.to_string()),
+    );
+    tokio::task::spawn_blocking(move || end(Some(&session_id), Some(&owner)))
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "stop released agent processes",
+            message: error.to_string(),
+        })
 }

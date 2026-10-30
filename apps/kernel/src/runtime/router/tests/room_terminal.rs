@@ -534,3 +534,78 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
         .unwrap();
     });
 }
+
+// A one-shot `GetSessionState` carries the process rows the live feed shows.
+#[test]
+fn a_one_shot_session_state_lists_the_rooms_processes() {
+    run("room-state-processes", || async {
+        let worktree = crate::test_support::TestWorktree::new("room_state_processes");
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
+        let session_id = app
+            .sessions_mut()
+            .create_session(worktree.session_request())
+            .expect("session")
+            .id()
+            .to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let opened = terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_id,
+            None,
+            RoomTerminalOperation::Open {
+                cols: 80,
+                rows: 24,
+                title: None,
+                command: Some(vec!["/bin/sleep".into(), "8897".into()]),
+            },
+        )
+        .await
+        .expect("the owner opens a terminal");
+        let RoomTerminalResult::Opened { terminal } = opened else {
+            panic!("unexpected result");
+        };
+        let rows = || async {
+            let request =
+                LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+                    session_id: session_id.clone(),
+                });
+            let response = router
+                .dispatch(
+                    remote_command_for_request(&request, Some(DEFAULT_LOCAL_USER_ID)),
+                    request,
+                )
+                .await
+                .expect("one-shot session state");
+            serde_json::to_value(response).unwrap()["SessionState"]["processes"].clone()
+        };
+        let mut found = serde_json::Value::Null;
+        for _ in 0..100 {
+            found = rows().await;
+            if found.as_array().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["command"].as_str().is_some_and(|c| c.contains("sleep")))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        terminal_request(
+            &router,
+            DEFAULT_LOCAL_USER_ID,
+            &session_id,
+            None,
+            RoomTerminalOperation::Close {
+                terminal_id: terminal.terminal_id.clone(),
+            },
+        )
+        .await
+        .expect("the owner closes it");
+        let row = found
+            .as_array()
+            .and_then(|rows| rows.first())
+            .unwrap_or_else(|| panic!("the one-shot state lists no process: {found}"));
+        assert_eq!(row["owner"]["kind"], "terminal");
+        assert_eq!(row["owner"]["id"], terminal.terminal_id.as_str());
+    });
+}

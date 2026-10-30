@@ -55,5 +55,27 @@ pub(crate) fn keys_for_session(
         })
         .collect::<Vec<_>>();
     keys.extend(terminals.process_keys(session_id));
+    keys.extend(released_keys_for_session(session_id));
     keys
+}
+
+pub(crate) fn released_keys_for_session(session_id: &str) -> Vec<(SessionProcessOwner, String)> {
+    released_keys(|session, _| session == session_id)
+}
+
+/// Processes an ended workload left running (`setsid nohup job &`).
+pub(super) fn released_keys(
+    select: impl Fn(&str, &SessionProcessOwner) -> bool,
+) -> Vec<(SessionProcessOwner, String)> {
+    let mut registry = super::registry().lock().unwrap_or_else(|e| e.into_inner());
+    registry.retain(|_, state| state.strong_count() > 0);
+    registry
+        .iter()
+        .filter_map(|(key, state)| {
+            let state = state.upgrade()?;
+            let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+            let (session, owner) = observation.released_to.as_ref()?;
+            select(session, owner).then(|| (owner.clone(), key.clone()))
+        })
+        .collect()
 }
