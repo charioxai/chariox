@@ -83,6 +83,13 @@ test("A worker control or uninstall whose answer was lost is reported as unknown
   } }), /closed/)
 })
 
+test("a worker that could not be isolated tells the user what the host needs", async () => {
+  const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_wasm_containment", updated_at_ms: 1 }
+  const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
+  assert.equal(result.message, "docs · failed · app_wasm_containment: this computer cannot isolate the App worker, so the App was not started; "
+    + "your App data is retained. On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact")
+})
+
 test("a worker refused for low host disk space points at the App log that says how much to free", async () => {
   const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_disk_space", updated_at_ms: 1 }
   const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })

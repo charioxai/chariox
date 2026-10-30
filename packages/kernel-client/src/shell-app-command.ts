@@ -289,11 +289,21 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
   return `${route.route_id} · ${route.source_event_type} v${route.source_event_version}${source} → ${route.event_name} · ${counts}`
 }
 
+function workerFailureHint(worker: AppWorkerSummary): string {
+  switch (worker.failure) {
+    case "app_lifecycle_disk_space":
+      return `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
+    case "app_wasm_containment":
+      return ": this computer cannot isolate the App worker, so the App was not started; your App data is retained. "
+        + "On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact"
+    default:
+      return ""
+  }
+}
+
 function formatWorker(worker: AppWorkerSummary, commandPrefix: string): string {
   const enabled = worker.enabled ? "" : " (stopped by user)"
-  const hint = worker.failure === "app_lifecycle_disk_space"
-    ? `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
-    : ""
+  const hint = workerFailureHint(worker)
   const failure = worker.failure ? ` · ${worker.failure}${hint}` : ""
   const recovery = worker.phase === "quarantined"
     ? ` · explicit start required: ${commandPrefix} start ${JSON.stringify(worker.installation_id)}`
