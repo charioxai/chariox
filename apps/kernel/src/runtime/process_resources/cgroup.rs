@@ -199,29 +199,50 @@ fn own() -> Option<PathBuf> {
     Some(Path::new("/sys/fs/cgroup").join(relative.trim_start_matches('/')))
 }
 
-/// The parent of the kernel's own cgroup, when it delegates the memory controller.
+/// The parent of the kernel's own cgroup, when it delegates the memory
+/// controller and this user can create the budget's directory there.
 pub(super) fn delegated_parent() -> Option<PathBuf> {
-    let parent = own()?.parent()?.to_path_buf();
-    let controllers = std::fs::read_to_string(parent.join("cgroup.subtree_control")).ok()?;
-    controllers
-        .split_whitespace()
-        .any(|name| name == "memory")
-        .then_some(parent)
+    static PARENT: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    PARENT
+        .get_or_init(|| delegated_parent_of(&own()?, can_create_budget))
+        .clone()
 }
 
-/// The cgroups whose limits bound the workloads: from the delegated parent
-/// their budget lives under, else from the kernel's own cgroup they share.
+fn delegated_parent_of(own: &Path, can_create: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let parent = own.parent()?;
+    let controllers = std::fs::read_to_string(parent.join("cgroup.subtree_control")).ok()?;
+    (controllers.split_whitespace().any(|name| name == "memory") && can_create(parent))
+        .then(|| parent.to_path_buf())
+}
+
+/// A delegated controller does not make the parent writable for this user.
+fn can_create_budget(parent: &Path) -> bool {
+    let probe = parent.join(format!("chariox-probe-{}", std::process::id()));
+    let created = std::fs::create_dir(&probe).is_ok();
+    let _ = std::fs::remove_dir(&probe);
+    created
+}
+
+/// The cgroups whose limits bound the workloads, where they actually run:
+/// from the delegated parent their budget lives under, else from the kernel's
+/// own cgroup, which they then share.
 pub(super) fn bounding() -> Vec<PathBuf> {
-    delegated_parent()
-        .or_else(own)
-        .map(|start| {
-            start
-                .ancestors()
-                .take_while(|path| path.starts_with("/sys/fs/cgroup"))
-                .map(Path::to_path_buf)
-                .collect()
-        })
-        .unwrap_or_default()
+    let Some(own) = own() else {
+        return Vec::new();
+    };
+    let parent = delegated_parent();
+    bounding_for(Path::new("/sys/fs/cgroup"), &own, |path| {
+        parent.as_deref() == Some(path)
+    })
+}
+
+fn bounding_for(root: &Path, own: &Path, can_create: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+    delegated_parent_of(own, can_create)
+        .unwrap_or_else(|| own.to_path_buf())
+        .ancestors()
+        .take_while(|path| path.starts_with(root))
+        .map(Path::to_path_buf)
+        .collect()
 }
 
 /// How much more a limited cgroup can hold before its limit, without swap.
@@ -283,4 +304,41 @@ fn remove_empty(path: &Path) {
         }
     }
     let _ = std::fs::remove_dir(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// root/service.slice/kernel.service, the slice delegating memory and the
+    /// kernel's own cgroup limited to 1 GiB.
+    fn service() -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("pc-cgroup-{:016x}", rand::random::<u64>()));
+        let own = root.join("service.slice/kernel.service");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(
+            own.parent().unwrap().join("cgroup.subtree_control"),
+            "memory\n",
+        )
+        .unwrap();
+        std::fs::write(own.join("memory.max"), "1073741824\n").unwrap();
+        (root, own)
+    }
+
+    #[test]
+    fn an_unwritable_delegated_parent_leaves_the_kernels_own_limit_in_force() {
+        let (root, own) = service();
+        let bounds = bounding_for(&root, &own, |_| false);
+        assert_eq!(bounds.first(), Some(&own), "{bounds:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_writable_delegated_parent_bounds_the_sibling_budget_by_the_parent_only() {
+        let (root, own) = service();
+        let bounds = bounding_for(&root, &own, |_| true);
+        assert_eq!(bounds.first(), own.parent().map(Path::to_path_buf).as_ref());
+        assert!(!bounds.contains(&own), "{bounds:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
