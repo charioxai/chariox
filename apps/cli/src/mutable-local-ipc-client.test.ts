@@ -28,6 +28,19 @@ test("managed target telemetry forwards options to the current client", async ()
   assert.deepEqual(calls, [["source", { kernelRef: "kernel-1" }], ["target", { machineRef: "machine-2" }], ["source", undefined]])
 })
 
+test("the kernel protocol is read from the current client", async () => {
+  const source = new LocalIpcClient("ws://127.0.0.1:1")
+  const target = new LocalIpcClient("ws://127.0.0.1:2")
+  source.kernelProtocolVersion = async () => 710
+  target.kernelProtocolVersion = async () => 711
+  const client = createMutableLocalIpcClient(source)
+  assert.equal(await client.kernelProtocolVersion(), 710)
+  const pivot = beginMutableLocalIpcClientPivot(client, target)
+  assert.equal(await client.kernelProtocolVersion(), 711)
+  await pivot.rollback()
+  assert.equal(await client.kernelProtocolVersion(), 710)
+})
+
 test("command composition starts with the mutable local client used by the app", () => {
   const client = createMutableLocalIpcClient(new LocalIpcClient("ws://127.0.0.1:1"))
   const handlers = createCliCommandActionComposition({

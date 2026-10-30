@@ -108,6 +108,9 @@ export function createMutableLocalIpcClient(initialClient: LocalIpcClient): Muta
     send<TResponse>(request: unknown): Promise<TResponse> {
       return currentClient.send<TResponse>(request)
     },
+    kernelProtocolVersion() {
+      return currentClient.kernelProtocolVersion()
+    },
     requestStats() {
       return currentClient.requestStats()
     },
