@@ -101,7 +101,7 @@ pub(super) fn register(
         ActiveRelease::load(context.store.path(), binding.clone(), trust.clone()).map_err(
             preparation_failed(installation, binding.token().generation, "active_release"),
         )?;
-    budget.check().map_err(|_| LifecycleError::Stopped)?;
+    budget.check()?;
     let verified = active.verify().map_err(preparation_failed(
         installation,
         binding.token().generation,

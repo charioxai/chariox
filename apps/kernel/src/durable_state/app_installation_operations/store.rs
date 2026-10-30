@@ -29,7 +29,14 @@ pub(super) fn now() -> Result<i64> {
     i64::try_from(crate::session::unix_epoch_ms()).map_err(|_| InstallOperationError::Storage)
 }
 pub(super) fn limit(value: &AppOperationBudget) -> Result<()> {
-    value.check().map_err(|_| InstallOperationError::Stopped)
+    value.check().map_err(|stopped| match stopped {
+        crate::runtime::app_operation_budget::AppOperationStopped::Cancelled => {
+            InstallOperationError::Stopped
+        }
+        crate::runtime::app_operation_budget::AppOperationStopped::Deadline => {
+            InstallOperationError::Deadline
+        }
+    })
 }
 pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     // An installation has one first-install operation and any number of

@@ -23,6 +23,10 @@ test("cache contention, capacity and storage failures explain recovery", () => {
   assert.match(formatInstallFailure("app_aot_limit"), /Rebuild a smaller/)
   assert.match(formatInstallFailure("app_aot_store"), /disk space and permissions/)
 })
+test("a start that outlives its budget says so instead of reporting a stop", () => {
+  assert.match(formatInstallFailure("app_lifecycle_deadline"), /30-second budget/)
+  assert.match(formatInstallFailure("app_lifecycle_deadline"), /Start it again/)
+})
 test("an untrusted native App worker points at the installation, not the disk", () => {
   assert.match(formatInstallFailure("app_wasm_runtime"), /must belong to root, or be read-only to your user/)
   assert.doesNotMatch(formatInstallFailure("app_wasm_runtime"), /disk space/)

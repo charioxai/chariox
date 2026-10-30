@@ -155,7 +155,7 @@ impl AppLifecycleService {
 }
 pub(super) fn code(error: LifecycleError) -> Error {
     match error {
-        LifecycleError::Busy | LifecycleError::LiveLimit => Error::Busy,
+        LifecycleError::Busy | LifecycleError::LiveLimit | LifecycleError::Deadline => Error::Busy,
         LifecycleError::Authority | LifecycleError::Stopped => Error::Conflict,
         _ => Error::StorageUnavailable,
     }

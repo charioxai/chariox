@@ -40,6 +40,7 @@ fn error(error: InstallOperationError) -> Error {
         InstallOperationError::CommitUnknown => Error::Unknown,
         InstallOperationError::Storage => Error::Storage,
         InstallOperationError::Stopped => Error::Failed("app_install_cancelled_or_expired"),
+        InstallOperationError::Deadline => Error::Failed("app_lifecycle_deadline"),
         InstallOperationError::Stale => Error::Failed("app_install_authority_changed"),
         InstallOperationError::Limit => Error::Failed("app_install_limit"),
         InstallOperationError::NotFound => Error::Failed("app_install_not_found"),

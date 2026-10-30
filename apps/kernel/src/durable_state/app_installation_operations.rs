@@ -45,6 +45,8 @@ pub(crate) enum InstallOperationError {
     Limit,
     #[error("app_install_stopped")]
     Stopped,
+    #[error("app_lifecycle_deadline")]
+    Deadline,
     #[error("app_install_storage")]
     Storage,
     #[error("app_install_commit_unknown")]
