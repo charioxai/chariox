@@ -441,6 +441,7 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
         connect(&kernel, Duration::from_secs(60)).await;
     });
     assert!(!token_file.exists(), "no token is left on disk");
+    #[cfg(target_os = "linux")]
     assert_eq!(
         std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
         scratch.join("bin/chariox-kernel")
@@ -549,7 +550,10 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
     });
     // Not left running unmanaged: ended (and reaped) as on a planned restart.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while Path::new(&format!("/proc/{exec_pid}")).exists() {
+    // Signal 0 only checks that the process still exists; ended and reaped
+    // it does not.
+    assert!(exec_pid > 1);
+    while unsafe { libc::kill(exec_pid, 0) } == 0 {
         assert!(
             Instant::now() < deadline,
             "the exec kept running after the hot reload"
@@ -629,6 +633,8 @@ fn a_terminal_takes_input_after_a_hot_reload() {
     });
 }
 
+/// Memory domains are cgroups, which only Linux has.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_adopted_terminal_keeps_its_memory_domain() {
     let scratch = std::env::temp_dir().join(format!("hr-domain-{}", std::process::id()));
@@ -989,6 +995,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
     if login.vault_token().is_some() {
         assert!(lines(&record.join("starts"))[0].ends_with("token=set"));
     }
+    #[cfg(target_os = "linux")]
     assert_eq!(
         std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
         scratch.join("bin/chariox-kernel")
