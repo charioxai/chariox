@@ -107,6 +107,10 @@ const BRIDGE_SOURCE = `(() => {
   (${installAppDrafts.toString()})();
 })();`;
 
+// prepareUpdate waits at most 5 s; this covers the page's answer on top of it.
+const UPDATE_SAFE_POINT_MS = 6000;
+const INLINE_SCRIPT_BLOCKED = "The view has no actions because its page uses an inline script, which views do not run. Put the script in a file, load it with <script src>, and reinstall the App.";
+
 function invalid(message) {
   return new BrowserControllerError("invalid_request", message);
 }
@@ -154,8 +158,11 @@ function agentCall(params, token) {
   if (params.call === "state") {
     expression = call("state", []);
   } else if (params.call === "registrations") {
-    // The only call that answers with a bare list.
-    expression = call("registrations", [], "{ ok: true, value: answer }");
+    // The only call that answers with a bare list. With no action registered,
+    // a refused inline script is the likely cause, and the person can fix it.
+    expression = call("registrations", [], `answer.length === 0 && view.inlineScriptBlocked()
+      ? { ok: false, code: "action_not_registered", message: ${JSON.stringify(INLINE_SCRIPT_BLOCKED)} }
+      : { ok: true, value: answer }`);
   } else if (params.call === "invoke") {
     if (typeof params.name !== "string" || !AGENT_NAME.test(params.name)) throw invalid("invalid action name");
     const input = params.input ?? {};
@@ -416,6 +423,12 @@ export class AppTabs {
     const next = params.entry ?? "index.html";
     app.assets = assets(params.assets, next);
     app.entry = next;
+    // The old page may be holding an unsaved draft: give it a bounded moment
+    // to save. A page without a handler answers at once; a hung or gone one
+    // is cut off, since the update must not wait for it.
+    await this.connection.send("Runtime.evaluate", {
+      expression: "globalThis.__charioxViewAgent?.prepareUpdate()", awaitPromise: true, returnByValue: true,
+    }, sessionId, { timeoutMs: UPDATE_SAFE_POINT_MS }).catch(() => {});
     // Calls the old page queued are not the new page's: its promises go with it.
     this.calls = this.calls.filter((call) => call.target_id !== app.targetId);
     await this.connection.send("Page.reload", { ignoreCache: true }, sessionId);

@@ -27,7 +27,8 @@ function form(name, attributes, controls) {
 const nativeSetter = () => ({ prototype: Object.defineProperty({}, 'value', {
   set(value) { this.native = [...(this.native ?? []), value]; this.value = value; } }) });
 function page(forms = [], request = () => Promise.resolve(null), inputs) {
-  const context = { document: { querySelectorAll: () => forms }, TextEncoder, Event: class { constructor(type) { this.type = type; } },
+  const listeners = new Map();
+  const context = { document: { querySelectorAll: () => forms, addEventListener: (type, listener) => listeners.set(type, listener) }, listeners, TextEncoder, Event: class { constructor(type) { this.type = type; } },
     HTMLInputElement: nativeSetter(), HTMLSelectElement: nativeSetter(), HTMLTextAreaElement: nativeSetter(),
     setTimeout, clearTimeout, request, inputs };
   const api = vm.runInNewContext(`(${createViewActions.toString()})(request, inputs)`, context);
@@ -248,4 +249,15 @@ test('UI callbacks capture the input caller and keep it separate from a human ca
   assert.deepEqual(calls.map(call => call.token), ['input-token',undefined,undefined,'input-token']);
   assert.equal(tracked[0].token,'input-token');
   assert.equal(tracked[0].promise,agent);
+});
+
+test('only a refused inline script marks the view as blocked', () => {
+  const { api, context } = page();
+  const violate = event => context.listeners.get('securitypolicyviolation')(event);
+  assert.equal(api.agent.inlineScriptBlocked(), false);
+  violate({ blockedURI: 'https://elsewhere.test/a.js', effectiveDirective: 'script-src-elem' });
+  violate({ blockedURI: 'inline', effectiveDirective: 'img-src' });
+  assert.equal(api.agent.inlineScriptBlocked(), false);
+  violate({ blockedURI: 'inline', effectiveDirective: 'script-src-elem' });
+  assert.equal(api.agent.inlineScriptBlocked(), true);
 });

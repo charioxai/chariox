@@ -14,6 +14,8 @@ export function createViewActions(request, inputs) {
   const MAX_CHANGE_BYTES = 16 * 1024;
   const MAX_BUFFERED_CHANGES = 256;
   const MAX_WAIT_MS = 30_000;
+  const MAX_UPDATE_HANDLERS = 8;
+  const UPDATE_WAIT_MS = 5000;
   // Password and protected controls take what the agent supplies like any other:
   // a value the agent knows is its own input. The product masks what a Vault fill
   // put there in model-bound observations; this module neither reads nor echoes it.
@@ -21,7 +23,13 @@ export function createViewActions(request, inputs) {
 
   const registered = new Map();
   const formHandlers = new WeakMap();
+  // The view's policy refuses inline scripts without telling the page's author.
+  let inlineScriptBlocked = false;
+  document.addEventListener('securitypolicyviolation', event => {
+    if (event.blockedURI === 'inline' && /^script-src/.test(event.effectiveDirective)) inlineScriptBlocked = true;
+  });
   let stateProvider = null;
+  const updateHandlers = [];
   let latest = 0;
   const log = [];
   const waiters = new Set();
@@ -186,6 +194,13 @@ export function createViewActions(request, inputs) {
       if (typeof provider !== 'function') throw new TypeError('chariox.view.state needs a function returning the snapshot');
       stateProvider = provider;
     },
+    // Called before an update reloads this view: save what is being edited
+    // (for example to this origin's web storage), then return or settle.
+    beforeUpdate(handler) {
+      if (typeof handler !== 'function') throw new TypeError('chariox.view.beforeUpdate needs a function');
+      if (updateHandlers.length >= MAX_UPDATE_HANDLERS) throw new RangeError(`chariox.view.beforeUpdate: at most ${MAX_UPDATE_HANDLERS} handlers`);
+      updateHandlers.push(handler);
+    },
     changed(delta) {
       const checked = bounded(delta, MAX_CHANGE_BYTES, 'change_too_large', 'the change');
       if (!checked.ok) throw new RangeError(`chariox.view.changed: ${checked.message}`);
@@ -225,6 +240,16 @@ export function createViewActions(request, inputs) {
 
   // The kernel's side. Every answer is `{ok: true, value}` or `{ok: false, code, message}`.
   const agent = Object.freeze({
+    /** Runs the page's save handlers; the kernel reloads the view once they settle or after 5 s. */
+    async prepareUpdate() {
+      let timer;
+      const saved = Promise.allSettled(updateHandlers.map(async handler => handler())).then(() => true);
+      const late = new Promise(resolve => { timer = setTimeout(() => resolve(false), UPDATE_WAIT_MS); });
+      try { return { ok: true, value: { handlers: updateHandlers.length, saved: await Promise.race([saved, late]) } }; }
+      finally { clearTimeout(timer); }
+    },
+    /** True once the view's policy has refused one of its inline scripts. */
+    inlineScriptBlocked() { return inlineScriptBlocked; },
     /** Declaration-shaped descriptors, compared by the kernel with the signed ones. */
     registrations() {
       return [...[...registered.values()].map(({ descriptor }) => JSON.parse(JSON.stringify(descriptor))), ...forms().map(describeForm)];

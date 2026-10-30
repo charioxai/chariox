@@ -209,3 +209,64 @@ test('MP-08/MP-10 A3: browser loss gives an interrupted handler a typed result a
   assert.notEqual(next.target, app.target);
   assert.deepEqual((await next.agent({ call: 'state' })).value, { todos: [] });
 });
+
+test('a view whose inline script the policy refused says so instead of "not registered"', async () => {
+  const opened = await host.handle({ id: ++requests, method: 'browser.app.open', params: {
+    origin_label: 'inline-script', installation_id: 'inline-script', assets: [
+      asset('index.html', 'text/html', `<main></main><script>chariox.action({ name: 'add_todo', description: 'x', effect: 'read', inputSchema: { type: 'object', additionalProperties: false } }, async () => ({}));</script>`)] } });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  const target = opened.result.target_id;
+  const { connection, sessionId } = await host.browser.resolvePageTarget(target);
+  for (let i = 0; i < 200; i++) {
+    const ready = await connection.send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true }, sessionId);
+    if (ready.result.value === 'complete') break;
+    await new Promise(r => setTimeout(r, 25));
+  }
+  const answer = await host.handle({ id: ++requests, method: 'browser.app.agent', params: { target_id: target, agent: 'agent-7', call: 'registrations' } });
+  assert.equal(answer.ok, true, JSON.stringify(answer));
+  assert.equal(answer.result.ok, false, JSON.stringify(answer));
+  assert.equal(answer.result.code, 'action_not_registered');
+  assert.match(answer.result.message, /inline script/);
+  assert.match(answer.result.message, /<script src>/);
+});
+
+const draftPage = `<main></main><script src="app.js"></script>`;
+const draftScript = (beforeUpdate) => `
+  window.notes = JSON.parse(localStorage.getItem('draft') ?? '[]');
+  localStorage.removeItem('draft');
+  ${beforeUpdate}
+  window.ready = true;`;
+async function openDraftApp(label, beforeUpdate) {
+  const assets = [asset('index.html', 'text/html', draftPage), asset('app.js', 'text/javascript', draftScript(beforeUpdate))];
+  const opened = await host.handle({ id: ++requests, method: 'browser.app.open', params: { origin_label: label, installation_id: label, assets } });
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  const target = opened.result.target_id;
+  const { connection, sessionId } = await host.browser.resolvePageTarget(target);
+  const evaluate = async expression => (await connection.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId)).result.value;
+  const ready = async () => { for (let i = 0; i < 400 && !await evaluate('window.ready === true'); i++) await new Promise(r => setTimeout(r, 25)); };
+  await ready();
+  const reload = async () => {
+    await evaluate('delete window.ready');
+    const started = Date.now();
+    const reply = await host.handle({ id: ++requests, method: 'browser.app.reload', params: { target_id: target, assets } });
+    assert.equal(reply.ok, true, JSON.stringify(reply));
+    await ready();
+    return Date.now() - started;
+  };
+  return { evaluate, reload };
+}
+
+test('an update reload waits for the page to save its draft, which the new page restores', async () => {
+  const app = await openDraftApp('update-draft', `chariox.view.beforeUpdate(async () => { await new Promise(r => setTimeout(r, 200)); localStorage.setItem('draft', JSON.stringify(window.notes)); });`);
+  await app.evaluate(`window.notes.push('milk', 'eggs')`);
+  await app.reload();
+  assert.deepEqual(JSON.parse(await app.evaluate('JSON.stringify(window.notes)')), ['milk', 'eggs']);
+});
+
+test('an update reload does not wait for a page that never answers, nor for one with no handler', async () => {
+  const hung = await openDraftApp('update-hung', `chariox.view.beforeUpdate(() => new Promise(() => {}));`);
+  const waited = await hung.reload();
+  assert.ok(waited >= 4900 && waited < 9000, `cut off after about 5 s, took ${waited} ms`);
+  const plain = await openDraftApp('update-plain', '');
+  assert.ok(await plain.reload() < 3000, 'a page without a handler reloads at once');
+});
