@@ -1072,9 +1072,9 @@ async fn a_job_that_left_the_session_outlives_its_command() {
     let attached = root.path().join("attached.pid");
     // The pause lets the resource watch observe both jobs before the command ends.
     let script = format!(
-        "setsid sh -c 'echo $$ > \"{}\"; exec sleep 8885' </dev/null >/dev/null 2>&1 & \
+        "{} </dev/null >/dev/null 2>&1 & \
          sh -c 'echo $$ > \"{}\"; exec sleep 8886' </dev/null >/dev/null 2>&1 & sleep 1",
-        detached.display(),
+        crate::test_support::session_job(&format!("'{}'", detached.display()), 8885),
         attached.display(),
     );
     let id = service
@@ -1167,8 +1167,8 @@ async fn a_job_detaching_as_its_command_returns_keeps_running() {
     let detached = root.path().join("late.pid");
     // The command returns at once: the job is still detaching when it ends.
     let script = format!(
-        "setsid nohup sh -c 'echo $$ > \"{}\"; exec sleep 8887' </dev/null >/dev/null 2>&1 &",
-        detached.display(),
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8887),
     );
     let id = service
         .open(OpenRoomTerminal {
@@ -1213,8 +1213,8 @@ async fn a_detached_job_stays_listed_counted_and_stoppable_under_its_terminal() 
     let service = service(root.path());
     let detached = root.path().join("owned.pid");
     let script = format!(
-        "setsid nohup sh -c 'echo $$ > \"{}\"; exec sleep 8893' </dev/null >/dev/null 2>&1 &",
-        detached.display(),
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8893),
     );
     let id = service
         .open(OpenRoomTerminal {
@@ -1289,8 +1289,8 @@ async fn a_detached_job_ends_with_its_room() {
     let service = service(root.path());
     let detached = root.path().join("room.pid");
     let script = format!(
-        "setsid nohup sh -c 'echo $$ > \"{}\"; exec sleep 8894' </dev/null >/dev/null 2>&1 &",
-        detached.display(),
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8894),
     );
     service
         .open(OpenRoomTerminal {

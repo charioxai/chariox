@@ -133,13 +133,16 @@ fn a_job_the_agent_detached_outlives_a_claude_restart_and_stays_its_own() {
             pty_program: Some("/bin/sh".into()),
             pty_args: vec![
                 "-c".into(),
-                r#"if [ ! -e "$DETACHED" ]; then
-  (setsid nohup sh -c 'echo $$ > "$DETACHED"; exec sleep 8891' </dev/null >/dev/null 2>&1 &)
+                format!(
+                    r#"if [ ! -e "$DETACHED" ]; then
+  (nohup {} </dev/null >/dev/null 2>&1 &)
   sh -c 'echo $$ > "$ATTACHED"; exec sleep 8892' </dev/null >/dev/null 2>&1 &
-  setsid sh -c 'echo $$ > "$TOOL"; exec sleep 8895' </dev/null >/dev/null 2>&1 &
+  {} </dev/null >/dev/null 2>&1 &
 fi
-while IFS= read -r line; do :; done"#
-                    .into(),
+while IFS= read -r line; do :; done"#,
+                    crate::test_support::detached_job("\"$DETACHED\"", 8891),
+                    crate::test_support::session_job("\"$TOOL\"", 8895),
+                ),
             ],
             pty_env: BTreeMap::from([
                 ("DETACHED".into(), detached.display().to_string()),
@@ -172,8 +175,7 @@ while IFS= read -r line; do :; done"#
     );
     restart_claude_runtime(&run, &mut binding.state, "regression_restart_detached").unwrap();
     std::thread::sleep(Duration::from_millis(600));
-    // SAFETY: signal 0 only probes the positive PIDs this test started.
-    let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0 && !zombie(pid);
+    let alive = crate::test_support::process_alive;
     let (job_alive, leftover_alive, command_alive) = (alive(job), alive(leftover), alive(command));
     let owner =
         crate::runtime::process_resources::SessionProcessOwner::Agent("detach-agent".into());
@@ -213,7 +215,8 @@ while IFS= read -r line; do :; done"#
 }
 
 // An agent restarted twice is still one accounting unit: what each run started
-// is limited together, not once per run.
+// is limited together, not once per run. Linux-only: it reads cgroup limits.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_agent_restarted_twice_stays_one_limited_unit() {
     let worktree = crate::test_support::TestWorktree::new("claude-unit-restarts");
@@ -229,9 +232,11 @@ fn an_agent_restarted_twice_stays_one_limited_unit() {
             pty_program: Some("/bin/sh".into()),
             pty_args: vec![
                 "-c".into(),
-                r#"(setsid nohup sh -c 'echo $$ > "$JOBS/job.$$"; exec sleep 8896' </dev/null >/dev/null 2>&1 &)
-while IFS= read -r line; do :; done"#
-                    .into(),
+                format!(
+                    r#"(nohup {} </dev/null >/dev/null 2>&1 &)
+while IFS= read -r line; do :; done"#,
+                    crate::test_support::detached_job("\"$JOBS/job.{pid}\"", 8896),
+                ),
             ],
             pty_env: BTreeMap::from([("JOBS".into(), worktree.path().display().to_string())]),
             pty_env_remove: Vec::new(),
@@ -300,14 +305,4 @@ while IFS= read -r line; do :; done"#
         "the agent's three runs hold {} separately limited domains: {limited:?}",
         limited.len()
     );
-}
-
-fn zombie(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            stat.rfind(')')
-                .map(|end| stat[end + 1..].trim_start().starts_with('Z'))
-        })
-        .unwrap_or(false)
 }
