@@ -44,10 +44,22 @@ pub(super) async fn run(
             turn_id: None,
             actor: None,
         };
-        worker
+        if let Err(failure) = worker
             .run(ipc.clone(), scope, step.from, step.to, context)
             .await
-            .map_err(|e| wasmtime::Error::msg(format!("migration failed: {}", e.code)))?;
+        {
+            // The kernel names this cause to the person; the process exit
+            // alone would only say that the worker never registered.
+            let report = Scope::new(
+                format!("migration-failed-{}", step.to),
+                tokio::time::Instant::now() + Duration::from_secs(2),
+            );
+            let _ = ipc
+                .call(&report, "migration.failed", serde_json::json!({"code": failure.code}))
+                .await;
+            report.finish();
+            return Err(wasmtime::Error::msg(format!("migration failed: {}", failure.code)));
+        }
         let journal = Scope::new(format!("migration-step-{}", step.to), deadline);
         ipc.call(
             &journal,

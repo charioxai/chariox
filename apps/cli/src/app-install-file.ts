@@ -357,6 +357,8 @@ const installFailures: Record<string, string> = {
   app_install_package_incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
   app_install_package_incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
   app_install_package_incompatible_contract: "The App's declared contract is not supported by this kernel.",
+  app_install_package_import_not_allowed: "The App asks for a capability this kernel does not offer. Remove that import and rebuild the App.",
+  app_install_package_invalid_component: "The App's code file is not a valid WebAssembly component. Rebuild the App.",
   app_install_package_incompatible_resource_policy: "The App requests more resources than this kernel allows.",
   app_install_package_untrusted_publisher: "The package's publisher is not trusted by this kernel.",
   app_install_package_invalid_signature: "The package signature is invalid.",
@@ -379,9 +381,21 @@ const installFailures: Record<string, string> = {
   app_update_schema_downgrade: "This release's data schema is older than the installed App's; App data is never migrated to an older schema.",
 }
 
+// Why a data migration stopped: the runtime's own codes in plain words, otherwise the App's own code.
+const migrationCauses: Record<string, string> = {
+  DEADLINE_EXCEEDED: "ran out of time",
+  APP_TRAPPED: "crashed",
+  APP_MEMORY_LIMIT: "used too much memory",
+}
+
 /** Friendly text for an operation's kernel failure code; unknown codes are shown only when well-formed. */
 export function formatInstallFailure(failure: string): string {
   if (Object.hasOwn(installFailures, failure)) return installFailures[failure]!
+  const migration = /^app_update_migration_failed(?::([A-Z0-9_]{1,48}))?$/.exec(failure)
+  if (migration) {
+    const cause = migration[1] === undefined ? "" : Object.hasOwn(migrationCauses, migration[1]) ? ` The migration ${migrationCauses[migration[1]]}.` : ` The App reported: ${migration[1]}.`
+    return `The App could not move its data to the new version, so the update was not applied.${cause} The installed version and its data are unchanged.`
+  }
   return (/^app_(?:install|update|lifecycle)_[a-z_]{1,96}$/.test(failure) ? `Kernel failure: ${failure}.` : "The kernel could not complete the App operation.")
 }
 

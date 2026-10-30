@@ -40,6 +40,53 @@ pub(crate) enum AppWorkerError {
     /// A local update is replacing this worker's generation.
     #[error("app_worker_updating")]
     Updating,
+    /// The update's data migration failed before the worker registered.
+    #[error("{0}")]
+    Migration(MigrationFailure),
+}
+
+/// Why a data migration stopped, as the person reads it: the code the App's
+/// migration (or the runtime) gave. It is untrusted text from the worker, so
+/// only `A-Z`, `0-9` and `_` up to 48 characters are kept; it must fit a
+/// `Copy` error and a stored failure string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MigrationFailure {
+    code: [u8; 48],
+    len: u8,
+}
+
+impl MigrationFailure {
+    pub(crate) fn from_worker(code: &str) -> Self {
+        let mut failure = Self {
+            code: [0; 48],
+            len: 0,
+        };
+        if !code.is_empty()
+            && code.len() <= failure.code.len()
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            failure.code[..code.len()].copy_from_slice(code.as_bytes());
+            failure.len = code.len() as u8;
+        }
+        failure
+    }
+}
+
+impl std::fmt::Display for MigrationFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("app_update_migration_failed")?;
+        if self.len > 0 {
+            // Constructed only from ASCII.
+            write!(
+                f,
+                ":{}",
+                String::from_utf8_lossy(&self.code[..usize::from(self.len)])
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// How long a call that lost its worker waits for the monitor to name why.

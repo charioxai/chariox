@@ -624,7 +624,7 @@ fn signed_unknown_component_import_is_refused_before_install() {
     let Err(error) = verify(&bytes, &policy) else {
         panic!("signed forbidden import was accepted");
     };
-    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert_eq!(error.code, ErrorCode::ImportNotAllowed);
     assert!(error.message.contains("forbidden"), "{}", error.message);
     assert!(
         error.message.contains("runtime/app.wasm"),
@@ -684,7 +684,7 @@ fn signed_malformed_components_are_refused() {
     let Err(error) = verify(&bytes, &policy) else {
         panic!("malformed component was accepted");
     };
-    assert_eq!(error.code, ErrorCode::IncompatibleContract);
+    assert_eq!(error.code, ErrorCode::InvalidComponent);
 }
 
 #[test]

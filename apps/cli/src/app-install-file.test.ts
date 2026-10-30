@@ -514,7 +514,7 @@ test("each stable package error code renders its own message (V-PKG-03)", () => 
   const codes = [
     "invalid_arguments", "io", "invalid_developer_key", "invalid_archive", "archive_limit", "invalid_path",
     "duplicate_path", "invalid_manifest", "invalid_schema", "incompatible_protocol", "incompatible_sdk",
-    "incompatible_contract", "incompatible_resource_policy", "untrusted_publisher", "invalid_signature",
+    "incompatible_contract", "import_not_allowed", "invalid_component", "incompatible_resource_policy", "untrusted_publisher", "invalid_signature",
     "integrity_mismatch", "missing_entry", "unexpected_entry", "unsupported_feature",
   ]
   const rendered = codes.map((code) => formatInstallFailure(`app_install_package_${code}`))
@@ -535,6 +535,8 @@ test("each stable package error code renders its own message (V-PKG-03)", () => 
       incompatible_protocol: "The App needs a kernel protocol version this kernel does not support.",
       incompatible_sdk: "The App was built with an SDK version this kernel does not support.",
       incompatible_contract: "The App's declared contract is not supported by this kernel.",
+      import_not_allowed: "The App asks for a capability this kernel does not offer. Remove that import and rebuild the App.",
+      invalid_component: "The App's code file is not a valid WebAssembly component. Rebuild the App.",
       incompatible_resource_policy: "The App requests more resources than this kernel allows.",
       untrusted_publisher: "The package's publisher is not trusted by this kernel.",
       invalid_signature: "The package signature is invalid.",
@@ -565,6 +567,15 @@ test("lifecycle update failures retain their kernel cause in operation output", 
     assert.match(formatInstallOperation({ request_id: "lifecycle-update", phase: "failed", installation_id: "installed", generation: "2", package_digest: `sha256:${"a".repeat(64)}`, interaction_id: null, failure }), new RegExp(failure))
   }
   assert.equal(formatInstallFailure("app_lifecycle_bad\nprivate details"), "The kernel could not complete the App operation.")
+})
+
+test("a failed data migration names its own cause in plain words", () => {
+  assert.equal(formatInstallFailure("app_update_migration_failed:NOTES_BAD_ROW"),
+    "The App could not move its data to the new version, so the update was not applied. The App reported: NOTES_BAD_ROW. The installed version and its data are unchanged.")
+  assert.match(formatInstallFailure("app_update_migration_failed:DEADLINE_EXCEEDED"), /The migration ran out of time\./)
+  assert.match(formatInstallFailure("app_update_migration_failed:APP_TRAPPED"), /The migration crashed\./)
+  assert.doesNotMatch(formatInstallFailure("app_update_migration_failed"), /reported|migration (ran|crashed|used)/)
+  assert.equal(formatInstallFailure("app_update_migration_failed:bad code"), "The kernel could not complete the App operation.")
 })
 
 // Shared by standalone CLI operation output and TUI /app operation notices.

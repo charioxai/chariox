@@ -79,6 +79,9 @@ pub(crate) enum LifecycleError {
     Registration,
     #[error("app_lifecycle_registration_cancelled")]
     RegistrationCancelled,
+    /// The update's data migration failed: the App's own code names why.
+    #[error("{0}")]
+    Migration(crate::runtime::app_worker::MigrationFailure),
     /// Readiness exceeded its bounded wait. The owner is reaped; a fresh
     /// explicit start can retry the committed generation on the same kernel.
     #[error("app_lifecycle_registration_deadline")]

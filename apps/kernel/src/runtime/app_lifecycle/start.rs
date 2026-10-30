@@ -546,6 +546,7 @@ fn registration_failure(error: crate::runtime::app_worker::AppWorkerError) -> Li
     match error {
         AppWorkerError::Cancelled => LifecycleError::RegistrationCancelled,
         AppWorkerError::Deadline => LifecycleError::RegistrationDeadline,
+        AppWorkerError::Migration(failure) => LifecycleError::Migration(failure),
         _ => LifecycleError::Registration,
     }
 }
@@ -584,6 +585,20 @@ mod registration_failure_tests {
             registration_failure(AppWorkerError::Unavailable).to_string(),
             "app_lifecycle_registration"
         );
+        assert_eq!(
+            registration_failure(AppWorkerError::Migration(
+                crate::runtime::app_worker::MigrationFailure::from_worker("NOTES_V2_BAD_ROW")
+            ))
+            .to_string(),
+            "app_update_migration_failed:NOTES_V2_BAD_ROW"
+        );
+        // Untrusted worker text never reaches a stored failure.
+        for code in ["", "lower", "HAS SPACE", "A\nB", &"X".repeat(49)] {
+            assert_eq!(
+                crate::runtime::app_worker::MigrationFailure::from_worker(code).to_string(),
+                "app_update_migration_failed"
+            );
+        }
         assert_eq!(
             registration_failure(AppWorkerError::Invalid).to_string(),
             "app_lifecycle_registration"

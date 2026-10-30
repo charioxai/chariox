@@ -155,6 +155,14 @@ deliberate contract change (`CHARIOX_UPDATE_VECTORS=1`) and review the diff.
   enter a value it knows into a password or masked field; the product keeps
   masking what a Vault fill put there in model-bound observations. Anything
   richer uses `chariox.action`, whose schema the developer writes.
+- **Updates and unsaved work.** When an update commits, the kernel reloads
+  every open view onto the new release. A page that holds work in memory
+  registers `chariox.view.beforeUpdate(handler)` (up to 8 handlers). The
+  controller runs them in the old page and reloads when they have all settled,
+  or after 5 s; a page without a handler reloads at once. The handlers save to
+  the view's own web storage, which the reloaded page reads: the old page's
+  kernel calls are refused once the new generation is active. Fields inside a
+  `<form>` are kept by the product without any handler.
 
 ## 9. The agent bridge and the runtime MCP catalog (A2)
 
