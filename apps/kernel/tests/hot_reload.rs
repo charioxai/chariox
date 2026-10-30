@@ -136,6 +136,22 @@ async fn request(socket: &mut Socket, body: Value) -> Value {
     .expect("the kernel answered in time")
 }
 
+async fn closed_by_the_old_program(mut socket: Socket) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(Message::Ping(data))) => {
+                    let _ = socket.send(Message::Pong(data)).await;
+                }
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .expect("the old kernel program ended its connections");
+}
+
 async fn terminal(socket: &mut Socket, session_id: &str, operation: Value) -> Value {
     let response = request(
         socket,
@@ -211,19 +227,7 @@ fn a_hot_reload_keeps_a_running_terminal_command_and_its_output() {
         unsafe { libc::kill(pid, libc::SIGUSR2) };
         // The old program's connections end with it; a refused reload would
         // keep this one open.
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                match socket.next().await {
-                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                    Some(Ok(Message::Ping(data))) => {
-                        let _ = socket.send(Message::Pong(data)).await;
-                    }
-                    Some(Ok(_)) => {}
-                }
-            }
-        })
-        .await
-        .expect("the old kernel program ended its connections");
+        closed_by_the_old_program(socket).await;
         #[cfg(target_os = "linux")]
         assert_eq!(
             std::fs::read_link(format!("/proc/{pid}/exe")).unwrap(),
@@ -376,7 +380,7 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
         unsafe { libc::kill(pid, libc::SIGUSR2) };
-        drop(socket);
+        closed_by_the_old_program(socket).await;
         connect(&kernel, Duration::from_secs(60)).await;
         exec_pid
     });
@@ -389,4 +393,75 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+fn a_terminal_takes_input_after_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-input-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let opened = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "open", "cols": 80, "rows": 24, "command": ["/bin/sh"]}),
+        )
+        .await;
+        let terminal_id = opened["terminal"]["terminal_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let before = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "read_output", "terminal_id": terminal_id,
+                "after_offset": 0, "wait_ms": 0}),
+        )
+        .await["output"]["terminal"]["output_offset"]
+            .as_u64()
+            .unwrap();
+        let typed = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "input", "terminal_id": terminal_id,
+                "data_base64": base64::engine::general_purpose::STANDARD
+                    .encode("echo typed-$((40+2))\n")}),
+        )
+        .await;
+        assert_eq!(typed["input"]["accepted"], true, "{typed}");
+        // Only the shell's own answer prints 42; the echoed keys do not.
+        let waited = terminal(
+            &mut socket,
+            &session_id,
+            json!({"operation": "wait", "terminal_id": terminal_id,
+                "watches": [{"kind": "output_contains", "text": "typed-42"}],
+                "after_offset": before, "timeout_ms": 20000}),
+        )
+        .await;
+        assert_eq!(
+            waited["waited"]["fired"]["kind"], "output_matched",
+            "{waited}"
+        );
+    });
 }
