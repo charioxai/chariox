@@ -3,11 +3,17 @@ use crate::frame_transport::{
     binary_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES, MAX_ASSEMBLY_BYTES,
     MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
+use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
+enum Stream {
+    Subscription(String),
+    DisplayTunnel,
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lane {
     Reply,
@@ -17,7 +23,12 @@ enum Lane {
 }
 /// Display events keep one FIFO per subscription (the stream), not one for all
 /// streams, so a small band frame is never queued behind another stream's bulk.
-fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> (Lane, Option<String>) {
+/// The lane, the per-stream queue key (display events only) and the
+/// stream a frame belongs to (any scope, for byte metering).
+fn lane(
+    message: &Message,
+    display_route: &impl Fn(&str) -> bool,
+) -> (Lane, Option<String>, Option<Stream>) {
     if let Message::Binary(bytes) = message {
         if matches!(
             crate::binary_response::decode(bytes),
@@ -26,35 +37,55 @@ fn lane(message: &Message, display_route: &impl Fn(&str) -> bool) -> (Lane, Opti
                 _
             ))
         ) {
-            return (Lane::Reply, None);
+            return (Lane::Reply, None, None);
         }
         return match crate::binary_event::decode(bytes) {
-            Ok((header, _))
-                if header.kind == "client_event" && display_route(&header.subscription_id) =>
-            {
-                (Lane::Event, Some(header.subscription_id))
+            Ok((header, _)) if header.kind == "client_event" => {
+                let id = header.subscription_id;
+                let key = display_route(&id).then(|| id.clone());
+                (
+                    if key.is_some() {
+                        Lane::Event
+                    } else {
+                        Lane::Ordered
+                    },
+                    key,
+                    Some(Stream::Subscription(id)),
+                )
             }
-            _ => (Lane::Ordered, None),
+            _ => (Lane::Ordered, None, None),
         };
     }
     let Message::Text(text) = message else {
-        return (Lane::Ordered, None);
+        return (Lane::Ordered, None, None);
     };
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(_) => return (Lane::Ordered, None),
+        Err(_) => return (Lane::Ordered, None, None),
     };
     match value.get("kind").and_then(|v| v.as_str()).unwrap_or("") {
         "client_response"
         | "client_metadata_response"
         | "daemon_peer_response"
-        | "client_connected" => (Lane::Reply, None),
+        | "client_connected" => (Lane::Reply, None, None),
         "client_event" => match value.get("subscription_id").and_then(|v| v.as_str()) {
-            Some(id) if display_route(id) => (Lane::Event, Some(id.to_string())),
-            _ => (Lane::Ordered, None),
+            Some(id) if display_route(id) => (
+                Lane::Event,
+                Some(id.to_string()),
+                Some(Stream::Subscription(id.to_string())),
+            ),
+            Some(id) => (
+                Lane::Ordered,
+                None,
+                Some(Stream::Subscription(id.to_string())),
+            ),
+            None => (Lane::Ordered, None, None),
         },
-        kind if kind.ends_with("request") => (Lane::Request, None),
-        _ => (Lane::Ordered, None),
+        kind if crate::meter::is_display_tunnel_data_kind(kind) => {
+            (Lane::Ordered, None, Some(Stream::DisplayTunnel))
+        }
+        kind if kind.ends_with("request") => (Lane::Request, None, None),
+        _ => (Lane::Ordered, None, None),
     }
 }
 fn control(message: &Message) -> bool {
@@ -221,14 +252,52 @@ fn receiver_message(message: Message, binary_events: bool) -> Option<Message> {
     }
     Some(message)
 }
+/// Counts what the writer takes from the connection's queue, by the scope of
+/// the subscription the frame belongs to (control when it belongs to none).
+pub(super) struct WriterUsage {
+    meter: ConnectionMeter,
+    scope_of: Box<dyn Fn(&str) -> Option<Arc<str>> + Send>,
+}
+impl Default for WriterUsage {
+    fn default() -> Self {
+        Self::new(ConnectionMeter::detached(), |_| None)
+    }
+}
+impl WriterUsage {
+    pub(super) fn new(
+        meter: ConnectionMeter,
+        scope_of: impl Fn(&str) -> Option<Arc<str>> + Send + 'static,
+    ) -> Self {
+        Self {
+            meter,
+            scope_of: Box::new(scope_of),
+        }
+    }
+    fn record(&self, message: &Message, stream: Option<&Stream>) {
+        if !matches!(message, Message::Text(_) | Message::Binary(_)) {
+            return;
+        }
+        let scope = match stream {
+            Some(Stream::Subscription(id)) => (self.scope_of)(id),
+            Some(Stream::DisplayTunnel) => Some(Arc::from(DISPLAY_TUNNEL_SCOPE)),
+            None => None,
+        };
+        self.meter.record(
+            Direction::Out,
+            scope.as_deref().unwrap_or(CONTROL_SCOPE),
+            message.len(),
+        );
+    }
+}
 struct Queued {
     message: Message,
     lane: Lane,
     key: Option<String>,
 }
 impl Queued {
-    fn new(message: Message, display_route: &impl Fn(&str) -> bool) -> Self {
-        let (lane, key) = lane(&message, display_route);
+    fn new(message: Message, display_route: &impl Fn(&str) -> bool, usage: &WriterUsage) -> Self {
+        let (lane, key, subscription) = lane(&message, display_route);
+        usage.record(&message, subscription.as_ref());
         Self { message, lane, key }
     }
     // A single-chunk message: interactive frames, never bulk.
@@ -276,6 +345,7 @@ pub(super) async fn run_writer<S, F>(
     mut receipts: mpsc::Receiver<(u32, u32)>,
     mut controls: mpsc::Receiver<Message>,
     display_route: F,
+    usage: WriterUsage,
 ) -> &'static str
 where
     S: Sink<Message> + Unpin,
@@ -306,7 +376,7 @@ where
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => match receiver_message(message, binary_events) {
-                    Some(m) => pending.push_back(Queued::new(m, &display_route)),
+                    Some(m) => pending.push_back(Queued::new(m, &display_route, &usage)),
                     None => return "bad_outgoing_message",
                 },
                 Err(mpsc::error::TryRecvError::Disconnected) => {
@@ -495,7 +565,7 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route)),None=>return "bad_outgoing_message"},None=>open=false}
+                match message {Some(message)=>match receiver_message(message,binary_events){Some(m)=>pending.push_back(Queued::new(m, &display_route, &usage)),None=>return "bad_outgoing_message"},None=>open=false}
             }
         }
     }
@@ -535,7 +605,16 @@ mod tests {
         let (_ct, cr) = mpsc::channel(8);
         let catalog=serde_json::json!({"kind":"client_response","request_id":"catalog","payload":"x".repeat(3_000_000)}).to_string();
         tx.send(Message::Text(catalog.into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let first = client.next().await.unwrap().unwrap();
         let medium=serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(200_000)}).to_string();
         let event = |id, payload| {
@@ -664,7 +743,16 @@ mod tests {
             let bytes = crate::binary_event::encode(&header, &[7; 4096]).unwrap();
             tx.send(Message::Binary(bytes.into())).await.unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut wire = 0;
         let mut ids = Vec::new();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -711,7 +799,16 @@ mod tests {
         for _ in 0..4000 {
             tx.send(Message::Text("{}".into())).await.unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ack_rx,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut frames = 0;
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(300), client.next()).await
@@ -743,7 +840,16 @@ mod tests {
         let (_ct, cr) = mpsc::channel(8);
         let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
         tx.send(Message::Text(reply.clone().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(sink, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            sink,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let (mut flights, mut done) = (0, None);
         loop {
@@ -793,7 +899,16 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ack_rx, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ack_rx,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut ids = Vec::new();
         while let Ok(Some(Ok(Message::Text(text)))) =
@@ -853,7 +968,16 @@ mod tests {
             .await
             .unwrap();
         drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            true,
+            ar,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut total = 0;
         let mut receipts = Vec::new();
         let mut receiver = crate::frame_transport::FrameReceiver::default();
@@ -920,7 +1044,16 @@ mod tests {
         tx.send(Message::Text("x".repeat(CHUNK_BYTES + 1).into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, false, false, ar, cr, |_| false));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            false,
+            false,
+            ar,
+            cr,
+            |_| false,
+            WriterUsage::default(),
+        ));
         assert!(
             matches!(client.next().await.unwrap().unwrap(),Message::Text(t) if t.contains("requires an updated client"))
         );
@@ -938,7 +1071,16 @@ mod tests {
         let (at, ar) = mpsc::channel(8);
         let (_ct, cr) = mpsc::channel(8);
         tx.send(Message::Text(serde_json::json!({"kind":"client_response","request_id":"snapshot","payload":"x".repeat(200000)}).to_string().into())).await.unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| false));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            |_| false,
+            WriterUsage::default(),
+        ));
         let mut message = client.next().await.unwrap().unwrap();
         tx.send(Message::Text(
             r#"{"kind":"client_event","subscription_id":"terminal","event_id":1,"payload":"tail"}"#
@@ -1007,7 +1149,16 @@ mod tests {
             .await
             .unwrap();
         drop(tx);
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
         let mut done = Vec::new();
         while done.len() < 4 {
@@ -1061,7 +1212,16 @@ mod tests {
         tx.send(display_event("page", 1, "p".repeat(400_000)))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let mut wire = 0;
         while let Ok(Some(Ok(message))) =
             tokio::time::timeout(Duration::from_millis(150), client.next()).await
@@ -1105,7 +1265,16 @@ mod tests {
         tx.send(Message::Text(reply.to_string().into()))
             .await
             .unwrap();
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
         let producer = tokio::spawn(async move {
@@ -1180,7 +1349,16 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let task = tokio::spawn(run_writer(socket, rx, true, false, ar, cr, |_| true));
+        let task = tokio::spawn(run_writer(
+            socket,
+            rx,
+            true,
+            false,
+            ar,
+            cr,
+            |_| true,
+            WriterUsage::default(),
+        ));
         while let Ok(Some(Ok(_))) =
             tokio::time::timeout(Duration::from_millis(200), client.next()).await
         {}
@@ -1265,7 +1443,16 @@ mod tests {
                 .await
                 .unwrap();
             drop(tx);
-            let task = tokio::spawn(run_writer(socket, rx, true, true, ar, cr, |_| true));
+            let task = tokio::spawn(run_writer(
+                socket,
+                rx,
+                true,
+                true,
+                ar,
+                cr,
+                |_| true,
+                WriterUsage::default(),
+            ));
             let mut receiver = crate::frame_transport::FrameReceiver::default();
             let mut bytes = 0;
             let mut chunks = 0;
@@ -1333,7 +1520,7 @@ mod binary_reply_regression {
             "negotiated successful replies must not base64 ciphertext"
         );
         assert!(
-            matches!(lane(&binary, &|_| true), (Lane::Reply, None)),
+            matches!(lane(&binary, &|_| true), (Lane::Reply, None, None)),
             "response correlation keeps the reply lane"
         );
     }

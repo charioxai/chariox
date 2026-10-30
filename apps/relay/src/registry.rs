@@ -161,9 +161,15 @@ impl<V: Clone> ShardedRouteMap<String, V> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveEventRoute {
-    pub(crate) display: bool,
+    pub(crate) scope: Arc<str>,
     pub(crate) daemon_key: DaemonKey,
     pub(crate) client_sender: RelaySender,
+}
+
+impl ActiveEventRoute {
+    pub(crate) fn is_display(&self) -> bool {
+        crate::frame_transport::is_display_scope(Some(&self.scope))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -212,7 +218,18 @@ impl RelayRouteIndex {
     /// A foreign sender or an ordinary terminal subscription never gains bypass.
     pub(crate) fn display_for_sender(&self, subscription_id: &str, sender: &RelaySender) -> bool {
         self.subscription(subscription_id)
-            .is_some_and(|route| route.display && route.client_sender.same_channel(sender))
+            .is_some_and(|route| route.is_display() && route.client_sender.same_channel(sender))
+    }
+
+    /// The scope of this socket's own subscription, for byte metering.
+    pub(crate) fn scope_for_sender(
+        &self,
+        subscription_id: &str,
+        sender: &RelaySender,
+    ) -> Option<Arc<str>> {
+        self.subscription(subscription_id)
+            .filter(|route| route.client_sender.same_channel(sender))
+            .map(|route| route.scope)
     }
 
     fn subscription_queue_pressure(&self) -> (usize, usize) {
@@ -350,7 +367,7 @@ pub(crate) struct PendingDaemonPeerRequest {
 pub(crate) enum PendingRequestKind {
     Request,
     Subscribe {
-        display: bool,
+        scope: Arc<str>,
         subscription_id: String,
         client_public_key: String,
     },
@@ -933,7 +950,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key: daemon_key.clone(),
                 client_sender,
             },
@@ -964,7 +981,7 @@ mod tests {
         routes.set_subscription(
             "subscription-1".to_string(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key,
                 client_sender: client_sender.clone(),
             },
@@ -1063,7 +1080,7 @@ mod display_scheduling_tests {
         routes.set_subscription(
             "display".into(),
             ActiveEventRoute {
-                display: false,
+                scope: "session".into(),
                 daemon_key: DaemonKey::new("realm", "kernel"),
                 client_sender: own.clone(),
             },
@@ -1072,7 +1089,7 @@ mod display_scheduling_tests {
         routes.set_subscription(
             "display".into(),
             ActiveEventRoute {
-                display: true,
+                scope: crate::frame_transport::DISPLAY_EVENT_SCOPE.into(),
                 daemon_key: DaemonKey::new("realm", "kernel"),
                 client_sender: own.clone(),
             },

@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
+use crate::meter::{ConnectionMeter, Direction, UsageMeter, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
@@ -106,6 +107,7 @@ pub(crate) async fn handle_connection(
     registry: Arc<RwLock<RelayRegistry>>,
     auth_verifier: RelayAuthVerifier,
     relay_request_counter: Arc<AtomicU64>,
+    meter: UsageMeter,
 ) -> Result<(), std::io::Error> {
     stream.set_nodelay(true)?;
     let mut chunks = false;
@@ -189,6 +191,10 @@ pub(crate) async fn handle_connection(
     let (control_tx, control_rx) = mpsc::channel(8);
     let writer_routes = routes.clone();
     let writer_sender = outgoing_tx.downgrade();
+    let usage_routes = routes.clone();
+    let usage_sender = outgoing_tx.downgrade();
+    let connection_meter = ConnectionMeter::new(meter);
+    let mut meter_bound = false;
     let mut writer_task = Some(tokio::spawn(writer::run_writer(
         writer,
         outgoing_rx,
@@ -201,6 +207,11 @@ pub(crate) async fn handle_connection(
                 .upgrade()
                 .is_some_and(|sender| writer_routes.display_for_sender(subscription_id, &sender))
         },
+        writer::WriterUsage::new(connection_meter.clone(), move |subscription_id: &str| {
+            usage_sender
+                .upgrade()
+                .and_then(|sender| usage_routes.scope_for_sender(subscription_id, &sender))
+        }),
     )));
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
@@ -217,6 +228,12 @@ pub(crate) async fn handle_connection(
 
     let connection_result: Result<(), std::io::Error> = async {
         loop {
+            if !meter_bound {
+                if let Some(identity) = &verified_identity {
+                    connection_meter.bind_realm(&identity.realm_id);
+                    meter_bound = true;
+                }
+            }
             let message = tokio::select! {
                 message = reader.next() => message,
                 _ = async {
@@ -315,6 +332,7 @@ pub(crate) async fn handle_connection(
             // Binary replies enter exactly the same authenticated pending-route ledger as JSON replies.
             let message = match message {
                 Message::Binary(bytes) if bytes.starts_with(b"CXR2") => {
+                    connection_meter.record(Direction::In, CONTROL_SCOPE, bytes.len());
                     if !binary_events || registered_daemon_key.is_none() {
                         send_close(&outgoing_tx,"binary responses require a negotiated daemon connection".into());
                         break;
@@ -333,6 +351,7 @@ pub(crate) async fn handle_connection(
                         .is_some_and(|value| value.get("kind").and_then(|kind| kind.as_str()) == Some("transport_ack")) {
                         match serde_json::from_str::<crate::frame_transport::TransportFrame>(&text) {
                             Ok(crate::frame_transport::TransportFrame::TransportAck { transfer_id, offset }) => {
+                                connection_meter.record(Direction::In, CONTROL_SCOPE, text.len());
                                 if receipt_tx.try_send((transfer_id, offset)).is_err() { end_reason = "receipt_queue_full"; break; }
                                 continue;
                             }
@@ -343,6 +362,22 @@ pub(crate) async fn handle_connection(
                     let envelope: RelayEnvelope = serde_json::from_str(&text).map_err(|error| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
                     })?;
+                    let scope = match &envelope {
+                        RelayEnvelope::DaemonEvent { subscription_id, .. } => routes
+                            .subscription(subscription_id)
+                            .map(|route| route.scope),
+                        RelayEnvelope::DaemonDisplayTunnelResponseStart { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelChunk { .. }
+                        | RelayEnvelope::DaemonDisplayTunnelClose { .. } => {
+                            Some(Arc::from(DISPLAY_TUNNEL_SCOPE))
+                        }
+                        _ => None,
+                    };
+                    connection_meter.record(
+                        Direction::In,
+                        scope.as_deref().unwrap_or(CONTROL_SCOPE),
+                        text.len(),
+                    );
                     match envelope {
                         RelayEnvelope::DaemonRegister { registration } => {
                             let identity = verify_relay_token(
@@ -735,7 +770,7 @@ pub(crate) async fn handle_connection(
                                     if error.is_none() {
                                         match &pending.kind {
                                             PendingRequestKind::Subscribe {
-                                                display,
+                                                scope,
                                                 subscription_id,
                                                 client_public_key,
                                             } => {
@@ -755,7 +790,7 @@ pub(crate) async fn handle_connection(
                                                         routes.set_subscription(
                                                             subscription_id.clone(),
                                                             ActiveEventRoute {
-                                                                display: *display,
+                                                                scope: scope.clone(),
                                                                 daemon_key: pending.daemon_key.clone(),
                                                                 client_sender,
                                                             },
@@ -1012,7 +1047,7 @@ pub(crate) async fn handle_connection(
                         send_close(&outgoing_tx, "binary events require a negotiated daemon connection".into());
                         break;
                     };
-                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &bytes).await?;
+                    route_daemon_binary_event(&registry, &routes, current_daemon_key, &relay_request_counter, &connection_meter, &bytes).await?;
                 }
                 Message::Ping(payload) => {
                     if control_tx.try_send(Message::Pong(payload)).is_err() {

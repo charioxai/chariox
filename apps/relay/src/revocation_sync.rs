@@ -209,7 +209,7 @@ fn log_sync_error(realm_id: &str, stage: &str, message: &str) {
     );
 }
 
-fn current_unix_ms() -> u64 {
+pub(crate) fn current_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))

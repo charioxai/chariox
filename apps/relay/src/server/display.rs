@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use crate::meter::{ConnectionMeter, Direction, UsageMeter, DISPLAY_TUNNEL_SCOPE};
 use crate::protocol::{
     RelayDisplayTunnelHeader, RelayDisplayTunnelOpenRequest, RelayEnvelope, RelayError,
 };
@@ -43,6 +44,7 @@ pub(crate) async fn handle_display_connection(
     _peer_addr: SocketAddr,
     registry: Arc<RwLock<RelayRegistry>>,
     relay_request_counter: Arc<AtomicU64>,
+    meter: UsageMeter,
 ) -> Result<(), std::io::Error> {
     let request = match read_display_request(&mut stream).await {
         Ok(request) => request,
@@ -76,6 +78,8 @@ pub(crate) async fn handle_display_connection(
                 write_response(&mut stream, 502, "display tunnel daemon is disconnected").await?;
                 return Ok(());
             };
+            let usage = ConnectionMeter::new(meter);
+            usage.bind_realm(&daemon_key.realm_id);
             let stream_id = format!(
                 "display-stream-{}",
                 relay_request_counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -93,6 +97,7 @@ pub(crate) async fn handle_display_connection(
                 stream_id.clone(),
                 tunnel_id,
                 event_rx,
+                &usage,
             )
             .await;
             registry
@@ -178,7 +183,9 @@ async fn forward_display_http_stream(
     stream_id: String,
     tunnel_id: String,
     mut event_rx: mpsc::Receiver<DisplayStreamEvent>,
+    usage: &ConnectionMeter,
 ) -> Result<(), std::io::Error> {
+    usage.record(Direction::In, DISPLAY_TUNNEL_SCOPE, request.body.len());
     let websocket_key = request.websocket_key.clone();
     let open = RelayEnvelope::DaemonDisplayTunnelOpen {
         request: RelayDisplayTunnelOpenRequest {
@@ -233,8 +240,15 @@ async fn forward_display_http_stream(
             .await?;
             return Ok(());
         }
-        return forward_display_websocket_stream(stream, daemon_sender, stream_id, key, event_rx)
-            .await;
+        return forward_display_websocket_stream(
+            stream,
+            daemon_sender,
+            stream_id,
+            key,
+            event_rx,
+            usage,
+        )
+        .await;
     }
     write_response_start(&mut stream, start.0, &start.1).await?;
     loop {
@@ -243,6 +257,7 @@ async fn forward_display_http_stream(
                 let decoded = BASE64_STANDARD
                     .decode(data.as_bytes())
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                usage.record(Direction::Out, DISPLAY_TUNNEL_SCOPE, decoded.len());
                 stream.write_all(&decoded).await?;
             }
             Ok(Some(DisplayStreamEvent::Close { .. })) | Ok(None) => break,
@@ -260,6 +275,7 @@ async fn forward_display_websocket_stream(
     stream_id: String,
     websocket_key: String,
     mut event_rx: mpsc::Receiver<DisplayStreamEvent>,
+    usage: &ConnectionMeter,
 ) -> Result<(), std::io::Error> {
     write_websocket_handshake(&mut stream, &websocket_key).await?;
     let websocket = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
@@ -269,9 +285,11 @@ async fn forward_display_websocket_stream(
             browser_message = browser_read.next() => {
                 match browser_message {
                     Some(Ok(Message::Binary(data))) => {
+                        usage.record(Direction::In, DISPLAY_TUNNEL_SCOPE, data.len());
                         send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary"))?;
                     }
                     Some(Ok(Message::Text(data))) => {
+                        usage.record(Direction::In, DISPLAY_TUNNEL_SCOPE, data.len());
                         send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text"))?;
                     }
                     Some(Ok(Message::Close(_))) | None => {
@@ -311,6 +329,7 @@ async fn forward_display_websocket_stream(
                             Some("text") => Message::Text(String::from_utf8_lossy(&decoded).to_string().into()),
                             _ => Message::Binary(decoded.into()),
                         };
+                        usage.record(Direction::Out, DISPLAY_TUNNEL_SCOPE, message.len());
                         if browser_write.send(message).await.is_err() {
                             break;
                         }
