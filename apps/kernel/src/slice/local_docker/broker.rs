@@ -47,6 +47,11 @@ struct BrokerConnection {
 static BROKER: OnceLock<Mutex<Option<BrokerConnection>>> = OnceLock::new();
 #[cfg(unix)]
 static BROKER_CONFIGURED: OnceLock<bool> = OnceLock::new();
+/// The descriptor of the connection the supervisor handed this program
+/// (`CHARIOX_SLICE_DOCKER_BROKER_FD`); after a hot reload the environment
+/// names the same number again.
+#[cfg(unix)]
+static INHERITED_FD: OnceLock<RawFd> = OnceLock::new();
 
 /// Why the local DEV broker never connected; a later broker use retries it.
 #[cfg(unix)]
@@ -201,6 +206,7 @@ pub fn initialize() {
                 return;
             }
             if let Ok(reader) = writer.try_clone() {
+                let _ = INHERITED_FD.set(raw_fd);
                 let state = BROKER.get_or_init(|| Mutex::new(None));
                 *state
                     .lock()
@@ -337,6 +343,26 @@ fn unavailable(outage: &Option<LocalBrokerOutage>) -> io::Error {
             None => "managed slice Docker broker is unavailable".to_string(),
         },
     )
+}
+
+/// Keeps the connection the supervisor handed this program open for the next
+/// program of a hot reload, under the descriptor number its environment names.
+/// No request is in flight: each holds the connection through its response.
+#[cfg(unix)]
+pub(super) fn hand_over_inherited_connection() -> Option<RawFd> {
+    use std::os::fd::{AsRawFd, IntoRawFd};
+    let fd = *INHERITED_FD.get()?;
+    let connection = BROKER
+        .get()?
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()?;
+    if connection.writer.as_raw_fd() != fd || !connection.reader.buffer().is_empty() {
+        return None;
+    }
+    let BrokerConnection { reader, writer } = connection;
+    drop(reader);
+    Some(writer.into_raw_fd())
 }
 
 #[cfg(unix)]

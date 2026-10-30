@@ -589,6 +589,7 @@ pub fn finish() -> Option<String> {
         )
         .chain(prepared.handover.credentials_fd)
         .chain(prepared.handover.listeners.values().copied())
+        .chain(crate::slice::hand_over_managed_docker_broker())
         .collect();
     crate::logging::info_with_fields(
         "hot_reload",
