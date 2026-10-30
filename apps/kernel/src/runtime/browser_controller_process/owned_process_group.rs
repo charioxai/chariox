@@ -183,18 +183,22 @@ impl OwnedProcessGroup {
                 "browser process group holds members not proven ours; ending only the proven ones",
                 serde_json::json!({ "proven": owned.len(), "unproven": unproven }),
             );
-            for pid in owned.into_iter().rev() {
-                if let Ok(pid) = i32::try_from(pid) {
-                    unsafe {
-                        libc::kill(pid, libc::SIGKILL);
-                    }
+            self.end_members(&owned);
+        }
+    }
+
+    fn end_members(&self, owned: &[(u32, String)]) {
+        for (pid, _started) in owned.iter().rev() {
+            if let Ok(pid) = i32::try_from(*pid) {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
                 }
             }
         }
     }
 
     /// The group members proven to descend from our child, and how many are not.
-    fn members(&self, processes: &BTreeMap<u32, Process>) -> (Vec<u32>, usize) {
+    fn members(&self, processes: &BTreeMap<u32, Process>) -> (Vec<(u32, String)>, usize) {
         let mut owned = Vec::new();
         let mut unproven = 0;
         for (&pid, process) in processes {
@@ -202,7 +206,7 @@ impl OwnedProcessGroup {
                 continue;
             }
             if self.owns(pid, processes) {
-                owned.push(pid);
+                owned.push((pid, process.started.clone()));
             } else {
                 unproven += 1;
             }
@@ -446,7 +450,40 @@ mod tests {
             (43, member(42, "child")),
             (44, member(1, "reparented-before-seen")),
         ]);
-        assert_eq!(group.members(&processes), (vec![42, 43], 1));
+        assert_eq!(
+            group.members(&processes),
+            (vec![(42, "root".into()), (43, "child".into())], 1)
+        );
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_replaced_member_is_not_signalled_after_enumeration() {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        unsafe {
+            command.pre_exec(|| match libc::setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
+        let mut child = command.spawn().unwrap();
+        let root = child.id();
+        let group = OwnedProcessGroup::new(root);
+        let started = snapshot(root).unwrap()[&root].started.clone();
+        // The PID now belongs to a process other than the one enumerated.
+        group.end_members(&[(root, format!("{started}-replaced"))]);
+        std::thread::sleep(Duration::from_millis(200));
+        let survived = child.try_wait().unwrap().is_none();
+        if survived {
+            group.end_members(&[(root, started)]);
+        }
+        let ended = child.wait().is_ok();
+        assert!(
+            survived,
+            "a member with another start identity was signalled"
+        );
+        assert!(ended);
     }
     #[test]
     #[cfg(target_os = "linux")]

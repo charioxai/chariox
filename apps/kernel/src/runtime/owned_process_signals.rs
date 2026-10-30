@@ -201,34 +201,42 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
         };
-        let text = match std::fs::read_to_string(entry.path().join("stat")) {
-            Ok(text) => text,
-            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
-                continue
-            }
-            Err(error) => return Err(error),
-        };
-        let Some((_, tail)) = text.rsplit_once(") ") else {
-            return Err(io::Error::other("invalid process identity"));
-        };
-        let fields: Vec<_> = tail.split_whitespace().collect();
-        if fields.len() < 20 {
-            return Err(io::Error::other("short process identity"));
+        if let Some(row) = linux_row(pid, std::fs::read(entry.path().join("stat")))? {
+            rows.push(row);
         }
-        let parse = |field: &str| {
-            field
-                .parse()
-                .map_err(|_| io::Error::other("invalid process ID"))
-        };
-        rows.push(ProcessIdentity {
-            pid,
-            parent: parse(fields[1])?,
-            group: parse(fields[2])?,
-            session: parse(fields[3])?,
-            start: fields[19].into(),
-        });
     }
     Ok(rows)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessIdentity>> {
+    let bytes = match stat {
+        Ok(bytes) => bytes,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            return Ok(None)
+        }
+        Err(error) => return Err(error),
+    };
+    let text = String::from_utf8(bytes).map_err(io::Error::other)?;
+    let Some((_, tail)) = text.rsplit_once(") ") else {
+        return Err(io::Error::other("invalid process identity"));
+    };
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    if fields.len() < 20 {
+        return Err(io::Error::other("short process identity"));
+    }
+    let parse = |field: &str| {
+        field
+            .parse()
+            .map_err(|_| io::Error::other("invalid process ID"))
+    };
+    Ok(Some(ProcessIdentity {
+        pid,
+        parent: parse(fields[1])?,
+        group: parse(fields[2])?,
+        session: parse(fields[3])?,
+        start: fields[19].into(),
+    }))
 }
 #[cfg(target_os = "macos")]
 fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
@@ -345,6 +353,59 @@ mod tests {
             start: start.into(),
         }
     }
+    #[cfg(target_os = "linux")]
+    fn spawn_named_sleeper(name: &'static [u8]) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        unsafe {
+            command.pre_exec(move || {
+                libc::prctl(libc::PR_SET_NAME, name.as_ptr() as libc::c_ulong, 0, 0, 0);
+                Ok(())
+            });
+        }
+        command.spawn().unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_foreign_process_with_a_non_utf8_name_does_not_block_a_witness() {
+        let mut foreign = spawn_named_sleeper(b"\xff\xfe\0");
+        let mut own = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let witness = OwnedProcessSignals::for_child(&own);
+        let seen = snapshot();
+        let _ = foreign.kill();
+        let _ = foreign.wait();
+        let _ = own.kill();
+        let _ = own.wait();
+        assert!(witness.is_ok(), "witness failed: {:?}", witness.err());
+        assert!(seen.unwrap().iter().any(|row| row.pid == foreign.id()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn an_unreadable_process_still_counts_as_a_group_member_but_is_never_owned() {
+        let denied = || Err(io::Error::from_raw_os_error(libc::EACCES));
+        let own = std::process::id();
+        let row = linux_row(own, denied())
+            .unwrap()
+            .expect("row for a live process");
+        assert!(row.start.is_empty());
+        assert_eq!(row.group, unsafe { libc::getpgrp() } as u32);
+        let mut guard = OwnedProcessSignals {
+            root: row.group,
+            exclusive_session: None,
+            owned: BTreeMap::from([(row.group, "root".into())]),
+        };
+        let leader = row(row.group, 1, row.group, "root");
+        assert!(guard
+            .group_with(&[leader, row], |_| panic!("unreadable member signalled"))
+            .is_err());
+    }
+
     #[test]
     fn mp11_review_macos_session_witness_admits_fast_reparented_child() {
         assert_eq!(
