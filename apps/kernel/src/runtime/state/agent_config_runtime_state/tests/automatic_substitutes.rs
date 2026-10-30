@@ -19,7 +19,7 @@ pub(super) struct FailingTurn {
     pub(super) agent_id: String,
     pub(super) failed_run_id: String,
     pub(super) prompt_id: String,
-    worktree: std::path::PathBuf,
+    pub(super) worktree: std::path::PathBuf,
 }
 
 impl Drop for FailingTurn {
@@ -40,6 +40,21 @@ impl FailingTurn {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, &self.agent_id)
+    }
+
+    /// The failed run works in the test's worktree, as a provider run does.
+    pub(super) async fn run_in_worktree(&self) {
+        let run = self
+            .live_run()
+            .expect("the failing run is live")
+            .with_working_directory_for_test(self.worktree.clone());
+        self.runtime
+            .with_app_side_effect(move |app| {
+                app.providers_mut().insert_run_for_test(run);
+                Ok::<_, crate::error::DaemonError>(())
+            })
+            .await
+            .unwrap();
     }
 
     fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {

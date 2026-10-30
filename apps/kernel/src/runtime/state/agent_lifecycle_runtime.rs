@@ -948,6 +948,7 @@ impl KernelRuntimeState {
             .await
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
+        Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
