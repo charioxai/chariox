@@ -490,6 +490,11 @@ test("managed slice image locks every network and compiler input", async () => {
   const scratchStageStart = dockerfile.indexOf("FROM scratch AS managed-release-artifacts")
   const scratchStageEnd = dockerfile.indexOf("\nFROM ", scratchStageStart + 1)
   assert.ok(scratchStageStart >= 0 && scratchStageEnd > scratchStageStart)
+  assert.match(
+    dockerfile,
+    /cargo build --locked --release --package chariox-app-wasm-worker --bin chariox-app-wasm-worker/,
+    "the builder must compile the WASM App worker that the managed kernel opens beside itself",
+  )
   assert.deepEqual(
     dockerfile.slice(scratchStageStart, scratchStageEnd).trim().split("\n"),
     [
@@ -499,8 +504,9 @@ test("managed slice image locks every network and compiler input", async () => {
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
       "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage",
+      "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker",
     ],
-    "scratch may export only the five managed runtime binaries",
+    "scratch may export only the six managed runtime binaries",
   )
   for (const [, image] of fromStages) {
     if (image.toLowerCase() === "scratch") continue

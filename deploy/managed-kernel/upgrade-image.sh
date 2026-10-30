@@ -1007,6 +1007,7 @@ else
   if path_exists "$image_root/usr/local/bin/chariox-app-package"; then
     install -d -o root -g root -m 0755 "$pending_release/usr/libexec"
     install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
+    install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-wasm-worker" "$pending_release/usr/local/bin/chariox-app-wasm-worker"
     install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
   fi

@@ -67,6 +67,7 @@ RUN mkdir -p /opt/chariox-runtime-bin \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-relay --bin chariox-relay \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-package --bin chariox-app-package \
           && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-runtime --bin chariox-app-storage \
+          && CARGO_BUILD_JOBS="$CHARIOX_CARGO_BUILD_JOBS" CARGO_INCREMENTAL=0 cargo build --locked --release --package chariox-app-wasm-worker --bin chariox-app-wasm-worker \
           && profile_dir="release" \
           ;; \
         dev) \
@@ -86,6 +87,7 @@ COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-boot
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package
 COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage
+COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker
 
 FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
