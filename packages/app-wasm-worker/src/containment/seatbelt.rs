@@ -25,9 +25,10 @@ pub(super) fn profile(files: &[PathBuf]) -> io::Result<Profile> {
     let mut parameters = Vec::new();
     if !files.is_empty() {
         let mut parents: Vec<&Path> = Vec::new();
-        // File contents and directory entries only. Mode, owner, flags,
-        // timestamps, extended attributes and links stay refused, as Linux
-        // seccomp refuses them; sockets, exec and devices have no grant at all.
+        // File contents and directory entries (including symlinks, which
+        // Seatbelt resolves before checking). Mode, owner, flags, timestamps
+        // and extended attributes stay refused, as Linux seccomp refuses them;
+        // hard links, sockets, exec and devices have no grant at all.
         text.push_str(
             "; An installed App's own files: read/write beneath data and tmp only.\n\
              (allow file-read* file-write-create file-write-data file-write-unlink",
