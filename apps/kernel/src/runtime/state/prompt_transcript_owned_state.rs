@@ -314,7 +314,10 @@ impl KernelRuntimeOwnedState {
             }
             if output.kind == crate::terminal::TerminalOutputKind::ProviderReasoning {
                 if let Some(agent_id) = agent_id.as_deref() {
-                    let message = String::from_utf8_lossy(&bounded_bytes).into_owned();
+                    let message = self.room_secret_observations.scrub_text_or_withhold(
+                        session_id,
+                        &String::from_utf8_lossy(&bounded_bytes),
+                    );
                     self.record_workflow_thinking_trace(
                         session_id,
                         &output.provider_run_id,
