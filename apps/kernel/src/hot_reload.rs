@@ -18,7 +18,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 2;
+pub const HANDOVER_FORMAT: u32 = 3;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -41,7 +41,27 @@ pub(crate) struct ProviderHandover {
     run_id: String,
     // The running process authenticates its kernel tool calls with it.
     runtime_mcp_auth_token: Option<String>,
-    claude: crate::provider::ClaudeHandover,
+    process: HandedOverProcess,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HandedOverProcess {
+    Claude(crate::provider::ClaudeHandover),
+    /// A Codex app-server keeps its PTY and port; the turn it runs continues.
+    Codex {
+        pty: crate::pty::PtyHandover,
+        turn: crate::provider::CodexHandover,
+    },
+}
+
+impl HandedOverProcess {
+    fn adapter_key(&self) -> &'static str {
+        match self {
+            Self::Claude(_) => "claude",
+            Self::Codex { .. } => "codex",
+        }
+    }
 }
 
 impl std::fmt::Debug for ProviderHandover {
@@ -50,18 +70,24 @@ impl std::fmt::Debug for ProviderHandover {
             .field("session_id", &self.session_id)
             .field("agent_id", &self.agent_id)
             .field("run_id", &self.run_id)
-            .field("claude", &self.claude)
+            .field("process", &self.process)
             .finish_non_exhaustive()
     }
 }
 
 impl ProviderHandover {
-    fn fds(&self) -> [i32; 3] {
-        self.claude.fds()
+    fn fds(&self) -> Vec<i32> {
+        match &self.process {
+            HandedOverProcess::Claude(claude) => claude.fds().to_vec(),
+            HandedOverProcess::Codex { pty, .. } => vec![pty.master_fd],
+        }
     }
 
     fn pid(&self) -> u32 {
-        self.claude.pid()
+        match &self.process {
+            HandedOverProcess::Claude(claude) => claude.pid(),
+            HandedOverProcess::Codex { pty, .. } => pty.pid,
+        }
     }
 }
 
@@ -77,8 +103,7 @@ static START: OnceLock<Start> = OnceLock::new();
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
-static ADOPTING: Mutex<BTreeMap<String, crate::provider::ClaudeHandover>> =
-    Mutex::new(BTreeMap::new());
+static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
 fn lock<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     slot.lock().unwrap_or_else(|e| e.into_inner())
@@ -228,7 +253,9 @@ fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
         for (name, value) in runs.remove(&provider.run_id).unwrap_or_default() {
             credentials.insert(name, zeroize::Zeroizing::new(value));
         }
-        provider.claude.set_credentials(credentials);
+        if let HandedOverProcess::Claude(claude) = &mut provider.process {
+            claude.set_credentials(credentials);
+        }
     }
 }
 
@@ -241,7 +268,12 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
     }
     let runs: BTreeMap<&str, BTreeMap<&str, &str>> = providers
         .iter()
-        .map(|p| (p.run_id.as_str(), p.claude.credentials().iter().collect()))
+        .filter_map(|p| match &p.process {
+            HandedOverProcess::Claude(claude) => {
+                Some((p.run_id.as_str(), claude.credentials().iter().collect()))
+            }
+            HandedOverProcess::Codex { .. } => None,
+        })
         .collect();
     let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
     let mut fds = [0; 2];
@@ -272,7 +304,12 @@ pub(crate) fn handed_over_credentials(
     lock(&RECEIVED_PROVIDERS)
         .iter()
         .find(|p| p.session_id == session_id && p.agent_id.as_deref() == agent_id)
-        .map(|p| p.claude.credentials().clone())
+        .and_then(|p| match &p.process {
+            HandedOverProcess::Claude(claude) => Some(claude.credentials().clone()),
+            // The app-server keeps the login it runs with; the launch only
+            // reconnects to it.
+            HandedOverProcess::Codex { .. } => None,
+        })
 }
 
 /// Whether the agent's turn kept running across the hot reload.
@@ -289,20 +326,54 @@ pub(crate) fn claim_provider_run(
     agent_id: Option<&str>,
     adapter_key: &str,
 ) -> Option<(String, Option<String>)> {
-    if adapter_key != "claude" {
-        return None;
-    }
     let mut providers = lock(&RECEIVED_PROVIDERS);
-    let index = providers
-        .iter()
-        .position(|p| p.session_id == session_id && p.agent_id.as_deref() == agent_id)?;
+    let index = providers.iter().position(|p| {
+        p.session_id == session_id
+            && p.agent_id.as_deref() == agent_id
+            && p.process.adapter_key() == adapter_key
+    })?;
     let provider = providers.remove(index);
-    lock(&ADOPTING).insert(provider.run_id.clone(), provider.claude);
+    lock(&ADOPTING).insert(provider.run_id.clone(), provider.process);
     Some((provider.run_id, provider.runtime_mcp_auth_token))
 }
 
 pub(crate) fn take_claude(run_id: &str) -> Option<crate::provider::ClaudeHandover> {
-    lock(&ADOPTING).remove(run_id)
+    let mut adopting = lock(&ADOPTING);
+    match adopting.remove(run_id)? {
+        HandedOverProcess::Claude(claude) => Some(claude),
+        other => {
+            adopting.insert(run_id.to_string(), other);
+            None
+        }
+    }
+}
+
+/// The PTY of a claimed run's handed-over provider server, to adopt instead
+/// of starting a new one.
+pub(crate) fn adopting_pty(run_id: &str) -> Option<crate::pty::PtyHandover> {
+    match lock(&ADOPTING).get(run_id)? {
+        HandedOverProcess::Codex { pty, .. } => Some(pty.clone()),
+        HandedOverProcess::Claude(_) => None,
+    }
+}
+
+/// The address the claimed run's handed-over Codex app-server listens on.
+pub(crate) fn adopting_codex_endpoint(run_id: &str) -> Option<String> {
+    match lock(&ADOPTING).get(run_id)? {
+        HandedOverProcess::Codex { turn, .. } => Some(turn.endpoint().to_string()),
+        HandedOverProcess::Claude(_) => None,
+    }
+}
+
+pub(crate) fn take_codex(run_id: &str) -> Option<crate::provider::CodexHandover> {
+    let mut adopting = lock(&ADOPTING);
+    match adopting.remove(run_id)? {
+        HandedOverProcess::Codex { turn, .. } => Some(turn),
+        other => {
+            adopting.insert(run_id.to_string(), other);
+            None
+        }
+    }
 }
 
 /// New runs must not take a handed-over run's id.
@@ -347,20 +418,57 @@ pub(crate) fn handing_over() -> bool {
     lock(&PREPARED).is_some()
 }
 
-/// Keeps a running provider turn for the next program.
-pub(crate) fn hand_over_provider(
+/// Keeps a running Claude turn for the next program.
+pub(crate) fn hand_over_claude(
     run: &crate::provider::RuntimeProviderRun,
     claude: crate::provider::ClaudeHandover,
 ) {
-    let provider = ProviderHandover {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared
+            .handover
+            .providers
+            .push(provider_handover(run, HandedOverProcess::Claude(claude)));
+    }
+}
+
+/// Offers a provider server's PTY to a running turn that may be handed over.
+/// The PTY of a run whose turn is not handed over ends before the swap.
+pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::PtyHandover) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared.offered_ptys.insert(run_id.to_string(), pty);
+    }
+}
+
+/// Keeps a running Codex turn, with the app-server PTY offered for its run,
+/// for the next program. Gives the turn back when there is no such PTY.
+pub(crate) fn hand_over_codex(
+    run: &crate::provider::RuntimeProviderRun,
+    turn: crate::provider::CodexHandover,
+) -> Result<(), crate::provider::CodexHandover> {
+    let mut prepared = lock(&PREPARED);
+    let Some(prepared) = prepared.as_mut() else {
+        return Err(turn);
+    };
+    let Some(pty) = prepared.offered_ptys.remove(run.id()) else {
+        return Err(turn);
+    };
+    prepared.handover.providers.push(provider_handover(
+        run,
+        HandedOverProcess::Codex { pty, turn },
+    ));
+    Ok(())
+}
+
+fn provider_handover(
+    run: &crate::provider::RuntimeProviderRun,
+    process: HandedOverProcess,
+) -> ProviderHandover {
+    ProviderHandover {
         session_id: run.session_id().to_string(),
         agent_id: run.agent_instance_id().map(str::to_string),
         run_id: run.id().to_string(),
         runtime_mcp_auth_token: run.runtime_mcp_auth_token().map(str::to_string),
-        claude,
-    };
-    if let Some(prepared) = lock(&PREPARED).as_mut() {
-        prepared.handover.providers.push(provider);
+        process,
     }
 }
 
@@ -369,6 +477,7 @@ pub(crate) fn hand_over_provider(
 struct Prepared {
     handover: Handover,
     path: PathBuf,
+    offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
 }
 
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
@@ -394,6 +503,7 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
                 *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Prepared {
                     handover,
                     path: handover_path,
+                    offered_ptys: BTreeMap::new(),
                 });
                 return;
             }

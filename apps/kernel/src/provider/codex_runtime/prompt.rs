@@ -75,6 +75,18 @@ pub fn submit_codex_prompt(
         });
         return Ok(());
     }
+    #[cfg(unix)]
+    if let Some(turn) = state.adopted_turn.take() {
+        // A hot reload handed this prompt's running turn over: the app-server
+        // still runs it, so continue reading it instead of starting it again.
+        crate::logging::info_with_fields(
+            "hot_reload.codex",
+            "continuing a handed-over Codex turn",
+            serde_json::json!({ "provider_run_id": run.id(), "thread_id": state.thread_id() }),
+        );
+        super::handover::continue_turn(state, turn);
+        return Ok(());
+    }
     // Every existing thread keeps its conversation and provider identity.
     // Fresh thread/start already carries this context; later refreshes use the
     // same documented developer-item seam as native/resumed threads.

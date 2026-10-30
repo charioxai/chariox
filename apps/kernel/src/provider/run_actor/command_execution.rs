@@ -296,7 +296,7 @@ pub(super) fn execute_terminate_command(
         let (slot, state) = runtime_registry.take_claude_runtime(&run_id)?;
         match crate::provider::hand_over_claude_runtime(state) {
             Ok(handover) => {
-                crate::hot_reload::hand_over_provider(&run, handover);
+                crate::hot_reload::hand_over_claude(&run, handover);
                 return Ok(());
             }
             Err(state) => {
@@ -305,6 +305,20 @@ pub(super) fn execute_terminate_command(
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*state);
             }
         }
+    }
+    #[cfg(unix)]
+    if run.adapter_key() == "codex" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_codex_runtime(&run_id)?;
+        // Dropping the state closes only this program's connection: the
+        // app-server keeps running the turn for the next program.
+        if crate::provider::codex_turn_handover(&state)
+            .is_some_and(|turn| crate::hot_reload::hand_over_codex(&run, turn).is_ok())
+        {
+            return Ok(());
+        }
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
     }
     if run.adapter_key() == "opencode"
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)

@@ -42,6 +42,20 @@ pub fn initialize_codex_runtime(
     let client = codex_client_for_run(run, &endpoint, None)?;
     let socket = client.connect_initialized()?;
     let next_request_id = 1;
+    #[cfg(unix)]
+    if let Some(turn) = crate::hot_reload::take_codex(run.id()) {
+        // The prompt's submit resumes the thread and continues this turn.
+        let thread_id = Some(turn.thread_id().to_string());
+        let mut state = CodexRuntimeState::pending(endpoint, thread_id, socket, next_request_id);
+        state.adopted_turn = Some(turn);
+        return Ok(CodexRuntimeBinding {
+            state,
+            selection: CodexRunSelection {
+                model: normalize_codex_model(run.model()),
+                variant: run.variant().map(str::to_string),
+            },
+        });
+    }
     let resumable_thread_id = run.resume_state().codex_thread_id().map(str::to_string);
     let (mut state, selection) = match resumable_thread_id {
         Some(thread_id) if run.endpoint_mode() == AgentEndpointMode::External => {

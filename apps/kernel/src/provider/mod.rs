@@ -102,6 +102,8 @@ pub use codex_client::{
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
+#[cfg(unix)]
+pub(crate) use codex_runtime::{codex_turn_handover, CodexHandover};
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,

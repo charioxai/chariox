@@ -845,3 +845,168 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         scratch.join("bin/chariox-kernel")
     );
 }
+
+/// A Codex app-server shaped like the measured one (codex-cli 0.159.3).
+const FAKE_CODEX: &str = include_str!("hot_reload/fake_codex.py");
+
+#[test]
+fn a_hot_reload_keeps_a_running_codex_turn() {
+    codex_turn_across_a_hot_reload(false);
+}
+
+/// The turn may end while no kernel program is connected to the app-server.
+#[test]
+fn a_hot_reload_keeps_a_codex_turn_that_ends_during_the_swap() {
+    codex_turn_across_a_hot_reload(true);
+}
+
+fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
+    let scratch =
+        std::env::temp_dir().join(format!("hr-codex-{}-{finish_in_gap}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(scratch.join("fake_codex.py"), FAKE_CODEX).unwrap();
+    let codex = scratch.join("codex");
+    {
+        let _files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::write(
+            &codex,
+            format!(
+                "#!/bin/sh\nexec python3 {} \"$@\"\n",
+                scratch.join("fake_codex.py").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    std::fs::create_dir_all(scratch.join("codex-home")).unwrap();
+    let mut env = vec![
+        ("CHARIOX_CODEX_BIN", codex.clone()),
+        ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
+        ("CODEX_HOME", scratch.join("codex-home")),
+    ];
+    if finish_in_gap {
+        env.push(("CHARIOX_FAKE_CODEX_FINISH_IN_GAP", "1".into()));
+    }
+    let kernel = start_kernel_with(&scratch, &env);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let spawned = request(
+            &mut socket,
+            json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
+                "provider": "codex", "model": "gpt-6-luna", "effort": "low",
+                "worktree_id": null, "no_subscribe": true}}),
+        )
+        .await;
+        let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{spawned}"))
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        request(
+            &mut socket,
+            json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                "target_agent_id": agent_id, "prompt": "write four hundred parts", "attachments": []}}),
+        )
+        .await;
+
+        // Upgrade while the turn streams: the fake waits after part 200 until
+        // its client connection drops.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 200 {
+            assert!(
+                Instant::now() < deadline,
+                "the turn did not start streaming"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let state = request(
+                &mut socket,
+                json!({"GetSessionState": {"session_id": session_id}}),
+            )
+            .await;
+            let settled = state["SessionState"]["session"]["prompt_states"][&agent_id]
+                ["active_prompt"]
+                .is_null();
+            if settled
+                && lines(&record.join("parts")).last().map(String::as_str) == Some("result 1")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the turn did not complete: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let history = request(
+            &mut socket,
+            json!({"GetSessionHistoryOutline": {"session_id": session_id,
+                "agent_ids": [agent_id], "include_prefetched_content": true}}),
+        )
+        .await
+        .to_string();
+        std::fs::write(scratch.join("history.json"), &history).unwrap();
+        // Every part once, including those streamed while no program was connected.
+        for part in 1..=400 {
+            assert_eq!(
+                history.matches(&format!("turn-1-part-{part} ")).count(),
+                1,
+                "part {part} is not in history once: {history}"
+            );
+        }
+        assert!(!history.contains("interrupted"), "{history}");
+    });
+    // One app-server ran the whole turn, and it got the prompt once.
+    assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
+    let threads = lines(&record.join("threads"));
+    let server = threads[0].split_once(' ').unwrap().1.to_string();
+    assert_eq!(
+        threads,
+        [
+            format!("thread/start {server}"),
+            format!("thread/resume {server}")
+        ]
+    );
+}

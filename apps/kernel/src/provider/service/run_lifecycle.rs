@@ -58,7 +58,13 @@ impl ProviderProcessService {
             Some((run_id, _)) => run_id.clone(),
             None => self.next_run_id(),
         };
-        let launch_result = adapter.connect(&request)?;
+        #[allow(unused_mut)]
+        let mut launch_result = adapter.connect(&request)?;
+        // The handed-over app-server keeps listening where it did.
+        #[cfg(unix)]
+        if let Some(endpoint) = crate::hot_reload::adopting_codex_endpoint(&run_id) {
+            launch_result.structured_endpoint = Some(endpoint);
+        }
 
         crate::logging::info_with_fields(
             "daemon.provider",

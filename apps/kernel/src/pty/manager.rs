@@ -477,6 +477,11 @@ impl PtyManager {
             return Ok(());
         }
 
+        #[cfg(unix)]
+        if let Some(handover) = crate::hot_reload::adopting_pty(run.id()) {
+            return self.adopt(process_key, &handover);
+        }
+
         let program = run.pty_program().ok_or_else(|| DaemonError::PtySpawn {
             provider_run_id: run.id().to_string(),
             message: "provider run does not define a managed PTY program".to_string(),
