@@ -238,11 +238,14 @@ async fn a_caller_whose_grant_ended_is_told_why() {
 }
 
 /// Holds every descriptor the process may open, as a busy host does, until dropped.
+/// Linux only: it counts the open descriptors through procfs.
+#[cfg(target_os = "linux")]
 struct Exhausted {
     saved: libc::rlimit,
     held: Vec<std::fs::File>,
 }
 
+#[cfg(target_os = "linux")]
 impl Exhausted {
     fn new() -> Self {
         let mut saved: libc::rlimit = unsafe { std::mem::zeroed() };
@@ -268,6 +271,7 @@ impl Exhausted {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Exhausted {
     fn drop(&mut self) {
         self.held.clear();
@@ -277,6 +281,7 @@ impl Drop for Exhausted {
 
 // The same failure with a real OS error: a process that cannot open `/proc/<pid>/stat`
 // tells nothing about the holder.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_host_out_of_descriptors_does_not_end_a_live_holders_grant() {
     let state = state();
