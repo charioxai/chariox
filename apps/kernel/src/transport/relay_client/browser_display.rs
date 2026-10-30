@@ -255,7 +255,7 @@ pub(super) async fn handle_subscribe(
         },
     )?;
     if initial_credit {
-        pump.acknowledge(generation, 0, true, None);
+        pump.acknowledge(generation, 0, true, None, false);
     }
     let delivery_key = key.clone();
     let delivery_relay = relay_id.clone();
@@ -309,6 +309,7 @@ pub(super) async fn acknowledge(
     sequence: u64,
     lost: bool,
     held_ms: Option<u32>,
+    paused: bool,
 ) -> Option<&'static str> {
     let pump = {
         let guard = tasks.lock().await;
@@ -322,7 +323,7 @@ pub(super) async fn acknowledge(
             .display_pump
             .clone()?
     };
-    let status = pump.acknowledge(generation, sequence, lost, held_ms)?;
+    let status = pump.acknowledge(generation, sequence, lost, held_ms, paused)?;
     browser_display_delivery_id(tasks, display_id, public_key).await?;
     Some(status)
 }
@@ -371,6 +372,43 @@ mod tests {
         tokio::time::advance(Duration::from_secs(61)).await;
         tokio::task::yield_now().await;
         assert!(browser_display_delivery_id(&tasks, "d", "key")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn mp08_a_paused_display_keeps_its_delivery_for_minutes_and_resumes_on_the_same_pump() {
+        let pump = super::super::display_pump::DisplayPump::new(7, "d");
+        let tasks = Arc::new(Mutex::new(std::collections::BTreeMap::from([(
+            "display".into(),
+            RelaySubscriptionTask {
+                display_id: Some("d".into()),
+                display_pump: Some(pump.clone()),
+                relay_subscription_id: "relay".into(),
+                client_public_key: "key".into(),
+                handle: tokio::spawn(sleep(Duration::from_secs(60))),
+            },
+        )])));
+        tokio::task::yield_now().await;
+        // Hidden for five minutes: a paused acknowledgement every 20 s is the only traffic.
+        for _ in 0..15 {
+            tokio::time::advance(Duration::from_secs(20)).await;
+            assert_eq!(
+                acknowledge(&tasks, "d", "key", 7, 3, false, None, true).await,
+                Some("running")
+            );
+            tokio::task::yield_now().await;
+        }
+        // Watched again: the independent-frame request reaches the same registration.
+        assert_eq!(
+            acknowledge(&tasks, "d", "key", 7, 3, true, None, false).await,
+            Some("running")
+        );
+        // Silence alone still ends the delivery after sixty seconds.
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::task::yield_now().await;
+        assert!(acknowledge(&tasks, "d", "key", 7, 4, false, None, false)
             .await
             .is_none());
     }

@@ -558,13 +558,24 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
   for(const event of options.initialEvents??[])receiveEvent(event);
   if(options.initialEvents)options.initialEvents.length=0;
   // A stopped stream sends no heartbeats: the kernel ACK gate stops its pump.
-  const heartbeat = setInterval(() => { if (!paused && performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence); }, heartbeatMs);
-  // A stream runs only while a person can see it: while unwatched there are no ACKs (the kernel pump goes dormant) and
-  // no frames are kept; being watched again asks for one independent frame.
-  const halt = () => { paused = true; clearTimeout(gapTimer); gapTimer = null; held.clear(); heldBytes = 0; };
-  const resume = () => { if (paused && options.watched?.value !== false) { paused = false; resync = true; keyRequestedAt = -Infinity; recover(); } };
+  // While recovering, the heartbeat repeats the independent-frame request: it also lifts a kernel pause whose resume ACK was overtaken.
+  const heartbeat = setInterval(() => { if (!paused && performance.now() - ackedAt >= heartbeatMs) ack(presenter.sequence, recovering); }, heartbeatMs);
+  // A stream runs only while a person can see it. Unwatched, the kernel pump is told to pause (no capture, no frames, no
+  // reprobe) and a sparse paused ACK keeps the delivery lease alive; no frames are kept here. Being watched again asks for one
+  // independent frame, which also lifts the pause.
+  let pauseTimer = null;
+  const pauseKernel = () => {
+    if (closed || failure) return;
+    request({ op: 'display_ack', subscription_id: binding.subscription_id, generation: binding.generation, sequence: presenter.sequence, lost: false, paused: true })
+      .then(reply => { if (reply?.push !== 'running') fail(Error('MD-DISPLAY: push pump ' + (reply?.push ?? 'unavailable'))); }, fail);
+  };
+  const halt = () => {
+    paused = true; clearTimeout(gapTimer); gapTimer = null; held.clear(); heldBytes = 0; queuedAck = null;
+    if (pauseTimer === null) { pauseKernel(); pauseTimer = setInterval(pauseKernel, options.pauseKeepaliveMs ?? 20_000); }
+  };
+  const resume = () => { if (paused && options.watched?.value !== false) { paused = false; clearInterval(pauseTimer); pauseTimer = null; resync = true; keyRequestedAt = -Infinity; recover(); } };
   const unwatch = options.watched?.subscribe(watched => { if (watched) { if (running) resume(); } else halt(); });
-  if (!paused) ack(presenter.sequence);
+  if (paused) halt(); else ack(presenter.sequence);
   const next = async () => {
     if (failure) throw failure;
     if (!unread.length) await new Promise(resolve => { const wake = () => { clearTimeout(timer); waiters.delete(wake); resolve(); }; const timer = setTimeout(wake, idleMs); waiters.add(wake); });
@@ -586,6 +597,6 @@ function pushDisplay(presenter, transport, request, binding, actorCommand, optio
     takeover: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('takeover'));},
     release: () => {predictionEpoch++;presenter.prediction?.restore();return request(actorCommand('release'));},
     actors: () => request(actorCommand('actors')),
-    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearTimeout(gapTimer); unwatch?.(); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
+    async close(closeOptions) { closed = true; running = false; queuedAck=null;receiptTimes.clear();document?.removeEventListener('visibilitychange',visibilityChanged); clearInterval(heartbeat); clearInterval(pauseTimer); clearTimeout(gapTimer); unwatch?.(); off(); presentationQueue.cancel(); presenter.close(closeOptions); await presentationQueue.tail.catch(() => {}); await options.releaseDisplay(closeOptions?.preserveFrame); },
   };
 }

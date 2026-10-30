@@ -44,6 +44,8 @@ struct PumpState {
     /// Gate closures in the congestion window, with the oldest unacked frame that closed each.
     closes: VecDeque<(Instant, u64)>,
     synced_at: Option<Instant>,
+    /// Nobody watches: no capture and no reprobe until an acknowledgement asks for an independent frame.
+    paused: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -93,6 +95,9 @@ impl PumpState {
             + Duration::from_millis(5)
     }
     fn admit(&mut self, now: Instant) -> Gate {
+        if self.paused {
+            return Gate::Closed;
+        }
         // MP-08/MP-10/MP-11: private fixed-label timings, no peer or payload.
         self.mark(
             "push_rtt_floor",
@@ -147,8 +152,25 @@ impl PumpState {
             congested: self.closes.len() >= 2,
         })
     }
+    /// Nobody watches: forget what is in flight instead of letting the stall gate reprobe, and resume from an
+    /// independent frame.
+    fn pause(&mut self) {
+        self.started = true;
+        self.paused = true;
+        self.sent.clear();
+        self.gated_at = None;
+        self.reset = true;
+    }
     fn acknowledge(&mut self, sequence: u64, lost: bool, now: Instant, held_ms: Option<u32>) {
         self.started = true;
+        if self.paused {
+            // An acknowledgement of a frame sent before the pause may arrive after it: only the viewer asking
+            // for an independent frame (watched again) resumes.
+            if !lost {
+                return;
+            }
+            self.paused = false;
+        }
         self.reset |= lost;
         self.acked = self.acked.max(sequence);
         while let Some(&(sent, at)) = self.sent.front() {
@@ -239,12 +261,17 @@ impl DisplayPump {
         sequence: u64,
         lost: bool,
         held_ms: Option<u32>,
+        paused: bool,
     ) -> Option<&'static str> {
         let status = self.with(|state| {
             if state.generation != generation {
                 return None;
             }
-            state.acknowledge(sequence, lost, Instant::now(), held_ms);
+            if paused {
+                state.pause();
+            } else {
+                state.acknowledge(sequence, lost, Instant::now(), held_ms);
+            }
             Some(if state.failed {
                 "failed"
             } else if state.stopped {
@@ -715,6 +742,41 @@ mod tests {
     }
 
     #[test]
+    fn mp08_a_paused_pump_stays_dormant_past_the_reprobe_until_an_independent_frame_is_asked() {
+        let start = Instant::now();
+        let unwatched = start + STALL + REPROBE + Duration::from_secs(30);
+        let mut state = PumpState::default();
+        state.acknowledge(0, false, start, None);
+        assert!(matches!(state.admit(start), Gate::Open(_)));
+        state.sent.push_back((1, start));
+        // Without a pause, silence reopens the gate on the reprobe: an animated page keeps producing bursts.
+        let mut silent = PumpState::default();
+        silent.acknowledge(0, false, start, None);
+        silent.sent.push_back((1, start));
+        assert_eq!(
+            silent.admit(start + STALL + Duration::from_millis(1)),
+            Gate::Closed
+        );
+        assert!(matches!(silent.admit(unwatched), Gate::Open(_)));
+        // A paused pump never does, however long nobody watches.
+        state.pause();
+        assert_eq!(
+            state.admit(start + STALL + Duration::from_millis(1)),
+            Gate::Closed
+        );
+        assert_eq!(state.admit(unwatched), Gate::Closed);
+        // The late acknowledgement of a frame sent before the pause does not resume it.
+        state.acknowledge(1, false, unwatched, Some(0));
+        assert_eq!(state.admit(unwatched), Gate::Closed);
+        // Watched again: the independent-frame request resumes it with a reset.
+        state.acknowledge(1, true, unwatched, None);
+        let Gate::Open(credit) = state.admit(unwatched) else {
+            panic!("watched again resumes the pump")
+        };
+        assert!(credit.reset && state.sent.is_empty());
+    }
+
+    #[test]
     fn mp10_repeated_gate_closure_reports_congestion() {
         let start = Instant::now();
         let mut state = PumpState::default();
@@ -778,7 +840,7 @@ mod tests {
     #[test]
     fn mp10_new_pump_first_frame_is_independent() {
         let pump = DisplayPump::new(7, "display");
-        assert_eq!(pump.acknowledge(7, 13, false, None), Some("running"));
+        assert_eq!(pump.acknowledge(7, 13, false, None, false), Some("running"));
         let now = Instant::now();
         let Gate::Open(credit) = pump.with(|state| state.admit(now)) else {
             panic!()
@@ -793,8 +855,8 @@ mod tests {
     #[test]
     fn mp10_foreign_generation_ack_is_refused() {
         let pump = DisplayPump::new(7, "display");
-        assert_eq!(pump.acknowledge(8, 1, false, None), None);
-        assert_eq!(pump.acknowledge(7, 1, false, None), Some("running"));
+        assert_eq!(pump.acknowledge(8, 1, false, None, false), None);
+        assert_eq!(pump.acknowledge(7, 1, false, None, false), Some("running"));
     }
     // MP-08/MP-10/MP-11: receiver-side decode/queue hold is not wire RTT.
     #[test]

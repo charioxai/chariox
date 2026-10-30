@@ -306,6 +306,7 @@ mod tests {
             sequence: 0,
             lost: false,
             held_ms: None,
+            paused: false,
         })
         .browser_input_key()
         .is_none());

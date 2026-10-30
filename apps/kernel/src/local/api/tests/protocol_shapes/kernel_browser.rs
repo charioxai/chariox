@@ -18,6 +18,26 @@ fn the_legacy_user_side_frame_stream_is_not_a_command() {
 }
 
 #[test]
+fn a_paused_display_ack_is_versioned_and_omitted_when_false() {
+    let paused = Command::DisplayAck {
+        subscription_id: "s".into(),
+        generation: 2,
+        sequence: 3,
+        lost: false,
+        held_ms: None,
+        paused: true,
+    };
+    let wire = serde_json::json!({"op":"display_ack","subscription_id":"s","generation":2,"sequence":3,"lost":false,"paused":true});
+    assert_eq!(serde_json::to_value(&paused).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), paused);
+    let plain = serde_json::json!({"op":"display_ack","subscription_id":"s","generation":2,"sequence":3,"lost":false});
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<Command>(plain.clone()).unwrap()).unwrap(),
+        plain
+    );
+}
+
+#[test]
 fn kernel_browser_protocol_443_request_snapshots() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -189,6 +209,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             sequence: 3,
             lost: true,
             held_ms: None,
+            paused: false,
         },
         Command::DisplayInput {
             tab_id: "t".into(),

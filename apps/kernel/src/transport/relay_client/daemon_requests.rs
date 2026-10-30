@@ -151,6 +151,7 @@ pub(super) async fn handle_prepared_daemon_request(
                         sequence,
                         lost,
                         held_ms,
+                        paused,
                     },
             }) = &request.request
             {
@@ -162,6 +163,7 @@ pub(super) async fn handle_prepared_daemon_request(
                     *sequence,
                     *lost,
                     *held_ms,
+                    *paused,
                 )
                 .await;
                 return display_ack_outcome(status, &daemon_private_key, &client_public_key);
