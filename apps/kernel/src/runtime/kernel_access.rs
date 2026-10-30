@@ -324,8 +324,10 @@ mod tests {
                 term: KernelAccessTerm::Minutes(30),
                 // The deadline below is still ahead, as after a suspend.
                 expires_at_ms: Some(crate::session::unix_epoch_ms() - 60_000),
+                covered: Vec::new(),
             },
             holder,
+            covered: Vec::new(),
             clock: Some(GrantClock::new(30, 5)),
         };
         assert_eq!(grant.ended_reason(Instant::now()), Some("expiry"));

@@ -523,7 +523,11 @@ async fn an_ended_terminal_keeps_no_session_to_sweep() {
     })
     .await;
     assert!(
-        service.lock().terminals[&id].session_sweep.is_none(),
+        service.lock().terminals[&id]
+            .lock()
+            .terminal
+            .session_sweep
+            .is_none(),
         "an ended terminal still holds the old shell's session for a later sweep"
     );
 }
