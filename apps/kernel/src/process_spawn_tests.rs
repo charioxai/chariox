@@ -48,6 +48,64 @@ fn panicking_pty_does_not_disable_future_spawns() {
 }
 
 #[test]
+fn ordinary_user_spawns_from_a_non_dumpable_kernel() {
+    use std::os::unix::process::CommandExt;
+    const ENV: &str = "CHARIOX_NON_DUMPABLE_SPAWN_REGRESSION_CHILD";
+    if std::env::var_os(ENV).is_some() {
+        // The kernel does this at startup; it makes /proc/self files root-owned.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+        let output = super::command("/bin/cat")
+            .arg("/proc/self/oom_score_adj")
+            .output()
+            .expect("an ordinary user's non-dumpable kernel must be able to spawn");
+        assert!(output.status.success());
+        let mut child = spawn_command(Command::new("/bin/true"))
+            .expect("spawn_command must not depend on /proc/self write access");
+        assert!(child.wait().unwrap().success());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let status = rt
+            .block_on(async { super::async_command("/bin/true").status().await })
+            .expect("async spawns must not depend on /proc/self write access");
+        assert!(status.success());
+        return;
+    }
+    let mut probe = Command::new("/proc/self/exe");
+    probe
+        .args([
+            "ordinary_user_spawns_from_a_non_dumpable_kernel",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ENV, "1");
+    unsafe {
+        probe.pre_exec(|| {
+            // Root keeps CAP_DAC_OVERRIDE and would hide the defect.
+            if libc::geteuid() == 0
+                && (libc::setgroups(0, std::ptr::null()) != 0
+                    || libc::setgid(65534) != 0
+                    || libc::setuid(65534) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = probe.spawn().unwrap();
+    let status = child.wait_timeout(Duration::from_secs(10)).unwrap();
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(
+        status.is_some_and(|s| s.success()),
+        "an unprivileged non-dumpable parent must still spawn children"
+    );
+}
+
+#[test]
 #[ignore = "privileged drill requires CAP_SYS_RESOURCE; see docs/PROCESS_RESOURCES.md"]
 fn spawned_trees_are_killable_when_the_kernel_is_oom_protected() {
     check_inherited_oom_policy(-1000);
