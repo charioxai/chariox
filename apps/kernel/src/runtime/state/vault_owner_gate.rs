@@ -19,8 +19,11 @@ mod wording {
 enum Who {
     /// The owner's own client.
     Owner,
-    /// A person at a client: the sign-in of a provider account.
+    /// A person at a client: starting the sign-in of a provider account.
     Person,
+    /// A person at a client, or an agent of the owner who was handed the
+    /// token: saving the setup token of a provider account.
+    PersonOrOwnerAgent,
     /// The owner's client or an agent working for the owner: an agent's own
     /// secret requests still wait for the owner's unlock when the Vault is
     /// locked.
@@ -32,8 +35,12 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
         LocalDaemonRequest::LockCredentialVault(_) => {
             (Who::Owner, "vault_lock_owner_only", wording::LOCK)
         }
-        LocalDaemonRequest::SetProviderAccountCredential(_) => (
-            Who::Person,
+        LocalDaemonRequest::SetProviderAccountCredential(request) => (
+            if request.run {
+                Who::Person
+            } else {
+                Who::PersonOrOwnerAgent
+            },
             "provider_account_sign_in_person_only",
             wording::ENROLL,
         ),
@@ -53,6 +60,14 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
     })
 }
 
+fn is_agent(command: &KernelCommand, class: Option<KernelConnectionClass>) -> bool {
+    command.caller.metaagent_id.is_some()
+        || matches!(
+            class,
+            Some(KernelConnectionClass::KernelAgent | KernelConnectionClass::ExternalAgent)
+        )
+}
+
 impl KernelRuntimeState {
     /// `Ok` for every request that is not a Vault or credential change.
     pub(crate) fn ensure_vault_change_allowed(
@@ -69,16 +84,9 @@ impl KernelRuntimeState {
             || match who {
                 Who::Owner => self.owner_client_user_id(command).is_ok(),
                 Who::Person => command.is_terminal_caller(),
+                Who::PersonOrOwnerAgent => command.is_terminal_caller() || is_agent(command, class),
                 Who::OwnerOrAgent => {
-                    self.owner_client_user_id(command).is_ok()
-                        || command.caller.metaagent_id.is_some()
-                        || matches!(
-                            class,
-                            Some(
-                                KernelConnectionClass::KernelAgent
-                                    | KernelConnectionClass::ExternalAgent
-                            )
-                        )
+                    self.owner_client_user_id(command).is_ok() || is_agent(command, class)
                 }
             };
         if allowed {

@@ -611,7 +611,8 @@ async fn only_the_owner_may_lock_the_vault_or_change_what_it_stores() {
             assert_eq!(refused, name != allowed, "{who} {name}");
         }
     }
-    // Agents may do what their tools are for, and nothing else.
+    // Agents may do what their tools are for, and nothing else: a token they
+    // were handed can be saved, but locking the Vault is the owner's.
     let agents = [
         (
             "kernel agent",
@@ -622,7 +623,7 @@ async fn only_the_owner_may_lock_the_vault_or_change_what_it_stores() {
     for (who, caller) in agents {
         for (name, request) in vault_changes() {
             let refused = refused_as_owner_only(f.send_as(caller.clone(), request).await);
-            assert_eq!(refused, matches!(name, "lock" | "sign-in"), "{who} {name}");
+            assert_eq!(refused, name == "lock", "{who} {name}");
         }
     }
     // A local grant holder is stopped before the gate unless its grant is live.
@@ -756,4 +757,35 @@ async fn a_member_cannot_answer_the_vault_menu() {
         "the member did not lock the Vault"
     );
     menu.abort();
+}
+
+fn sign_in(run: bool) -> LocalDaemonRequest {
+    LocalDaemonRequest::SetProviderAccountCredential(
+        crate::local::SetProviderAccountCredentialRequest {
+            session_id: None,
+            agent_id: None,
+            provider: "claude".into(),
+            account_profile: "none".into(),
+            value: "value".into(),
+            run,
+            overwrite: false,
+        },
+    )
+}
+
+#[tokio::test]
+async fn an_agent_may_save_a_token_it_was_given_but_not_start_the_login() {
+    let f = Fixture::locked();
+    f.unlock(PASSPHRASE).await.unwrap();
+    let mut metaagent = caller_of(Some(KernelConnectionClass::Terminal), None);
+    metaagent.metaagent_id = Some("metaagent".into());
+    for agent in [
+        caller_of(Some(KernelConnectionClass::KernelAgent), None),
+        metaagent,
+    ] {
+        assert!(!refused_as_owner_only(
+            f.send_as(agent.clone(), sign_in(false)).await
+        ));
+        assert!(refused_as_owner_only(f.send_as(agent, sign_in(true)).await));
+    }
 }
