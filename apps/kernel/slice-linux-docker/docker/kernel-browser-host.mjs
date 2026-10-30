@@ -64,7 +64,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
-    ['chrome_window_follow', 'note_selection'].includes(request.params?.op))
+    ['chrome_window_follow', 'note_selection', 'pointer_cursor'].includes(request.params?.op))
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
