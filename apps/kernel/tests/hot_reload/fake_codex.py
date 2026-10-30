@@ -1,10 +1,11 @@
 # A Codex app-server shaped like the real one (codex-cli 0.159.3) where a hot
-# reload meets it: a running turn keeps running while no client is connected,
-# `thread/resume` on a new connection rejoins it, and what was streamed
-# meanwhile is not replayed. The turn streams 400 parts and keeps streaming
-# while the kernel prepares the swap; once its client connection drops it
-# streams 30 parts with no client (or, with CHARIOX_FAKE_CODEX_FINISH_IN_GAP,
-# the rest of the turn), and continues once a connection resumes the thread.
+# reload meets it: a running turn keeps running whether or not a client is
+# connected, `thread/resume` on a new connection rejoins it, and what was
+# streamed while no client was connected is not replayed. The turn streams one
+# item of 450 parts, one every 20 ms. The test writes `swap` into the record
+# when it starts the reload and `go` once it is connected again: part 300 waits
+# for `go`, so the item still streams after the swap. With
+# CHARIOX_FAKE_CODEX_FINISH_IN_GAP the turn ends as soon as `swap` exists.
 import base64, hashlib, json, os, socket, struct, sys, threading, time
 
 record = os.environ.get("CHARIOX_FAKE_CODEX_RECORD", "/dev/null/none")
@@ -12,7 +13,6 @@ finish_in_gap = os.environ.get("CHARIOX_FAKE_CODEX_FINISH_IN_GAP") == "1"
 THREAD, TURN, ITEM = "thread-1", "turn-1", "msg-1"
 lock = threading.Condition()
 subscriber = None
-dropped = False
 turn = {"status": None, "text": ""}
 
 
@@ -79,36 +79,36 @@ def turn_view():
     return {"id": TURN, "status": turn["status"], "items": items}
 
 
+PARTS = 450
+
+
 def stream(n):
     delta = f"turn-1-part-{n} \n"
     turn["text"] += delta
     notify("item/agentMessage/delta", {"threadId": THREAD, "turnId": TURN, "itemId": ITEM, "delta": delta})
     note("parts", f"part {n}")
-    time.sleep(0.005)
+
+
+def wait_for(name):
+    while not os.path.exists(os.path.join(record, name)):
+        time.sleep(0.01)
 
 
 def run_turn():
-    global dropped
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
-    n = 0
-    while not dropped:
-        n += 1
-        if n == 400:
-            # Not dropped in time: hold the last part until it is.
-            with lock:
-                lock.wait_for(lambda: dropped)
-        stream(n)
-    gap = 400 if finish_in_gap else min(n + 30, 400)
-    while n < gap:
-        n += 1
-        stream(n)
-    if not finish_in_gap:
-        with lock:
-            lock.wait_for(lambda: subscriber is not None)
-        while n < 400:
-            n += 1
+    for n in range(1, PARTS + 1):
+        swapping = os.path.exists(os.path.join(record, "swap"))
+        if finish_in_gap and swapping:
             stream(n)
+            continue
+        if n == 300:
+            if finish_in_gap:
+                wait_for("swap")
+            else:
+                wait_for("go")
+        stream(n)
+        time.sleep(0.02)
     notify("item/completed", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": turn["text"]}})
     turn["status"] = "completed"
     notify("turn/completed", {"threadId": THREAD, "turn": {"id": TURN, "status": "completed", "items": []}})
@@ -149,7 +149,7 @@ def answer(conn, request):
 
 
 def serve(conn):
-    global subscriber, dropped
+    global subscriber
     request = b""
     while b"\r\n\r\n" not in request:
         chunk = conn.recv(4096)
@@ -172,8 +172,6 @@ def serve(conn):
     with lock:
         if subscriber is conn:
             subscriber = None
-            dropped = True
-            lock.notify_all()
     conn.close()
 
 

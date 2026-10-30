@@ -915,12 +915,14 @@ fn claude_turn_across_a_hot_reload(login: Login) {
 /// A Codex app-server shaped like the measured one (codex-cli 0.159.3).
 const FAKE_CODEX: &str = include_str!("hot_reload/fake_codex.py");
 
+/// The item streaming at the swap keeps streaming: its deltas show up with no
+/// stall longer than the swap itself, each once and in order.
 #[test]
-fn a_hot_reload_keeps_a_running_codex_turn() {
+fn a_codex_item_keeps_streaming_across_a_hot_reload() {
     codex_turn_across_a_hot_reload(false);
 }
 
-/// The turn may end while no kernel program is connected to the app-server.
+/// The turn may end while the kernel program is being replaced.
 #[test]
 fn a_hot_reload_keeps_a_codex_turn_that_ends_during_the_swap() {
     codex_turn_across_a_hot_reload(true);
@@ -1002,16 +1004,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
         )
         .await;
 
-        // Upgrade while the turn streams: the fake keeps streaming until its
-        // client connection drops.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while lines(&record.join("parts")).len() < 100 {
-            assert!(
-                Instant::now() < deadline,
-                "the turn did not start streaming"
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        // Install the new program first: the upgrade then only signals.
         let installed = scratch.join("bin/chariox-kernel");
         install(
             |staged| {
@@ -1019,14 +1012,30 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
             },
             &installed,
         );
+        // Upgrade while the item streams; watch what the session shows of it.
+        let started = Instant::now();
+        let mut shown = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 100 {
+            assert!(
+                Instant::now() < deadline,
+                "the turn did not start streaming"
+            );
+            note_shown_parts(&mut socket, &session_id, &agent_id, started, &mut shown).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
+        std::fs::write(record.join("swap"), "").unwrap();
+        let signalled = epoch_ms();
         unsafe { libc::kill(pid, libc::SIGUSR2) };
         closed_by_the_old_program(socket).await;
 
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        std::fs::write(record.join("go"), "").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
+            note_shown_parts(&mut socket, &session_id, &agent_id, started, &mut shown).await;
             let state = request(
                 &mut socket,
                 json!({"GetSessionState": {"session_id": session_id}}),
@@ -1044,7 +1053,25 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
                 Instant::now() < deadline,
                 "the turn did not complete: {state}"
             );
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !finish_in_gap {
+            // The swap: from the signal until the new program continues the
+            // turn (the old program stops, the new one starts and adopts it).
+            let continued = logged_at(&scratch, "continuing a handed-over Codex turn");
+            let swap = Duration::from_millis(continued.saturating_sub(signalled));
+            // From the last part shown before the swap to the first after it,
+            // and between any two later ones, no longer than the swap (plus
+            // this test's 100 ms polling and the output pump's cadence).
+            let stall = shown
+                .windows(2)
+                .map(|pair| pair[1].0 - pair[0].0)
+                .max()
+                .unwrap();
+            assert!(
+                stall <= swap + Duration::from_secs(1),
+                "the item stood still for {stall:?}; the swap took {swap:?}: {shown:?}"
+            );
         }
         let history = request(
             &mut socket,
@@ -1054,25 +1081,71 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool) {
         .await
         .to_string();
         std::fs::write(scratch.join("history.json"), &history).unwrap();
-        // Every part once, including those streamed while no program was connected.
-        for part in 1..=400 {
+        // Every part once and in order, including those streamed during the swap.
+        let mut previous = 0;
+        for part in 1..=450 {
+            let needle = format!("turn-1-part-{part} ");
             assert_eq!(
-                history.matches(&format!("turn-1-part-{part} ")).count(),
+                history.matches(&needle).count(),
                 1,
                 "part {part} is not in history once: {history}"
             );
+            let at = history.find(&needle).unwrap();
+            assert!(at > previous, "part {part} is out of order: {history}");
+            previous = at;
         }
         assert!(!history.contains("interrupted"), "{history}");
     });
     // One app-server ran the whole turn, and it got the prompt once.
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
+    // On one connection: the thread was started once and never resumed.
     let threads = lines(&record.join("threads"));
-    let server = threads[0].split_once(' ').unwrap().1.to_string();
-    assert_eq!(
-        threads,
-        [
-            format!("thread/start {server}"),
-            format!("thread/resume {server}")
-        ]
-    );
+    assert_eq!(threads.len(), 1, "{threads:?}");
+    assert!(threads[0].starts_with("thread/start "), "{threads:?}");
+}
+
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// When the kernel first logged `message`.
+fn logged_at(scratch: &Path, message: &str) -> u64 {
+    std::fs::read_dir(scratch.join("logs"))
+        .unwrap()
+        .flat_map(|file| {
+            std::fs::read_to_string(file.unwrap().path())
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|line| line["message"] == message)
+                .filter_map(|line| line["timestamp_ms"].as_u64())
+                .collect::<Vec<_>>()
+        })
+        .min()
+        .unwrap_or_else(|| panic!("the kernel never logged {message:?}"))
+}
+
+/// Notes when the session shows more parts of the streaming item.
+async fn note_shown_parts(
+    socket: &mut Socket,
+    session_id: &str,
+    agent_id: &str,
+    started: Instant,
+    shown: &mut Vec<(Duration, usize)>,
+) {
+    let history = request(
+        socket,
+        json!({"GetSessionHistoryOutline": {"session_id": session_id,
+            "agent_ids": [agent_id], "include_prefetched_content": true}}),
+    )
+    .await
+    .to_string();
+    let parts = history.matches("turn-1-part-").count();
+    // From the first part on: the stream's start is not part of the swap.
+    if parts > 0 && shown.last().is_none_or(|(_, last)| parts > *last) {
+        shown.push((started.elapsed(), parts));
+    }
 }
