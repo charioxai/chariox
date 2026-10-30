@@ -86,7 +86,8 @@ impl KernelRuntimeState {
     }
 
     /// Whether the sudo window `id` still serves a connection from `peer`. A peer the
-    /// OS can't read just now still does: only a confirmed answer closes it.
+    /// OS can't read just now defers only the process check: the window and its turn
+    /// are still judged, and only a confirmed answer closes it.
     pub(crate) fn sudo_peer_live(&self, id: &str, peer: &ProcessIdentity) -> bool {
         if peer.gone() {
             return false;
@@ -95,7 +96,9 @@ impl KernelRuntimeState {
             Ok(chain) => self
                 .sudo_for_chain(&chain)
                 .is_ok_and(|turn| turn.entry_id == id),
-            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+            Err(error) => {
+                error.kind() != std::io::ErrorKind::NotFound && self.sudo_window_bound(id).is_ok()
+            }
         }
     }
 }
