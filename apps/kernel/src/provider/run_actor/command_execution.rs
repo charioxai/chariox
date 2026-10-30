@@ -302,7 +302,7 @@ pub(super) fn execute_terminate_command(
             Err(state) => {
                 *slot
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(state);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*state);
             }
         }
     }

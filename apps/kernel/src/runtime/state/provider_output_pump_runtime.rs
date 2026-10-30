@@ -64,6 +64,7 @@ impl KernelRuntimeState {
             .await;
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_provider_output_pump(&self) {
         self.run_provider_output_pump_until(std::future::pending())
             .await;

@@ -256,7 +256,7 @@ pub(crate) fn submit_claude_prompt(
 /// gives the state back to stop as for a restart.
 pub(crate) fn hand_over_claude_runtime(
     state: ClaudeRuntimeState,
-) -> Result<ClaudeHandover, ClaudeRuntimeState> {
+) -> Result<ClaudeHandover, Box<ClaudeRuntimeState>> {
     handover::hand_over(state)
 }
 

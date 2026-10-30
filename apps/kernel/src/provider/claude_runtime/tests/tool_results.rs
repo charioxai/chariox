@@ -67,7 +67,7 @@ fn claude_handler_bounds_unsupported_rejection_written_to_provider() {
     use std::io::{BufRead, Read};
     let (mut state, mut batch) = parser_state();
     let _ = state.child.kill();
-    let _ = state.child.wait();
+    state.child.wait();
     let mut echo = std::process::Command::new("/bin/cat")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

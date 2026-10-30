@@ -314,6 +314,19 @@ impl DaemonApp {
     }
 }
 
+/// A turn handed over by a hot reload already runs with its credentials.
+pub(crate) fn handed_over_credentials(
+    request: &crate::provider::LaunchProviderRequest,
+) -> Option<crate::provider::ProviderCredentialEnvironment> {
+    #[cfg(unix)]
+    return crate::hot_reload::handed_over_credentials(
+        &request.session_id,
+        request.agent_id.as_deref(),
+    );
+    #[cfg(not(unix))]
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,17 +1010,4 @@ mod tests {
             path.display()
         );
     }
-}
-
-/// A turn handed over by a hot reload already runs with its credentials.
-pub(crate) fn handed_over_credentials(
-    request: &crate::provider::LaunchProviderRequest,
-) -> Option<crate::provider::ProviderCredentialEnvironment> {
-    #[cfg(unix)]
-    return crate::hot_reload::handed_over_credentials(
-        &request.session_id,
-        request.agent_id.as_deref(),
-    );
-    #[cfg(not(unix))]
-    None
 }

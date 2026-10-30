@@ -204,16 +204,16 @@ impl ClaudeHandover {
 /// turn to continue, so it stops as for a restart.
 pub(super) fn hand_over(
     mut state: ClaudeRuntimeState,
-) -> Result<ClaudeHandover, ClaudeRuntimeState> {
+) -> Result<ClaudeHandover, Box<ClaudeRuntimeState>> {
     if state.active_turn_id.is_none() || !matches!(state.child.try_wait(), Ok(None)) {
-        return Err(state);
+        return Err(Box::new(state));
     }
     let (Some((stdout, mut stdout_unread)), Some((stderr, mut stderr_unread))) =
         (state.output.stdout.hold(), state.output.stderr.hold())
     else {
         state.output.stdout.release();
         state.output.stderr.release();
-        return Err(state);
+        return Err(Box::new(state));
     };
     // Lines already read but not yet applied come first in the next program.
     let mut stdout_lines = Vec::new();
