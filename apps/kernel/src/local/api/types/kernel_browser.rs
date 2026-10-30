@@ -223,14 +223,6 @@ pub enum KernelBrowserCommand {
         tab_id: String,
         generation: u64,
     },
-    Subscribe {
-        tab_id: String,
-        generation: u64,
-    },
-    Poll {
-        subscription_id: String,
-        generation: u64,
-    },
     Unsubscribe {
         subscription_id: String,
         generation: u64,

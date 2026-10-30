@@ -3,7 +3,7 @@ import test from "node:test"
 import { WebSocketServer } from "ws"
 import { LocalIpcClient, LocalIpcError } from "./ipc.js"
 
-for (const op of ["input", "open", "navigate", "close", "subscribe", "stop"]) {
+for (const op of ["input", "open", "navigate", "close", "unsubscribe", "stop"]) {
   test(`MD-3: disconnected browser ${op} is never replayed as a new terminal actor`, async t => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 })
     await new Promise<void>(resolve => server.once("listening", resolve))

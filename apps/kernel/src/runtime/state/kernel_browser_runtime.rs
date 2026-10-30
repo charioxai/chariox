@@ -16,12 +16,6 @@ pub(crate) enum KernelBrowserDisplayRequest {
         frame_width: u32,
         frame_height: u32,
     },
-    // Keep the protected legacy native stream seam for display adapters.
-    #[allow(dead_code)]
-    Subscribe {
-        tab_id: String,
-        generation: u64,
-    },
     Input {
         binding: crate::runtime::kernel_browser_host::KernelBrowserDocumentBinding,
         input: crate::local::KernelBrowserInput,
@@ -138,12 +132,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             "MD-DISPLAY: terminal display adapter required".into(),
         ));
     }
-    if matches!(
-        &request.command,
-        KernelBrowserCommand::Subscribe { .. }
-            | KernelBrowserCommand::Poll { .. }
-            | KernelBrowserCommand::Unsubscribe { .. }
-    ) {
+    if matches!(&request.command, KernelBrowserCommand::Unsubscribe { .. }) {
         return Err(host_error(
             "MD-3: agents read the browser with state, snapshot and screenshot; a live stream is for a person watching".into(),
         ));
@@ -654,9 +643,6 @@ impl KernelRuntimeState {
                 frame_height,
             } => {
                 serde_json::json!({"op":"screenshot","tab_id":tab_id,"generation":generation,"bound_frames":true,"_capture_protection":true,"_capture_viewport":{"width":frame_width,"height":frame_height}})
-            }
-            KernelBrowserDisplayRequest::Subscribe { tab_id, generation } => {
-                serde_json::json!({"op":"subscribe","tab_id":tab_id,"generation":generation,"bound_frames":true})
             }
             KernelBrowserDisplayRequest::Input { binding, input } => {
                 if binding.document_id.is_empty() || binding.document_id.len() > 256 {
@@ -1230,10 +1216,10 @@ mod document_tests {
             serde_json::json!({"op":"poll","subscription_id":"stream","generation":1}),
             serde_json::json!({"op":"unsubscribe","subscription_id":"stream","generation":1}),
         ] {
-            let error = browser_tool_params(serde_json::json!({ "command": command }))
-                .unwrap_err()
-                .to_string();
-            assert!(error.contains("live stream"), "unexpected refusal: {error}");
+            assert!(
+                browser_tool_params(serde_json::json!({ "command": command })).is_err(),
+                "an agent opened a live stream: {command}"
+            );
         }
     }
     #[test]

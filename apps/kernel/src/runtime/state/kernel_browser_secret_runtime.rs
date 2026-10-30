@@ -132,7 +132,7 @@ impl KernelRuntimeState {
         });
         let (user, method) = (user.to_string(), method.to_string());
         let pixels = matches!(method.as_str(), "host.browser" | "host.computer")
-            && (params["op"] == "screenshot" || params["op"] == "poll");
+            && params["op"] == "screenshot";
         let display = method == "host.browser"
             && ((params["op"] == "screenshot" && params["display_subscription_id"].is_string())
                 || params["op"] == "display_subscribe");

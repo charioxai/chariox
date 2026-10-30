@@ -5,6 +5,19 @@ use crate::local::{
 };
 
 #[test]
+fn the_legacy_user_side_frame_stream_is_not_a_command() {
+    for command in [
+        serde_json::json!({"op":"subscribe","tab_id":"t","generation":2}),
+        serde_json::json!({"op":"poll","subscription_id":"s","generation":2}),
+    ] {
+        assert!(
+            serde_json::from_value::<Command>(command.clone()).is_err(),
+            "{command} parsed as a browser command"
+        );
+    }
+}
+
+#[test]
 fn kernel_browser_protocol_443_request_snapshots() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -48,20 +61,6 @@ fn kernel_browser_protocol_443_request_snapshots() {
                 generation: 2,
             },
             serde_json::json!({"op":"screenshot","tab_id":"t","generation":2}),
-        ),
-        (
-            Command::Subscribe {
-                tab_id: "t".into(),
-                generation: 2,
-            },
-            serde_json::json!({"op":"subscribe","tab_id":"t","generation":2}),
-        ),
-        (
-            Command::Poll {
-                subscription_id: "s".into(),
-                generation: 2,
-            },
-            serde_json::json!({"op":"poll","subscription_id":"s","generation":2}),
         ),
         (
             Command::Unsubscribe {

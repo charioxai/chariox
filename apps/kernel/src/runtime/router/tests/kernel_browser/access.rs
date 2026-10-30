@@ -250,10 +250,9 @@ async fn check(native: bool) {
     .await
     .unwrap();
     // An agent reads with snapshots and screenshots; it never opens a live stream.
-    for command in [
-        json!({"op":"subscribe","tab_id":tab,"generation":generation}),
-        json!({"op":"poll","subscription_id":"host-stream-any","generation":generation}),
-    ] {
+    for command in
+        [json!({"op":"unsubscribe","subscription_id":"host-stream-any","generation":generation})]
+    {
         assert!(tool(
             &router,
             token,
