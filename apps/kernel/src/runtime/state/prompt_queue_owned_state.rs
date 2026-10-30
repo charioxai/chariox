@@ -265,7 +265,7 @@ impl KernelRuntimeOwnedState {
 
     /// Mirrors the prompt state and, when `steered_trigger` names the trigger
     /// whose firing the change consumed, records that firing in the same
-    /// durable event.
+    /// durable event and publishes it as one checkpoint-atomic step.
     fn mirror_prompt_owner_agent_state_settling_steer(
         &self,
         session_id: &str,
@@ -275,25 +275,38 @@ impl KernelRuntimeOwnedState {
         activity_mutation: super::managed_activity_runtime_state::ManagedActivityMutation<'_>,
         steered_trigger: Option<&TriggerFiring>,
     ) -> Result<(), DaemonError> {
-        let session = self.session_store.mirror_agent_prompt_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        )?;
-        let settlement = steered_trigger.and_then(|firing| {
-            session.settlement_of_steered_trigger(&firing.trigger_id, firing.now_ms)
-        });
-        crate::durable_prompt_state::append_durable_prompt_state_event_settling(
-            &self.durable_state_store,
-            &session,
-            agent_id,
-            settlement.clone(),
-        )?;
-        if let Some(settlement) = settlement {
-            self.session_store
-                .write()
-                .apply_agent_trigger_settlement(session_id, settlement)?;
+        let commit = || {
+            let session = self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            let settlement = steered_trigger.and_then(|firing| {
+                session.settlement_of_steered_trigger(&firing.trigger_id, firing.now_ms)
+            });
+            crate::durable_prompt_state::append_durable_prompt_state_event_settling(
+                &self.durable_state_store,
+                &session,
+                agent_id,
+                settlement.clone(),
+            )?;
+            if let Some(settlement) = settlement {
+                self.session_store
+                    .write()
+                    .apply_agent_trigger_settlement(session_id, settlement)?;
+            }
+            Ok(())
+        };
+        if steered_trigger.is_some() {
+            // A checkpoint taken between the queue entry's removal and the
+            // settlement's publication would record the old trigger at the
+            // sequence of the event that settles it, and restart would skip
+            // that event and admit the occurrence again.
+            self.durable_state_store
+                .with_workflow_runtime_transition_lock(commit)?;
+        } else {
+            commit()?;
         }
         activity_mutation.record();
         self.withdraw_stale_agent_interactions();

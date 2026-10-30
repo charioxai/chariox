@@ -1363,16 +1363,25 @@ fn restored_trigger(
         .cloned()
 }
 
-/// A kernel that dies right after a steer's queue entry is consumed must not
-/// admit the same occurrence again: the entry is consumed and the occurrence
-/// settled in one durable write. Every write that would settle the trigger
-/// separately is made to fail, which is the state a crash between the two
-/// writes leaves behind.
-async fn restart_after_a_confirmed_steer_consumed_its_fence(
+struct SteeredTriggerRig {
+    config: DaemonConfig,
+    state_path: std::path::PathBuf,
+    session: crate::session::RuntimeSession,
+    agent: crate::agent::AgentInstance,
+    prompt_owner: crate::runtime::prompt_state::PromptStateOwner,
+    router: CommandRouter,
+    trigger: crate::session::AgentTrigger,
+    sessions: crate::session::SessionStateStore,
+    durable_state: crate::durable_state::DurableKernelStateStore,
+}
+
+/// A running turn whose busy-policy-steer trigger is created and not yet due.
+async fn steered_trigger_rig(
+    name: &str,
     repeat: crate::session::AgentTriggerRepeat,
-) -> (Option<crate::session::AgentTrigger>, u64) {
-    let (config, state_path) = durable_config("trigger-steer-settles-with-fence");
-    let worktree = crate::test_support::TestWorktree::new("trigger-steer-settles-with-fence");
+) -> SteeredTriggerRig {
+    let (config, state_path) = durable_config(name);
+    let worktree = crate::test_support::TestWorktree::new(name);
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -1394,7 +1403,8 @@ async fn restart_after_a_confirmed_steer_consumed_its_fence(
         "slow-structured",
     );
     let prompt_owner = start_running_turn(&app, &session, &agent);
-    let state_db = app.durable_state_store().path().to_path_buf();
+    let sessions = app.session_state_store();
+    let durable_state = app.durable_state_store();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = router
         .runtime_state
@@ -1418,8 +1428,30 @@ async fn restart_after_a_confirmed_steer_consumed_its_fence(
     else {
         panic!("unexpected trigger response");
     };
-    let due = trigger.next_run_at_ms();
-    let connection = rusqlite::Connection::open(&state_db).unwrap();
+    SteeredTriggerRig {
+        config,
+        state_path,
+        session,
+        agent,
+        prompt_owner,
+        router,
+        trigger,
+        sessions,
+        durable_state,
+    }
+}
+
+/// A kernel that dies right after a steer's queue entry is consumed must not
+/// admit the same occurrence again: the entry is consumed and the occurrence
+/// settled in one durable write. Every write that would settle the trigger
+/// separately is made to fail, which is the state a crash between the two
+/// writes leaves behind.
+async fn restart_after_a_confirmed_steer_consumed_its_fence(
+    repeat: crate::session::AgentTriggerRepeat,
+) -> (Option<crate::session::AgentTrigger>, u64) {
+    let rig = steered_trigger_rig("trigger-steer-settles-with-fence", repeat).await;
+    let due = rig.trigger.next_run_at_ms();
+    let connection = rusqlite::Connection::open(rig.durable_state.path()).unwrap();
     connection
         .execute_batch(
             "CREATE TRIGGER crash_before_trigger_update BEFORE INSERT ON durable_state_events
@@ -1427,19 +1459,116 @@ async fn restart_after_a_confirmed_steer_consumed_its_fence(
              BEGIN SELECT RAISE(FAIL, 'crash before the trigger update'); END;",
         )
         .unwrap();
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due)).await;
-    let (_, queued) = prompt_owner.state_parts(&session, agent.id());
+    boxed_schedule_future(|| rig.router.runtime_state.dispatch_due_agent_triggers(due)).await;
+    let (_, queued) = rig.prompt_owner.state_parts(&rig.session, rig.agent.id());
     assert!(queued.is_empty(), "the acknowledged steer leaves the queue");
     connection
         .execute_batch("DROP TRIGGER crash_before_trigger_update;")
         .unwrap();
     drop(connection);
+    let SteeredTriggerRig {
+        config,
+        state_path,
+        session,
+        trigger,
+        prompt_owner,
+        router,
+        sessions,
+        durable_state,
+        ..
+    } = rig;
     drop(prompt_owner);
     drop(router);
+    drop(sessions);
+    drop(durable_state);
 
     let left_behind = restored_trigger(&config, session.id(), trigger.id());
     let _ = std::fs::remove_file(state_path);
     (left_behind, due)
+}
+
+/// A checkpoint is captured under the transition lock. The steer that
+/// consumes a trigger's occurrence removes the queue entry, commits the
+/// combined settlement and publishes the settled trigger; none of that may
+/// become visible while a checkpoint holds the boundary, or a checkpoint taken
+/// in between records the entry gone and the trigger still due at the
+/// sequence of the event that settles it, which restart then skips.
+async fn steer_waits_for_the_checkpoint_boundary(repeat: crate::session::AgentTriggerRepeat) {
+    let rig = steered_trigger_rig("trigger-steer-checkpoint-boundary", repeat).await;
+    let due = rig.trigger.next_run_at_ms();
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let checkpoint = {
+        let durable_state = rig.durable_state.clone();
+        std::thread::spawn(move || {
+            durable_state
+                .with_workflow_runtime_transition_lock(|| {
+                    held_tx.send(()).expect("hold should signal");
+                    release_rx.recv().expect("release should signal");
+                    Ok(())
+                })
+                .expect("transition lock should release");
+        })
+    };
+    held_rx.recv().expect("checkpoint boundary should be held");
+    let dispatching = {
+        let runtime_state = rig.router.runtime_state.clone();
+        tokio::spawn(async move {
+            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
+        })
+    };
+    let queued = |sessions: &crate::session::SessionStateStore| {
+        sessions
+            .get_session(rig.session.id())
+            .expect("session should read")
+            .queued_prompts_for_agent(rig.agent.id())
+            .map_or(0, |queued| queued.len())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while queued(&rig.sessions) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the trigger prompt should queue");
+    // The stub provider acknowledges a steer within a second; give the commit
+    // the time to publish if the boundary does not hold it back.
+    let started = std::time::Instant::now();
+    while queued(&rig.sessions) == 1 && started.elapsed() < std::time::Duration::from_secs(3) {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    assert_eq!(
+        queued(&rig.sessions),
+        1,
+        "the steer published its queue state inside a held checkpoint boundary"
+    );
+    release_tx.send(()).expect("release should send");
+    checkpoint.join().expect("checkpoint thread should join");
+    dispatching.await.expect("dispatch should finish");
+    assert_eq!(queued(&rig.sessions), 0, "the steer completes");
+    let settled = rig
+        .sessions
+        .get_session(rig.session.id())
+        .expect("session should read")
+        .agent_triggers()
+        .iter()
+        .find(|trigger| trigger.id() == rig.trigger.id())
+        .cloned();
+    match repeat {
+        crate::session::AgentTriggerRepeat::Once => assert!(settled.is_none()),
+        _ => assert_eq!(settled.expect("a recurring trigger stays").fired(), 1),
+    }
+    let _ = std::fs::remove_file(rig.state_path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_recurring_steer_waits_for_the_checkpoint_boundary() {
+    steer_waits_for_the_checkpoint_boundary(crate::session::AgentTriggerRepeat::Every).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_one_shot_steer_waits_for_the_checkpoint_boundary() {
+    steer_waits_for_the_checkpoint_boundary(crate::session::AgentTriggerRepeat::Once).await;
 }
 
 #[tokio::test]
