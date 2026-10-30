@@ -215,12 +215,18 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
         Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
             return Ok(None)
         }
+        // hidepid or another user's process: its group and session stay
+        // visible, its start identity does not, so it is never ours.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => {
+            return Ok(unreadable_row(pid))
+        }
         Err(error) => return Err(error),
     };
-    let text = String::from_utf8(bytes).map_err(io::Error::other)?;
-    let Some((_, tail)) = text.rsplit_once(") ") else {
+    // The process name is arbitrary bytes; the numbers follow its last ')'.
+    let Some(end) = bytes.iter().rposition(|byte| *byte == b')') else {
         return Err(io::Error::other("invalid process identity"));
     };
+    let tail = std::str::from_utf8(&bytes[end + 1..]).map_err(io::Error::other)?;
     let fields: Vec<_> = tail.split_whitespace().collect();
     if fields.len() < 20 {
         return Err(io::Error::other("short process identity"));
@@ -237,6 +243,19 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
         session: parse(fields[3])?,
         start: fields[19].into(),
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn unreadable_row(pid: u32) -> Option<ProcessIdentity> {
+    let id = i32::try_from(pid).ok()?;
+    let (group, session) = unsafe { (libc::getpgid(id), libc::getsid(id)) };
+    (group > 0 && session > 0).then(|| ProcessIdentity {
+        pid,
+        parent: 0,
+        group: group as u32,
+        session: session as u32,
+        start: String::new(),
+    })
 }
 #[cfg(target_os = "macos")]
 fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
