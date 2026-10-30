@@ -1,6 +1,6 @@
 // MD-2: Linux host policy. The renderer sandbox is never disabled.
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { accessSync, constants, readdirSync, statSync } from "node:fs";
 // install-root.sh installs the pinned Chromium (deploy/local-linux/kernel-browser-chromium.lock.json)
 // read-only under /usr/lib/chariox; the kernel prefers it over a system browser.
 export const pinnedChromium = "/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome";
@@ -9,6 +9,19 @@ function rootOwned(file, stat) {
 }
 export function candidates(_environment, stat = statSync) {
   return [...(rootOwned(pinnedChromium, stat) ? [pinnedChromium] : []), "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"];
+}
+// MP-08/MP-10: Linux Chrome decodes video in hardware only through VA-API and keeps it off by default. A host with a
+// render node this user can open and a VA-API driver gets it (github.com's HEVC-only hero has no software decoder);
+// without one, the launch is unchanged and pages show what Chrome shows there.
+const VA_DRIVER_DIRECTORIES = ["/usr/lib/x86_64-linux-gnu/dri", "/usr/lib/aarch64-linux-gnu/dri", "/usr/lib64/dri", "/usr/lib/dri"];
+export function hardwareVideoDecode(environment, fs = { accessSync, readdirSync }) {
+  const usable = (directory, test) => { try { return fs.readdirSync(directory).some(test); } catch { return false; } };
+  const renderNode = usable("/dev/dri", name => { if (!/^renderD\d+$/.test(name)) return false; try { fs.accessSync(`/dev/dri/${name}`, constants.R_OK | constants.W_OK); return true; } catch { return false; } });
+  const drivers = environment.LIBVA_DRIVERS_PATH ? environment.LIBVA_DRIVERS_PATH.split(":") : VA_DRIVER_DIRECTORIES;
+  return renderNode && drivers.some(directory => usable(directory, name => name.endsWith("_drv_video.so")));
+}
+export function videoDecodeArguments(environment, fs) {
+  return hardwareVideoDecode(environment, fs) ? ["--enable-features=AcceleratedVideoDecodeLinuxGL"] : [];
 }
 export function launchEnvironment(environment, uid = process.getuid?.()) {
   if (uid === 0) throw new Error("MD-2: run the kernel browser as a normal Unix user; root Chromium is unsupported");
