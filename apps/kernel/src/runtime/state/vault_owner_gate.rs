@@ -11,6 +11,8 @@ mod wording {
         "Only a person at a Chariox client can sign in a provider account. Ask the owner to do it.";
     pub(super) const CHANGE: &str =
         "Only the owner of this kernel or its agents can change what the Vault stores.";
+    pub(super) const MENU: &str =
+        "Only the owner of this kernel or its agents can open the Vault menu.";
 }
 
 /// What the request changes, and so who may ask.
@@ -44,6 +46,9 @@ fn who_may(request: &LocalDaemonRequest) -> Option<(Who, &'static str, &'static 
             "vault_change_owner_only",
             wording::CHANGE,
         ),
+        LocalDaemonRequest::ManageCredentialVault(_) => {
+            (Who::OwnerOrAgent, "vault_menu_owner_only", wording::MENU)
+        }
         _ => return None,
     })
 }

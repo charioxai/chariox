@@ -659,3 +659,101 @@ async fn an_agent_still_reaches_the_vault_menu_and_its_own_secret_writes() {
         tokio::time::timeout(std::time::Duration::from_secs(2), f.send_as(agent, manage)).await;
     assert!(answer.is_err() || !refused_as_owner_only(answer.unwrap()));
 }
+
+fn open_the_vault_menu(f: &Fixture) -> LocalDaemonRequest {
+    LocalDaemonRequest::ManageCredentialVault(crate::local::ManageCredentialVaultRequest {
+        session_id: f.session.clone(),
+        agent_id: Some(f.agent.clone()),
+    })
+}
+
+#[tokio::test]
+async fn only_the_owner_or_its_agents_may_open_the_vault_menu() {
+    let f = Fixture::locked();
+    f.unlock(PASSPHRASE).await.unwrap();
+    let strangers = [
+        (
+            "member",
+            caller_of(
+                Some(KernelConnectionClass::Terminal),
+                Some("session-member"),
+            ),
+        ),
+        (
+            "relay peer",
+            caller_of(
+                Some(KernelConnectionClass::RelayPeer),
+                Some("remote-kernel"),
+            ),
+        ),
+        (
+            "unauthenticated",
+            caller_of(Some(KernelConnectionClass::Unauthenticated), None),
+        ),
+    ];
+    for (who, caller) in strangers {
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            f.send_as(caller, open_the_vault_menu(&f)),
+        )
+        .await;
+        let refused = answer.is_ok_and(refused_as_owner_only);
+        assert!(refused, "{who} may not open the Vault menu");
+    }
+    let pending = f
+        .router
+        .runtime_state
+        .session_snapshot(&f.session)
+        .await
+        .unwrap()
+        .active_interaction_for_agent(&f.agent)
+        .is_some();
+    assert!(!pending, "a refused caller raised no menu in the session");
+}
+
+#[tokio::test]
+async fn a_member_cannot_answer_the_vault_menu() {
+    let f = Fixture::locked();
+    f.unlock(PASSPHRASE).await.unwrap();
+    let runtime = f.router.runtime_state.clone();
+    let (session, agent) = (f.session.clone(), f.agent.clone());
+    let menu = tokio::spawn(async move {
+        runtime
+            .manage_credential_vault_unlock(&session, &agent)
+            .await
+    });
+    let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let snapshot = f.router.runtime_state.session_snapshot(&f.session).await;
+            if let Some(prompt) = snapshot
+                .unwrap()
+                .active_interaction_for_agent(&f.agent)
+                .map(|prompt| prompt.id().to_owned())
+            {
+                break prompt;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the Vault menu should appear");
+    let lock_now =
+        LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+            session_id: f.session.clone(),
+            interaction_id: prompt,
+            choice_id: "lock_now".into(),
+            custom_reply: None,
+            passkey: None,
+            passkey_remember_minutes: None,
+        });
+    let member = caller_of(
+        Some(KernelConnectionClass::Terminal),
+        Some("session-member"),
+    );
+    assert!(f.send_as(member, lock_now).await.is_err());
+    assert!(
+        f.status().await.unlocked,
+        "the member did not lock the Vault"
+    );
+    menu.abort();
+}
