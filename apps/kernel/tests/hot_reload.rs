@@ -604,7 +604,8 @@ fn connections_during_a_hot_reload_are_not_refused() {
 }
 
 /// Claude Code as the kernel drives it (stream-json on stdin/stdout): each
-/// prompt is a turn that streams 400 parts over 4 s. It records every start
+/// prompt is a turn that streams 400 parts over 4 s, waiting halfway until
+/// the test has upgraded the kernel. It records every start
 /// and every prompt it receives.
 const FAKE_CLAUDE: &str = r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi
@@ -634,6 +635,10 @@ while IFS= read -r line; do
         printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"turn-$turn-part-$part \"}}}"
         text="${text}turn-$turn-part-$part "
         echo "part $part $EPOCHREALTIME" >> "$record/parts"
+        # Halfway, wait for the upgrade: the turn is running when it happens.
+        if [[ $part == 200 ]]; then
+            for _ in $(seq 1 600); do [[ -e "$record/go" ]] && break; sleep 0.1; done
+        fi
         sleep 0.01
     done
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_stop\",\"index\":0}}"
@@ -785,6 +790,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         closed_by_the_old_program(socket).await;
 
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        std::fs::write(record.join("go"), "").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let state = request(
