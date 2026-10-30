@@ -704,57 +704,36 @@ async fn sudo_operations_non_room_app_binding_reuses_task_consent() {
 }
 
 #[tokio::test]
-async fn sudo_operations_app_validation_reuses_task_consent() {
+async fn sudo_operations_app_validation_stays_with_the_owner_decision() {
     use crate::durable_state::app_validations::{
         canonical, ValidationCommand, ValidationOperation, ValidationState,
     };
     let f = super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "alice");
     let store = f.state.owned.durable_state_store.clone();
     crate::durable_state::app_state::fixture_catalog(&store);
+    // The caller's agent runs a live /sudo task; protected App actions are still the owner's.
     let turn = running(&f);
-    let create = |id: &str, callers: serde_json::Value| {
-        let (parameters, digest) = canonical(&serde_json::json!({"to": "acct"}));
-        store
-            .app_validation(ValidationCommand::Create(ValidationOperation {
-                operation_id: id.into(),
-                owner: "alice".into(),
-                installation: "installed".into(),
-                generation: 1,
-                action: "send_payment".into(),
-                parameters,
-                digest,
-                state: ValidationState::Pending,
-                expires_ms: crate::session::unix_epoch_ms() + 600_000,
-                callers: callers.to_string(),
-            }))
-            .unwrap();
-    };
-    create(
-        "by-sudo-agent",
-        serde_json::json!([{"kind": "agent", "id": turn.agent_id}]),
-    );
+    let (parameters, digest) = canonical(&serde_json::json!({"to": "acct"}));
+    store
+        .app_validation(ValidationCommand::Create(ValidationOperation {
+            operation_id: "by-sudo-agent".into(),
+            owner: "alice".into(),
+            installation: "installed".into(),
+            generation: 1,
+            action: "send_payment".into(),
+            parameters,
+            digest,
+            state: ValidationState::Pending,
+            expires_ms: crate::session::unix_epoch_ms() + 600_000,
+            callers: serde_json::json!([{"kind": "agent", "id": turn.agent_id}]).to_string(),
+        }))
+        .unwrap();
     f.state
         .app_validation_pass(crate::session::unix_epoch_ms())
         .await;
-    let state = |id: &str| {
-        store
-            .app_validation_status("alice", "installed", id)
-            .unwrap()
-            .unwrap()
-            .state
-    };
-    assert_eq!(state("by-sudo-agent"), ValidationState::Approved);
-    // The pump shows one operation per installation at a time.
-    create(
-        "by-human",
-        serde_json::json!([{"kind": "human", "id": "alice"}]),
-    );
-    f.state
-        .app_validation_pass(crate::session::unix_epoch_ms())
-        .await;
-    assert_eq!(
-        state("by-human"),
-        ValidationState::Pending,
-        "a human caller still decides with the passkey"
-    );
+    let status = store
+        .app_validation_status("alice", "installed", "by-sudo-agent")
+        .unwrap()
+        .unwrap();
+    assert_eq!(status.state, ValidationState::Pending);
 }
