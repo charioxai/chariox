@@ -122,7 +122,8 @@ extern "C" fn forward_reload(_: libc::c_int) {
 
 #[cfg(unix)]
 fn forward_reloads_to_the_kernel() {
-    unsafe { libc::signal(libc::SIGUSR2, forward_reload as libc::sighandler_t) };
+    let handler: extern "C" fn(libc::c_int) = forward_reload;
+    unsafe { libc::signal(libc::SIGUSR2, handler as libc::sighandler_t) };
 }
 
 pub(super) struct KernelRun {

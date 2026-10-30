@@ -47,7 +47,7 @@ pub(crate) struct ProviderHandover {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum HandedOverProcess {
-    Claude(crate::provider::ClaudeHandover),
+    Claude(Box<crate::provider::ClaudeHandover>),
     /// A Codex app-server keeps its PTY and port; the turn it runs continues.
     Codex {
         pty: crate::pty::PtyHandover,
@@ -340,7 +340,7 @@ pub(crate) fn claim_provider_run(
 pub(crate) fn take_claude(run_id: &str) -> Option<crate::provider::ClaudeHandover> {
     let mut adopting = lock(&ADOPTING);
     match adopting.remove(run_id)? {
-        HandedOverProcess::Claude(claude) => Some(claude),
+        HandedOverProcess::Claude(claude) => Some(*claude),
         other => {
             adopting.insert(run_id.to_string(), other);
             None
@@ -424,10 +424,10 @@ pub(crate) fn hand_over_claude(
     claude: crate::provider::ClaudeHandover,
 ) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
-        prepared
-            .handover
-            .providers
-            .push(provider_handover(run, HandedOverProcess::Claude(claude)));
+        prepared.handover.providers.push(provider_handover(
+            run,
+            HandedOverProcess::Claude(Box::new(claude)),
+        ));
     }
 }
 
