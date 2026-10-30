@@ -92,7 +92,6 @@ pub(super) fn details_text(attachments: &[PromptAttachment]) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{fixture_with_options, popup};
-    use super::*;
     use base64::Engine;
 
     #[tokio::test]
