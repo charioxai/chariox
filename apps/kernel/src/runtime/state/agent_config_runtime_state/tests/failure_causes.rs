@@ -33,10 +33,8 @@ fn follow(turn: FailingTurn) -> FailingTurn {
 }
 
 fn followed_error_failure(turn: &FailingTurn) -> Option<TurnOutcome> {
-    turn.runtime
-        .owned
-        .publish_outside_runtime_activity()
-        .unwrap();
+    turn.runtime.owned.publish_outside_run_states(None);
+    turn.runtime.outside_store().outside_settled().unwrap();
     turn.runtime
         .outside_store()
         .outside_list("follower", None, 100)

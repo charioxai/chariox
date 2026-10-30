@@ -15,24 +15,62 @@ fn settled_turn(activity: &AgentRuntimeActivity) -> Option<SettledTurn> {
 }
 
 impl KernelRuntimeOwnedState {
-    pub(in crate::runtime::state) fn outside_run_state_snapshot(
+    /// Run states of the followed targets for a new subscription. Blocking store reads: the
+    /// caller holds only the managed-activity boundary, which is taken before any store.
+    pub(in crate::runtime::state) fn outside_run_state_baseline(
         &self,
         targets: &[EventTarget],
-    ) -> Option<Vec<RunState>> {
+    ) -> Vec<RunState> {
         let kernel = self.config_projection.snapshot().daemon_id;
-        let sessions: BTreeSet<_> = targets
-            .iter()
-            .filter(|target| target.kernel == kernel)
-            .map(|target| target.session_id.as_str())
+        let sessions = local_sessions(targets, &kernel)
+            .filter_map(|id| {
+                // An ended/deleted session has already published its terminal event.
+                let mut session = self.session_store.get_session(id).ok()?;
+                session.set_agents(self.agent_store.get_session_agents(id));
+                Some(session)
+            })
             .collect();
+        self.outside_run_states(&kernel, targets, sessions)
+    }
+
+    /// Queues the followed run states of `session` (of every followed session when `None`)
+    /// that changed since the writer last got them. Publishers may hold a store guard, so the
+    /// stores are only tried; a busy store leaves the states for the next publication.
+    pub(in crate::runtime::state) fn publish_outside_run_states(&self, session: Option<&str>) {
+        let queued = self
+            .durable_state_store
+            .enqueue_outside_run_states(session, |targets| {
+                let kernel = self.config_projection.snapshot().daemon_id;
+                let mut sessions = Vec::new();
+                for id in local_sessions(targets, &kernel) {
+                    let Ok(mut session) = self.session_store.try_get_session_for_projection(id)?
+                    else {
+                        continue;
+                    };
+                    session.set_agents(self.agent_store.try_get_session_agents_for_projection(id)?);
+                    sessions.push(session);
+                }
+                Some(self.outside_run_states(&kernel, targets, sessions))
+            });
+        if let Err(error) = queued {
+            crate::logging::error_with_fields(
+                "outside.events",
+                "agent run-state transition could not be queued",
+                serde_json::json!({"error":error.to_string()}),
+            );
+        }
+    }
+
+    fn outside_run_states(
+        &self,
+        kernel: &str,
+        targets: &[EventTarget],
+        sessions: Vec<crate::session::RuntimeSession>,
+    ) -> Vec<RunState> {
         let active_turns = self.active_turns.snapshot();
         let mut states = Vec::new();
-        for id in sessions {
-            // An ended/deleted session has already published its terminal event.
-            let Ok(mut session) = self.session_store.try_get_session_for_projection(id)? else {
-                continue;
-            };
-            session.set_agents(self.agent_store.try_get_session_agents_for_projection(id)?);
+        for session in sessions {
+            let id = session.id();
             // Settlement detail changes prompt_status, but not its normalized run state.
             // Avoid taking the prompt-activity lock inside its own mutation boundary.
             let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
@@ -91,31 +129,18 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
-        Some(states)
+        states
     }
+}
 
-    pub(in crate::runtime::state) fn publish_outside_runtime_activity(
-        &self,
-    ) -> Result<(), DaemonError> {
-        let targets: Vec<_> = self
-            .durable_state_store
-            .outside_parts()?
-            .into_iter()
-            .filter(|part| part.ended.is_none())
-            .flat_map(|part| part.targets)
-            .collect();
-        if targets.is_empty() {
-            return Ok(());
-        }
-        // Some callers still hold a store's mutation guard. Their normal projection
-        // publication retries this capture after those guards have been released.
-        let Some(states) = self.outside_run_state_snapshot(&targets) else {
-            return Ok(());
-        };
-        if states.is_empty() {
-            return Ok(());
-        }
-        self.durable_state_store
-            .outside_mutate(Mutation::RunStates { states })
-    }
+fn local_sessions<'a>(
+    targets: &'a [EventTarget],
+    kernel: &'a str,
+) -> impl Iterator<Item = &'a str> + 'a {
+    targets
+        .iter()
+        .filter(move |target| target.kernel == kernel)
+        .map(|target| target.session_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
 }

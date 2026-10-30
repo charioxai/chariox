@@ -5881,3 +5881,26 @@ management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥880
 (`integrationReceivedEventsMinimumProtocolVersion`). Relay peer 430 only pairs the
 embedded local response union with local 880. The managed-upgrade predecessor list
 holds the current release (636) and the one before it (629).
+
+### Bounded daemon health diagnostics (local 790)
+
+`GetDaemonHealth` returns a collected snapshot. `metadata.generated_at_ms` is its
+collection time; repeated reads can share the same snapshot. Collection runs
+outside the request worker and normally refreshes once a second.
+
+`projection_invariants` includes `mismatch_count` and
+`mismatch_counts_by_kind`; `mismatches` is a sample of at most sixteen entries.
+`sample_counts` maps diagnostic collection paths to their counts before
+sampling; child collections count the parents included in the sample. Nested
+arrays and long diagnostic text are sampled to keep the complete
+response below 64 KiB. Counts remain authoritative when a sample is shortened.
+
+`request_timings` contains the most recent 128 completed requests per kind, up to
+1,024 known kinds. Each entry has `kind`, `samples`, and p50/p95/max distributions
+for `queue_us`, `handler_us`, `durable_wait_us`, `durable_commit_us`, `fsync_us`,
+and `response_bytes`. Handler time includes durable waits and excludes actor
+queue time. Sync time measures actual SQLite VFS and terminal-artifact sync calls; batched
+requests share the batch's commit/sync time. Response size measures the JSON response body.
+Metrics contain no request payloads, identifiers, paths or credentials. The health
+response samples timing entries when necessary, with the full kind count in
+`sample_counts.request_timings`. Relay peer shapes are unchanged.

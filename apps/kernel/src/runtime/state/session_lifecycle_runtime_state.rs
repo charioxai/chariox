@@ -995,6 +995,8 @@ impl KernelRuntimeState {
         }
         self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
         self.detach_session_slices(&session).await?;
+        owned.terminal_stream.remove_session(session_id);
+        owned.session_store.retire_ended_session(session_id);
         Ok(session)
     }
 
@@ -1016,8 +1018,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session_id = session_id.to_string();
         let owned = &self.owned;
+        let session_before_delete = owned.session_store.get_session(&session_id)?;
         let durable_session = owned.session_end_snapshot(&session_id)?;
-        let durable_project_delete = owned.project_removed_by_session_delete(&session_id);
+        let durable_project_delete = owned.project_removed_by_session_delete(&session_id)?;
         let _vault_observation_guard = self.vault_observation_mutation_guard().await;
         // Revoke the bound worker copy while its Room/slice binding still exists.
         if self
@@ -1041,7 +1044,7 @@ impl KernelRuntimeState {
             .await;
         let worker_agents = self.agents_leased_to_workers(&session_id);
         let (session, terminated_run_ids, removed_project) =
-            owned.delete_session(owned.session_store.get_session(&session_id)?)?;
+            owned.delete_session(session_before_delete)?;
         // Swept only now: the Room is gone, so an open that raced the delete
         // fails its own Room check instead of outliving this sweep.
         self.end_room_terminals(&session_id);

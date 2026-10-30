@@ -235,6 +235,30 @@ Current implementation note:
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
 - the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while Workspace Live Sync managed mode owns fine-grained text coordination and opaque whole-file coordination for Chariox-managed provider sessions
 
+Request timing is retained in bounded per-kind windows. The health collector runs
+outside request workers and publishes a bounded snapshot once a second. Its
+invariant diagnostics retain counts and a sample rather than every mismatch.
+SQLite commits use the shared durable writer; synchronous actor callers yield
+the Tokio worker while awaiting settlement. SQLite filesystem sync callbacks are
+timed separately from the commit and caller wait. Checkpoint capture stays
+ordered with projection publication, then releases that boundary before encoding
+and saving its immutable result. Outside run states enter the durable queue under
+the activity boundary only when they changed since the last publication, and the
+writer commits them in queue order; no caller waits for them. A subscribe takes
+its run-state baseline with blocking store reads under the same boundary.
+
+An ended session leaves the live session and agent projections, command queues,
+terminal streams, and resident session store. Its record is indexed in SQLite in
+the same transaction as the end event. History reads, project restore and reattach
+load that record on demand; deletion removes it in the deletion transaction.
+Interactive PTYs drain a bounded nonblocking batch per turn. A continuously
+writing process cannot extend a turn, and exit is published only after the output
+reader reaches EOF, preserving the final bytes. Terminal artifacts and completion
+events enter a bounded writer queue without waiting under the terminal registry;
+open/close receipts settle outside that registry. Codex tool transcripts retain a
+64 KiB UTF-8 tail with an explicit omission marker, including completed output,
+so large provider tool output cannot retain and repeatedly copy the full stream.
+
 ### 3.3.1.1 Kernel Runtime and Workflow Details
 
 Detailed target-kernel implementation model, workflow model, workflow messaging, endpoint/run-output behavior, publication runtime behavior, agent binding rules, and observability baseline now live in [ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md](ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md). Keep this main architecture file focused on top-level component boundaries and authority rules.

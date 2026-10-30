@@ -266,9 +266,7 @@ impl KernelRuntimeState {
                 owned.admit_agent_task(&prepared)?;
                 let task = owned
                     .durable_state_store
-                    .agent_tasks(Some(session_id), Some(&agent_id))?
-                    .into_iter()
-                    .find(|t| t.prompt_id == active_prompt.id())
+                    .agent_turn_task(session_id, &agent_id, active_prompt.id())?
                     .ok_or_else(|| {
                         crate::durable_state::agent_lifecycle::error("failed turn has no task")
                     })?;

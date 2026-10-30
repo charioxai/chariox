@@ -33,7 +33,13 @@ impl CommandRouter {
         // MD-4: admission policy remains shared; unrelated branches stay off caller stacks.
         let response_command = command.clone();
         let follow_request = request.clone();
-        let mut response = Box::pin(router.dispatch_authorized(command, request)).await;
+        let mut response = router
+            .request_metrics
+            .observe(
+                command.command_type.clone(),
+                Box::pin(router.dispatch_authorized(command, request)),
+            )
+            .await;
         if let (Some(grant_id), Ok(response)) =
             (response_command.external_grant_id(), &mut response)
         {

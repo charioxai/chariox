@@ -324,22 +324,23 @@ impl DurableSnapshotScheduler {
         // old projection at the new event sequence and skip the event on
         // restart. The shared transition lock makes capture linearizable with
         // the durable commit and in-memory publication.
-        self.durable_state
+        let payload = self
+            .durable_state
             .with_workflow_runtime_transition_lock(|| {
-                let payload = DurableKernelSnapshotPayload::capture(
+                Ok(DurableKernelSnapshotPayload::capture(
                     &self.sessions,
                     &self.agents,
                     &self.slices,
                     &self.metaagent_events,
                     &self.room_computer_revoked,
-                );
-                self.durable_state.save_entity_checkpoint(
-                    &self.owner_id,
-                    sequence,
-                    checkpoint_entities(&payload)?,
-                )?;
-                Ok(())
-            })
+                ))
+            })?;
+        self.durable_state.save_entity_checkpoint(
+            &self.owner_id,
+            sequence,
+            checkpoint_entities(&payload)?,
+        )?;
+        Ok(())
     }
 
     pub(crate) async fn run(self, poll_interval: Duration) {

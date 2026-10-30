@@ -754,7 +754,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::RetireWakes { room, agent, now } => {
             let removed = |r: &str, a: &str| r == room && agent.as_deref().is_none_or(|x| x == a);
             // The recipient is going away, so its tasks can never progress.
-            for mut t in tasks(tx)? {
+            for mut t in room_tasks(tx, &room, agent.as_deref())? {
                 if removed(&t.room_id, &t.agent_id) {
                     if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
                         match registrations(tx, &t.task_id) {

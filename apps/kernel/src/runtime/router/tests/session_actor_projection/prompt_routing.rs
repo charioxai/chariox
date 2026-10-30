@@ -99,9 +99,9 @@ async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         .await
         .expect("prompt should create an agent lane");
     assert!(router
-        .daemon_health_projection(0)
+        .agent_runtime
+        .queue_snapshots()
         .await
-        .agent_command_lanes
         .iter()
         .any(|lane| lane.lane_id == agent_id));
     let workflow_request = LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
@@ -131,9 +131,9 @@ async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         .expect("ending session should clean up agent lane");
 
     assert!(!router
-        .daemon_health_projection(0)
+        .agent_runtime
+        .queue_snapshots()
         .await
-        .agent_command_lanes
         .iter()
         .any(|lane| lane.lane_id == agent_id));
     assert!(!router.workflow_runtime.has_lane(&session_id).await);
@@ -183,9 +183,9 @@ async fn agent_lane_is_removed_when_agent_is_destroyed() {
         .await
         .expect("prompt should create an agent lane");
     assert!(router
-        .daemon_health_projection(0)
+        .agent_runtime
+        .queue_snapshots()
         .await
-        .agent_command_lanes
         .iter()
         .any(|lane| lane.lane_id == agent_id));
 
@@ -205,9 +205,9 @@ async fn agent_lane_is_removed_when_agent_is_destroyed() {
         .expect("destroying agent should clean up agent lane");
 
     assert!(!router
-        .daemon_health_projection(0)
+        .agent_runtime
+        .queue_snapshots()
         .await
-        .agent_command_lanes
         .iter()
         .any(|lane| lane.lane_id == agent_id));
 }
@@ -490,9 +490,8 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
 
     let mut spawned_agent_lane_created = false;
     for _ in 0..50 {
-        let projection = router.daemon_health_projection(0).await;
-        if projection
-            .agent_command_lanes
+        let agent_lanes = router.agent_runtime.queue_snapshots().await;
+        if agent_lanes
             .iter()
             .any(|lane| lane.lane_id == spawned_agent.id())
         {

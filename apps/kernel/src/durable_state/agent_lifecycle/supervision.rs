@@ -54,7 +54,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
-            for mut t in tasks(tx)? {
+            for mut t in source_tasks(tx, &room, &source)? {
                 if t.room_id != room || t.state == ExecutionState::Done {
                     continue;
                 }
@@ -136,7 +136,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             held_work,
         } => {
             let mut changed = vec![];
-            for mut t in tasks(tx)? {
+            for mut t in waiting_tasks(tx)? {
                 if t.state == ExecutionState::Waiting {
                     let regs = match registrations(tx, &t.task_id) {
                         Ok(regs) => regs,
@@ -209,7 +209,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
-            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') NOT IN ('accepted','acknowledged','handled','expired','failed') ELSE 1 END").map_err(sql)?;
+            // Outside recipients (room '') are pulled by their holders, never delivered here.
+            let mut q=tx.prepare("SELECT sequence,room_id,agent_id,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id>'' AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') NOT IN ('accepted','acknowledged','handled','expired','failed') ELSE 1 END ORDER BY sequence").map_err(sql)?;
             let rows = q
                 .query_map([], |r| {
                     Ok((
@@ -315,7 +316,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
-                    for mut t in tasks(tx)? {
+                    for mut t in live_tasks(tx, &e.room_id, &e.agent_id)? {
                         if t.room_id == e.room_id
                             && t.agent_id == e.agent_id
                             && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)

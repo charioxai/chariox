@@ -470,7 +470,7 @@ impl KernelRuntimeState {
         // Borrowing another agent's provider could pick an unauthenticated account.
         let mut moving = None;
         let mut idle = None;
-        for session in self.owned.session_store.sessions_in_project(project.id()) {
+        for session in self.owned.session_store.sessions_in_project(project.id())? {
             for agent in self.owned.agent_store.get_session_agents(session.id()) {
                 if agent.remote_execution().is_some() {
                     continue;

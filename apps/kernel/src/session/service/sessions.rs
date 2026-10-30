@@ -105,6 +105,7 @@ impl SessionService {
         session_id: &str,
         next_status: SessionStatus,
     ) -> Result<RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)
@@ -138,6 +139,7 @@ impl SessionService {
         &mut self,
         session_id: &str,
     ) -> Result<(RuntimeSession, Option<RuntimeProject>), DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let deleted =
             self.store
                 .remove(session_id)
@@ -148,10 +150,9 @@ impl SessionService {
         self.ephemeral_session_ids.remove(session_id);
         let project_id = deleted.project_id().to_string();
         let project_has_visible_sessions = self
-            .store
-            .list()
+            .sessions_in_project(&project_id)?
             .into_iter()
-            .any(|session| !session.is_hidden() && session.project_id() == project_id.as_str());
+            .any(|session| !session.is_hidden() && session.id() != session_id);
         let removed_project = (!project_id.is_empty() && !project_has_visible_sessions)
             .then(|| self.projects.remove(&project_id))
             .flatten();
@@ -163,6 +164,7 @@ impl SessionService {
         session_id: &str,
         attachment_id: &str,
     ) -> Result<RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)
@@ -797,6 +799,7 @@ impl SessionService {
         session_id: &str,
         operation: &'static str,
     ) -> Result<&mut RuntimeSession, DaemonError> {
+        self.ensure_resident_session(session_id)?;
         let session =
             self.store
                 .get_mut(session_id)

@@ -389,6 +389,7 @@ fn rejected_verified_operation_preserves_adjacent_ordinary_writer_batches() {
     let (after_tx, after_rx) = mpsc::channel();
     let event = |id: &str, response| {
         DurableWriterRequest::Ordinary(super::super::DurableWriteRequest {
+            observation: None,
             operation: super::super::DurableWriteOperation::Event {
                 event_id: id.into(),
                 kind: "app.verified.test".into(),

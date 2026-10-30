@@ -283,10 +283,14 @@ impl DaemonApp {
     pub(super) fn restore_durable_state(&mut self) -> Result<(), DaemonError> {
         let restore_started = Instant::now();
         let snapshot_started = Instant::now();
-        let replay_after_sequence = match self
+        let snapshot = self
             .durable_state
-            .latest_snapshot_for_owner(&self.config.daemon_id)?
-        {
+            .latest_snapshot_for_owner(&self.config.daemon_id)?;
+        // Populate historical Room lookup before the live-only restore drops
+        // ended checkpoint records. Replay ordering is part of the migration.
+        self.durable_state
+            .backfill_retired_sessions(&self.config.daemon_id, snapshot.as_ref())?;
+        let replay_after_sequence = match snapshot {
             Some(snapshot) => {
                 if self.restore_durable_state_snapshot(snapshot.payload)? {
                     snapshot.sequence
@@ -688,7 +692,7 @@ impl DaemonApp {
     }
 
     fn remove_restored_projects_without_visible_sessions(&self) -> Result<(), DaemonError> {
-        for project in self.sessions.remove_projects_without_visible_sessions() {
+        for project in self.sessions.remove_projects_without_visible_sessions()? {
             self.durable_state.append_event(
                 "project.deleted",
                 Some(project.id().to_string()),
@@ -795,6 +799,7 @@ impl DaemonApp {
             .sessions
             .iter()
             .filter(|session| self.session_belongs_to_current_kernel(session))
+            .filter(|session| session.status() != crate::session::SessionStatus::Ended)
             .map(|session| session.id().to_string())
             .collect();
         let mut prompt_private_states_by_session =
@@ -807,7 +812,9 @@ impl DaemonApp {
         }
         self.sessions.restore_projects(snapshot.projects);
         for mut session in snapshot.sessions {
-            if !restored_session_ids.contains(session.id()) {
+            if !restored_session_ids.contains(session.id())
+                || session.status() == crate::session::SessionStatus::Ended
+            {
                 continue;
             }
             if let Some(states) = prompt_private_states_by_session.get(session.id()) {
@@ -1572,7 +1579,7 @@ impl DaemonApp {
                 ) {
                     return Ok(());
                 }
-                let mut session: RuntimeSession = decode_durable_payload_field(
+                let session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",
                     "durable_state.restore_ended_session",
@@ -1586,9 +1593,9 @@ impl DaemonApp {
                 self.prompt_state_owner.remove_session(session.id());
                 self.forget_room_computer_session_access(session.id());
                 self.agents.remove_session_agents(session.id());
-                session.set_agents(Vec::new());
-                let session = self.restore_session_with_project_migration(session);
-                self.update_session_projection(session);
+                self.sessions.remove_restored_session(session.id());
+                self.session_state_projection_store().remove(session.id());
+                self.agent_runtime_projection.remove_session(session.id());
             }
             "session.deleted" => {
                 if durable_payload_entity_belongs_to_other_owner(

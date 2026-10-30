@@ -2,16 +2,13 @@ use super::*;
 use crate::durable_state::DurableKernelStateStore;
 
 impl SessionService {
-    pub(crate) fn with_room_environment_durability(
-        mut self,
-        state: DurableKernelStateStore,
-    ) -> Self {
-        self.room_environment_durable_state = Some(state);
+    pub(crate) fn with_durability(mut self, state: DurableKernelStateStore) -> Self {
+        self.durable_state = Some(state);
         self
     }
 
     pub(crate) fn restore_room_environments(&mut self) -> Result<(), DaemonError> {
-        let Some(state) = self.room_environment_durable_state.as_ref() else {
+        let Some(state) = self.durable_state.as_ref() else {
             return Ok(());
         };
         for mut environment in state.load_room_environments(&self.host_daemon_id)? {
@@ -36,9 +33,7 @@ impl SessionService {
         let result = mutate(&mut self.room_environments);
         let current = self.room_environments.environment(session_id);
         if current != previous.as_ref() {
-            if let (Some(state), Some(environment)) =
-                (&self.room_environment_durable_state, current)
-            {
+            if let (Some(state), Some(environment)) = (&self.durable_state, current) {
                 if state
                     .save_room_environment(&self.host_daemon_id, environment)
                     .is_err()

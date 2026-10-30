@@ -14,6 +14,42 @@ provider execution, relay authority or mandatory managed shutdown.
 Local 780 / peer 330 adds the persisted kernel-owned `last_activity_at_ms` and public snapshot schema 14. Ordinary and managed sessions use the same prompt, turn, message, interaction, durable replay and projection paths. Presence and connection updates cannot change this stamp. Clients consume it without deriving activity from last-used or arrival order. This source change alone does not establish hosted acceptance.
 
 
+## MP-08 / MP-09 / MP-10 / MP-11 retired Room upgrades (2026-10-28)
+
+Before restoring live state, the kernel backfills retired Rooms from persisted
+checkpoints and lifecycle events in sequence, including later restores and
+deletes. The owner-scoped index and its one-time receipt commit atomically;
+subsequent boots use the maintained index. Ended checkpoint Rooms and their
+agents stay outside live projections. Replaying an end also removes that Room's
+agent runtime projections, so restart does not retain one entry per ended agent.
+Reattachment resolves through canonical
+indexed state rather than treating absence from a live projection as deletion.
+Default Project cleanup retains a project backed by a visible retired Room and
+propagates index errors before removing any project. Both placements use this
+same path; no protocol shape or managed stop-policy change is introduced.
+
+## MP-08 / MP-09 / MP-10 / MP-11 independent Room terminal parsing (2026-10-28)
+
+`room_terminal/owner.rs` gives each Room terminal its own PTY, parser, screen,
+output log, watches and waiting readers. `service/pump_task.rs` schedules each
+terminal independently and runs parsing and scrollback rendering outside Tokio's
+transport workers. The service registry only looks up or detaches owners; input
+on one terminal no longer pumps or renders every other terminal.
+
+Ordinary and managed kernels use the same owners and scheduling. Managed command
+admission still holds the quiescence guard through the input write or command
+open commit. A managed work check treats an owner whose lock is busy as working,
+so parsing cannot block the check or permit a premature stop. Creation is ordered
+with Room end and kernel shutdown; final saves are queued under the owner's lock
+before a later close can delete the record. Removed owners reject outstanding
+requests and stop their pumps. There is no protocol shape, provider, relay or
+Cloud shutdown-policy change.
+
+The focused terminal regressions pause one parser or renderer and require another
+terminal's resize, snapshot and input echo to finish before that work resumes.
+The live responsiveness drill is `scripts/drills/kernel-responsiveness.mjs`;
+source regressions alone do not close the MP parity matrix.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 binary Room exec (2026-10-27)
 
 `RoomTerminal` binary exec operations enter the same owner/Room-agent checks in

@@ -401,4 +401,5 @@ pub use workspace::*;
 /// (`ListEventConnectionEvents`, `ReplayEventConnectionEvent`); the predecessor list keeps only the
 /// current release (636) and the one before it (629).
 /// MP-08 / MP-09 / MP-10 / MP-11: 800 adds process limits, Health observations and owned process controls.
+/// Request timing distributions and bounded sampled health diagnostics.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 910;

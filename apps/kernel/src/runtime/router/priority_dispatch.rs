@@ -239,7 +239,12 @@ impl CommandRouter {
                     .await
             }),
             request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {
-                execute_daemon_health_request(self.daemon_health_projection_input(0), request).await
+                execute_daemon_health_request(
+                    &self.daemon_health_cache,
+                    self.daemon_health_projection_input(0),
+                    request,
+                )
+                .await
             }),
             LocalDaemonRequest::GetKernelResourceTelemetry(_) => boxed_handler(|| async move {
                 execute_kernel_resource_telemetry_request(self.config_projection.snapshot())

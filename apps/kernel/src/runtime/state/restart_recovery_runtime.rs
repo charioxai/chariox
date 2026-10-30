@@ -2212,9 +2212,10 @@ mod tests {
             )
             .await;
 
+        runtime.owned.publish_outside_run_states(None);
         runtime
-            .owned
-            .publish_outside_runtime_activity()
+            .outside_store()
+            .outside_settled()
             .expect("the follower's state is published");
         let events: Vec<serde_json::Value> = runtime
             .outside_store()

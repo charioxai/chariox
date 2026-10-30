@@ -387,7 +387,7 @@ impl DaemonApp {
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
-            ),
+            )?,
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
@@ -408,8 +408,7 @@ impl DaemonApp {
             prompt_workspace_claims: PromptWorkspaceClaimStore::default(),
             prompt_state_owner: PromptStateOwner::default(),
             sessions: SessionStateStore::new(
-                SessionService::new(&config)
-                    .with_room_environment_durability(durable_state.clone()),
+                SessionService::new(&config).with_durability(durable_state.clone()),
             ),
             history,
             operational_history,

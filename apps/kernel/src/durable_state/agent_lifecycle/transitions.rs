@@ -125,11 +125,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 task.revision += 1;
                 task
             } else {
-                let resumed = tasks(tx)?.into_iter().find(|t| {
-                    t.room_id == room
-                        && t.agent_id == agent
-                        && t.pending_prompt_id.as_deref() == Some(&prompt)
-                });
+                let resumed = pending_continuation(tx, &room, &agent, &prompt)?;
                 if let Some(mut t) = resumed {
                     if t.state != ExecutionState::Working {
                         return Err(error(
@@ -222,7 +218,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             room,
             run,
         } => {
-            for mut task in tasks(tx)?.into_iter().filter(|t| t.room_id == room) {
+            for mut task in room_tasks(tx, &room, None)? {
                 if super::workflow_tasks::settle_unstarted_delegates(
                     tx, &mut task, &owner_id, &run,
                 )? {
@@ -750,12 +746,15 @@ fn yield_refusal(
         .iter()
         .any(AgentObligation::requires_resolution);
     if !foreign.is_empty() && !unresolved {
-        for other in tasks(tx)?.into_iter().filter(|o| {
-            o.task_id != t.task_id
-                && o.room_id == t.room_id
-                && o.agent_id == t.agent_id
-                && o.state == ExecutionState::Waiting
-        }) {
+        for other in live_tasks(tx, &t.room_id, &t.agent_id)?
+            .into_iter()
+            .filter(|o| {
+                o.task_id != t.task_id
+                    && o.room_id == t.room_id
+                    && o.agent_id == t.agent_id
+                    && o.state == ExecutionState::Waiting
+            })
+        {
             let theirs = registrations(tx, &other.task_id)?;
             if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
                 return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());

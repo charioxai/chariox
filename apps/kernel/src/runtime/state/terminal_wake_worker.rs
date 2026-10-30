@@ -217,7 +217,8 @@ mod tests {
     async fn a_text_split_across_two_capped_waits_still_fires() {
         let root = std::env::temp_dir().join(format!("chariox-split-wait-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let service = crate::room_terminal::RoomTerminalService::new(root.join("terminals"));
+        let service =
+            crate::room_terminal::RoomTerminalService::new(root.join("terminals")).unwrap();
         let terminal = service
             .open(crate::room_terminal::OpenRoomTerminal {
                 session_id: "room-1".into(),

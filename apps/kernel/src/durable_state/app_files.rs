@@ -102,8 +102,7 @@ impl DurableKernelStateStore {
         if let Some(queued) = fault.as_ref().and_then(|fault| fault.queued.as_ref()) {
             queued();
         }
-        receiver
-            .recv()
+        crate::durable_state::await_writer_response(receiver)
             .map_err(|_| PrivateDataError::OutcomeUncertain)?
     }
 }

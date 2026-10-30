@@ -1,6 +1,7 @@
 //! Codex transcript projection for text, tool items, and provider tool chunks.
 
 mod item;
+mod output_window;
 mod text;
 mod tool_state;
 mod tool_update;

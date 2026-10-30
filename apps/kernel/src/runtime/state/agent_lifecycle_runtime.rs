@@ -70,9 +70,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(), DaemonError> {
         let existing = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|task| task.prompt_id == prompt.id());
+            .agent_turn_task(room, agent, prompt.id())?;
         let session = self.session_store.get_session(room)?;
         let task = if let Some(task) = existing {
             task
@@ -137,9 +135,7 @@ impl KernelRuntimeOwnedState {
         }
         let Some(task) = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt))
+            .agent_turn_or_continuation_task(room, agent, prompt)?
         else {
             return Ok(None);
         };
@@ -299,9 +295,7 @@ impl KernelRuntimeOwnedState {
         self.ensure_agent_task(room, agent, prompt, Some(run))?;
         let Some(task) = self
             .durable_state_store
-            .agent_tasks(Some(room), Some(agent))?
-            .into_iter()
-            .find(|t| t.prompt_id == prompt.id())
+            .agent_turn_task(room, agent, prompt.id())?
         else {
             return Ok(None);
         };
@@ -539,9 +533,7 @@ impl KernelRuntimeState {
         let task = self
             .owned
             .durable_state_store
-            .agent_tasks(Some(session.id()), Some(sender.id()))?
-            .into_iter()
-            .find(|t| t.prompt_id == current.id())
+            .agent_turn_task(session.id(), sender.id(), current.id())?
             .ok_or_else(|| ledger::error("sender task unavailable"))?;
         let Outcome::Event(event) =
             self.owned
@@ -731,12 +723,7 @@ impl KernelRuntimeState {
             let other_unfinished = self
                 .owned
                 .durable_state_store
-                .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
-                .iter()
-                .any(|t| {
-                    t.task_id != task.task_id
-                        && !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                });
+                .agent_has_other_unfinished_task(&task.room_id, &task.agent_id, &task.task_id)?;
             if !other_unfinished {
                 self.owned
                     .durable_state_store
@@ -967,7 +954,12 @@ impl KernelRuntimeState {
                 }
                 continue;
             }
-            if task.state == ExecutionState::Cancelled {
+            if task.state == ExecutionState::Cancelled
+                && !self
+                    .owned
+                    .durable_state_store
+                    .agent_task_terminal_recorded(&task)?
+            {
                 if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
                     tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
                 }

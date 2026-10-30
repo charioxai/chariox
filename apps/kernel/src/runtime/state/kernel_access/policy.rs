@@ -116,10 +116,18 @@ impl KernelRuntimeState {
             .ok_or_else(|| error("grant revoked or expired"))
     }
 
-    /// A state-changing request arrived from another kernel's gateway for one of its
-    /// agents. Only who and what kind, never the payload.
-    pub(crate) fn audit_gateway_request(&self, on_behalf_of: &OnBehalfOf, request_kind: &str) {
-        let _ = self.owned.durable_state_store.append_event(
+    /// A request arrived from another kernel's gateway for one of its agents. Only who
+    /// and what kind, never the payload; the request does not wait for the record.
+    pub(crate) fn audit_gateway_request(
+        &self,
+        on_behalf_of: &OnBehalfOf,
+        request: &crate::local::LocalDaemonRequest,
+    ) {
+        if !crate::runtime::kernel_gateway::ledger::is_audited(request) {
+            return;
+        }
+        let request_kind = crate::runtime::kernel_gateway::ledger::variant_name(request);
+        let recorded = self.owned.durable_state_store.append_event_detached(
             "kernel_gateway.request",
             Some(format!(
                 "{}:{}",
@@ -131,6 +139,13 @@ impl KernelRuntimeState {
                 "request": request_kind,
             }),
         );
+        if let Err(error) = recorded {
+            crate::logging::error_with_fields(
+                "kernel_gateway",
+                "gateway request audit could not be queued",
+                serde_json::json!({"error": error.to_string()}),
+            );
+        }
     }
 
     /// A state-changing request this kernel's agent sent to another kernel.
