@@ -524,6 +524,7 @@ fn release_detached_jobs(
     resources.release(
         run.session_id(),
         crate::runtime::process_resources::SessionProcessOwner::Agent(agent_id.to_string()),
+        None,
     );
 }
 

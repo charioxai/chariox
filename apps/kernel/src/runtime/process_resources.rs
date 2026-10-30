@@ -376,7 +376,7 @@ struct Observation {
     commands: Vec<pool::CommandUse>,
     memory_limit_bytes: Option<u64>,
     /// Who Health lists the processes under when no run or terminal does.
-    listed: Option<(String, SessionProcessOwner)>,
+    listed: Option<projection::Listing>,
     /// Set once the workload's own process ended: what it left running is
     /// still this owner's, listed, counted and stoppable until it ends.
     released: bool,
@@ -396,17 +396,26 @@ pub(crate) struct ProcessDomain {
 }
 impl ProcessDomain {
     /// The workload's own process ended and its owner swept what it still
-    /// owns. Processes that left on purpose (`setsid nohup job &`) are not
+    /// owns; `opened_by` is the agent that opened a terminal owner. Processes that left on purpose (`setsid nohup job &`) are not
     /// ended with it: the memory watch stays until the last of them exits.
     /// An owner already gone for good gets nothing: they end with the domain.
-    pub(crate) fn release(&mut self, session_id: &str, owner: SessionProcessOwner) {
+    pub(crate) fn release(
+        &mut self,
+        session_id: &str,
+        owner: SessionProcessOwner,
+        opened_by: Option<String>,
+    ) {
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
-        if control::owner_ended(self.started, session_id, &owner) {
+        if control::owner_ended(self.started, session_id, &owner, opened_by.as_deref()) {
             return;
         }
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.listed = Some((session_id.to_string(), owner));
+            state.listed = Some(projection::Listing {
+                session_id: session_id.to_string(),
+                owner,
+                opened_by,
+            });
             state.released = true;
         }
         // A new workload of the same owner may bind the same key; the released
@@ -429,8 +438,11 @@ impl ProcessDomain {
     /// Lists the processes in Health under `owner` (a process the agent
     /// started through a runtime tool rather than its provider run).
     pub(crate) fn list_as(&self, session_id: &str, owner: SessionProcessOwner) {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).listed =
-            Some((session_id.to_string(), owner));
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).listed = Some(projection::Listing {
+            session_id: session_id.to_string(),
+            owner,
+            opened_by: None,
+        });
     }
     pub(crate) fn bind_key(&self, key: &str) {
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());

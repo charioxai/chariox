@@ -6,21 +6,7 @@ use crate::provider::{
 };
 use std::time::{Duration, Instant};
 
-fn zombie(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            stat.rfind(')')
-                .map(|end| stat[end + 1..].trim_start().starts_with('Z'))
-        })
-        .unwrap_or(false)
-}
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 only probes a positive PID this test started.
-    let probe = unsafe { libc::kill(pid, 0) };
-    probe == 0 && !zombie(pid)
-}
+use crate::test_support::process_alive as alive;
 
 fn agent_run(
     worktree: &crate::test_support::TestWorktree,
@@ -98,9 +84,13 @@ fn a_job_the_agents_tool_detached_outlives_its_provider_process() {
         &worktree,
         "pty-detach-run",
         "pty-agent",
-        r#"(setsid nohup sh -c 'echo $$ > "$DETACHED"; exec sleep 8898' </dev/null >/dev/null 2>&1 &)
-setsid sh -c 'echo $$ > "$TOOL"; exec sleep 8899' </dev/null >/dev/null 2>&1 &
+        &format!(
+            r#"(nohup {} </dev/null >/dev/null 2>&1 &)
+{} </dev/null >/dev/null 2>&1 &
 while IFS= read -r line; do :; done"#,
+            crate::test_support::detached_job("\"$DETACHED\"", 8898),
+            crate::test_support::session_job("\"$TOOL\"", 8899),
+        ),
     );
     let mut manager = PtyManager::new();
     manager
@@ -143,8 +133,11 @@ fn a_job_the_agents_tool_detached_outlives_a_provider_process_that_died() {
         &worktree,
         "pty-died-run",
         "pty-died-agent",
-        r#"(setsid nohup sh -c 'echo $$ > "$DETACHED"; exec sleep 8897' </dev/null >/dev/null 2>&1 &)
+        &format!(
+            r#"(nohup {} </dev/null >/dev/null 2>&1 &)
 sleep 1; exit 3"#,
+            crate::test_support::detached_job("\"$DETACHED\"", 8897),
+        ),
     );
     let mut manager = PtyManager::new();
     manager

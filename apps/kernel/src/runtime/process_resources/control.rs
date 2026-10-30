@@ -98,7 +98,12 @@ pub(super) fn domain_dropped(started: u64) {
 
 /// Whether the owner of a workload that started at `started` is gone for good.
 /// Asked under the registry lock, so no end slips between it and the release.
-pub(super) fn owner_ended(started: u64, session_id: &str, owner: &SessionProcessOwner) -> bool {
+pub(super) fn owner_ended(
+    started: u64,
+    session_id: &str,
+    owner: &SessionProcessOwner,
+    opened_by: Option<&str>,
+) -> bool {
     OWNER_ENDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -106,8 +111,22 @@ pub(super) fn owner_ended(started: u64, session_id: &str, owner: &SessionProcess
         .any(|end| {
             started < end.after
                 && end.session_id.as_deref().is_none_or(|id| id == session_id)
-                && end.owner.as_ref().is_none_or(|ended| ended == owner)
+                && end
+                    .owner
+                    .as_ref()
+                    .is_none_or(|ended| belongs_to(ended, owner, opened_by))
         })
+}
+
+/// Whether work of `owner` (a terminal opened by `opened_by`) is the work of
+/// `ended`: an agent's own, and that of the Room terminals it opened.
+fn belongs_to(
+    ended: &SessionProcessOwner,
+    owner: &SessionProcessOwner,
+    opened_by: Option<&str>,
+) -> bool {
+    ended == owner
+        || matches!(ended, SessionProcessOwner::Agent(agent_id) if opened_by == Some(agent_id))
 }
 
 /// The owner is gone for good (its Room ended or was deleted, the agent was
@@ -134,10 +153,14 @@ pub(crate) fn end_owner(session_id: Option<&str>, owner: Option<&SessionProcessO
 }
 
 /// The owner of what an ended workload left running stops its work (or is
-/// gone, through `end_owner`): those processes end too.
+/// gone, through `end_owner`): those processes end too. An agent's work
+/// includes its Room terminals' jobs, even once the terminals are closed.
 pub(crate) fn stop_released(session_id: Option<&str>, owner: Option<&SessionProcessOwner>) {
-    let keys = projection::released_keys(|session, current| {
-        session_id.is_none_or(|id| id == session) && owner.is_none_or(|owner| owner == current)
+    let keys = projection::released_keys(|released| {
+        session_id.is_none_or(|id| id == released.session_id)
+            && owner.is_none_or(|ended| {
+                belongs_to(ended, &released.owner, released.opened_by.as_deref())
+            })
     });
     for (_, key) in keys {
         if let Err(error) = stop_for_key(&key, None) {

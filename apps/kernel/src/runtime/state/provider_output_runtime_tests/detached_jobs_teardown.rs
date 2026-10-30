@@ -11,15 +11,7 @@ enum Teardown {
     StopKernel,
 }
 
-fn alive(pid: i32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            stat.rfind(')')
-                .map(|end| !stat[end + 1..].trim_start().starts_with('Z'))
-        })
-        .unwrap_or(false)
-}
+use crate::test_support::process_alive as alive;
 
 async fn the_detached_job_ends_with(teardown: Teardown, name: &str) {
     let worktree = crate::test_support::TestWorktree::new(name);
@@ -50,9 +42,11 @@ async fn the_detached_job_ends_with(teardown: Teardown, name: &str) {
             pty_program: Some("/bin/sh".to_string()),
             pty_args: vec![
                 "-c".to_string(),
-                r#"(setsid nohup sh -c 'echo $$ > "$DETACHED"; exec sleep 8895' </dev/null >/dev/null 2>&1 & sleep 1)
-while IFS= read -r line; do :; done"#
-                    .to_string(),
+                format!(
+                    r#"(nohup {} </dev/null >/dev/null 2>&1 & sleep 1)
+while IFS= read -r line; do :; done"#,
+                    crate::test_support::detached_job("\"$DETACHED\"", 8895),
+                ),
             ],
             pty_env: [("DETACHED".to_string(), pid_file.display().to_string())].into(),
             pty_env_remove: Vec::new(),

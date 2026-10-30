@@ -288,6 +288,7 @@ impl PtyProcess {
         self.resources.release(
             &agent.session_id,
             crate::runtime::process_resources::SessionProcessOwner::Agent(agent.agent_id),
+            None,
         );
     }
 }
@@ -1260,6 +1261,7 @@ impl PtyManager {
         provider_run_id: &str,
         session_id: &str,
         owner: crate::runtime::process_resources::SessionProcessOwner,
+        opened_by: Option<String>,
     ) {
         if let Some(process) = self
             .process_aliases
@@ -1267,7 +1269,7 @@ impl PtyManager {
             .and_then(|key| self.processes.get_mut(key))
             .filter(|process| process.exit_code.is_some() || process.signal.is_some())
         {
-            process.resources.release(session_id, owner);
+            process.resources.release(session_id, owner, opened_by);
         }
     }
 

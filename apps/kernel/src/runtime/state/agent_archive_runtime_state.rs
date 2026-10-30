@@ -269,7 +269,8 @@ impl KernelRuntimeState {
     }
 }
 
-/// What the agent's shells left running (`setsid nohup job &`) ends with its work.
+/// What the agent's shells and its Room terminals' shells left running
+/// (`setsid nohup job &`) ends with its work.
 pub(super) async fn stop_released_agent_processes(
     session_id: &str,
     agent_id: &str,
