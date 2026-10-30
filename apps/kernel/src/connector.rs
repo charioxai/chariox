@@ -702,6 +702,73 @@ mod tests {
     }
 
     #[test]
+    fn connector_results_and_errors_do_not_carry_the_injected_credential() {
+        let secret = "vault value+/=7f3a";
+        let form = url::form_urlencoded::byte_serialize(secret.as_bytes()).collect::<String>();
+        let prepared = || PreparedConnectorCall {
+            connector: "demo".to_string(),
+            operation: "lookup".to_string(),
+            safety: ConnectorSafety::Read,
+            request: ConnectorAdapterRequest {
+                id: "call-1".to_string(),
+                request_type: ConnectorAdapterRequestType::Call,
+                connector: "demo".to_string(),
+                operation: Some("lookup".to_string()),
+                arguments: None,
+                config: None,
+                operations: Vec::new(),
+                credential: Some(ConnectorAdapterCredential {
+                    id: "api".to_string(),
+                    secret: secret.to_string(),
+                    injection: UserCredentialInjectionConfig::Basic {
+                        username: "svc".to_string(),
+                    },
+                    allowed_hosts: Vec::new(),
+                }),
+                timeout_ms: 1_000,
+                max_response_bytes: 1_024,
+            },
+            adapter: CharioxConnectorAdapterDefinition {
+                kind: "connector-adapter".to_string(),
+                name: "demo".to_string(),
+                version: None,
+                adapter_protocol: "jsonl".to_string(),
+                command: PathBuf::from("demo"),
+                args: Vec::new(),
+                description: None,
+                source: None,
+                manifest_path: None,
+            },
+        };
+        let failed = ConnectorAdapterResponse {
+            id: "call-1".to_string(),
+            ok: false,
+            result: None,
+            error: Some(format!("http://host/r?key={form}: status code 401")),
+        };
+        let error = adapter_response_to_execution(prepared(), failed)
+            .expect_err("a failed call is an error")
+            .to_string();
+        assert!(
+            !error.contains(&form) && error.contains("[redacted]"),
+            "{error}"
+        );
+        let echoed = ConnectorAdapterResponse {
+            id: "call-1".to_string(),
+            ok: true,
+            result: Some(serde_json::json!({"echo": [format!("svc:{secret}")], "n": 1})),
+            error: None,
+        };
+        let execution = adapter_response_to_execution(prepared(), echoed).unwrap();
+        assert!(
+            !execution.result.to_string().contains(secret),
+            "{}",
+            execution.result
+        );
+        assert_eq!(execution.result["n"], 1);
+    }
+
+    #[test]
     fn connector_validation_requires_adapter_name() {
         let definition = CharioxConnectorDefinition {
             kind: "connector".to_string(),

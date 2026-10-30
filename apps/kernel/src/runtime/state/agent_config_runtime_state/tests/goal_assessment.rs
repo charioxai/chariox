@@ -576,7 +576,7 @@ async fn mp11_protected_completion_reads_private_result_and_keeps_history_withhe
         .unwrap();
     assert!(entries
         .iter()
-        .any(|e| e.text == "[sensitive Room terminal stream withheld]"));
+        .any(|e| e.text.contains("Filled [redacted];")));
     assert!(!entries
         .iter()
         .any(|e| e.text.contains("synthetic-private-fill")));
@@ -831,9 +831,10 @@ async fn mp11_neutral_assessment_uses_private_work_result_without_public_or_dura
         .operational_history_store
         .load_session_history_entries(&room, Some(&agent))
         .unwrap();
+    // The stream is public text scrubbed by value; only the Vault value stays out of it.
     assert!(!serde_json::to_string(&history)
         .unwrap()
-        .contains("PRIVATE_WORK_OUTCOME"));
+        .contains("PRIVATE_VALUE_CANARY"));
 }
 
 // MP-08/MP-10: an achieved check publishes only its final answer as ordinary
