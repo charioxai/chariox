@@ -104,6 +104,27 @@ fn make_process_nondumpable() -> bool {
     true
 }
 
+// The kernel this supervisor runs: a reload (SIGUSR2, the unit's
+// `ExecReload`) is forwarded to it, which replaces its program in place.
+static KERNEL_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static RELOAD_FORWARDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(unix)]
+extern "C" fn forward_reload(_: libc::c_int) {
+    use std::sync::atomic::Ordering;
+    let pid = KERNEL_PID.load(Ordering::SeqCst);
+    // Only the kernel child itself: never 0, 1 or a process group.
+    if pid > 1 {
+        RELOAD_FORWARDED.store(true, Ordering::SeqCst);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+    }
+}
+
+#[cfg(unix)]
+fn forward_reloads_to_the_kernel() {
+    unsafe { libc::signal(libc::SIGUSR2, forward_reload as libc::sighandler_t) };
+}
+
 pub(super) struct KernelRun {
     status: ExitStatus,
     runtime: Duration,
@@ -117,9 +138,17 @@ pub(super) fn supervise_kernel(
     topology: ManagedProviderTopology,
 ) -> Result<(), DaemonError> {
     let mut restart_delay = MIN_RESTART_DELAY;
+    #[cfg(unix)]
+    forward_reloads_to_the_kernel();
     loop {
         let started_at = Instant::now();
-        match run_kernel_once(config, release, &mut confirmation, cloud, topology) {
+        let run = run_kernel_once(config, release, &mut confirmation, cloud, topology);
+        // A reloaded kernel ran the release `current` names now: verify that
+        // release again before starting it.
+        if RELOAD_FORWARDED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        match run {
             Ok(run) => {
                 if run.runtime >= STABLE_RUNTIME {
                     restart_delay = MIN_RESTART_DELAY;
@@ -157,6 +186,7 @@ pub(super) fn run_kernel_once(
     cloud: &impl BootstrapCloudClient,
     topology: ManagedProviderTopology,
 ) -> Result<KernelRun, DaemonError> {
+    use std::sync::atomic::Ordering;
     let started_at = Instant::now();
     let mut child = spawn_kernel(config, release, topology)?;
     if confirmation.is_some() {
@@ -164,9 +194,11 @@ pub(super) fn run_kernel_once(
         terminate_child(&mut child)?;
         child = spawn_kernel(config, release, topology)?;
     }
-    let status = child
-        .wait()
-        .map_err(|error| supervisor_error(&format!("wait for managed kernel: {error}")))?;
+    KERNEL_PID.store(child.id() as i32, Ordering::SeqCst);
+    let status = child.wait();
+    KERNEL_PID.store(0, Ordering::SeqCst);
+    let status =
+        status.map_err(|error| supervisor_error(&format!("wait for managed kernel: {error}")))?;
     Ok(KernelRun {
         status,
         runtime: started_at.elapsed(),
@@ -224,6 +256,10 @@ fn spawn_kernel_with_handoff(
     };
     let local_auth_path = prepare_kernel_local_auth_file(config)?;
     let mut command = Command::new(&release.kernel_binary);
+    // The verified file runs, named by its installed path: a hot reload
+    // starts what that path names then, the release an upgrade activated.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::arg0(&mut command, &config.kernel_binary);
     command
         .current_dir(&config.process_home)
         .env("HOME", &config.process_home)
@@ -1883,5 +1919,136 @@ fn supervisor_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "supervise managed kernel",
         message: message.to_string(),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod reload_tests {
+    use super::*;
+
+    /// MP-08: `systemctl reload` of the bootstrap unit reaches the managed
+    /// kernel, which then replaces its program with what its installed path
+    /// names; once it exits, the supervisor verifies that release again.
+    #[test]
+    fn a_reload_reaches_the_kernel_started_by_its_installed_path() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        clear_test_broker_lease();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-supervisor-reload-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let home = root.join("home");
+        let release_kernel = root.join("releases/one/chariox-kernel");
+        let installed = root.join("bin/chariox-kernel");
+        let record = root.join("kernel.record");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(release_kernel.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        // A real program sees the argv[0] it was started with (a script sees
+        // its own path): bash, which runs BASH_ENV first.
+        std::fs::copy("/bin/bash", &release_kernel).unwrap();
+        let startup = root.join("kernel-startup.sh");
+        std::fs::write(
+            &startup,
+            r#"rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
+trap 'echo reloaded >> "$CHARIOX_KERNEL_RECORD"; exit 0' USR2
+echo "$0" > "$CHARIOX_KERNEL_RECORD"
+while :; do sleep 0.05; done
+"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&release_kernel, &installed).unwrap();
+        let config = BootstrapConfig {
+            process_home: home.clone(),
+            chariox_home: home.join(".chariox"),
+            envelope_path: root.join("managed-bootstrap.json"),
+            receipt_path: root.join("bootstrap-receipt.json"),
+            manifest_path: root.join("release-manifest.json"),
+            signature_path: root.join("release-manifest.sig"),
+            public_key_path: root.join("release-public-key"),
+            kernel_binary: installed.clone(),
+            kernel_host: "127.0.0.1".to_string(),
+            kernel_port: 43118,
+        };
+        // Release verification resolves the installed path to the release file.
+        let release = VerifiedRelease {
+            digest: "test".to_string(),
+            kernel_binary: release_kernel,
+        };
+        BootstrapReceipt {
+            schema_version: 2,
+            status: BootstrapReceiptStatus::Confirmed,
+            environment_id: "managed-env-1".to_string(),
+            machine_id: "managed-machine-1".to_string(),
+            kernel_id: "managed-kernel-1".to_string(),
+            generation: 1,
+            relay_public_key: "managed-public-key".to_string(),
+            runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
+            managed_repository_root: Some("/srv/managed workspaces".to_string()),
+            confirmed_at: Some("2026-09-20T20:00:00Z".to_string()),
+            context_plan: None,
+            provider_rebuild_action_id: None,
+            freshness_evidence: None,
+        }
+        .persist(&config.receipt_path)
+        .unwrap();
+        let service_root = root.join("share");
+        let publication_root = service_root.join("slices");
+        std::fs::create_dir_all(&publication_root).unwrap();
+        std::env::set_var("CHARIOX_KERNEL_RECORD", &record);
+        std::env::set_var("BASH_ENV", &startup);
+        std::env::set_var(MANAGED_PROVIDER_TOPOLOGY_ENV, "shared_host");
+        std::env::set_var(
+            crate::provider::MANAGED_SLICE_SERVICE_ROOT_ENV,
+            &service_root,
+        );
+        std::env::set_var(
+            crate::provider::MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+            &publication_root,
+        );
+        std::env::set_var("CHARIOX_SLICE_ROOT", &publication_root);
+        std::env::set_var(
+            BROKER_SOCKET_ENV,
+            service_root.join(".private-control/control/control.sock"),
+        );
+        std::env::remove_var(BROKER_FD_ENV);
+        std::env::remove_var(BROKER_REQUIRED_ENV);
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_ISOLATION", "1");
+
+        let supervisor = std::thread::spawn(move || {
+            supervise_kernel(
+                &config,
+                &release,
+                None,
+                &super::super::cloud::HttpBootstrapCloudClient::default(),
+                ManagedProviderTopology::SharedHost,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while std::fs::read_to_string(&record)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            assert!(Instant::now() < deadline, "the kernel did not start");
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            std::fs::read_to_string(&record).unwrap().trim(),
+            installed.display().to_string(),
+            "the kernel must be named by its installed path"
+        );
+        let own = std::process::id() as libc::pid_t;
+        assert!(own > 1);
+        unsafe { libc::kill(own, libc::SIGUSR2) };
+        supervisor
+            .join()
+            .unwrap()
+            .expect("the supervisor returns to verify the release again");
+        assert!(std::fs::read_to_string(&record)
+            .unwrap()
+            .ends_with("reloaded\n"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
