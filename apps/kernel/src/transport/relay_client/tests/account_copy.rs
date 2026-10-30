@@ -121,6 +121,48 @@ fn assert_code(result: Result<serde_json::Value, DaemonError>, code: &str, canar
     assert_eq!(public.code, code, "unexpected safe error: {error}");
     assert!(!format!("{error:?} {error} {public:?}").contains(canary));
 }
+/// Starts a copy, answers the kernel-owned consent and returns the outcome. It
+/// answers nothing else, so a Vault prompt makes the copy time out.
+async fn consented_copy(
+    router: &Arc<CommandRouter>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, DaemonError> {
+    let copying = router.clone();
+    let pending = tokio::spawn(async move { source_request(&copying, request).await });
+    let consent = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let response = source_request(
+                router,
+                serde_json::json!({"SubscribeUserAppViews":{"wait_ms":0}}),
+            )
+            .await
+            .unwrap();
+            if let Some(interaction) = response["UserAppViewsChanged"]["interactions"]
+                .as_array()
+                .unwrap()
+                .first()
+            {
+                break interaction.clone();
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("copy needs the existing kernel-owned consent");
+    source_request(
+        router,
+        serde_json::json!({"AnswerUserDomainInteraction":{
+            "interaction_id":consent["id"], "choice_id":"copy"
+        }}),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), pending)
+        .await
+        .expect("the copy finished without asking for the Vault")
+        .unwrap()
+}
+
 fn assert_native_files_clean(path: &Path, canary: &str) {
     if !path.exists() {
         return;
@@ -221,6 +263,11 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         std::env::set_var("CHARIOX_CLAUDE_BIN", &fake);
         let mut source = config(&root, "source");
         let mut target = config(&root, "target");
+        if scenario == CopyScenario::Recipient {
+            // The strictest policy: a browser copy still needs no prompt while the Vault is open.
+            target.user_config.credential_vault.unlock_policy =
+                crate::config::CredentialVaultUnlockPolicy::Always;
+        }
         let cloud = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let cloud_url = format!("http://{}", cloud.local_addr().unwrap());
         source.cloud_relay.as_mut().unwrap().api_url = cloud_url.clone();
@@ -634,6 +681,34 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     assert_native_files_clean(&root.join("native-home"), canary);
                 }
             }
+            // An open Vault needs no session and no prompt, also with a session.
+            let mut scoped = receive.clone();
+            scoped["CopyProviderAccountFromKernel"]["operation_id"] = "receive-open-session".into();
+            scoped["CopyProviderAccountFromKernel"]["session_id"] = target_session.clone().into();
+            scoped["CopyProviderAccountFromKernel"]["agent_id"] = target_agent.clone().into();
+            let copied = consented_copy(&target_router, scoped).await.unwrap();
+            source_request(
+                &target_router,
+                serde_json::json!({"RemoveProviderAccountProfile":{
+                    "provider":"claude",
+                    "account_profile":copied["ProviderAccountCopied"]["receipt"]["account_profile"]
+                }}),
+            )
+            .await
+            .unwrap();
+            // Without a session a locked Vault cannot be asked for: the copy ends with a
+            // retryable error that names the Vault.
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            let mut sessionless = receive.clone();
+            sessionless["CopyProviderAccountFromKernel"]["operation_id"] =
+                "receive-locked-no-session".into();
+            let locked = consented_copy(&target_router, sessionless).await;
+            assert_code(locked, "provider_account_copy_vault_locked", canary);
+            assert!(target_profiles
+                .list("local", Some("claude"))
+                .unwrap()
+                .iter()
+                .all(|p| !p.profile_id.starts_with("copy-")));
             // A receiver whose Vault is locked, or was never created, asks for it
             // in the requesting session and then finishes the same copy.
             for (operation, first_use) in [("receive-locked", false), ("receive-first-use", true)] {
@@ -760,6 +835,17 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 .await
                 .unwrap();
             }
+            crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
+            std::fs::remove_file(&target_vault).unwrap();
+            let mut first_use = receive.clone();
+            first_use["CopyProviderAccountFromKernel"]["operation_id"] =
+                "receive-first-use-no-session".into();
+            let created = consented_copy(&target_router, first_use).await;
+            assert_code(created, "provider_account_copy_vault_locked", canary);
+            assert!(
+                !target_vault.exists(),
+                "no session: the Vault was not created"
+            );
             let _ = stop_target.send(true);
             let _ = stop_source.send(true);
             tokio::time::timeout(Duration::from_secs(5), target_task)

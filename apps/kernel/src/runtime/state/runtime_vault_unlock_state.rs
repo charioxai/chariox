@@ -408,6 +408,33 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// For an action that only needs the Vault open, not unlocked afresh per
+    /// use: an open Vault needs no session and no prompt, whatever its unlock
+    /// policy. A locked or never-created one is asked for as usual, which
+    /// needs the request's session.
+    pub(crate) async fn ensure_vault_open_for_command_context(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<VaultUnlockGuard, DaemonError> {
+        let vault = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
+            && crate::secret::chariox_encrypted_vault_status(&expand_vault_path(&vault.path))?
+                .unlocked
+        {
+            return Ok(VaultUnlockGuard::not_required());
+        }
+        self.ensure_vault_unlocked_for_command_context(command, session_id, agent_id, operation)
+            .await
+    }
+
     /// Validate where an unlock interaction can be shown without acquiring a
     /// Vault lease. Verification of caller-supplied input can then run while
     /// the Vault stays locked; the actual write repeats this same preflight.

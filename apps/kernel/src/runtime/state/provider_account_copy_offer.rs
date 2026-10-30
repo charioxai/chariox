@@ -243,9 +243,11 @@ impl KernelRuntimeState {
             return Err(failure("provider_account_copy_cancelled"));
         }
         // The install runs on this kernel's own peer handler, so its Vault is
-        // opened here, through the prompt every Vault-needing action uses.
+        // opened here, through the prompt every Vault-needing action uses. A
+        // copy from a browser waiting room has no session: an open Vault does
+        // not need one, a locked one ends the copy with a retryable error.
         let _vault = self
-            .ensure_vault_unlocked_for_command_context(command, None, None, "provider account copy")
+            .ensure_vault_open_for_command_context(command, None, None, "provider account copy")
             .await
             .map_err(|_| failure("provider_account_copy_vault_locked"))?;
         let current = self.config_snapshot().await;
