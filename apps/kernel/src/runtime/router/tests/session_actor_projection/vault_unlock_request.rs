@@ -81,6 +81,14 @@ impl Fixture {
     async fn send(&self, request: LocalDaemonRequest) -> Result<LocalDaemonResponse, DaemonError> {
         let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
             .with_connection_class(KernelConnectionClass::Terminal);
+        self.send_as(caller, request).await
+    }
+
+    async fn send_as(
+        &self,
+        caller: KernelCaller,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let command = KernelCommand::from_local_request_with_caller(
             format!("vault-unlock-{}", rand::random::<u64>()),
             KernelCommandSource::LocalCli,
@@ -375,5 +383,74 @@ async fn the_lease_follows_the_unlock_policy() {
     assert!(
         expires.abs_diff(now_ms + 60_000) < 5_000,
         "single use lasts a minute"
+    );
+}
+
+fn unlock_request(passphrase: &str) -> LocalDaemonRequest {
+    LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
+        passphrase: VaultPassphrase::new(passphrase),
+    })
+}
+
+#[tokio::test]
+async fn only_the_owners_own_client_may_unlock() {
+    let f = Fixture::locked();
+    // A member of a shared session is a terminal with a user id, not the owner.
+    let mut member = KernelCaller::for_source(&KernelCommandSource::RelayClient)
+        .with_connection_class(KernelConnectionClass::Terminal);
+    member.user_id = Some("session-member".into());
+    // An agent the kernel launched, and a Metaagent, are not the owner's client.
+    let agent = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(KernelConnectionClass::KernelAgent);
+    let mut metaagent = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(KernelConnectionClass::Terminal);
+    metaagent.metaagent_id = Some("metaagent".into());
+    for caller in [member, agent, metaagent] {
+        let (code, message) = code_of(f.send_as(caller, unlock_request(PASSPHRASE)).await);
+        assert_eq!(code, "vault_unlock_owner_only");
+        assert_eq!(
+            message,
+            "Only the owner of this kernel can unlock its Vault."
+        );
+        assert!(
+            !f.status().await.unlocked,
+            "a refused caller unlocks nothing"
+        );
+    }
+    // The refusal is before the passphrase check: it costs the owner no attempt.
+    for _ in 0..6 {
+        let mut member = KernelCaller::for_source(&KernelCommandSource::RelayClient)
+            .with_connection_class(KernelConnectionClass::Terminal);
+        member.user_id = Some("session-member".into());
+        f.send_as(member, unlock_request(WRONG)).await.unwrap_err();
+    }
+    f.unlock(PASSPHRASE).await.unwrap();
+    assert!(f.status().await.unlocked);
+}
+
+#[tokio::test]
+async fn the_vault_menu_on_a_locked_vault_asks_the_client_to_unlock_and_raises_no_prompt() {
+    let f = Fixture::locked();
+    let manage =
+        LocalDaemonRequest::ManageCredentialVault(crate::local::ManageCredentialVaultRequest {
+            session_id: f.session.clone(),
+            agent_id: Some(f.agent.clone()),
+        });
+    let (code, message) = code_of(
+        tokio::time::timeout(std::time::Duration::from_secs(10), f.send(manage))
+            .await
+            .expect("a locked Vault must not wait for an unlock prompt"),
+    );
+    assert_eq!(code, "vault_locked");
+    assert_eq!(message, "The Vault is locked. Unlock it, then try again.");
+    let snapshot = f
+        .router
+        .runtime_state
+        .session_snapshot(&f.session)
+        .await
+        .unwrap();
+    assert!(
+        snapshot.active_interaction_for_agent(&f.agent).is_none(),
+        "no unlock prompt is raised"
     );
 }

@@ -11,6 +11,7 @@ mod wording {
     pub(super) const MISSING: &str =
         "This kernel has no Vault yet. Create it on that machine first.";
     pub(super) const LOCKED: &str = "The Vault is locked. Unlock it, then try again.";
+    pub(super) const OWNER_ONLY: &str = "Only the owner of this kernel can unlock its Vault.";
 
     pub(super) fn rate_limited(seconds: u64) -> String {
         format!("Too many wrong passphrases. Try again in {seconds} seconds.")
@@ -21,6 +22,7 @@ const WRONG_PASSPHRASE: &str = "vault_passphrase_wrong";
 const RATE_LIMITED: &str = "vault_unlock_rate_limited";
 const MISSING: &str = "vault_missing";
 const LOCKED: &str = "vault_locked";
+const OWNER_ONLY: &str = "vault_unlock_owner_only";
 
 fn refusal(code: &'static str, message: impl Into<String>, retryable: bool) -> DaemonError {
     DaemonError::VaultUnlock {
@@ -54,6 +56,41 @@ fn owner_client_lease(
 }
 
 impl KernelRuntimeState {
+    /// The kernel owner's own client: a terminal (local token or relay client
+    /// with a user id), not an agent, and the owner's user id. A member of a
+    /// shared session is a terminal too, but not the owner.
+    pub(crate) fn owner_client_user_id(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+    ) -> Result<String, DaemonError> {
+        let caller = crate::runtime::command::command_caller_user_id(command);
+        let owner = self.owned.config_projection.local_owner_user_id();
+        if command.is_terminal_caller()
+            && [crate::session::DEFAULT_LOCAL_USER_ID, owner.as_str()].contains(&caller.as_str())
+        {
+            return Ok(caller);
+        }
+        Err(refusal(OWNER_ONLY, wording::OWNER_ONLY, false))
+    }
+
+    /// The Vault menu opens on an open Vault. A locked one is unlocked by the
+    /// client first (`UnlockCredentialVault`), not through an agent's prompt.
+    pub(crate) fn require_unlocked_vault(&self) -> Result<(), DaemonError> {
+        let config = self
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        if config.backend == CredentialVaultBackend::CharioxEncrypted
+            && !crate::secret::chariox_encrypted_vault_status(expand_vault_path(&config.path))?
+                .unlocked
+        {
+            return Err(vault_locked_error());
+        }
+        Ok(())
+    }
+
     /// `UnlockCredentialVault`: unlocks the existing Vault for the owner's
     /// own client. It never creates a Vault.
     pub(crate) async fn unlock_credential_vault_for_owner(

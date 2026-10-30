@@ -70,7 +70,7 @@ pub(crate) async fn execute_user_config_request(
             execute_lock_credential_vault_request(config_projection, request).await
         }
         LocalDaemonRequest::UnlockCredentialVault(request) => {
-            let owner = command_caller_user_id(command);
+            let owner = runtime_state.owner_client_user_id(command)?;
             let (status, action) = runtime_state
                 .unlock_credential_vault_for_owner(&owner, request)
                 .await?;
@@ -356,6 +356,7 @@ pub(crate) async fn execute_manage_credential_vault_request(
     runtime_state: &KernelRuntimeState,
     request: ManageCredentialVaultRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state.require_unlocked_vault()?;
     let agent_id = runtime_state
         .vault_prompt_agent(
             &request.session_id,
