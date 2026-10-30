@@ -121,14 +121,14 @@ test("session browser projection renders ended sessions inside an archived proje
   )
 })
 
-function session(id: string, status: string, lastUsedAtMs: number): SessionListEntry {
+function session(id: string, status: string, lastActivityAtMs: number): SessionListEntry {
   return {
     id,
     alias: null,
     workspace_id: "/workspace",
     worktree_id: "/workspace",
     created_at_ms: 1,
-    last_used_at_ms: lastUsedAtMs,
+    last_activity_at_ms: lastActivityAtMs,
     status,
     connected_cli_count: 0,
   }
