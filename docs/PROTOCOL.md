@@ -5918,3 +5918,23 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### MP-08 / MP-10 / MP-11: document mode and pointer cursor — local 920 / peer 371
+
+A mirror v2 reset of a page that is not in no-quirks mode carries `document_mode`
+(`quirks` or `limited-quirks`, the HTML document mode the parser chose; absent
+means no-quirks). Deltas never carry it. The viewer creates its frame document in
+the same mode: an `iframe srcdoc` document is always no-quirks, so a frame for
+another mode is an about:blank document written with a doctype that selects it.
+
+`KernelBrowser` `{op: "pointer_cursor", tab_id, generation, x, y}` (CSS px inside
+the Tab's page) answers `{generation, cursor}`: the CSS cursor keyword the page
+shows there, read in the kernel's isolated world of the live document (open
+shadow roots and same-origin frames included; `auto` resolves as Chrome does: an
+I-beam over selectable text and editable fields, else `default`; a `url()` cursor
+answers its fallback keyword). It is an observation: it neither starts the
+browser nor moves the native pointer. A viewer showing the page as video (whole
+page or the navigation preview) asks while the pointer moves, one read in flight.
+Relay peer 371 only pairs the embedded local response union with local 920. The
+managed-upgrade list is [629, 636, 920]. Focused checks: `cargo test -p
+chariox-kernel --lib protocol_shapes` (`browser_pointer_cursor_and_document_mode_920_shape_is_pinned`).

@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
+import { readPointerCursor } from "./browser-controller-cursor.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
 import { BrowserInputCapture } from "./browser-controller-input.mjs";
 import {
@@ -850,6 +851,7 @@ export class BrowserCdpClient {
     return ensureFocusWorld(this, connection, sessionId, targetId, frame, options);
   }
   async observeNote(request) { return observeBrowserNote(this, request); }
+  async pointerCursor(request) { return readPointerCursor(this, request); }
 
   async readFocus(connection, sessionId, targetId, frame) {
     const captured = this.inputCapture.visibilityBySession.get(sessionId);
