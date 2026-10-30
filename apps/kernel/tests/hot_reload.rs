@@ -351,7 +351,7 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
             &mut socket,
             &session_id,
             json!({"operation": "open", "cols": 80, "rows": 24,
-                "command": ["/bin/sh", "-c", "sleep 3; echo still-here"]}),
+                "command": ["/bin/sh", "-c", "sleep 3; echo still-here; exec sleep 60"]}),
         )
         .await;
         let terminal_id = opened["terminal"]["terminal_id"].as_str().unwrap();
@@ -372,7 +372,7 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
                 "timeout_ms": 20000}),
         )
         .await;
-        // The kernel kept running and its connection open: the command finished here.
+        // The kernel kept running and its connection open: the output arrived here.
         assert_eq!(
             waited["waited"]["fired"]["kind"], "output_matched",
             "{waited}"
