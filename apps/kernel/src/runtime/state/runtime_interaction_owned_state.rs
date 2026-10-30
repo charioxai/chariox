@@ -505,7 +505,7 @@ impl KernelRuntimeOwnedState {
         if passkey_verified
             && interaction
                 .kernel_operation_id()
-                .is_some_and(|id| id.starts_with("sudo:") && !id.contains(":scope:"))
+                .is_some_and(|id| id.starts_with("sudo:"))
             && interaction
                 .choice(choice_id)
                 .is_some_and(crate::session::RuntimeInteractionChoice::requires_passkey)

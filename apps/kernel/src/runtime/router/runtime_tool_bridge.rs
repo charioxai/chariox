@@ -175,8 +175,7 @@ impl CommandRouter {
                 })?)
                 .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
             self.runtime_state
-                .confirm_sudo_scope(&turn, &request)
-                .await?;
+                .authorize_sudo_request(&turn.entry_id, &request)?;
             let mut command = crate::runtime::command::KernelCommand::from_local_request(
                 format!("{}:{}", turn.entry_id, rand::random::<u64>()),
                 turn.prompt_id.clone(),

@@ -80,6 +80,13 @@ fn parse(attachment: &PromptAttachment) -> Result<Note, String> {
     Ok(note)
 }
 
+/// The selected text and the comment of a readable note, as the agent receives them.
+pub(crate) fn quote_and_comment(attachment: &PromptAttachment) -> Option<(String, String)> {
+    parse(attachment)
+        .ok()
+        .map(|note| (note.quote, note.comment))
+}
+
 /// Rejects malformed or oversized notes at admission, so the user sees the error instead of
 /// losing context, and returns the prompt to admit: a notes-only message gets a fixed request
 /// line, anything else is unchanged.

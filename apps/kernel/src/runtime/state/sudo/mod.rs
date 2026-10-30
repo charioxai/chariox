@@ -9,6 +9,7 @@ use crate::session::{
     RuntimeInteractionChoice, SessionStatus,
 };
 
+mod approval_attachments;
 mod end_wake;
 mod entry;
 mod external;

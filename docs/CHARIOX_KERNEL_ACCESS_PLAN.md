@@ -4,7 +4,7 @@
 
 MP-08 / MP-10 / MP-11 A04 update (protocol 484): the current sudo contract is
 [`KERNEL_SUDO.md`](KERNEL_SUDO.md). Hour-scale windows bind the owner-authorized
-work and fresh-passkey typed operation scopes; sudo cannot answer approvals.
+work and cover the whole kernel with no further passkey; sudo cannot answer approvals.
 The historical D2/D3/D14/D16 one-turn and approval rules below are superseded
 for sudo by that contract. Main's whole-local-kernel external grants and
 structured requester identity remain unchanged.

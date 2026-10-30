@@ -713,22 +713,22 @@ impl KernelRuntimeState {
                 .grants
                 .values_mut()
                 .filter_map(|grant| {
+                    let now = Instant::now();
+                    let left = grant.time_left(now)?;
                     let clock = grant.clock.as_mut()?;
-                    if clock.notice_sent || Instant::now() < clock.notice {
+                    let lead = clock.deadline.saturating_duration_since(clock.notice);
+                    if clock.notice_sent || left > lead {
                         return None;
                     }
                     clock.notice_sent = true;
-                    Some((grant.summary.clone(), grant.holder.clone(), clock.deadline))
+                    Some((grant.summary.clone(), grant.holder.clone(), left))
                 })
                 .collect::<Vec<_>>()
         };
-        for (summary, holder, deadline) in notices {
+        for (summary, holder, left) in notices {
             let runtime = self.clone();
             tokio::spawn(async move {
-                let seconds = deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_secs()
-                    .max(1);
+                let seconds = left.as_secs().max(1);
                 let Ok(KernelAccessTerm::Minutes(minutes)) = runtime
                     .access_decision(&summary, &holder, "extension", seconds)
                     .await

@@ -18,21 +18,21 @@ pub(crate) fn sudo_window_minutes(reply: Option<&str>) -> Result<u32, DaemonErro
     }
 }
 
-/// Starts the window at verification time; extension restarts it, never banks.
-#[cfg(test)]
-pub(super) fn open_window(turn: &mut KernelSudoTurn, minutes: u32) {
-    open_window_at(
-        turn,
-        minutes,
-        (Instant::now(), crate::session::unix_epoch_ms()),
-    );
-}
-
 /// Regression-only short windows, keyed by session so parallel tests keep the
 /// real durations. Real elapsed-time proof stays with the live drills.
 #[cfg(test)]
 pub(crate) static SUDO_WINDOW_LENGTH_FOR_TEST: std::sync::Mutex<BTreeMap<String, Duration>> =
     std::sync::Mutex::new(BTreeMap::new());
+
+/// What is left of a window: the earlier of its monotonic deadline and the
+/// expiry clients display, because the monotonic clock does not count host sleep.
+pub(super) fn time_left(turn: &KernelSudoTurn, now: Instant) -> Option<Duration> {
+    crate::runtime::kernel_access::time_left(turn.deadline, turn.expires_at_ms, now)
+}
+
+pub(super) fn window_lapsed(turn: &KernelSudoTurn) -> bool {
+    time_left(turn, Instant::now()) == Some(Duration::ZERO)
+}
 
 pub(super) fn open_window_at(turn: &mut KernelSudoTurn, minutes: u32, verified: (Instant, u64)) {
     let length = Duration::from_secs(u64::from(minutes) * 60);
@@ -171,12 +171,15 @@ impl KernelRuntimeState {
                     .get(&id)
                     .filter(|turn| turn.revision == revision)
                     .and_then(|turn| {
-                        let deadline = turn.deadline?;
-                        Some(if turn.warning_sent {
-                            deadline
-                        } else {
-                            deadline.checked_sub(SUDO_WARNING).unwrap_or(deadline)
-                        })
+                        let now = Instant::now();
+                        let left = time_left(turn, now)?;
+                        Some(
+                            now + if turn.warning_sent {
+                                left
+                            } else {
+                                left.saturating_sub(SUDO_WARNING)
+                            },
+                        )
                     });
                 let Some(next) = next else {
                     break;
@@ -206,12 +209,11 @@ impl KernelRuntimeState {
             access
                 .values_mut()
                 .filter_map(|turn| {
-                    let deadline = turn.deadline?;
-                    if turn.warning_sent || deadline.saturating_duration_since(now) > SUDO_WARNING
-                    {
+                    let left = time_left(turn, now)?;
+                    if turn.warning_sent || left > SUDO_WARNING {
                         return None;
                     }
-                    let late = now.saturating_duration_since(deadline.checked_sub(SUDO_WARNING)?);
+                    let late = SUDO_WARNING - left;
                     let mut warning = turn.clone();
                     warning.warning_sent = true;
                     if let Some(task) = turn.task_id.as_deref() {
@@ -224,14 +226,12 @@ impl KernelRuntimeState {
                     // A failed receipt leaves the warning due for retry.
                     if self.audit_sudo(&warning, "warning").is_err() { return None; }
                     turn.warning_sent = true;
-                    Some((turn.clone(), late))
+                    Some((turn.clone(), late, left))
                 })
                 .collect::<Vec<_>>()
         };
-        for (turn, late) in due {
-            let remaining = turn.deadline.map_or(0, |d| {
-                d.saturating_duration_since(now).as_secs().div_ceil(60)
-            });
+        for (turn, late, left) in due {
+            let remaining = left.as_secs().div_ceil(60);
             self.owned.notify_session(&turn.session_id, &turn.agent_id, format!(
                 "Sudo window {} for agent {} expires in {remaining} minutes. Use /sudo extend to renew it with a fresh passkey; regular work continues after expiry.",
                 turn.entry_id, turn.agent_id));
@@ -297,11 +297,6 @@ impl KernelRuntimeState {
             .sudo_timers
             .lock()
             .expect("sudo timers poisoned")
-            .remove(&turn.entry_id);
-        self.owned
-            .sudo_scopes
-            .lock()
-            .expect("sudo scopes poisoned")
             .remove(&turn.entry_id);
         self.owned
             .sudo_verified_at
@@ -467,7 +462,8 @@ impl KernelRuntimeState {
                 .get_mut(&turn.entry_id)
                 .filter(|current| {
                     current.revision == turn.revision
-                        && current.deadline.is_some_and(|d| Instant::now() < d)
+                        && current.deadline.is_some()
+                        && !window_lapsed(current)
                 })
                 .ok_or_else(|| error("sudo window ended or changed before the extension"))?;
             open_window_at(current, minutes, verified);

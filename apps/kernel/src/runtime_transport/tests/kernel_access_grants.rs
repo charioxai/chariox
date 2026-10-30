@@ -1813,6 +1813,21 @@ async fn answered_within(holder: Client, request: Value) -> (Client, Value) {
     .unwrap()
 }
 
+// MP-08 / MP-10 / MP-11: the extension notice follows the expiry the owner was
+// shown, not only the monotonic clock that stops while the host sleeps.
+#[tokio::test]
+async fn the_extension_notice_follows_the_displayed_expiry_after_host_sleep() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    kernel.control("slept").await;
+    let prompt = kernel.access_popup("-extension").await;
+    assert_eq!(
+        prompt["message"],
+        "The external agent's access ends in 4 minutes. Extend?"
+    );
+}
+
 // MP-08 / MP-10: the grant's own deadline passes while nothing asks the kernel
 // to sweep. A wait in flight ends, and the holder's next event request of every
 // kind is refused as ended: it neither hangs nor sees an event.

@@ -295,7 +295,10 @@ impl KernelRuntimeState {
             agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
             session_name: session.alias().unwrap_or("Unnamed session").into(),
             task_summary,
-            task: prompt.into(),
+            task: format!(
+                "{prompt}{}",
+                super::approval_attachments::details_text(&request.attachments)
+            ),
             grant_id: entry.requester.as_ref().map(|g| g.grant_id.clone()),
             terminal_id: entry.terminal_id.clone(),
         };
@@ -305,8 +308,11 @@ impl KernelRuntimeState {
             format!("{requester_name} wants to run one sudo task")
         };
         let message = format!(
-            "Agent: {}\nSession: {}\nTask: {}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
-            presentation.agent_name, presentation.session_name, task_description,
+            "Agent: {}\nSession: {}\nTask: {}{}\n\nSudo allows critical approvals across this kernel until this task yields or is revoked.",
+            presentation.agent_name,
+            presentation.session_name,
+            task_description,
+            super::approval_attachments::approval_text(&request.attachments),
         );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &entry.entry_id,
