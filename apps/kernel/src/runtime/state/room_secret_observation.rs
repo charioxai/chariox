@@ -764,10 +764,13 @@ impl RoomSecretObservations {
 
     fn scrub_variants(&self, room: &str) -> Vec<Zeroizing<String>> {
         let room = self.room_key(room);
+        // A Room whose registry failed to initialize has no entry; its events are already withheld.
         let Ok(rooms) = self.rooms.lock() else {
             return Vec::new();
         };
-        let protection = &rooms[room];
+        let Some(protection) = rooms.get(room) else {
+            return Vec::new();
+        };
         let mut variants = protection
             .values
             .iter()

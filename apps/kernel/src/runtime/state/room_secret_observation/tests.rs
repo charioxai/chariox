@@ -880,6 +880,40 @@ fn marker_io_failure_aborts_input_and_withholds_capture() {
     assert!(store.require("room", true).is_err());
 }
 
+#[test]
+fn streamed_history_stays_withheld_when_the_registry_cannot_initialize() {
+    let root = TestRoot::new();
+    let path = root.path().join("file");
+    std::fs::write(&path, b"not a directory").unwrap();
+    let store = RoomSecretObservations::new(path, BTreeSet::new());
+    let event = |sequence: u64, kind: &str| {
+        serde_json::from_value::<crate::history::HistoryEvent>(serde_json::json!({
+            "event_id": format!("event-{sequence}"),
+            "sequence": sequence,
+            "timestamp_ms": sequence,
+            "session_id": "room",
+            "agent_id": "agent",
+            "provider_run_id": "run",
+            "kind": kind,
+            "content": format!("streamed chunk {sequence}"),
+        }))
+        .unwrap()
+    };
+    for kind in ["provider_output", "provider_reasoning"] {
+        let protected = store.protect_history_events(vec![event(1, kind), event(2, kind)]);
+        for event in &protected {
+            assert_eq!(
+                event.content.as_deref(),
+                Some("[recovered sensitive Room history withheld]")
+            );
+        }
+    }
+    assert!(
+        store.rooms.lock().is_ok(),
+        "the shared registry stays usable"
+    );
+}
+
 #[tokio::test]
 async fn vault_mutation_drains_inputs_and_blocks_new_resolutions_across_rooms() {
     use super::super::browser_controller_action_execution_runtime_state::computer_input_reconcile_test_support::TestRoom;
