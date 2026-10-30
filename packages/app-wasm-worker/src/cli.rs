@@ -12,9 +12,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(all(not(test), not(debug_assertions)))]
-const _: () = chariox_app_runtime::assert_production_build();
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Launch {
