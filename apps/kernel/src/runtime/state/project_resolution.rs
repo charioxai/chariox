@@ -21,6 +21,7 @@ pub(crate) struct PreparedSessionWorkspace {
     caller: String,
     saved: Vec<Candidate>,
     workspace: String,
+    identity: String,
 }
 #[derive(Debug)]
 pub(crate) enum PreparedProjectEntry {
@@ -68,6 +69,7 @@ impl KernelRuntimeState {
         let defaults = defaults(&projects);
         let input = Input {
             workspace: request.workspace_id.clone(),
+            worktree: None,
             create: request.create_if_missing,
             selected: selected.as_ref().map(|project| Candidate {
                 id: project.id().into(),
@@ -80,6 +82,7 @@ impl KernelRuntimeState {
             workspace,
             name,
             project_id: matched,
+            ..
         } = metadata.map_err(Failure::error)?;
         Ok(PreparedProjectResolution {
             request,
@@ -139,7 +142,9 @@ impl KernelRuntimeState {
                     kernel_ref,
                 )
             });
+        // The lane rewrites the worktree of a placement request, so it cannot be measured here.
         if request.hidden
+            || request.worktree_placement.is_some()
             || !local_placement
             || !matches!(
                 request.project_selection,
@@ -155,6 +160,7 @@ impl KernelRuntimeState {
         let (metadata, _) = self
             .measure_project_workspace(Input {
                 workspace: request.workspace_id.clone(),
+                worktree: Some(request.worktree_id.clone()),
                 create: true,
                 selected: None,
                 defaults: saved.clone(),
@@ -163,6 +169,7 @@ impl KernelRuntimeState {
         // An unusable requested folder is reported by session creation itself.
         let Ok(Metadata {
             workspace,
+            identity,
             project_id: Some(_),
             ..
         }) = metadata
@@ -173,6 +180,7 @@ impl KernelRuntimeState {
             caller: caller.into(),
             saved,
             workspace,
+            identity,
         }))
     }
     pub(super) fn apply_prepared_session_workspace(
@@ -193,6 +201,13 @@ impl KernelRuntimeState {
         {
             return Err(resolution_error(
                 "Project changed while its folder was checked; refresh and retry",
+            ));
+        }
+        // The lane normalizes the folder against the worktree; the saved spelling belongs to
+        // the same folder only if both reach one identity.
+        if request.workspace_id != prepared.identity {
+            return Err(resolution_error(
+                "Project folder changed while it was checked; retry",
             ));
         }
         request.workspace_id = prepared.workspace;
@@ -936,5 +951,154 @@ mod tests {
         for id in created {
             state.delete_session_id(&id).await.unwrap();
         }
+    }
+    struct LinkedWorktreeFixture {
+        _root: crate::test_support::TestWorktree,
+        plain: std::path::PathBuf,
+        linked: std::path::PathBuf,
+        plain_project: crate::session::RuntimeProject,
+        repository_project: crate::session::RuntimeProject,
+        router: crate::runtime::router::CommandRouter,
+    }
+    // Saved Default Projects (each with its own Environment) for a non-Git folder A and for a
+    // repository B, plus a linked worktree of B.
+    fn linked_worktree_fixture(label: &str) -> LinkedWorktreeFixture {
+        let root = crate::test_support::TestWorktree::new(label);
+        let plain = root.path().join("plain");
+        let repository = root.path().join("repository");
+        let linked = root.path().join("linked");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::create_dir(&repository).unwrap();
+        for args in [
+            vec!["init"],
+            vec!["config", "user.email", "tests@example.invalid"],
+            vec!["config", "user.name", "Chariox Tests"],
+            vec!["commit", "--allow-empty", "-m", "initial"],
+            vec![
+                "worktree",
+                "add",
+                "-b",
+                "feature/r11",
+                linked.to_str().unwrap(),
+            ],
+        ] {
+            crate::runtime::workspace_git_common::run_git(&repository, &args).unwrap();
+        }
+        let app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            1,
+        );
+        let saved = |id: &str, folder: &std::path::Path, platform: &str| {
+            let mut project = crate::session::RuntimeProject::new(
+                id,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                folder.to_str().unwrap(),
+                id,
+                crate::session::RuntimeProjectKind::Default,
+            );
+            project.set_environment_definition(crate::session::ProjectEnvironmentDefinition {
+                schema_version: 1,
+                origin: crate::session::ProjectEnvironmentDefinitionOrigin::UserAuthored,
+                source: crate::session::ProjectEnvironmentDefinitionSource::Commands,
+                target_platform: platform.into(),
+                source_path: None,
+                inputs: vec![],
+                path_entries: vec![],
+                setup_steps: vec![],
+                validation_commands: vec![],
+            });
+            project
+        };
+        let plain_project = saved("saved-plain", &plain, "linux-x86_64");
+        let repository_project = saved("saved-repository", &repository, "linux-aarch64");
+        router
+            .runtime_state()
+            .owned
+            .session_store
+            .restore_projects(vec![plain_project.clone(), repository_project.clone()]);
+        LinkedWorktreeFixture {
+            _root: root,
+            plain,
+            linked,
+            plain_project,
+            repository_project,
+            router,
+        }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: the saved Project follows the folder the session really
+    // runs in: a linked worktree of repository B outranks the requested non-Git folder A.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r11_environment_create_session_prepares_the_effective_linked_worktree_workspace() {
+        let fixture = linked_worktree_fixture("r11-effective-workspace");
+        let state = fixture.router.runtime_state();
+        let LocalDaemonResponse::SessionCreated { session, .. } = r4_dispatch(
+            &fixture.router,
+            "r11-create-plain-and-linked",
+            crate::local::LocalDaemonRequest::CreateSession(
+                crate::session::CreateSessionRequest::new(
+                    fixture.plain.to_str().unwrap(),
+                    fixture.linked.to_str().unwrap(),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+        .expect("the session must be created") else {
+            panic!("Session expected")
+        };
+        let joined = state
+            .owned
+            .session_store
+            .get_project(session.project_id())
+            .unwrap();
+        state.delete_session_id(session.id()).await.unwrap();
+        assert_eq!(
+            (session.workspace_id(), joined.id()),
+            (
+                fixture.repository_project.workspace_id(),
+                fixture.repository_project.id()
+            ),
+            "the session runs in repository B's worktree and must keep B's Project"
+        );
+        assert_eq!(
+            joined.environment_definition(),
+            fixture.repository_project.environment_definition()
+        );
+        assert_ne!(joined.id(), fixture.plain_project.id());
+    }
+
+    // MP-08 / MP-10 / MP-11: a prepared identity applies only to the folder it was measured for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn r11_environment_prepared_session_folder_must_match_the_lane_normalization() {
+        let fixture = linked_worktree_fixture("r11-revalidate-effective");
+        let state = fixture.router.runtime_state();
+        let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+        let measured = crate::session::CreateSessionRequest::new(
+            fixture.plain.to_str().unwrap(),
+            fixture.linked.to_str().unwrap(),
+        )
+        .with_owner_user_id(owner);
+        let prepared = state
+            .prepare_session_workspace(&measured, owner)
+            .await
+            .unwrap()
+            .expect("repository B's saved folder must be prepared");
+        let committed = crate::session::CreateSessionRequest::new(
+            fixture.plain.to_str().unwrap(),
+            fixture.plain.to_str().unwrap(),
+        )
+        .with_owner_user_id(owner);
+        let error = state
+            .create_prepared_session_response(committed, Some(prepared))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Project folder changed"),
+            "an identity measured for another worktree must not commit: {error}"
+        );
     }
 }

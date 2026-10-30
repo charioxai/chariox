@@ -14,6 +14,8 @@ pub(crate) struct Candidate {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Input {
     pub workspace: String,
+    /// The session's worktree, which can move the effective workspace to another repository.
+    pub worktree: Option<String>,
     pub create: bool,
     pub selected: Option<Candidate>,
     pub defaults: Vec<Candidate>,
@@ -21,6 +23,8 @@ pub(crate) struct Input {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Metadata {
     pub workspace: String,
+    /// The folder the request resolves to after Git normalization, before the saved spelling.
+    pub identity: String,
     pub name: Option<String>,
     pub project_id: Option<String>,
 }
@@ -128,6 +132,7 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
         if let (Some(candidate), Some(binding)) = (&input.selected, selected_binding) {
             return Ok(Metadata {
                 workspace: binding.into(),
+                identity: binding.into(),
                 name: None,
                 project_id: Some(candidate.id.clone()),
             });
@@ -140,7 +145,8 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
     )
     .map_err(|_| Failure::WorkspaceUnavailable)?;
     let path = admitted.canonical_path.to_string_lossy().into_owned();
-    let canonical = crate::runtime::workspace_git_common::canonical_workspace_path(&path, &path)
+    let worktree = input.worktree.as_deref().unwrap_or(&path);
+    let canonical = crate::runtime::workspace_git_common::canonical_workspace_path(&path, worktree)
         .unwrap_or(path);
     crate::git_worktree_placement::preflight_existing_absolute_directory(
         &canonical,
@@ -151,6 +157,7 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
     if let (Some(candidate), Some(binding)) = (&input.selected, selected_binding) {
         return Ok(Metadata {
             workspace: binding.into(),
+            identity: canonical,
             name: None,
             project_id: Some(candidate.id.clone()),
         });
@@ -173,13 +180,15 @@ pub(crate) fn measure(input: Input) -> Result<Metadata, Failure> {
     if let Some((candidate, binding)) = matched {
         return Ok(Metadata {
             workspace: binding.into(),
+            identity: canonical,
             name: None,
             project_id: Some(candidate.id.clone()),
         });
     }
     let name = crate::runtime::workspace_git_common::workspace_display_label(&canonical);
     Ok(Metadata {
-        workspace: canonical,
+        workspace: canonical.clone(),
+        identity: canonical,
         name,
         project_id: None,
     })
