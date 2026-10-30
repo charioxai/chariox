@@ -6,7 +6,9 @@ use std::time::Duration;
 
 mod control;
 use control::WatchCommand;
-pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
+pub(crate) use control::{
+    end_owner, outside_ended_for_key, stop_for_key, stop_released, stop_released_of_agent,
+};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 mod projection;
 mod sampling;
@@ -295,7 +297,7 @@ struct Observation {
     memory_limit_bytes: Option<u64>,
     /// Set once the workload's own process ended: what it left running is
     /// still this owner's, listed, counted and stoppable until it ends.
-    released_to: Option<(String, SessionProcessOwner)>,
+    released_to: Option<projection::Released>,
 }
 
 pub(crate) struct ProcessDomain {
@@ -309,10 +311,15 @@ pub(crate) struct ProcessDomain {
 }
 impl ProcessDomain {
     /// The workload's own process ended and its owner swept what it still
-    /// owns. Processes that left on purpose (`setsid nohup job &`) are not
+    /// owns; `opened_by` is the agent that opened a terminal owner. Processes that left on purpose (`setsid nohup job &`) are not
     /// ended with it: the memory watch stays until the last of them exits.
     /// An owner already gone for good gets nothing: they end with the domain.
-    pub(crate) fn release(&mut self, session_id: &str, owner: SessionProcessOwner) {
+    pub(crate) fn release(
+        &mut self,
+        session_id: &str,
+        owner: SessionProcessOwner,
+        opened_by: Option<String>,
+    ) {
         let mut registry = registry().lock().unwrap_or_else(|e| e.into_inner());
         if control::owner_ended(self.started, session_id, &owner) {
             return;
@@ -320,7 +327,11 @@ impl ProcessDomain {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .released_to = Some((session_id.to_string(), owner));
+            .released_to = Some(projection::Released {
+            session_id: session_id.to_string(),
+            owner,
+            opened_by,
+        });
         // A new workload of the same owner may bind the same key; the released
         // processes keep their own entry until the last of them ends.
         registry.retain(|_, state| !state.ptr_eq(&Arc::downgrade(&self.state)));

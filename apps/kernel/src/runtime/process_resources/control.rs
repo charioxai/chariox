@@ -130,10 +130,23 @@ pub(crate) fn end_owner(session_id: Option<&str>, owner: Option<&SessionProcessO
 /// The owner of what an ended workload left running stops its work (or is
 /// gone, through `end_owner`): those processes end too.
 pub(crate) fn stop_released(session_id: Option<&str>, owner: Option<&SessionProcessOwner>) {
-    let keys = projection::released_keys(|session, current| {
-        session_id.is_none_or(|id| id == session) && owner.is_none_or(|owner| owner == current)
+    stop_released_where(|released| {
+        session_id.is_none_or(|id| id == released.session_id)
+            && owner.is_none_or(|owner| *owner == released.owner)
     });
-    for (_, key) in keys {
+}
+
+/// An agent's own jobs and those of the terminals it opened, even closed ones.
+pub(crate) fn stop_released_of_agent(session_id: &str, agent_id: &str) {
+    stop_released_where(|released| {
+        released.session_id == session_id
+            && (released.owner == SessionProcessOwner::Agent(agent_id.to_string())
+                || released.opened_by.as_deref() == Some(agent_id))
+    });
+}
+
+fn stop_released_where(select: impl Fn(&projection::Released) -> bool) {
+    for (_, key) in projection::released_keys(select) {
         if let Err(error) = stop_for_key(&key, None) {
             crate::logging::error_with_fields(
                 "process_resources.released",

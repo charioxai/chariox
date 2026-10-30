@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::events::{Fired, QUIET_BEFORE_WAITING};
 use super::terminal::{ProgramEnd, Terminal};
-use super::types::RoomTerminalOutcome;
+use super::types::{RoomTerminalOutcome, TerminalActor};
 use crate::pty::{PtyManager, PtyProcessState};
 
 /// How long an idle shell may take to start a command that was queued as
@@ -63,6 +63,10 @@ impl Terminal {
                     crate::runtime::process_resources::SessionProcessOwner::Terminal(
                         self.record.terminal_id.clone(),
                     ),
+                    match &self.record.opened_by {
+                        TerminalActor::Agent(agent_id) => Some(agent_id.clone()),
+                        TerminalActor::User => None,
+                    },
                 );
             }
             let _ = pty.remove_process(&run_id);
