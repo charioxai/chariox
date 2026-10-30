@@ -274,7 +274,10 @@ impl KernelRuntimeState {
             agent_name: agent.alias().unwrap_or(agent.agent_ref()).into(),
             session_name: session.alias().unwrap_or("Unnamed session").into(),
             task_summary,
-            task: prompt.into(),
+            task: format!(
+                "{prompt}{}",
+                super::approval_attachments::details_text(&request.attachments)
+            ),
             grant_id: entry.requester.as_ref().map(|g| g.grant_id.clone()),
             terminal_id: entry.terminal_id.clone(),
         };
