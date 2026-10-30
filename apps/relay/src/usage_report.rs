@@ -1,9 +1,11 @@
 //! Periodic, retried, idempotent report of the byte counters to the hosted
-//! control plane. A drained batch is written to a spool file before it is sent
-//! and removed only after Cloud acknowledged it, so a failed send is retried
-//! with the same batch id and a restart resumes the unacknowledged batch;
-//! Cloud counts each batch id once. Only what was still in memory when the
-//! process died (at most one interval) is lost.
+//! control plane. Every interval's counters are drained into their own batch
+//! (random id, own window) and written to the spool directory before anything
+//! is sent; a batch file is removed only after Cloud acknowledged it. Batches
+//! go out oldest first, so an outage keeps one file per interval, a failed
+//! send is retried with the same batch id, and a restart resumes every
+//! unacknowledged batch. Cloud counts each batch id once. Only what was still
+//! in memory when the process died (at most one interval) is lost.
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -49,12 +51,12 @@ pub struct UsageReporter<S> {
     relay_id: String,
     spool: PathBuf,
     send: S,
-    pending: Option<UsageBatch>,
     window_start_ms: u64,
 }
 
 impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
-    /// Resumes the batch a previous process spooled and never got acknowledged.
+    /// Opens the spool directory the unacknowledged batches of a previous
+    /// process are waiting in.
     pub fn open(
         meter: UsageMeter,
         relay_id: String,
@@ -62,36 +64,31 @@ impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
         send: S,
         now_ms: u64,
     ) -> Result<Self, String> {
-        let pending = match fs::read(&spool) {
-            Ok(bytes) => Some(
-                serde_json::from_slice::<UsageBatch>(&bytes).map_err(|error| {
-                    format!(
-                        "usage spool {} is not a usage batch ({error}); remove it to start over",
-                        spool.display()
-                    )
-                })?,
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(format!("usage spool {}: {error}", spool.display())),
-        };
-        Ok(Self {
+        fs::create_dir_all(&spool)
+            .map_err(|error| format!("usage spool {}: {error}", spool.display()))?;
+        let reporter = Self {
             meter,
             relay_id,
             spool,
             send,
-            pending,
             window_start_ms: now_ms,
-        })
+        };
+        // A write that died before its rename left nothing Cloud could know.
+        for path in reporter.spooled_files("partial")? {
+            remove_spool(&path)?;
+        }
+        for path in reporter.spooled_files("json")? {
+            read_spool(&path)?;
+        }
+        Ok(reporter)
     }
 
-    /// One report round: send the spooled batch, or spool and send what was
-    /// counted since the last one. Returns the batch Cloud acknowledged.
-    pub fn report(&mut self, now_ms: u64) -> Result<Option<UsageBatch>, String> {
-        if self.pending.is_none() {
-            let drained = self.meter.drain();
-            if drained.is_empty() {
-                return Ok(None);
-            }
+    /// One report round: spool what was counted since the last one as its own
+    /// batch, then send every spooled batch, oldest first. Returns how many
+    /// Cloud acknowledged; the first send that must be retried ends the round.
+    pub fn report(&mut self, now_ms: u64) -> Result<usize, String> {
+        let drained = self.meter.drain();
+        if !drained.is_empty() {
             let batch = UsageBatch {
                 relay_id: self.relay_id.clone(),
                 batch_id: new_batch_id()?,
@@ -111,28 +108,64 @@ impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
                 return Err(error);
             }
             self.window_start_ms = now_ms;
-            self.pending = Some(batch);
         }
-        let batch = self.pending.as_ref().expect("a batch is pending");
-        match (self.send)(batch) {
-            Ok(()) => {}
-            Err(SendError::Retry(error)) => return Err(error),
-            Err(SendError::Rejected(error)) => {
-                eprintln!("relay usage batch {} dropped: {error}", batch.batch_id);
+        let mut acknowledged = 0;
+        for path in self.spooled_files("json")? {
+            let batch = read_spool(&path)?;
+            match (self.send)(&batch) {
+                Ok(()) => {
+                    acknowledged += 1;
+                    log_report_sent(&batch);
+                }
+                Err(SendError::Retry(error)) => return Err(error),
+                Err(SendError::Rejected(error)) => {
+                    eprintln!("relay usage batch {} dropped: {error}", batch.batch_id);
+                }
+            }
+            remove_spool(&path)?;
+        }
+        Ok(acknowledged)
+    }
+
+    /// The spooled files with this extension, oldest window first.
+    fn spooled_files(&self, extension: &str) -> Result<Vec<PathBuf>, String> {
+        let spool_error =
+            |error: std::io::Error| format!("usage spool {}: {error}", self.spool.display());
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&self.spool).map_err(spool_error)? {
+            let path = entry.map_err(spool_error)?.path();
+            if path.extension().is_some_and(|found| found == extension) {
+                files.push(path);
             }
         }
-        remove_spool(&self.spool)?;
-        Ok(self.pending.take())
+        files.sort();
+        Ok(files)
     }
 }
 
-fn write_spool(path: &PathBuf, batch: &UsageBatch) -> Result<(), String> {
+fn read_spool(path: &PathBuf) -> Result<UsageBatch, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("usage spool {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "usage spool {} is not a usage batch ({error}); remove it to start over",
+            path.display()
+        )
+    })
+}
+
+fn write_spool(dir: &PathBuf, batch: &UsageBatch) -> Result<(), String> {
+    // Zero-padded, so the names sort in the order the windows ended.
+    let path = dir.join(format!(
+        "{:020}-{}.json",
+        batch.window_end_ms, batch.batch_id
+    ));
     let partial = path.with_extension("partial");
     let write = || -> std::io::Result<()> {
         let mut file = fs::File::create(&partial)?;
         file.write_all(&serde_json::to_vec(batch).map_err(std::io::Error::other)?)?;
         file.sync_all()?;
-        fs::rename(&partial, path)
+        fs::rename(&partial, &path)
     };
     write().map_err(|error| format!("usage spool {}: {error}", path.display()))
 }
@@ -245,26 +278,17 @@ pub async fn run_usage_report(
             }
             _ = ticker.tick() => {}
         }
-        // A stopping relay sends the batch it still had spooled and then
-        // what was counted since.
-        let rounds = if stopping { 2 } else { 1 };
+        // A stopping relay spools what was counted since the last round and
+        // sends everything it holds.
         let (returned, outcome) = tokio::task::spawn_blocking(move || {
-            let mut outcome = Ok(None);
-            for _ in 0..rounds {
-                outcome = reporter.report(crate::revocation_sync::current_unix_ms());
-                if outcome.is_err() {
-                    break;
-                }
-            }
+            let outcome = reporter.report(crate::revocation_sync::current_unix_ms());
             (reporter, outcome)
         })
         .await
         .expect("usage report task does not panic");
         reporter = returned;
-        match outcome {
-            Ok(Some(batch)) => log_report_sent(&batch),
-            Ok(None) => {}
-            Err(error) => log_report_error(&error),
+        if let Err(error) = outcome {
+            log_report_error(&error);
         }
     }
 }
@@ -316,7 +340,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("relay-usage-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        dir.join("spool.json")
+        dir.join("spool")
+    }
+
+    fn spooled(path: &PathBuf) -> usize {
+        fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     type Log = Rc<RefCell<Vec<UsageBatch>>>;
@@ -351,9 +386,8 @@ mod tests {
         .unwrap();
         meter.record("realm-a", "control", Direction::In, 100);
         assert!(first.report(2_000).is_err());
-        meter.record("realm-a", "control", Direction::In, 7);
         assert!(first.report(3_000).is_err());
-        // The second round resent the first batch; the 7 bytes wait in memory.
+        // The second round resent the same batch.
         let sent = log.borrow().clone();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0], sent[1]);
@@ -361,39 +395,93 @@ mod tests {
 
         // The relay restarts; a new process with a fresh meter resumes the spool.
         drop(first);
-        let restarted = UsageMeter::default();
         *fail.borrow_mut() = false;
         let mut second = UsageReporter::open(
-            restarted.clone(),
+            UsageMeter::default(),
             "relay-eu".into(),
             path.clone(),
             sender(&log, &fail),
             4_000,
         )
         .unwrap();
-        let acknowledged = second
-            .report(5_000)
-            .unwrap()
-            .expect("the spooled batch is sent");
-        assert_eq!(acknowledged, sent[0]);
-        assert!(!path.exists());
+        assert_eq!(second.report(5_000).unwrap(), 1);
+        assert_eq!(log.borrow().last(), Some(&sent[0]));
+        assert_eq!(spooled(&path), 0);
         // Nothing is counted twice: the next round has nothing to send.
-        assert_eq!(second.report(6_000).unwrap(), None);
+        assert_eq!(second.report(6_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn intervals_counted_while_a_batch_is_retrying_are_kept_and_survive_a_restart() {
+        let path = spool("outage");
+        let acknowledged = Log::default();
+        let down = Rc::new(RefCell::new(true));
+        let send = |acknowledged: &Log, down: &Rc<RefCell<bool>>| {
+            let (acknowledged, down) = (acknowledged.clone(), down.clone());
+            move |batch: &UsageBatch| {
+                if *down.borrow() {
+                    return Err(SendError::Retry("cloud unreachable".into()));
+                }
+                acknowledged.borrow_mut().push(batch.clone());
+                Ok(())
+            }
+        };
+        let meter = UsageMeter::default();
+        let mut first = UsageReporter::open(
+            meter.clone(),
+            "relay-eu".into(),
+            path.clone(),
+            send(&acknowledged, &down),
+            1_000,
+        )
+        .unwrap();
+        meter.record("realm-a", "control", Direction::In, 100);
+        assert!(first.report(2_000).is_err());
+        meter.record("realm-a", "control", Direction::In, 7);
+        assert!(first.report(3_000).is_err());
+        // The relay stops while Cloud is still down; the second interval was not only in memory.
+        drop(first);
+        *down.borrow_mut() = false;
+        let mut second = UsageReporter::open(
+            UsageMeter::default(),
+            "relay-eu".into(),
+            path,
+            send(&acknowledged, &down),
+            4_000,
+        )
+        .unwrap();
+        assert_eq!(second.report(5_000).unwrap(), 2);
+        assert_eq!(second.report(6_000).unwrap(), 0);
+        let windows: Vec<_> = acknowledged
+            .borrow()
+            .iter()
+            .map(|batch| {
+                (
+                    batch.window_start_ms,
+                    batch.window_end_ms,
+                    batch.entries[0].counters.bytes_in,
+                )
+            })
+            .collect();
+        assert_eq!(windows, [(1_000, 2_000, 100), (2_000, 3_000, 7)]);
     }
 
     #[test]
     fn a_batch_that_cannot_be_spooled_is_not_lost() {
         let meter = UsageMeter::default();
-        let path = spool("nospool").join("missing-dir").join("spool.json");
+        let path = spool("nospool");
         let (log, fail) = (Log::default(), Rc::new(RefCell::new(false)));
         let mut reporter = UsageReporter::open(
             meter.clone(),
             "relay-eu".into(),
-            path,
+            path.clone(),
             sender(&log, &fail),
             1_000,
         )
         .unwrap();
+        // The disk stops taking the spool after the relay started.
+        fs::remove_dir_all(&path).unwrap();
+        fs::write(&path, b"").unwrap();
         meter.record("realm-a", "session", Direction::Out, 40);
         assert!(reporter.report(2_000).is_err());
         assert!(log.borrow().is_empty(), "an unspooled batch is never sent");
@@ -420,14 +508,14 @@ mod tests {
             UsageReporter::open(meter.clone(), "relay-eu".into(), path.clone(), send, 1_000)
                 .unwrap();
         meter.record("realm-a", "control", Direction::In, 1);
-        reporter.report(2_000).unwrap();
-        assert!(!path.exists());
+        assert_eq!(reporter.report(2_000).unwrap(), 0);
+        assert_eq!(spooled(&path), 0);
         meter.record("realm-a", "control", Direction::In, 2);
-        let next = reporter
-            .report(3_000)
-            .unwrap()
-            .expect("later batches still go out");
-        assert_eq!(next.entries[0].counters.bytes_in, 2);
+        assert_eq!(
+            reporter.report(3_000).unwrap(),
+            1,
+            "later batches still go out"
+        );
     }
 
     #[test]

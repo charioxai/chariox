@@ -159,7 +159,7 @@ fn usage_report_from_env() -> Result<Option<UsageReportEnv>, String> {
     };
     let relay_id = read("CHARIOX_RELAY_ID").ok_or("usage reporting requires CHARIOX_RELAY_ID")?;
     let spool = read("CHARIOX_RELAY_USAGE_SPOOL")
-        .ok_or("usage reporting requires CHARIOX_RELAY_USAGE_SPOOL (a file path on disk)")?;
+        .ok_or("usage reporting requires CHARIOX_RELAY_USAGE_SPOOL (a directory on disk)")?;
     let secret = read("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
         .ok_or("authenticated usage reporting requires CHARIOX_RELAY_SCOPED_HMAC_SECRET")?;
     let interval = read("CHARIOX_RELAY_USAGE_INTERVAL_SECS")
