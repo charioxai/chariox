@@ -188,12 +188,8 @@ impl OwnedProcessGroup {
     }
 
     fn end_members(&self, owned: &[(u32, String)]) {
-        for (pid, _started) in owned.iter().rev() {
-            if let Ok(pid) = i32::try_from(*pid) {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
-            }
+        for (pid, started) in owned.iter().rev() {
+            kill_member(self.root, *pid, started);
         }
     }
 
@@ -212,6 +208,74 @@ impl OwnedProcessGroup {
             }
         }
         (owned, unproven)
+    }
+}
+
+/// Ends `pid` only while it still has the start identity recorded for it and
+/// still belongs to `root`'s group: the snapshot it came from is no authority
+/// once the member may have exited and its PID been reused. On Linux a pidfd
+/// pins the process before the identity is read, so a later reuse of the PID
+/// cannot receive the signal.
+fn kill_member(root: u32, pid: u32, started: &str) {
+    let Ok(raw) = i32::try_from(pid) else { return };
+    if raw <= 1 {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    match pidfd_open(raw) {
+        Ok(pinned) => {
+            if still_member(root, pid, started) {
+                use std::os::fd::AsRawFd;
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        pinned.as_raw_fd(),
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    );
+                }
+            }
+            return;
+        }
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => return,
+        // A kernel without pidfd: check, then signal by number.
+        Err(_) => {}
+    }
+    if still_member(root, pid, started) {
+        unsafe {
+            libc::kill(raw, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn pidfd_open(pid: i32) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) })
+}
+
+fn still_member(root: u32, pid: u32, started: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| linux_identity(&String::from_utf8_lossy(&stat)))
+            .is_some_and(|process| process.group == root && process.started == started)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        snapshot(root)
+            .and_then(|processes| {
+                processes
+                    .get(&pid)
+                    .map(|process| process.started == started)
+            })
+            .unwrap_or(false)
     }
 }
 
