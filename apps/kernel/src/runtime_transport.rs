@@ -279,7 +279,7 @@ fn consume_opened_kernel_local_auth_token_path(
     })
 }
 
-fn configured_kernel_local_auth_token() -> Option<Arc<str>> {
+pub(crate) fn configured_kernel_local_auth_token() -> Option<Arc<str>> {
     KERNEL_LOCAL_AUTH_TOKEN.get().cloned().flatten()
 }
 

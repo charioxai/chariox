@@ -553,6 +553,23 @@ pub fn finish() -> Option<String> {
     if let Err(error) = write_private(&prepared.path, &prepared.handover) {
         return Some(format!("the handover could not be written: {error}"));
     }
+    // The kernel deleted the token file its supervisor wrote once it read it:
+    // write it again for the new program to read the same way.
+    let token_file = start
+        .env
+        .iter()
+        .find(|(name, _)| name == crate::runtime_transport::KERNEL_LOCAL_AUTH_TOKEN_FILE_ENV)
+        .map(|(_, path)| PathBuf::from(path));
+    if let (Some(path), Some(token)) = (
+        &token_file,
+        crate::runtime_transport::configured_kernel_local_auth_token(),
+    ) {
+        if let Err(error) = crate::config::write_private_file(path, token.as_bytes()) {
+            return Some(format!(
+                "the local auth token could not be handed over: {error}"
+            ));
+        }
+    }
     let inherited: Vec<i32> = prepared
         .handover
         .terminals
@@ -599,6 +616,9 @@ pub fn finish() -> Option<String> {
         .env(HANDOVER_ENV, &prepared.path);
     let error = crate::process_spawn::exec_in_place(command, inherited);
     let _ = std::fs::remove_file(&prepared.path);
+    if let Some(path) = &token_file {
+        let _ = std::fs::remove_file(path);
+    }
     Some(error.to_string())
 }
 

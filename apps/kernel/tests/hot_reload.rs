@@ -86,9 +86,27 @@ fn start_kernel_with(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
     let port = free_port();
     let token = format!("{:032x}", rand::random::<u128>());
     let log = std::fs::File::create(scratch.join("kernel.log")).unwrap();
+    // A managed kernel reads its token from a file its supervisor wrote.
+    let token_file = env
+        .iter()
+        .find(|(name, _)| *name == "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE");
+    if let Some((_, path)) = token_file {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, token.as_bytes()).unwrap();
+    }
     let files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
-    let child = Command::new(&installed)
-        .env_clear()
+    let mut command = Command::new(&installed);
+    command.env_clear();
+    if token_file.is_none() {
+        command.env("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", &token);
+    }
+    let child = command
         .env("HOME", scratch.join("home"))
         .env("PATH", "/usr/bin:/bin")
         .env("SHELL", "/bin/sh")
@@ -96,7 +114,6 @@ fn start_kernel_with(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
         .env("CHARIOX_LOG_DIR", scratch.join("logs"))
         .env("CHARIOX_KERNEL_HOST", "127.0.0.1")
         .env("CHARIOX_KERNEL_PORT", port.to_string())
-        .env("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", &token)
         .env("CHARIOX_MCP_PORT", free_port().to_string())
         .env("CHARIOX_DAEMON_SOCKET", scratch.join("k.sock"))
         .envs(env.iter().map(|(name, value)| (*name, value)))
@@ -361,6 +378,45 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
             "{waited}"
         );
     });
+}
+
+/// A managed kernel reads its token from a file its supervisor wrote and
+/// deleted it; the new program must still accept the same token.
+#[test]
+fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-token-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let token_file = scratch.join("kernel.token");
+    let kernel = start_kernel_with(
+        &scratch,
+        &[("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", token_file.clone())],
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert!(!token_file.exists(), "the kernel consumes its token file");
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        connect(&kernel, Duration::from_secs(60)).await;
+    });
+    assert!(!token_file.exists(), "no token is left on disk");
+    assert_eq!(
+        std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
+        scratch.join("bin/chariox-kernel")
+    );
 }
 
 #[test]
