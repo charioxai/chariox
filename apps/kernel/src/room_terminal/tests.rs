@@ -381,12 +381,31 @@ fn only_lines_with_something_on_them_are_submitted() {
     );
 }
 
-/// Submits `first`'s line and then `second`'s before the shell can launch the
-/// first one's background job, and returns who the job's command belongs to.
-async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &TerminalActor) -> bool {
+/// Types each input in turn (`None` opens the terminal on the login shell, a
+/// program runs that shell without marks), then returns, per pid file the
+/// inputs write, whether the kernel may hold that command for room.
+async fn who_owns(
+    program: Option<Vec<String>>,
+    inputs: &[(&TerminalActor, String)],
+    pid_files: &[&str],
+) -> Vec<bool> {
     let root = TempDir::new();
     let service = service(root.path());
-    let id = open(&service, root.path()).terminal_id;
+    let id = match program {
+        None => open(&service, root.path()).terminal_id,
+        Some(command) => service
+            .open(OpenRoomTerminal {
+                session_id: "room-1".to_string(),
+                working_directory: root.path().to_path_buf(),
+                cols: 100,
+                rows: 30,
+                title: None,
+                opened_by: agent("a"),
+                command: Some(command),
+            })
+            .expect("terminal opens")
+            .terminal_id,
+    };
     let run_id = service
         .terminal_for_test(&id)
         .lock_open()
@@ -395,42 +414,69 @@ async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &Termi
         .run_id
         .clone()
         .unwrap();
-    let pid_file = root.path().join("job.pid");
-    type_as(
-        &service,
-        &id,
-        first,
-        &format!("sleep 120 & echo $! > '{}'\r", pid_file.display()),
-    )
-    .await;
-    assert!(
-        type_as(&service, &id, second, "true\r").await.accepted,
-        "the second line was refused, so the race did not happen"
-    );
-    let pid = || {
-        std::fs::read_to_string(&pid_file)
-            .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
-    };
-    until("the job to be launched", || async { pid().is_some() }).await;
-    let pid = pid().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let owner = loop {
-        if let Some(holdable) =
-            crate::runtime::process_resources::command_holdable_for_key(&run_id, pid)
-        {
-            break Some(holdable);
-        }
-        if Instant::now() > deadline {
-            break None;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    // SAFETY: the positive PID of the job this test started; never a group.
-    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    // The pid files are named in the inputs through `{dir}`.
+    let dir = root.path().display().to_string();
+    for (actor, input) in inputs {
+        assert!(
+            type_as(&service, &id, actor, &input.replace("{dir}", &dir))
+                .await
+                .accepted,
+            "an input was refused, so the race did not happen"
+        );
+    }
+    let mut owners = Vec::new();
+    let mut pids = Vec::new();
+    for name in pid_files {
+        let file = root.path().join(name);
+        let pid = || {
+            std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+        };
+        until("the command to be launched", || async { pid().is_some() }).await;
+        let pid = pid().unwrap();
+        pids.push(pid);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let owner = loop {
+            if let Some(holdable) =
+                crate::runtime::process_resources::command_holdable_for_key(&run_id, pid)
+            {
+                break Some(holdable);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        owners.push(owner);
+    }
+    for pid in pids {
+        // SAFETY: the positive PID of a command this test started; never a group.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
     service.end_session("room-1");
-    owner.expect("the sampler never saw the job")
+    owners
+        .into_iter()
+        .map(|owner| owner.expect("the sampler never saw the command"))
+        .collect()
 }
+
+/// A background job's line, then a second line accepted before the shell
+/// launches the first.
+async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &TerminalActor) -> bool {
+    who_owns(
+        None,
+        &[
+            (first, "sleep 120 & echo $! > '{dir}/job'\r".to_string()),
+            (second, "true\r".to_string()),
+        ],
+        &["job"],
+    )
+    .await[0]
+}
+
+/// A command that records its pid, then sleeps as that same process.
+const SLEEPER: &str = "sh -c 'echo $$ > {dir}/sleeper; exec sleep 120'";
 
 #[tokio::test]
 async fn an_agents_background_job_stays_the_agents_when_a_person_submits_before_the_shell_launches_it(
@@ -448,6 +494,99 @@ async fn a_persons_background_job_stays_the_persons_when_an_agent_submits_before
         !who_owns_the_job_two_lines_launch(&TerminalActor::User, &agent("a")).await,
         "the agent's later line took the person's job"
     );
+}
+
+#[tokio::test]
+async fn a_command_belongs_to_whoever_pressed_enter_when_the_text_came_in_separately() {
+    let a = agent("a");
+    let line = SLEEPER.to_string();
+    assert_eq!(
+        who_owns(
+            None,
+            &[(&a, line.clone()), (&a, "\r".to_string())],
+            &["sleeper"]
+        )
+        .await,
+        [true],
+        "an agent's Enter in a separate input did not submit the agent's command"
+    );
+    assert_eq!(
+        who_owns(
+            None,
+            &[(&a, line), (&TerminalActor::User, "\r".to_string())],
+            &["sleeper"]
+        )
+        .await,
+        [false],
+        "the person's Enter did not take the command it submitted"
+    );
+}
+
+#[tokio::test]
+async fn every_job_one_line_starts_belongs_to_that_lines_submitter() {
+    let a = agent("a");
+    let line = "sleep 120 & echo $! > '{dir}/one'; sleep 121 & echo $! > '{dir}/two'\r";
+    assert_eq!(
+        who_owns(
+            None,
+            &[
+                (&a, line.to_string()),
+                (&TerminalActor::User, "true\r".to_string())
+            ],
+            &["one", "two"]
+        )
+        .await,
+        [true, true],
+        "the person's later line took a job the agent's line started"
+    );
+}
+
+#[tokio::test]
+async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
+    let a = agent("a");
+    let line = "sh -c 'echo $$ > {dir}/head; exec sleep 120' | sh -c 'echo $$ > {dir}/tail; exec sleep 121' &\r";
+    assert_eq!(
+        who_owns(
+            None,
+            &[(&a, line.to_string()), (&TerminalActor::User, "true\r".to_string())],
+            &["head", "tail"]
+        )
+        .await,
+        [true, true],
+        "a member of the agent's background pipeline took the person's line"
+    );
+}
+
+#[tokio::test]
+async fn a_running_command_is_decided_while_a_later_line_waits_behind_it() {
+    let a = agent("a");
+    let started = Instant::now();
+    assert_eq!(
+        who_owns(None, &[(&a, format!("{SLEEPER}\rtrue\r"))], &["sleeper"]).await,
+        [true]
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "the running command waited for the line queued behind it"
+    );
+}
+
+#[tokio::test]
+async fn an_agents_command_stays_the_agents_in_a_shell_that_reports_no_marks() {
+    // Marks exist for bash and zsh; a shell started as a program reports none.
+    let a = agent("a");
+    let started = Instant::now();
+    assert_eq!(
+        who_owns(
+            Some(vec!["/bin/bash".into(), "--norc".into(), "-i".into()]),
+            &[(&a, format!("{SLEEPER}\r"))],
+            &["sleeper"]
+        )
+        .await,
+        [true],
+        "an agent's command in a shell without marks fell back to the person's default"
+    );
+    assert!(started.elapsed() < Duration::from_secs(8));
 }
 
 #[tokio::test]
