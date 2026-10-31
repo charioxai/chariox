@@ -4,6 +4,7 @@ import { onMount } from "solid-js"
 import { createAttachedSessionPrimeController } from "./attached-session-prime-controller.js"
 import { createDeferredBootstrapController } from "./deferred-bootstrap-controller.js"
 import { clampScrollTop } from "./history-viewport.js"
+import { followWaitingRoomFocus } from "./waiting-room-scroll.js"
 import { createPrimaryTranscriptEntryController } from "./primary-transcript-entry-controller.js"
 import { createPrimaryTranscriptRenderController } from "./primary-transcript-render-controller.js"
 import { getSessionHistoryOutline } from "./session-history-api.js"
@@ -130,6 +131,11 @@ export type CliPrimaryTranscriptCompositionDeps = {
 }
 
 export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscriptCompositionDeps) {
+  // Every rebuild of the waiting room keeps its highlighted row on screen once the new layout is drawn.
+  const followedWaitingRoom = <TView>(view: TView): TView => {
+    followWaitingRoomFocus(deps.renderer, deps.transcriptScrollboxRefController.current)
+    return view
+  }
   const waitingRoomRemoteTargets = () => {
     const targets = deps.waitingRoomTargets()
     const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
@@ -191,7 +197,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       ? buildLoadingTranscriptRenderable(deps.renderer, deps.sessionState().alias?.trim() || deps.sessionState().id)
       : deps.isAttached()
         ? buildEmptyTranscriptRenderable(deps.renderer)
-        : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
+        : followedWaitingRoom(buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
         ...waitingRoomRemoteTargets(),
         collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
         cloudNotice: deps.waitingRoomCloudNotice(),
@@ -207,7 +213,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
         slices: deps.slicesState(),
         projects: deps.waitingRoomProjects(),
-      }, deps.waitingRoomTargets(), deps.themeRegistryState()),
+      }, deps.waitingRoomTargets(), deps.themeRegistryState())),
     buildEntryRenderable: (entry) => buildTranscriptEntryRenderable(
       deps.renderer,
       entry,

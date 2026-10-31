@@ -43,6 +43,8 @@ export type SessionChromeRenderControllerDeps<TState, TBox = unknown> = {
   getWorkspaceLiveSyncStatus: () => WorkspaceLiveSyncStatus | null
   getHotkeyToggleLabel: () => string
   getTerminalWidth?: () => number
+  /** The column where the footer summary box starts, after the status indicator; the summary has the rest of the terminal width. */
+  getFooterSummaryColumn?: (footerSummaryBox: TBox | undefined) => number
   getConnectionLabel?: () => string | null
   getFooterFlash: () => FooterFlash | null
   getPromptMetaParts: () => PromptMetaPart[]
@@ -80,7 +82,7 @@ export function createSessionChromeRenderController<TState, TBox = unknown>(
         : SESSION_NEW_FOOTER_HINT
     const footerFlashWidth = footerFlash && footerFlash.display !== "toast" ? ` • ${footerFlash.message}`.length : 0
     const compactFooterWidth = deps.getTerminalWidth
-      ? Math.max(0, deps.getTerminalWidth() - footerFlashWidth)
+      ? Math.max(0, deps.getTerminalWidth() - (deps.getFooterSummaryColumn?.(footerSummaryBox) ?? 0) - footerFlashWidth)
       : null
     deps.syncPromptPlaceholder()
     deps.renderSummary({

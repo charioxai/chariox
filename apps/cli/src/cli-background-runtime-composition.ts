@@ -189,6 +189,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     isAttached: deps.isAttached,
     sessionId: () => deps.sessionState().id,
     resizeSession: deps.resizeSession,
+    rebuildWaitingRoom: () => deps.rebuildTranscript(),
   })
   const onResize = terminalResizeController.handleResize
 

@@ -1,3 +1,4 @@
+import { waitingRoomFocusedRowId } from "./waiting-room-scroll.js"
 import {
   BoxRenderable,
   TextareaRenderable,
@@ -227,13 +228,17 @@ export function buildNoSessionRenderable(
   const noSessionText = "No session attached. Dial in and choose your next run."
   const sessionWarning = theme.warning
   const menuRows = rows.map((row) => formatWaitingRoomMenuRow(row, maxMenuWidth))
-  const baseMenuWidth = Math.max(
-    menuRows.reduce((width, row) => Math.max(width, row.length), 0),
-    waitingRoomMenuMinWidth(sessions),
+  // The columns of a session row ask for room the terminal may not have: never wider than the terminal, or the centered view runs past both edges.
+  const baseMenuWidth = Math.min(
+    Math.max(
+      menuRows.reduce((width, row) => Math.max(width, row.length), 0),
+      waitingRoomMenuMinWidth(sessions),
+    ),
+    maxMenuWidth,
   )
   const warningWidth = Math.max(baseMenuWidth, noSessionText.length)
   const centeredNoSessionLine = centerTextToWidth(noSessionText, warningWidth)
-  const menuAlignOffset = Math.max(0, Math.floor((warningWidth - noSessionText.length) / 2))
+  const centeredMenuOffset = Math.max(0, Math.floor((warningWidth - noSessionText.length) / 2))
 
   const intro = new BoxRenderable(renderer, {
     width: "100%",
@@ -256,8 +261,10 @@ export function buildNoSessionRenderable(
   const finalMenuWidth = Math.max(
     renderedRows.reduce((width, entry) => Math.max(width, entry.content.length), 0),
   )
+  // The menu sits under the centered line, but never so far right that it runs past the terminal.
+  const menuAlignOffset = Math.min(centeredMenuOffset, Math.max(0, maxMenuWidth - finalMenuWidth))
   const content = new BoxRenderable(renderer, {
-    width: Math.max(warningWidth, menuAlignOffset + finalMenuWidth),
+    width: Math.max(warningWidth, menuAlignOffset + finalMenuWidth + 1),
     flexDirection: "column",
     alignItems: "flex-start",
     gap: 1,
@@ -278,11 +285,13 @@ export function buildNoSessionRenderable(
     customBorderChars: SplitBorder.customBorderChars,
     paddingLeft: 0,
     marginLeft: menuAlignOffset,
-    width: finalMenuWidth,
+    // The border takes one column of the box.
+    width: finalMenuWidth + 1,
   })
   for (const entry of renderedRows) {
     menu.add(
       new TextRenderable(renderer, {
+        ...(entry.row.focused ? { id: waitingRoomFocusedRowId } : {}),
         content: entry.content,
         fg: entry.row.focused ? theme.primary : entry.row.selectable ? theme.text : theme.textMuted,
         attributes: entry.row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
@@ -307,9 +316,12 @@ export function buildNoSessionRenderable(
   return wrapper
 }
 
+/** The view's vertical scrollbar takes the last column and the menu's left border one more: the rows are drawn two columns narrower than the terminal. */
+export const waitingRoomMenuWidthFor = (columns: number) => columns - 2
+
 function terminalColumnWidth() {
   return process.stdout.isTTY && Number.isFinite(process.stdout.columns)
-    ? process.stdout.columns
+    ? waitingRoomMenuWidthFor(process.stdout.columns)
     : Number.POSITIVE_INFINITY
 }
 
