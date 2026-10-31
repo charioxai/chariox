@@ -537,9 +537,8 @@ async fn queued_behind_native_stop(workflow_node_with_fresh_context: Option<bool
             successor_run.workflow_tools_enabled(),
             "the workflow node must start on a run with the workflow tools: {state}"
         );
-        assert_eq!(
+        assert!(
             successor_run.id() != run.id(),
-            true,
             "a workflow run replaces the ordinary run: {state}"
         );
         assert_eq!(
