@@ -83,6 +83,24 @@ test('MP-08/MP-10/MP-11 a Tab display lease follows the committed document and u
  assert.equal(await stream.regionCurrent(),false);
  await stream.close();
 });
+// Review (PR 1219): the pump's pause of an unwatched display is its own hold; a navigation commit clears only the
+// viewer's park, so native capture stays paused through redirects and reloads.
+test('MP-08/MP-10/MP-11 a document commit during an unwatched interval keeps native capture paused',async()=>{
+ const f=fixture();let committed={document_id:'doc',sessionId:'page'},follow=null;const parks=[];
+ f.host.browser.committedPageDocument=()=>({connection:f.host.browser.connection,...committed});
+ class Capture extends f.Capture{onDocument(fn){follow=fn;return()=>{};}park(parked){parks.push(parked);}}
+ const result=await subscribeVisiblePage(f.host,{...f.command,tab_display:true},'terminal:a',undefined,{Capture});
+ const stream=f.host.displays.get(result.subscription_id);
+ stream.park(true,true);assert.deepEqual(parks,[true]);
+ for(const next of ['doc2','doc3']){committed={document_id:next,sessionId:'page'};follow(next);}
+ assert.equal(stream.regionLease.document_id,'doc3');
+ assert.deepEqual(parks,[true],'two commits must not unpark native capture');assert.equal(stream.parked,true);
+ stream.park(false,true);assert.deepEqual(parks,[true,false]);assert.equal(stream.parked,false);
+ // The viewer's own park still ends at the next commit, and the pause outlasts it.
+ stream.park(true);stream.park(true,true);committed={document_id:'doc4',sessionId:'page'};follow('doc4');
+ assert.equal(stream.parked,true,'the watch pause survives the commit that clears the viewer park');
+ await stream.close();
+});
 // Review (PR 1166): resume replies omitted tab_display, so a resumed viewer rebuilt a plain binding and refused the
 // Tab's next document and its park.
 test('MP-08/MP-10/MP-11 a resumed Tab display stays a Tab display: it parks and follows the next commit',async()=>{

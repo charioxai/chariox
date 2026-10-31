@@ -5974,3 +5974,30 @@ the STUN Binding responder every relay runs on UDP 3478 of its host
 (`CHARIOX_RELAY_STUN_ADDRESS`, `off` disables): the kernel asks from each of its
 sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
 reflects addresses; no TURN, and a pair that cannot connect stays on the relay.
+
+### MP-08 / MP-09 / MP-10 / MP-11: user-side browser frame stream removed — local 919 / peer 370
+
+The `KernelBrowser` ops `subscribe` and `poll` (the old PNG frame stream for a
+user-domain browser) and the display request `subscribe` no longer exist. A client
+that sends one now gets the "unsupported operation" refusal that any unknown op gets;
+`unsubscribe` stays for display streams. Viewers watch a kernel browser through the
+mirror and the display transport only. Relay peer 370 only pairs the embedded local
+request/response union with local 919. The managed-upgrade list is [629, 636, 919].
+
+The same pair adds the optional `paused: true` on `display_ack`: the viewer's display is
+not watched. The push pump captures and sends nothing (not even the stall reprobe) and
+forgets what is in flight; the acknowledgement still renews the 60 s delivery lease, so a
+viewer repeats it every 20 s while hidden. Only an acknowledgement with `lost: true`
+(watched again, independent frame wanted) resumes the pump; late plain acknowledgements
+of frames sent before the pause do nothing.
+
+While paused the kernel also stops the capture source: it parks a Tab or region display
+(`display_park`), and for a Room display it sends the worker the peer command
+`RoomSharedDisplay.command={op:"park"}`. Both renew the host binding and the home and
+worker leases, so the 60 s expiry never runs for a paused view. The worker stops the
+shared desktop source once every viewer lease on it is parked; the next `capture` starts
+it again and returns the independent frame. `park` is a new peer command inside 919/370
+(not yet on `main`).
+
+Focused check: `cargo test -p chariox-kernel --lib protocol_shapes` (including
+`the_legacy_user_side_frame_stream_is_not_a_command`).

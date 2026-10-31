@@ -5,6 +5,39 @@ use crate::local::{
 };
 
 #[test]
+fn the_legacy_user_side_frame_stream_is_not_a_command() {
+    for command in [
+        serde_json::json!({"op":"subscribe","tab_id":"t","generation":2}),
+        serde_json::json!({"op":"poll","subscription_id":"s","generation":2}),
+    ] {
+        assert!(
+            serde_json::from_value::<Command>(command.clone()).is_err(),
+            "{command} parsed as a browser command"
+        );
+    }
+}
+
+#[test]
+fn a_paused_display_ack_is_versioned_and_omitted_when_false() {
+    let paused = Command::DisplayAck {
+        subscription_id: "s".into(),
+        generation: 2,
+        sequence: 3,
+        lost: false,
+        held_ms: None,
+        paused: true,
+    };
+    let wire = serde_json::json!({"op":"display_ack","subscription_id":"s","generation":2,"sequence":3,"lost":false,"paused":true});
+    assert_eq!(serde_json::to_value(&paused).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), paused);
+    let plain = serde_json::json!({"op":"display_ack","subscription_id":"s","generation":2,"sequence":3,"lost":false});
+    assert_eq!(
+        serde_json::to_value(serde_json::from_value::<Command>(plain.clone()).unwrap()).unwrap(),
+        plain
+    );
+}
+
+#[test]
 fn kernel_browser_protocol_443_request_snapshots() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -48,20 +81,6 @@ fn kernel_browser_protocol_443_request_snapshots() {
                 generation: 2,
             },
             serde_json::json!({"op":"screenshot","tab_id":"t","generation":2}),
-        ),
-        (
-            Command::Subscribe {
-                tab_id: "t".into(),
-                generation: 2,
-            },
-            serde_json::json!({"op":"subscribe","tab_id":"t","generation":2}),
-        ),
-        (
-            Command::Poll {
-                subscription_id: "s".into(),
-                generation: 2,
-            },
-            serde_json::json!({"op":"poll","subscription_id":"s","generation":2}),
         ),
         (
             Command::Unsubscribe {
@@ -190,6 +209,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             sequence: 3,
             lost: true,
             held_ms: None,
+            paused: false,
         },
         Command::DisplayInput {
             tab_id: "t".into(),
@@ -558,7 +578,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "9352bb314c1cb8834062adf15a15ba07c0531b5e145ddded16d63b77c6f8b670"
+        "dbba2a14828cdd6460208ffa75deaf1f89b2dabf53b5b270f81e8e01605ae307"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -661,7 +681,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "40c3556e7848859ac651026c39c368eceb7f8b9f0c8cb017cf96b933a2d5ce5f"
+        "7c11a068f44a20f17be6e1ced02bf79d48fe5e087108e2740c905020f5451533"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();

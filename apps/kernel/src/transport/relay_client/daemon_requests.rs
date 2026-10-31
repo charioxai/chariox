@@ -151,6 +151,7 @@ pub(super) async fn handle_prepared_daemon_request(
                         sequence,
                         lost,
                         held_ms,
+                        paused,
                     },
             }) = &request.request
             {
@@ -158,10 +159,13 @@ pub(super) async fn handle_prepared_daemon_request(
                     display_subscriptions,
                     subscription_id,
                     &client_public_key,
-                    *generation,
-                    *sequence,
-                    *lost,
-                    *held_ms,
+                    super::browser_display::AckReport {
+                        generation: *generation,
+                        sequence: *sequence,
+                        lost: *lost,
+                        held_ms: *held_ms,
+                        paused: *paused,
+                    },
                 )
                 .await;
                 return display_ack_outcome(status, &daemon_private_key, &client_public_key);

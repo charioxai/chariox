@@ -407,4 +407,7 @@ pub use workspace::*;
 /// health request timings and durable writer queue).
 /// Allocated 913 adds `processes` to the `SessionState` response: the same rows the live
 /// `session_processes_changed` feed shows, readable by a one-shot request.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 917;
+/// Version 919 removes the user-side browser frame stream: `KernelBrowserCommand::Subscribe` and `Poll`
+/// (and `KernelBrowserDisplayRequest::Subscribe`) no longer parse, so a client that sends them is refused; `DisplayAck`
+/// gains `paused` (nobody watches: the push pump goes dormant, the acknowledgement still renews the lease).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 919;

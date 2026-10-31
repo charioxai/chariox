@@ -846,10 +846,6 @@ fn mdaccess_revoked_open_cannot_populate_refocused_grant() {
     check_result_epoch_race("open", true);
 }
 #[test]
-fn mdaccess_revoked_subscribe_cannot_populate_refocused_grant() {
-    check_result_epoch_race("subscribe", true);
-}
-#[test]
 fn mdaccess_revoked_snapshot_cannot_return_after_refocus() {
     check_result_epoch_race("snapshot", true);
 }
@@ -871,7 +867,6 @@ while IFS= read -r request; do
     *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
     *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
     *'"op":"open"'*) result='{"generation":1,"tab_id":"late-tab","tabs":[{"tab_id":"late-tab","document_id":"d"}]}' ;;
-    *'"op":"subscribe"'*) result='{"generation":1,"subscription_id":"late-sub"}' ;;
     *) result='{"generation":1,"tabs":[{"tab_id":"existing-tab","document_id":"d"}]}' ;;
   esac
   printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
@@ -928,7 +923,7 @@ done
     let grant = state.access.grant("owner", "agent").unwrap();
     let uncontaminated = !grant.resources.contains(&UserDomainResource::BrowserTab {
         tab_id: "late-tab".into(),
-    }) && grant.subscriptions.is_empty();
+    });
     drop(state);
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
