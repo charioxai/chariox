@@ -1056,7 +1056,7 @@ fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
         .enable_all()
         .build()
         .unwrap();
-    let (child, tick) = runtime.block_on(async {
+    let forked = runtime.block_on(async {
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
         let session_id = session_in(&mut socket, &scratch).await;
         // The job waits for the go signal, then forks the child and ends.
@@ -1076,6 +1076,24 @@ fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
             .success());
         let pid = terminal_that_left_a_job_running(&mut socket, &session_id, &scratch, &job).await;
         let listed = listed_job(&mut socket, &session_id, pid).await.unwrap();
+        // Without a kernel-created process cgroup (no writable cgroup v2
+        // delegation) only sampled processes are known, so a child forked
+        // between two samples cannot be recovered. The job has not forked
+        // yet: stop it and leave nothing behind.
+        if !memory_domain(pid).as_deref().is_some_and(is_process_domain) {
+            eprintln!("skipped: the job has no kernel-created process cgroup on this host");
+            let stopped = request(
+                &mut socket,
+                json!({"StopSessionProcesses": {"session_id": session_id,
+                    "target": {"kind": "process", "process_id": listed["process_id"]}}}),
+            )
+            .await;
+            assert_eq!(
+                stopped["SessionProcessesStopped"]["result"]["outcome"], "outside_end",
+                "{stopped}"
+            );
+            return None;
+        }
         let sampled = listed["sampled_at_ms"].as_u64().unwrap();
         // Release the job right after a watch sample, so the next one is
         // 250 ms away and the reload comes first.
@@ -1124,8 +1142,11 @@ fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
             stopped["SessionProcessesStopped"]["result"]["outcome"], "outside_end",
             "{stopped}"
         );
-        (child, tick)
+        Some((child, tick))
     });
+    let Some((child, tick)) = forked else {
+        return;
+    };
     let deadline = Instant::now() + Duration::from_secs(20);
     while start_tick(child).as_deref() == Some(tick.as_str()) {
         assert!(
