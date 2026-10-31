@@ -768,6 +768,10 @@ impl PtyManager {
     }
 
     /// Reader and writer threads for a running PTY child, spawned here or adopted.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A spawned and an adopted PTY attach with the same parts; a struct would only rename them"
+    )]
     fn attach(
         &mut self,
         process_key: String,
