@@ -1053,6 +1053,47 @@ fn a_real_shutdown_still_stops_the_jobs_an_exited_terminal_left_running() {
 }
 
 #[test]
+fn a_hot_reload_that_cannot_hand_over_stops_the_jobs_like_a_restart() {
+    let scratch = std::env::temp_dir().join(format!("hr-nohandover-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, tick) = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let session_id = session_in(&mut socket, &scratch).await;
+        let pid = terminal_that_left_a_job(&mut socket, &session_id, &scratch).await;
+        let tick = start_tick(pid).expect("the job runs");
+        // The handover file cannot be written once the kernel has stopped.
+        std::fs::create_dir_all(scratch.join("home/.chariox/state/handover.json/keep")).unwrap();
+        let kernel_pid = kernel.child.id() as i32;
+        assert!(kernel_pid > 1);
+        unsafe { libc::kill(kernel_pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        (pid, tick)
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let exit = loop {
+        if let Some(exit) = kernel.child.try_wait().unwrap() {
+            break exit;
+        }
+        assert!(Instant::now() < deadline, "the kernel did not exit");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!exit.success(), "the kernel exits as failed: {exit}");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while start_tick(pid).as_deref() == Some(tick.as_str()) {
+        assert!(
+            Instant::now() < deadline,
+            "the job outlived a reload that could not hand over"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
 fn a_terminal_takes_input_after_a_hot_reload() {
     let scratch = std::env::temp_dir().join(format!("hr-input-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
