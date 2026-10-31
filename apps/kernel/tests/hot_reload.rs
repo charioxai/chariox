@@ -855,6 +855,7 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// A Room terminal whose command ended and left a detached job running
 /// (`setsid nohup job &`): the pid of the job, once the session lists it.
 async fn terminal_that_left_a_job(socket: &mut Socket, session_id: &str, scratch: &Path) -> i32 {
@@ -903,6 +904,7 @@ async fn terminal_that_left_a_job(socket: &mut Socket, session_id: &str, scratch
     pid
 }
 
+#[cfg(target_os = "linux")]
 /// The session's process row for `pid`, as Health lists it.
 async fn listed_job(socket: &mut Socket, session_id: &str, pid: i32) -> Option<Value> {
     let state = request(
@@ -917,6 +919,7 @@ async fn listed_job(socket: &mut Socket, session_id: &str, pid: i32) -> Option<V
         .cloned()
 }
 
+#[cfg(target_os = "linux")]
 /// The cgroup v2 path a process runs in, if the host has one.
 fn memory_domain(pid: i32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
@@ -925,12 +928,14 @@ fn memory_domain(pid: i32) -> Option<String> {
         .find_map(|line| line.strip_prefix("0::").map(str::to_string))
 }
 
+#[cfg(target_os = "linux")]
 fn is_process_domain(path: &str) -> bool {
     path.rsplit('/')
         .next()
         .is_some_and(|leaf| leaf.starts_with("process-"))
 }
 
+#[cfg(target_os = "linux")]
 /// Field 22 of `/proc/<pid>/stat`: with the pid it names one process for good.
 fn start_tick(pid: i32) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -938,6 +943,7 @@ fn start_tick(pid: i32) -> Option<String> {
     after_name.split_whitespace().nth(19).map(str::to_string)
 }
 
+#[cfg(target_os = "linux")]
 async fn session_in(socket: &mut Socket, scratch: &Path) -> String {
     let project = scratch.join("project").display().to_string();
     let created = request(
@@ -952,6 +958,7 @@ async fn session_in(socket: &mut Socket, scratch: &Path) -> String {
         .to_string()
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_controllable() {
     let scratch = std::env::temp_dir().join(format!("hr-released-{}", std::process::id()));
@@ -1019,6 +1026,7 @@ fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_control
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_real_shutdown_still_stops_the_jobs_an_exited_terminal_left_running() {
     let scratch = std::env::temp_dir().join(format!("hr-shutdown-{}", std::process::id()));
@@ -1052,6 +1060,7 @@ fn a_real_shutdown_still_stops_the_jobs_an_exited_terminal_left_running() {
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hot_reload_that_cannot_hand_over_stops_the_jobs_like_a_restart() {
     let scratch = std::env::temp_dir().join(format!("hr-nohandover-{}", std::process::id()));
@@ -1548,6 +1557,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
 
 /// The reviewer's case: an agent's earlier Claude process ended leaving a
 /// detached build, and the agent's current turn is handed over.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllable() {
     let scratch = std::env::temp_dir().join(format!("hr-agentjob-{}", std::process::id()));
