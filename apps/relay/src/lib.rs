@@ -7,6 +7,7 @@ pub mod meter;
 pub mod protocol;
 pub mod revocation_sync;
 pub mod server;
+pub mod stun;
 pub mod transport_timing;
 pub mod usage_report;
 

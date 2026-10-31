@@ -407,4 +407,4 @@ pub use workspace::*;
 /// health request timings and durable writer queue).
 /// Allocated 913 adds `processes` to the `SessionState` response: the same rows the live
 /// `session_processes_changed` feed shows, readable by a one-shot request.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 913;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 917;

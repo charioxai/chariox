@@ -373,7 +373,7 @@ pub(super) async fn handle_prepared_daemon_request(
             };
             ("local_terminal_renew", None, false, result)
         }
-        ParsedRelayClientMessage::LocalTerminalConnect(LocalBrowserConnectRequest {}) => {
+        ParsedRelayClientMessage::LocalTerminalConnect(LocalTerminalConnectRequest {}) => {
             let identity = match require_bound_client_sender(
                 caller_identity.as_ref(),
                 &encrypted_request,
@@ -425,7 +425,7 @@ pub(super) async fn handle_prepared_daemon_request(
             };
             ("local_browser_renew", None, false, result)
         }
-        ParsedRelayClientMessage::LocalBrowserConnect(LocalBrowserConnectRequest {}) => {
+        ParsedRelayClientMessage::LocalBrowserConnect(LocalBrowserConnectRequest { offer }) => {
             let identity = match require_bound_client_sender(
                 caller_identity.as_ref(),
                 &encrypted_request,
@@ -443,7 +443,10 @@ pub(super) async fn handle_prepared_daemon_request(
             // Only the relay carrier mints grants: a direct session cannot
             // extend itself beyond the relay-verified identity that admitted it.
             let result = match local_browser {
-                Some(local_browser) => local_browser.issue_grant(identity).await,
+                Some(local_browser) => match offer.as_deref() {
+                    Some(offer) => local_browser.issue_rtc_grant(identity, offer).await,
+                    None => local_browser.issue_grant(identity).await,
+                },
                 None => Err(relay_error(
                     "local_browser_unavailable",
                     "local browser connect is only issued over the relay",
@@ -715,7 +718,7 @@ enum ParsedRelayClientMessage {
     BrowserImportDelivery(crate::runtime::browser_import_payload::BrowserImportDeliveryRequest),
     LocalBrowserConnect(LocalBrowserConnectRequest),
     LocalBrowserRenew(LocalBrowserRenewRequest),
-    LocalTerminalConnect(LocalBrowserConnectRequest),
+    LocalTerminalConnect(LocalTerminalConnectRequest),
     LocalTerminalRenew(LocalBrowserRenewRequest),
 }
 
@@ -724,8 +727,12 @@ enum ParsedRelayClientMessage {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalTerminalConnectEnvelope {
-    local_terminal_connect: LocalBrowserConnectRequest,
+    local_terminal_connect: LocalTerminalConnectRequest,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalTerminalConnectRequest {}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalTerminalRenewEnvelope {
@@ -747,10 +754,14 @@ struct LocalBrowserRenewEnvelope {
 }
 
 /// Protocol 520: `{"local_browser_connect":{}}`, encrypted with the browser key
-/// bound into the caller's relay identity.
+/// bound into the caller's relay identity. Protocol 917: an SDP `offer` asks
+/// for the WebRTC data-channel carrier instead of the loopback WebSocket.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LocalBrowserConnectRequest {}
+struct LocalBrowserConnectRequest {
+    #[serde(default)]
+    offer: Option<String>,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

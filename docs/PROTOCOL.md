@@ -1141,7 +1141,9 @@ can instead use a dedicated loopback carrier that has no authority of its own:
    never exceeds the identity's expiry; a kernel clock ahead of Cloud shortens
    each lease by the same amount, and direct mode tolerates up to about 15
    seconds of it (about 10 seconds when one renewal is also lost). The session
-   uses that freshly verified identity for subsequent dispatch, allowing
+   takes that freshly verified identity's expiry and keeps the subject it was
+   admitted with (Cloud mints every lease token with a new subject; kernel
+   browser displays and mirrors belong to the caller that opened them), allowing
    continuous renewal across identity expiry.
    Thus even a cached authorization issued before Cloud revocation cannot
    extend the session beyond its expiry. The browser
@@ -5954,3 +5956,21 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### Direct browser sessions over WebRTC — local 917 / relay peer 362
+
+`local_browser_connect` may carry an SDP `offer`; the kernel answers
+`LocalBrowserConnectIssued` with an SDP `answer` (no `endpoint`) and the browser
+runs the same grant/key handshake and encrypted relay client frames over a WebRTC
+data channel (binary messages: one kind byte — 0 last fragment, 1 more, 2 ping,
+3 pong — then up to 16 KiB of UTF-8 text). Relay peer protocol unchanged. The
+managed-upgrade list is [629, 636, 917].
+
+The answer carries a host candidate per interface address and a server-reflexive
+candidate per socket a NAT translates. The interface list is read for every offer:
+after a network change the kernel binds the new addresses, stops offering the
+vanished ones and keeps the sockets of addresses that remain. Both sides learn their public address from
+the STUN Binding responder every relay runs on UDP 3478 of its host
+(`CHARIOX_RELAY_STUN_ADDRESS`, `off` disables): the kernel asks from each of its
+sockets, the browser passes `stun:<relay host>:3478` as its ICE server. STUN only
+reflects addresses; no TURN, and a pair that cannot connect stays on the relay.

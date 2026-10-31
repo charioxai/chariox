@@ -130,12 +130,71 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    if let Some(address) = stun_address_from_env()? {
+        serve_stun(address).await?;
+    }
     let served = server.run().await;
     if let Some((shutdown_tx, task)) = usage_report {
         let _ = shutdown_tx.send(true);
         let _ = task.await;
     }
     served?;
+    Ok(())
+}
+
+/// MP-08: UDP 3478 on every interface unless `CHARIOX_RELAY_STUN_ADDRESS`
+/// names another address or `off`.
+fn stun_address_from_env() -> Result<Option<std::net::SocketAddr>, String> {
+    parse_stun_address(std::env::var("CHARIOX_RELAY_STUN_ADDRESS").ok().as_deref())
+}
+
+fn parse_stun_address(value: Option<&str>) -> Result<Option<std::net::SocketAddr>, String> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(Some(std::net::SocketAddr::from((
+            [0, 0, 0, 0],
+            chariox_relay::stun::DEFAULT_PORT,
+        )))),
+        Some("off") => Ok(None),
+        Some(address) => address.parse().map(Some).map_err(|_| {
+            format!("CHARIOX_RELAY_STUN_ADDRESS must be ip:port or off, got `{address}`")
+        }),
+    }
+}
+
+/// Starts the STUN responder. A port already held is served by another relay
+/// (or STUN server) on this host, whose answers are the same, so it is
+/// reported and skipped; any other bind failure stops the relay.
+async fn serve_stun(address: std::net::SocketAddr) -> Result<(), String> {
+    let socket = match tokio::net::UdpSocket::bind(address).await {
+        Ok(socket) => socket,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!(
+                "{}",
+                json!({
+                    "component": "chariox-relay",
+                    "level": "warn",
+                    "event": "relay_stun_port_in_use",
+                    "fields": { "address": address.to_string() },
+                })
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "STUN responder cannot bind {address}: {error}; set CHARIOX_RELAY_STUN_ADDRESS to another ip:port or off"
+            ))
+        }
+    };
+    eprintln!(
+        "{}",
+        json!({
+            "component": "chariox-relay",
+            "level": "info",
+            "event": "relay_stun_listening",
+            "fields": { "address": address.to_string() },
+        })
+    );
+    tokio::spawn(chariox_relay::stun::serve(socket));
     Ok(())
 }
 
@@ -280,6 +339,20 @@ fn scoped_verifier_from_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp08_stun_address_defaults_to_3478_and_can_be_moved_or_turned_off() {
+        assert_eq!(
+            parse_stun_address(None).unwrap(),
+            Some("0.0.0.0:3478".parse().unwrap())
+        );
+        assert_eq!(
+            parse_stun_address(Some(" [::]:3479 ")).unwrap(),
+            Some("[::]:3479".parse().unwrap())
+        );
+        assert_eq!(parse_stun_address(Some("off")).unwrap(), None);
+        assert!(parse_stun_address(Some("3478")).is_err());
+    }
 
     #[test]
     fn parse_relay_draining_accepts_only_explicit_truthy_values() {
