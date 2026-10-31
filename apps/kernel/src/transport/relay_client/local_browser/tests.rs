@@ -1564,6 +1564,9 @@ struct RtcClient {
     partial: Vec<u8>,
     pings: usize,
     answer_pings: bool,
+    /// Bytes per second the client's downlink delivers, like a slow link;
+    /// later datagrams wait in the socket buffer or are lost there.
+    downlink: Option<(u64, std::time::Instant, u64)>,
 }
 
 impl RtcClient {
@@ -1598,6 +1601,7 @@ impl RtcClient {
             partial: Vec::new(),
             pings: 0,
             answer_pings: true,
+            downlink: None,
         };
         PENDING_OFFER.with(|slot| *slot.borrow_mut() = Some(pending));
         (client, offer.to_sdp_string())
@@ -1665,15 +1669,22 @@ impl RtcClient {
         };
         let mut buf = [0_u8; 2048];
         let input = match timeout(wait, self.socket.recv_from(&mut buf)).await {
-            Ok(Ok((len, source))) => str0m::Input::Receive(
-                std::time::Instant::now(),
-                str0m::net::Receive {
-                    proto: str0m::net::Protocol::Udp,
-                    source,
-                    destination: self.socket.local_addr().unwrap(),
-                    contents: buf[..len].try_into().unwrap(),
-                },
-            ),
+            Ok(Ok((len, source))) => {
+                if let Some((rate, since, received)) = self.downlink.as_mut() {
+                    *received += len as u64;
+                    let due = *since + Duration::from_secs_f64(*received as f64 / *rate as f64);
+                    tokio::time::sleep_until(due.into()).await;
+                }
+                str0m::Input::Receive(
+                    std::time::Instant::now(),
+                    str0m::net::Receive {
+                        proto: str0m::net::Protocol::Udp,
+                        source,
+                        destination: self.socket.local_addr().unwrap(),
+                        contents: buf[..len].try_into().unwrap(),
+                    },
+                )
+            }
             _ => str0m::Input::Timeout(std::time::Instant::now()),
         };
         self.rtc.handle_input(input).unwrap();
@@ -1973,6 +1984,58 @@ fn mp08_webrtc_peer_that_stops_answering_is_closed_within_three_seconds() {
             client.pings, before,
             "the kernel kept serving a browser that stopped answering"
         );
+    });
+}
+
+/// MP-08 TR-16: frames already handed to SCTP delay the keepalive on a slow
+/// link; a browser that keeps acknowledging them is alive, so the kernel keeps
+/// the path while more than a megabyte drains at 1 Mbit/s.
+#[test]
+fn mp08_webrtc_slow_link_draining_queued_frames_stays_connected() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        // Each refusal echoes its 700 KB request id: 1.4 MB queued for the browser.
+        let ids: Vec<String> = ["a", "b"].iter().map(|id| id.repeat(700_000)).collect();
+        for id in &ids {
+            client
+                .send_json(serde_json::json!({
+                    "kind": "client_request", "request_id": id,
+                    "target": {"daemon_id": "another-kernel"},
+                    "encrypted_request": proof(&browser, &kernel, serde_json::json!({})),
+                }))
+                .await;
+        }
+        client.downlink = Some((125_000, std::time::Instant::now(), 0));
+        let started = std::time::Instant::now();
+        let mut received = Vec::new();
+        while received.len() < ids.len() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the kernel ended a slow direct path that kept receiving ({} of {} frames, {:?})",
+                received.len(),
+                ids.len(),
+                started.elapsed()
+            );
+            client.step().await;
+            while let Some(frame) = client.frames.pop_front() {
+                received.push(frame);
+            }
+        }
+        assert!(
+            started.elapsed() > Duration::from_secs(5),
+            "the shaped link drained in {:?}",
+            started.elapsed()
+        );
+        for (frame, id) in received.iter().zip(&ids) {
+            assert_eq!(frame["request_id"].as_str(), Some(id.as_str()));
+        }
     });
 }
 
