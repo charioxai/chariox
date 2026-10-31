@@ -21,7 +21,7 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["native", "elicit", "kinds", "first-wins", "expiry"].includes(scenario), "unknown scenario")
+assert(["native", "elicit", "opencode", "kinds", "first-wins", "expiry"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), cliWrapper = resolve(need("--cli-wrapper"))
 const stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir")), loginFile = resolve(need("--login-file"))
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
@@ -143,7 +143,7 @@ done
   }
   const subscribed = async h => until(() => h.file("subscribe.json"), `${h.name} subscribed`, 90000)
 
-  if (scenario === "native" || scenario === "elicit") {
+  if (scenario === "native" || scenario === "elicit" || scenario === "opencode") {
     // The outside agent is an interactive Claude Code; the kernel asks through a Haiku agent.
     const cfg = join(dir, "claude")
     writeFileSync(join(cfg, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, theme: "dark", projects: { [join(dir, "work")]: { hasTrustDialogAccepted: true } } }))
@@ -155,14 +155,22 @@ done
 cd ${join(dir, "work")}
 exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEnv.TMPDIR}' 'CHARIOX_HOME=${kernelEnv.CHARIOX_HOME}' 'CHARIOX_DAEMON_SOCKET=${kernelEnv.CHARIOX_DAEMON_SOCKET}' 'CLAUDE_CONFIG_DIR=${cfg}' "CLAUDE_CODE_OAUTH_TOKEN=$(cat ${loginFile})" 'TERM=xterm-256color' claude --model claude-haiku-5-5 --allowedTools ${scenario === "elicit" ? "Bash,mcp__chariox__chariox_next_choice --strict-mcp-config --mcp-config " + mcpConfig : "Bash"}
 `, { mode: 0o700 })
+    if (scenario === "opencode") {
+      // OpenCode uses its fleet login through its own XDG directories; the model is its default free one.
+      const fleet = "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home"
+      writeFileSync(launcher, `#!/bin/bash
+cd ${join(dir, "work")}
+exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEnv.TMPDIR}' 'CHARIOX_HOME=${kernelEnv.CHARIOX_HOME}' 'CHARIOX_DAEMON_SOCKET=${kernelEnv.CHARIOX_DAEMON_SOCKET}' 'XDG_CONFIG_HOME=${fleet}/config' 'XDG_DATA_HOME=${fleet}/data' 'XDG_STATE_HOME=${fleet}/state' 'XDG_CACHE_HOME=${fleet}/cache' 'TERM=xterm-256color' opencode
+`, { mode: 0o700 })
+    }
     const sh = launcher
     tmux("new-session", "-d", "-s", tmuxName, "-x", "200", "-y", "50", sh)
     tmuxStarted = true
     note("outside-claude-start", { tmux: tmuxName })
-    await until(() => /❯|>\s*$|Try "/.test(screen()), "claude ready", 60000)
+    await until(() => scenario === "opencode" ? /Ask anything/.test(screen()) : /❯|>\s*$|Try "/.test(screen()), "outside harness ready", 60000)
     snap("01-ready")
     const mcpInstruction = `A test kernel runs on this machine and the \`chariox\` command talks to it (its name is ${alias}, its session is ${sessionId}). Get access with \`chariox access request --until-exit\` and follow that session with \`chariox events subscribe\`; then call your chariox_next_choice tool once and tell me the choice it returns.`
-    const instruction = scenario === "elicit" ? mcpInstruction : `A test kernel runs on this machine and the \`chariox\` command talks to it (its name is ${alias}, its session is ${sessionId}). Run \`chariox guide\` and follow it: get access with \`chariox access request --until-exit\`, follow that session with \`chariox events subscribe\`, then keep \`chariox events wait --timeout 540\` running as a background command. When it reports a decision for the person, handle it as the guide says. Stop when the decision has been answered and tell me the choice.`
+    const instruction = scenario === "elicit" ? mcpInstruction : scenario === "opencode" ? `A test kernel runs on this machine and the \`chariox\` command talks to it (its name is ${alias}, its session is ${sessionId}). Run \`chariox guide\` and follow it: get access with \`chariox access request --until-exit\`, follow that session with \`chariox events subscribe\`, then run \`chariox events wait --timeout 240\` in the foreground. When it reports a decision for the person, handle it as the guide says. Stop when the decision has been answered and tell me the choice.` : `A test kernel runs on this machine and the \`chariox\` command talks to it (its name is ${alias}, its session is ${sessionId}). Run \`chariox guide\` and follow it: get access with \`chariox access request --until-exit\`, follow that session with \`chariox events subscribe\`, then keep \`chariox events wait --timeout 540\` running as a background command. When it reports a decision for the person, handle it as the guide says. Stop when the decision has been answered and tell me the choice.`
     tmux("send-keys", "-t", tmuxName, "-l", instruction)
     await delay(1500)
     tmux("send-keys", "-t", tmuxName, "Enter")
@@ -171,15 +179,15 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
     for (let i = 0; i < 4 && !(await grants()); i++) { await delay(8000); if (!(await grants())) tmux("send-keys", "-t", tmuxName, "Enter") }
     // Wait until the outside agent holds a grant, follows the session and has a background wait running.
     await until(async () => (await rpc({ ListKernelAccessGrants: {} })).KernelAccessGrantsListed.grants.length > 0, "grant approved", 180000)
-    await until(() => scenario === "elicit" ? /chariox_next_choice|chariox-events|Called chariox/i.test(screen()) : /events wait/.test(screen()) && /ackground|running|Running/.test(screen()), scenario === "elicit" ? "the next-choice tool is running" : "background wait running", 180000)
+    await until(() => scenario === "elicit" ? /chariox_next_choice|chariox-events|Called chariox/i.test(screen()) : scenario === "opencode" ? /events wait/.test(screen()) : /events wait/.test(screen()) && /ackground|running|Running/.test(screen()), scenario === "elicit" ? "the next-choice tool is running" : "background wait running", 180000)
     snap("02-waiting")
     await delay(3000)
     await ask(popup("Colour", "Which colour should the report use?", colours))
     const pendingId = (await until(async () => (await pendingInteractions())[0], "question pending", 120000)).id
-    const shown = await until(() => { const s = screen(); return (scenario === "elicit" ? /requests your input/.test(s) && /Which colour/.test(s) && /Accept/.test(s) : /Enter to select/.test(s) && /Green/.test(s) && /Blue/.test(s)) && s }, "native question shown", 180000)
+    const shown = await until(() => { const s = screen(); return (scenario === "elicit" ? /requests your input/.test(s) && /Which colour/.test(s) && /Accept/.test(s) : scenario === "opencode" ? /Red/.test(s) && /Green/.test(s) && /Blue/.test(s) : /Enter to select/.test(s) && /Green/.test(s) && /Blue/.test(s)) && s }, "native question shown", 180000)
     snap("03-question")
     results.question_shown = true
-    if (scenario === "elicit") {
+    if (scenario === "elicit" || scenario === "opencode") {
       // The keys the person presses in the elicitation dialog: the test script picks Green.
       // Without --keys the drill stops here for a person to press them; `touch <state>/go` resumes it.
       if (!flags.has("--keys")) { note("explore", { tmux: tmuxName, go: join(dir, "go") }); await until(() => existsSync(join(dir, "go")), "a person finished the dialog", 900000) }
@@ -193,12 +201,20 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
     for (let i = 0; i < Math.abs(target - at); i++) { tmux("send-keys", "-t", tmuxName, target > at ? "Down" : "Up"); await delay(300) }
     }
     snap("04-selected")
-    if (scenario !== "elicit") tmux("send-keys", "-t", tmuxName, "Enter")
+    if (scenario === "native") tmux("send-keys", "-t", tmuxName, "Enter")
     await until(() => existsSync(join(dir, "work/chosen.txt")), "asker continued with the reply", 180000)
     results.chosen = readFileSync(join(dir, "work/chosen.txt"), "utf8")
     assert.equal(results.chosen, "green", "the asker's turn continues with the person's choice")
     await delay(8000)
     snap("05-after")
+    if (scenario === "opencode") {
+      // OpenCode keeps no transcript file here: the screens, the answer and the audit are the evidence.
+      const answered = events().filter(e => e.subject === pendingId)
+      results.audit = answered.map(e => ({ subject: e.subject, ...e.payload }))
+      assert.equal(answered.length, 1)
+      assert.equal(answered[0].payload.choice_id, "green")
+      assert.equal(answered[0].payload.connection_class, "external_agent")
+    } else {
     // The record alone was enough: look at what the outside agent saw and did in its own transcript.
     const jsonl = []
     const walk = p => { for (const e of readdirSync(p, { withFileTypes: true })) { const q = join(p, e.name); if (e.isDirectory()) walk(q); else if (q.endsWith(".jsonl")) jsonl.push(q) } }
@@ -233,6 +249,7 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
     assert.equal(answered.length, 1)
     assert.equal(answered[0].payload.choice_id, "green")
     assert.equal(answered[0].payload.connection_class, "external_agent")
+    }
   }
 
   if (scenario === "first-wins") {
