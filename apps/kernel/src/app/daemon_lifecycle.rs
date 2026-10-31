@@ -72,8 +72,29 @@ impl DaemonApp {
         Vec::new()
     }
 
+    /// Clients attached before a hot reload resume their subscriptions on the
+    /// same attachments.
+    #[cfg(unix)]
+    fn adopt_handed_over_attachments(&self) {
+        for attachment in crate::hot_reload::take_attachments() {
+            let attachment_id = attachment.id().to_string();
+            if let Err(error) = self
+                .attachments
+                .adopt_attachment(&mut self.sessions.write(), attachment)
+            {
+                crate::logging::warn_with_fields(
+                    "hot_reload",
+                    "a handed-over attachment could not be restored",
+                    serde_json::json!({ "attachment_id": attachment_id, "error": error.to_string() }),
+                );
+            }
+        }
+    }
+
     fn shutdown_cleanup_session_runtime(&mut self, session_id: &str) -> Result<(), DaemonError> {
         let removed_attachments = self.attachments.remove_session_attachments(session_id);
+        #[cfg(unix)]
+        crate::hot_reload::hand_over_attachments(&removed_attachments);
         for attachment in &removed_attachments {
             match self
                 .sessions
@@ -171,6 +192,8 @@ impl DaemonApp {
         let history_migration_owner = self.config.daemon_id.clone();
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        #[cfg(unix)]
+        self.adopt_handed_over_attachments();
         #[cfg(unix)]
         let hot_reload = crate::hot_reload::requested(
             self.room_terminals(),
