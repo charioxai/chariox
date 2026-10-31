@@ -50,6 +50,10 @@ const MAX_DATAGRAM: usize = 2048;
 /// socket that gets no answer offers only its interface address.
 const STUN_WAITS: [Duration; 2] = [Duration::from_millis(300), Duration::from_millis(400)];
 
+/// An open channel carries at least this often a keepalive, so the browser
+/// tells a dead direct path from a quiet one in a few seconds (TR-16).
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+
 const FRAME_LAST: u8 = 0;
 const FRAME_MORE: u8 = 1;
 const FRAME_PING: u8 = 2;
@@ -433,6 +437,8 @@ struct OpenChannel {
     pending: VecDeque<Vec<u8>>,
     reassembly: Vec<u8>,
     session_done: bool,
+    /// When SCTP last took a fragment for this channel.
+    last_sent: std::time::Instant,
 }
 
 /// Reads one socket until the driver retires it; STUN answers go to their
@@ -588,6 +594,7 @@ async fn poll_peer(
     sockets: &[Arc<UdpSocket>],
     wake: &Arc<Notify>,
 ) -> Option<std::time::Instant> {
+    let keepalive = keep_alive(peer);
     flush_outgoing(peer);
     loop {
         let output = match peer.rtc.poll_output() {
@@ -598,7 +605,9 @@ async fn poll_peer(
             }
         };
         match output {
-            Output::Timeout(deadline) => return Some(deadline),
+            Output::Timeout(deadline) => {
+                return Some(keepalive.map_or(deadline, |keepalive| keepalive.min(deadline)))
+            }
             Output::Transmit(transmit) => {
                 if let Some(socket) = sockets
                     .iter()
@@ -654,6 +663,7 @@ fn open_channel(peer: &mut Peer, id: ChannelId, wake: &Arc<Notify>) {
         pending: VecDeque::new(),
         reassembly: Vec::new(),
         session_done: false,
+        last_sent: std::time::Instant::now(),
     });
     let socket = ChannelSocket {
         incoming,
@@ -744,6 +754,20 @@ fn receive(peer: &mut Peer, id: ChannelId, binary: bool, data: &[u8]) -> bool {
     channel.incoming.try_send(message).is_ok()
 }
 
+/// Queues a keepalive when the channel sent nothing for a second; returns when
+/// the next one is due. Queued frames are proof of life on their own.
+fn keep_alive(peer: &mut Peer) -> Option<std::time::Instant> {
+    let channel = peer
+        .channel
+        .as_mut()
+        .filter(|channel| channel.pending.is_empty())?;
+    if channel.last_sent.elapsed() >= KEEPALIVE_INTERVAL {
+        channel.pending.push_back(vec![FRAME_PING]);
+        return None;
+    }
+    Some(channel.last_sent + KEEPALIVE_INTERVAL)
+}
+
 /// Encodes queued session frames while SCTP has room.
 fn flush_outgoing(peer: &mut Peer) {
     let Some(channel) = peer.channel.as_mut() else {
@@ -772,6 +796,7 @@ fn flush_outgoing(peer: &mut Peer) {
         match writer.write(true, fragment) {
             Ok(true) => {
                 channel.pending.pop_front();
+                channel.last_sent = std::time::Instant::now();
             }
             Ok(false) => break,
             Err(_) => {

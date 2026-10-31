@@ -1562,6 +1562,7 @@ struct RtcClient {
     open: bool,
     frames: std::collections::VecDeque<serde_json::Value>,
     partial: Vec<u8>,
+    pings: usize,
 }
 
 impl RtcClient {
@@ -1594,6 +1595,7 @@ impl RtcClient {
             open: false,
             frames: Default::default(),
             partial: Vec::new(),
+            pings: 0,
         };
         PENDING_OFFER.with(|slot| *slot.borrow_mut() = Some(pending));
         (client, offer.to_sdp_string())
@@ -1642,6 +1644,7 @@ impl RtcClient {
                             }
                         }
                         2 => {
+                            self.pings += 1;
                             let mut channel = self.rtc.channel(self.channel).unwrap();
                             assert!(channel.write(true, &[3]).unwrap());
                         }
@@ -1910,6 +1913,30 @@ fn mp11_webrtc_session_closes_when_the_pairing_is_cleared() {
         assert_eq!(
             client.next_json().await,
             serde_json::json!({"kind": "close", "reason": "local browser authority revoked"})
+        );
+    });
+}
+
+/// MP-08 TR-16: an admitted channel hears from the kernel every second even
+/// when the session has nothing to send, so the browser can tell a dead direct
+/// path from a quiet one within a few seconds and move to the relay.
+#[test]
+fn mp08_webrtc_idle_channel_carries_a_keepalive_every_second() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        let started = std::time::Instant::now();
+        client.pump(|client| client.pings >= 3).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(3_600),
+            "three keepalives took {:?}",
+            started.elapsed()
         );
     });
 }
