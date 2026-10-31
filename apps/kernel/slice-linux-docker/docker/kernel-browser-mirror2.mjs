@@ -1007,7 +1007,7 @@ export class Mirror2 {
       let at, local = null;
       const chain = entry ? hosts(entry) : [], hostPoints = [];
       if (entry) {
-        const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        const wheel = action.kind === 'scroll', localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y, ...(wheel ? { wheel } : {}) })})`);
         // The frame's point, then the frame as its owner's scrolling ancestors show it; each level reveals what the viewer scrolled ahead.
         const aim = async () => {
           try { local = await retryOffscreen(localAt); } catch (error) {
@@ -1019,8 +1019,8 @@ export class Mirror2 {
           // Level by level, inside out: the point in each host's viewport, the page's last.
           let point = local;
           for (const level of chain.toReversed()) {
-            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])})`));
-            point = { x: origin[0] + (origin[2] ?? 1) * point.x, y: origin[1] + (origin[3] ?? 1) * point.y }; hostPoints.unshift(point);
+            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])}${wheel ? ',true' : ''})`));
+            point = { x: origin[4], y: origin[5] }; hostPoints.unshift(point);
           }
           return point;
         };
