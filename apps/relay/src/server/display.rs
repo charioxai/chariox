@@ -650,6 +650,7 @@ mod tests {
             &sender,
             &RelayEnvelope::Close {
                 reason: "should fail fast".to_string(),
+                kernel_reload: false,
             },
         )
         .expect_err("full daemon queue should reject display envelope");

@@ -563,3 +563,135 @@ async fn disconnecting_client_drops_pending_requests_before_reconnect() {
     let _ = shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+/// What a subscribed client hears when its kernel leaves: a kernel that says it
+/// ends for a hot reload is announced as a reload; any other loss is not.
+async fn close_heard_by_subscriber(
+    daemon_leaves: impl FnOnce() -> Option<String>,
+) -> serde_json::Value {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("relay server should run");
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+        .await
+        .expect("daemon should connect");
+    let send = |envelope: &RelayEnvelope| {
+        Message::Text(
+            serde_json::to_string(envelope)
+                .expect("envelope should serialize")
+                .into(),
+        )
+    };
+    daemon_socket
+        .send(send(&RelayEnvelope::DaemonRegister {
+            registration: test_registration("daemon-1", "machine-1", "Linux", 10),
+        }))
+        .await
+        .expect("register should send");
+    sleep(Duration::from_millis(50)).await;
+    let target = ClientTarget {
+        daemon_id: Some("daemon-1".to_string()),
+        daemon_alias: None,
+    };
+    let (mut client, _) = connect_async_with_retry(&url)
+        .await
+        .expect("client should connect");
+    client
+        .send(send(&RelayEnvelope::ClientConnect {
+            auth_token: "secret".to_string(),
+            target: target.clone(),
+        }))
+        .await
+        .expect("client connect should send");
+    assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+    client
+        .send(send(&RelayEnvelope::ClientSubscribe {
+            request_id: "subscribe".to_string(),
+            subscription_id: "subscription".to_string(),
+            target,
+            session_id: "session-1".to_string(),
+            attachment_id: "terminal".to_string(),
+            client_public_key: "client-public".to_string(),
+            subscription_scope: None,
+            resume_from_event_id: None,
+            heartbeat_interval_ms: None,
+        }))
+        .await
+        .expect("subscribe should send");
+    let relay_request_id = match daemon_socket.next().await {
+        Some(Ok(Message::Text(text))) => match serde_json::from_str::<RelayEnvelope>(&text) {
+            Ok(RelayEnvelope::DaemonSubscribe {
+                relay_request_id, ..
+            }) => relay_request_id,
+            other => panic!("unexpected daemon subscribe: {other:?}"),
+        },
+        other => panic!("unexpected daemon subscribe frame: {other:?}"),
+    };
+    daemon_socket
+        .send(send(&RelayEnvelope::DaemonResponse {
+            relay_request_id,
+            encrypted_response: None,
+            error: None,
+        }))
+        .await
+        .expect("subscribe response should send");
+    assert!(matches!(client.next().await, Some(Ok(Message::Text(_)))));
+
+    if let Some(last_message) = daemon_leaves() {
+        daemon_socket
+            .send(Message::Text(last_message.into()))
+            .await
+            .expect("the daemon's last message should send");
+    }
+    let _ = daemon_socket.close(None).await;
+    let heard = loop {
+        match timeout(Duration::from_secs(5), client.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).expect("relay frame should decode");
+                if value["kind"] == "close" {
+                    break value;
+                }
+            }
+            other => panic!("the client never heard that its kernel left: {other:?}"),
+        }
+    };
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+    heard
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribers_hear_that_their_kernel_left_for_a_hot_reload() {
+    let heard = close_heard_by_subscriber(|| {
+        Some(r#"{"kind":"close","reason":"daemon shutting down","kernel_reload":true}"#.into())
+    })
+    .await;
+    assert_eq!(heard["reason"], "target daemon disconnected from relay");
+    assert_eq!(heard["kernel_reload"], true, "{heard}");
+
+    let heard = close_heard_by_subscriber(|| {
+        Some(r#"{"kind":"close","reason":"daemon shutting down"}"#.into())
+    })
+    .await;
+    assert!(heard.get("kernel_reload").is_none(), "{heard}");
+    let heard = close_heard_by_subscriber(|| None).await;
+    assert!(heard.get("kernel_reload").is_none(), "{heard}");
+}

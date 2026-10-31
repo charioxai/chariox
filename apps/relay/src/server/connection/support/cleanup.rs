@@ -10,7 +10,7 @@ use crate::registry::{
     DaemonKey, DisplayStreamSender, PendingRequestKind, RelayRegistry, RelayRouteIndex, RelaySender,
 };
 
-use super::{relay_error, send_close, send_daemon_subscription_cleanup, send_envelope};
+use super::{relay_error, send_daemon_subscription_cleanup, send_envelope};
 use crate::protocol::RelayEnvelope;
 use crate::registry::DisplayStreamEvent;
 
@@ -198,7 +198,12 @@ pub(in crate::server::connection) fn release_daemon(
 
 /// Tells everyone waiting on a released daemon that it is gone, so clients
 /// retry on its next registration instead of waiting for their timeouts.
-pub(in crate::server::connection) fn announce_released_daemon(released: ReleasedDaemon) {
+/// `kernel_reload`: the daemon said it ends for a hot reload; its subscribers
+/// hear so and retry soon.
+pub(in crate::server::connection) fn announce_released_daemon(
+    released: ReleasedDaemon,
+    kernel_reload: bool,
+) {
     for (sender, request_id) in released.client_errors {
         let _ = send_envelope(
             &sender,
@@ -229,7 +234,13 @@ pub(in crate::server::connection) fn announce_released_daemon(released: Released
         );
     }
     for sender in released.subscription_senders {
-        send_close(&sender, "target daemon disconnected from relay".to_string());
+        let _ = send_envelope(
+            &sender,
+            &RelayEnvelope::Close {
+                reason: "target daemon disconnected from relay".to_string(),
+                kernel_reload,
+            },
+        );
         let _ = sender.try_send(Message::Close(None));
     }
     for sender in released.display_stream_senders {
