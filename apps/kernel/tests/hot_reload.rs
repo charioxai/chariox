@@ -448,6 +448,63 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     );
 }
 
+/// A client resumes its subscription on the attachment it had: a browser whose
+/// attachment is gone waits for its Room to retry (seconds) before it shows the
+/// output again.
+#[test]
+fn a_client_keeps_its_attachment_across_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-attach-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        // `request` fails on an error answer such as `attachment_not_found`.
+        let pumped = request(
+            &mut socket,
+            json!({"PumpTerminalOutput": {"session_id": session_id, "attachment_id": attachment_id}}),
+        )
+        .await;
+        assert!(pumped["TerminalOutput"].is_object(), "{pumped}");
+    });
+}
+
 /// A local browser picks a kernel only while its presence record says it is
 /// on the relay, so the new program must say so as soon as it is back on the
 /// relay, not at its next presence heartbeat (10 s later in the web drill).

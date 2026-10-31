@@ -18,7 +18,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 4;
+pub const HANDOVER_FORMAT: u32 = 5;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -27,9 +27,22 @@ struct Handover {
     format: u32,
     terminals: Vec<TerminalHandover>,
     providers: Vec<ProviderHandover>,
+    attachments: Vec<AttachmentHandover>,
     // A pipe holding the providers' launch credentials: they stay in memory.
     credentials_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
+}
+
+/// A client's attachment to a session: the client resumes its subscription on
+/// it after the swap. (`RuntimeAttachment` leaves its owner out of what it
+/// serializes for clients.)
+#[derive(Debug, Serialize, Deserialize)]
+struct AttachmentHandover {
+    id: String,
+    session_id: String,
+    client_id: String,
+    capability_level: crate::attachment::ClientCapabilityLevel,
+    owner_user_id: String,
 }
 
 /// A provider run whose turn was running: the next program adopts it as the
@@ -102,6 +115,7 @@ struct Start {
 static START: OnceLock<Start> = OnceLock::new();
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
+static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -179,14 +193,31 @@ pub fn receive() {
         serde_json::json!({
             "terminals": handover.terminals.len(),
             "provider_runs": handover.providers.iter().map(|p| &p.run_id).collect::<Vec<_>>(),
+            "attachments": handover.attachments.len(),
         }),
     );
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
+    *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
     std::mem::take(&mut *lock(&RECEIVED_TERMINALS))
+}
+
+pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
+    std::mem::take(&mut *lock(&RECEIVED_ATTACHMENTS))
+        .into_iter()
+        .map(|a| {
+            crate::attachment::RuntimeAttachment::new(
+                a.id,
+                a.session_id,
+                a.client_id,
+                a.capability_level,
+                a.owner_user_id,
+            )
+        })
+        .collect()
 }
 
 // Listening sockets stay open across the swap: a connection that arrives
@@ -465,6 +496,22 @@ pub(crate) fn hand_over_claude(
     }
 }
 
+/// Keeps the attachments of a stopping session for the next program.
+pub(crate) fn hand_over_attachments(attachments: &[crate::attachment::RuntimeAttachment]) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared
+            .handover
+            .attachments
+            .extend(attachments.iter().map(|a| AttachmentHandover {
+                id: a.id().to_string(),
+                session_id: a.session_id().to_string(),
+                client_id: a.client_id().to_string(),
+                capability_level: a.capability_level(),
+                owner_user_id: a.owner_user_id().to_string(),
+            }));
+    }
+}
+
 /// Offers a provider server's PTY to a running turn that may be handed over.
 /// The PTY of a run whose turn is not handed over ends before the swap.
 pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::PtyHandover) {
@@ -565,6 +612,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             format: HANDOVER_FORMAT,
             terminals,
             providers: Vec::new(),
+            attachments: Vec::new(),
             credentials_fd: None,
             listeners: lock(&LISTENERS).clone(),
         }),
