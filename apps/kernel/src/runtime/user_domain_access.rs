@@ -64,12 +64,14 @@ impl Grant {
 /// What a hot reload hands over: each user's focus and the live grants, so
 /// agents keep the tools their providers listed. Resources and subscriptions
 /// end with the kernel browser.
+#[cfg(unix)]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AccessHandover {
     focus: BTreeMap<String, String>,
     grants: Vec<GrantHandover>,
 }
 
+#[cfg(unix)]
 #[derive(Debug, Serialize, Deserialize)]
 struct GrantHandover {
     user: String,
@@ -143,6 +145,7 @@ impl UserDomainAccess {
         }
         self.changed(user);
     }
+    #[cfg(unix)]
     pub(crate) fn hand_over(&self) -> AccessHandover {
         let now = Instant::now();
         AccessHandover {
@@ -161,6 +164,7 @@ impl UserDomainAccess {
                 .collect(),
         }
     }
+    #[cfg(unix)]
     pub(crate) fn adopt(&mut self, handover: AccessHandover) {
         let now_ms = crate::session::unix_epoch_ms();
         for handed in handover.grants {
