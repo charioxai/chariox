@@ -161,3 +161,22 @@ test('MP-08/MP-10 an old browser death check cannot close a replacement',async()
   await new Promise(resolve=>setTimeout(resolve,10));assert.equal(closed,0);
  }finally{host.stopWatchingBrowser?.();}
 });
+
+// MP-08/MP-10: github.com's hero video is HEVC only; Linux Chrome has no software HEVC decoder and keeps VA-API off by
+// default, so a host that can decode in hardware must launch with it, and a host that cannot launches unchanged.
+test('MP-08/MP-10 a Linux host with a usable VA-API render node launches the browser with hardware video decode',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ const {videoDecodeArguments}=await import('./kernel-browser-linux.mjs');
+ const host=(files,denied=[])=>({readdirSync:directory=>{if(!files[directory])throw Object.assign(new Error('ENOENT'),{code:'ENOENT'});return files[directory]},accessSync:file=>{if(denied.includes(file))throw Object.assign(new Error('EACCES'),{code:'EACCES'})}});
+ const gpu={'/dev/dri':['by-path','card0','renderD128'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']};
+ const decode=videoDecodeArguments({},host(gpu));
+ assert.deepEqual(decode,['--enable-features=AcceleratedVideoDecodeLinuxGL']);
+ assert(launchArguments('/private',false,true,1,decode).includes('--enable-features=AcceleratedVideoDecodeLinuxGL'));
+ for(const [files,denied,environment] of [
+  [{'/dev/dri':['by-path','card0'],'/usr/lib/x86_64-linux-gnu/dri':['iHD_drv_video.so']},[],{}], // a display controller without a render node
+  [gpu,['/dev/dri/renderD128'],{}], // a render node this user cannot open
+  [{'/dev/dri':['renderD128']},[],{}], // no VA-API driver
+  [gpu,[],{LIBVA_DRIVERS_PATH:'/opt/empty'}], // the configured driver path has none
+ ])assert.deepEqual(videoDecodeArguments(environment,host(files,denied)),[]);
+ assert(!launchArguments('/private',false,true).some(arg=>arg.startsWith('--enable-features')),'the default launch is unchanged');
+});

@@ -222,7 +222,16 @@ impl KernelRuntimeState {
         let result = tokio::task::spawn_blocking(move || {
             let _unlock = unlock;
             unlocked(&config)?;
-            profiles.install_account_copy(&config, &owner, &binding, &credential)
+            let receipt = profiles.install_account_copy(&config, &owner, &binding, &credential)?;
+            // "Ask every time": the owner's unlock covered this one copy.
+            let vault = &config.user_config.credential_vault;
+            if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
+                && vault.unlock_policy == crate::config::CredentialVaultUnlockPolicy::Always
+            {
+                crate::secret::lock_chariox_encrypted_vault(expand_vault_path(&vault.path))?;
+                crate::secret::clear_vault_secret_process_cache()?;
+            }
+            Ok(receipt)
         })
         .await
         .map_err(|_| failure("provider_account_copy_install_failed"))?;

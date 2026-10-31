@@ -555,6 +555,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-observation-regions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-observation-regions.mjs" "Browser Controller runtime dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-capture-presentation.mjs" "Browser Controller runtime dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-focus-world.mjs" "Browser Controller focus world dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cursor.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cursor.mjs" "Browser Controller cursor dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-display.mjs" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical-display.py" "$SLICE_NAME:/opt/chariox-slice/canonical-display.py" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical_vnc.py" "$SLICE_NAME:/opt/chariox-slice/canonical_vnc.py" "Canonical display support"

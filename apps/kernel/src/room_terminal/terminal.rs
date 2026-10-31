@@ -11,7 +11,6 @@ use super::events::{
 use super::output_log::OutputLog;
 use super::plain_text::PlainText;
 use super::screen::Screen;
-use super::session_sweep::SessionSweep;
 use super::shell_marks::{MarkScanner, ShellMark};
 use super::store::TerminalRecord;
 use super::types::{
@@ -20,6 +19,7 @@ use super::types::{
 };
 use super::types::{RoomTerminalEventKind, RoomTerminalWatch};
 use crate::pty::PtyManager;
+use crate::runtime::process_resources::SessionSweep;
 
 /// Longest a shell may take to reach its first prompt and still count as starting.
 const FIRST_PROMPT_LIMIT: Duration = Duration::from_secs(30);
@@ -30,6 +30,8 @@ pub(super) struct Terminal {
     pub run_id: Option<String>,
     pub shell_pid: Option<i32>,
     pub session_sweep: Option<SessionSweep>,
+    /// The shell exited and the sweep of its session is under way.
+    pub exit_swept: bool,
     pub screen: Screen,
     pub log: OutputLog,
     pub plain: PlainText,
@@ -149,6 +151,7 @@ impl Terminal {
             run_id,
             shell_pid,
             session_sweep: shell_pid.map(SessionSweep::capture),
+            exit_swept: false,
             screen,
             log: OutputLog::default(),
             plain: PlainText::new(),

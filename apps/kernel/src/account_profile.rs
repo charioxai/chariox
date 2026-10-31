@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use base64::Engine as _;
@@ -962,6 +963,9 @@ pub struct ProviderAccountProfileRegistry {
     path: PathBuf,
     document: Arc<RwLock<RegistryDocument>>,
     usage_refresh_attempts: Arc<ProviderAccountUsageRefreshCoordinator>,
+    /// Counts saved changes, so the relay connector republishes the logins it
+    /// advertises when one is added, renamed or signed out after it connected.
+    generation: Arc<AtomicU64>,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1047,6 +1051,7 @@ impl ProviderAccountProfileRegistry {
             path,
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
+            generation: Arc::new(AtomicU64::new(0)),
         };
         if changed {
             let document = registry.read_document()?;
@@ -3484,7 +3489,13 @@ impl ProviderAccountProfileRegistry {
     fn persist_locked(&self, document: &RegistryDocument) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(document)
             .map_err(|error| registry_error("write account profile registry", error.to_string()))?;
-        atomic_write_private_internal(&self.path, &bytes, true)
+        atomic_write_private_internal(&self.path, &bytes, true)?;
+        self.generation.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 }
 

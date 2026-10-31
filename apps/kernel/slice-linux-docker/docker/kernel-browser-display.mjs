@@ -473,13 +473,16 @@ export class DisplayStream {
     }
     return packet;
   }
-  // P1: a parked Tab display sends nothing while the viewer paints the DOM mirror; its source reads nothing back.
-  // The next frame after unparking is independent: the viewer kept no reference it can trust.
-  park(parked) {
-    parked = Boolean(parked);
-    if (parked === Boolean(this.parked)) return;
-    this.parked = parked; this.invalidate(true,'park'); this.regionSource?.park?.(parked);
-    if (!parked) { for (const wake of this.unparkWaiters ?? []) wake(); this.unparkWaiters = null; }
+  // P1: a parked display sends nothing and its source reads nothing back; the next frame after unparking is independent:
+  // the viewer kept no reference it can trust. Two holders park it, each cleared only by its own owner: the viewer
+  // painting the DOM mirror (a Tab's next commit clears it) and the kernel pump while nobody watches (`watch`).
+  get parked() { return Boolean(this.viewParked || this.watchParked); }
+  park(parked, watch = false) {
+    const was = this.parked;
+    this[watch ? 'watchParked' : 'viewParked'] = Boolean(parked);
+    if (this.parked === was) return;
+    this.invalidate(true,'park'); this.regionSource?.park?.(this.parked);
+    if (!this.parked) { for (const wake of this.unparkWaiters ?? []) wake(); this.unparkWaiters = null; }
   }
   waitUnparked(ms) {
     if (!this.parked) return Promise.resolve();
@@ -489,5 +492,5 @@ export class DisplayStream {
       const timer = setTimeout(done, ms); waiters.add(done);
     });
   }
-  async close() { clearTimeout(this.timer);this.endLease(); this.park(false); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
+  async close() { clearTimeout(this.timer);this.endLease(); this.park(false); this.park(false, true); this.invalidate(); await this.producer?.close();await this.refiner?.close();await this.pixels.close();await this.encoder.close(); }
 }

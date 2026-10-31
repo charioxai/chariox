@@ -1347,6 +1347,7 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         app.pty_mut().remove_process(&f.run).unwrap();
         app.pty_mut()
             .spawn(crate::pty::PtySpawnRequest {
+                agent: None,
                 process_key: f.run.clone(),
                 provider_run_id: f.run.clone(),
                 program: "/bin/sh".into(),

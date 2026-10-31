@@ -31,10 +31,13 @@ uses an explicit `copyable` flag; native authentication type retains its meaning
 Already installed copies are excluded. Removal makes the source available for
 a new explicit copy operation.
 
-The receiving kernel binds an existing detached `RuntimeInteraction` to the
-source profile and key, destination key, operation ID and replacement choice.
-Only an explicit owner answer through `AnswerUserDomainInteraction` continues;
-cancellation, expiry and a dropped waiter transfer nothing. The client waits
+When the owner's own client (a terminal caller) sends the request, choosing the
+offer is the consent and the receiving kernel raises no decision. For any other
+caller (an agent, a leased or remote run, a Metaagent) it binds an existing detached
+`RuntimeInteraction` to the source profile and key, destination key, operation ID and
+replacement choice. Only an explicit owner answer through `AnswerUserDomainInteraction`
+continues; cancellation, expiry and a dropped waiter transfer nothing. The source
+kernel's rules for releasing a login are the same in both cases. The client waits
 without replaying this authorization request. After acceptance, the authenticated
 recipient asks the source through `RequestProviderAccountCopy`. The source binds
 the recipient to the relay-authenticated kernel identity and key, then uses the

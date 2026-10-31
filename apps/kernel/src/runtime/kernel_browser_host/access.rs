@@ -67,13 +67,9 @@ impl KernelBrowserHost {
             .iter()
             .map(|old| old.agent.clone())
             .collect::<Vec<_>>();
-        let subscriptions = retired
-            .iter()
-            .flat_map(|old| old.subscriptions.iter().cloned())
-            .collect();
         let scopes = retired.into_iter().map(|old| old.scope).collect();
         self.retire_actors(user, &agents, model);
-        Self::cancel_subscriptions(backend, subscriptions, scopes);
+        Self::retire_scopes(backend, scopes);
         result
     }
 
@@ -231,18 +227,6 @@ impl KernelBrowserHost {
         for (user, agent, epoch) in due {
             self.revoke_grants_at_epoch(&user, Some(&agent), Some(epoch));
         }
-        let expired = {
-            let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            state
-                .access
-                .expired_subscriptions(Instant::now())
-                .into_iter()
-                .map(|(user, ids)| (state.browsers.get(&user).cloned(), ids))
-                .collect::<Vec<_>>()
-        };
-        for (backend, ids) in expired {
-            Self::cancel_subscriptions(backend, ids, Vec::new());
-        }
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -315,16 +299,6 @@ impl KernelBrowserHost {
     pub(crate) fn bind_activity(&self, user: &str, agent: &str, session: &str, busy: bool) {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let holders = state.access.revocation_set(user, Some(agent));
-        let subscriptions = holders
-            .iter()
-            .flat_map(|(owner, id)| {
-                state
-                    .access
-                    .grant(owner, id)
-                    .map(|grant| grant.subscriptions.keys().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default()
-            })
-            .collect();
         let scopes = holders
             .iter()
             .filter_map(|(owner, id)| state.access.subscription_owner(owner, id))
@@ -348,7 +322,7 @@ impl KernelBrowserHost {
                 &holders.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
                 model,
             );
-            Self::cancel_subscriptions(backend, subscriptions, scopes);
+            Self::retire_scopes(backend, scopes);
             crate::transport::mcp_server::catalog_changed();
         } else {
             drop(state);
@@ -405,7 +379,7 @@ impl KernelBrowserHost {
             .iter()
             .filter_map(|(owner, id)| state.access.subscription_owner(owner, id))
             .collect();
-        let subscriptions = state.access.revoke(user, agent);
+        state.access.revoke(user, agent);
         state
             .loaded
             .retain(|(owner, id, _)| owner != user || !holders.iter().any(|(_, held)| held == id));
@@ -414,7 +388,7 @@ impl KernelBrowserHost {
         let retired = holders.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
         drop(state);
         self.retire_actors(user, &retired, model);
-        Self::cancel_subscriptions(backend, subscriptions, scopes);
+        Self::retire_scopes(backend, scopes);
         crate::transport::mcp_server::catalog_changed();
     }
     fn retire_actors(
@@ -437,19 +411,21 @@ impl KernelBrowserHost {
             }
         }
     }
-    fn cancel_subscriptions(
+    fn retire_scopes(
         backend: Option<Arc<Mutex<BrowserControllerProcessStdioBackend>>>,
-        subscriptions: Vec<String>,
         scopes: Vec<String>,
     ) {
-        if subscriptions.is_empty() && scopes.is_empty() {
+        if scopes.is_empty() {
             return;
         }
         if let Some(backend) = backend {
             std::thread::spawn(move || {
                 if let Ok(mut backend) = backend.lock() {
                     // Internal cleanup never starts/restarts a browser or observes pixels.
-                    let _ = backend.host_request("host.revoke_subscriptions", serde_json::json!({"subscription_ids":subscriptions,"subscription_owners":scopes}));
+                    let _ = backend.host_request(
+                        "host.revoke_subscriptions",
+                        serde_json::json!({"subscription_owners":scopes}),
+                    );
                 }
             });
         }
@@ -564,9 +540,6 @@ impl KernelBrowserHost {
         if method == "host.browser" && params["op"] == "stop" {
             require_focus(&state, &admission.user, agent)?;
         }
-        state
-            .access
-            .prune_subscriptions(&admission.user, agent, Instant::now());
         // MP-08/MP-11 SB-02: Stop shuts down the owner's entire browser,
         // including unrelated tabs/displays. New-tabs approval cannot grant it.
         if params["op"] == "stop" && state.access.focused(&admission.user) != Some(agent) {
@@ -586,31 +559,11 @@ impl KernelBrowserHost {
         {
             return Err("MP-08: user-domain resource limit reached; revoke unused grants".into());
         }
-        if params["op"] == "subscribe"
-            && state
-                .access
-                .grant(&admission.user, agent)?
-                .subscriptions
-                .len()
-                >= 16
-        {
-            return Err("MP-08: user-domain subscription limit reached".into());
+        // MP-11: agents own no stream; a subscription id from one is foreign.
+        if params["subscription_id"].is_string() {
+            return Err("MP-11: foreign or revoked browser subscription".into());
         }
-        if let Some(id) = params["subscription_id"].as_str() {
-            let tab = state
-                .access
-                .grant(&admission.user, agent)?
-                .subscriptions
-                .get(id)
-                .cloned()
-                .ok_or("MP-11: foreign or revoked browser subscription")?;
-            state.access.claim(
-                &admission.user,
-                agent,
-                UserDomainResource::BrowserTab { tab_id: tab },
-                false,
-            )?;
-        } else if let Some(tab) = params["tab_id"].as_str() {
+        if let Some(tab) = params["tab_id"].as_str() {
             state.access.claim(
                 &admission.user,
                 agent,

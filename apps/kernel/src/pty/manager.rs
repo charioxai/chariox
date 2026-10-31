@@ -275,6 +275,15 @@ pub struct PtySpawnRequest {
     pub working_directory: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
+    /// Set for a provider process: what its tools start belongs to the agent,
+    /// across restarts of the process.
+    pub agent: Option<PtyAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PtyAgent {
+    pub session_id: String,
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +323,7 @@ impl PtyProcessState {
 
 struct PtyProcess {
     resources: crate::runtime::process_resources::ProcessDomain,
+    agent: Option<PtyAgent>,
     discovery_config: Option<crate::provider::OpenCodeDiscoveryConfigDirectory>,
     child: Box<dyn Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
@@ -325,6 +335,38 @@ struct PtyProcess {
     exit_code: Option<u32>,
     signal: Option<String>,
     reference_count: usize,
+}
+
+impl PtyProcess {
+    /// The process ends for a restart, not with its agent: jobs its tools
+    /// detached stay the agent's, under the same limit. A process that still
+    /// runs takes the commands it is running with it. Stopping or deleting
+    /// the agent ends the jobs.
+    fn hand_jobs_to_agent(&mut self, running: bool) {
+        let Some(agent) = self
+            .agent
+            .take()
+            .filter(|_| self.resources.memory_limit_bytes().is_none())
+        else {
+            return;
+        };
+        if let Some(leader) = running
+            .then(|| {
+                self.child
+                    .process_id()
+                    .and_then(|pid| i32::try_from(pid).ok())
+            })
+            .flatten()
+        {
+            crate::runtime::process_resources::SessionSweep::capture(leader)
+                .stop_with_descendants();
+        }
+        self.resources.release(
+            &agent.session_id,
+            crate::runtime::process_resources::SessionProcessOwner::Agent(agent.agent_id),
+            None,
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,6 +579,10 @@ impl PtyManager {
             working_directory: run.working_directory().cloned(),
             cols: 120,
             rows: 40,
+            agent: run.agent_instance_id().map(|agent_id| PtyAgent {
+                session_id: run.session_id().to_string(),
+                agent_id: agent_id.to_string(),
+            }),
         };
 
         self.spawn_with_credentials(request, credentials, false)?;
@@ -631,13 +677,18 @@ impl PtyManager {
             disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
         }
 
-        let prepared =
-            crate::runtime::process_resources::PreparedDomain::new().map_err(|error| {
-                DaemonError::PtySpawn {
-                    provider_run_id: request.provider_run_id.clone(),
-                    message: error.to_string(),
-                }
-            })?;
+        let prepared = crate::runtime::process_resources::PreparedDomain::new(
+            request
+                .agent
+                .as_ref()
+                .map_or(request.provider_run_id.as_str(), |agent| {
+                    agent.agent_id.as_str()
+                }),
+        )
+        .map_err(|error| DaemonError::PtySpawn {
+            provider_run_id: request.provider_run_id.clone(),
+            message: error.to_string(),
+        })?;
         #[cfg(unix)]
         let inner_program = request.program.clone();
         let (program, args) = prepared.command(request.program, request.args);
@@ -708,6 +759,7 @@ impl PtyManager {
         self.attach(
             request.process_key,
             request.provider_run_id,
+            request.agent,
             pair.master,
             child,
             resources,
@@ -720,6 +772,7 @@ impl PtyManager {
         &mut self,
         process_key: String,
         provider_run_id: String,
+        agent: Option<PtyAgent>,
         master: Box<dyn MasterPty + Send>,
         mut child: Box<dyn Child + Send + Sync>,
         resources: crate::runtime::process_resources::ProcessDomain,
@@ -844,6 +897,7 @@ impl PtyManager {
                 discovery_config: None,
                 child,
                 resources,
+                agent,
                 master,
                 process_group,
                 input_writer,
@@ -934,6 +988,7 @@ impl PtyManager {
                 .ok_or_else(|| unavailable("the PTY child has no PID"))?,
             process_group: process.process_group,
             cgroup: process.resources.cgroup_path(),
+            agent: process.agent.clone(),
         })
     }
 
@@ -951,8 +1006,13 @@ impl PtyManager {
         };
         // The handover named this fd for this PTY alone.
         let master = unsafe { AdoptedMaster::from_raw(handover.master_fd) };
+        let unit = handover
+            .agent
+            .as_ref()
+            .map_or(process_key.as_str(), |agent| agent.agent_id.as_str());
         let resources = crate::runtime::process_resources::PreparedDomain::adopted(
-            handover.cgroup.clone(),
+            unit,
+            handover.cgroup.as_deref(),
             handover.pid,
         )
         .and_then(|domain| domain.start(handover.pid))
@@ -961,6 +1021,7 @@ impl PtyManager {
         self.attach(
             process_key.clone(),
             process_key,
+            handover.agent.clone(),
             Box::new(master),
             Box::new(AdoptedChild::new(handover.pid)),
             resources,
@@ -1373,6 +1434,37 @@ impl PtyManager {
         Ok(None)
     }
 
+    /// The owner ends this process's session itself (a Room terminal's sweep),
+    /// so exiting or removing the process does not also kill its process group.
+    pub fn hand_group_cleanup_to_owner(&mut self, provider_run_id: &str) {
+        if let Some(process) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get_mut(key))
+        {
+            process.process_group = None;
+        }
+    }
+
+    /// Lets jobs that left an exited process's session outlive it; see
+    /// `ProcessDomain::release`.
+    pub fn release_exited_process_jobs(
+        &mut self,
+        provider_run_id: &str,
+        session_id: &str,
+        owner: crate::runtime::process_resources::SessionProcessOwner,
+        opened_by: Option<String>,
+    ) {
+        if let Some(process) = self
+            .process_aliases
+            .get(provider_run_id)
+            .and_then(|key| self.processes.get_mut(key))
+            .filter(|process| process.exit_code.is_some() || process.signal.is_some())
+        {
+            process.resources.release(session_id, owner, opened_by);
+        }
+    }
+
     pub fn remove_process(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
         let Some(process_key) = self.process_aliases.remove(provider_run_id) else {
             return Ok(false);
@@ -1411,6 +1503,7 @@ impl PtyManager {
 
         let status = if process.exit_code.is_some() || process.signal.is_some() {
             // Already reaped by output drain or liveness polling.
+            process.hand_jobs_to_agent(false);
             return Ok(true);
         } else {
             try_wait_pty_process(&mut process).map_err(|error| DaemonError::PtyCleanup {
@@ -1419,6 +1512,7 @@ impl PtyManager {
             })?
         };
 
+        process.hand_jobs_to_agent(status.is_none());
         if status.is_none() {
             terminate_pty_process_group(process.master.as_ref(), process.process_group);
             process
@@ -1801,6 +1895,7 @@ mod tests {
             let mut manager = PtyManager::new();
             manager
                 .spawn(PtySpawnRequest {
+                    agent: None,
                     process_key: RUN.into(),
                     provider_run_id: RUN.into(),
                     program: "/usr/bin/bwrap".into(),
@@ -1874,6 +1969,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:real-exit-code".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1918,6 +2014,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:early-exit-diagnostic".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -1961,6 +2058,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:real-signal".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -2027,6 +2125,7 @@ mod tests {
         fixture
             .0
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:with-descendant".to_string(),
                 provider_run_id: RUN.to_string(),
                 program: "/bin/sh".to_string(),
@@ -2110,6 +2209,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:with-orphan-descendant".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -2211,6 +2311,7 @@ mod tests {
         let id = "mp08-mp10-reaped-leader";
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: id.into(),
                 provider_run_id: id.into(),
                 program: "/bin/sh".into(),
@@ -2379,6 +2480,7 @@ mod tests {
         let mut manager = PtyManager::new();
         manager
             .spawn(PtySpawnRequest {
+                agent: None,
                 process_key: "stub-pty:no-echo".to_string(),
                 provider_run_id: provider_run_id.to_string(),
                 program: "/bin/sh".to_string(),
@@ -2671,6 +2773,7 @@ mod tests {
             ("memory-sibling", "/bin/sleep", vec!["30"]),
         ] {
             pty.spawn(PtySpawnRequest {
+                agent: None,
                 process_key: run.into(),
                 provider_run_id: run.into(),
                 program: program.into(),

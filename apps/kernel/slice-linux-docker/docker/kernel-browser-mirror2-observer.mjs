@@ -117,6 +117,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const checkedClosed = new WeakMap(), closedTodo = new Set();
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
+    // The HTML document mode, on snapshots only; limited-quirks (CSS1Compat) is told apart by its doctype, as the parser chose it.
+    const documentMode = () => document.compatMode === 'BackCompat' ? 'quirks'
+      : /^-\/\/W3C\/\/DTD XHTML 1\.0 (Frameset|Transitional)\/\//i.test(document.doctype?.publicId ?? '')
+        || !!document.doctype?.systemId && /^-\/\/W3C\/\/DTD HTML 4\.01 (Frameset|Transitional)\/\//i.test(document.doctype.publicId) ? 'limited-quirks' : 'no-quirks';
     const fragments = new Map(), fragmentOf = doc => { const hash = doc.location?.hash ?? ''; return hash.length > 1 ? hash.slice(1, 2049) : null; };
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
@@ -264,10 +268,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Chrome serializes a var() shorthand that a later declaration partly overrides as empty longhands; such
     // a linked sheet is read as source text through the kernel instead of through the CSSOM.
     const LOSSY = /[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;
+    // A copy that parses to fewer rules than the page's sheet (imports are inlined, unknown namespaces dropped) would
+    // render a different page: a linked sheet is then read as source text through the kernel, an inline one is its own text.
+    const wholeCopy = (sheet, text) => {
+      let own = 0; for (const rule of sheet.cssRules) if (rule.type !== 3 && rule.type !== 10) own++;
+      const copy = new CSSStyleSheet(); copy.replaceSync(text); return copy.cssRules.length >= own;
+    };
     const css = (sheet, base) => {
       const text = sheetText(sheet, base, 0, (chunk, at) => sanitizeMirrorCss(chunk, at, resource), null, Boolean(sheet.href));
-      if (!LOSSY.test(text)) return text;
-      if (sheet.href) throw new Error('lossy CSSOM serialization');
+      if (!LOSSY.test(text) && wholeCopy(sheet, text)) return text;
+      if (sheet.href) throw new Error('incomplete CSSOM serialization');
       // An inline <style>: its own source text is not lossy.
       const source = sheet.ownerNode?.localName === 'style' && !sheet.ownerNode.sheet?.media?.length ? sheet.ownerNode.textContent : null;
       return source ? sanitizeMirrorCss(source, base, resource) : text;
@@ -784,7 +794,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // by time after 256 visits, with the same byte/document bounds.
       const root = idOf(document), out = chunk(1024, 1024);
       adoptedDirty = false;
-      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header() };
+      return { root, nodes: out, ops: fontOps([], true), ...take(), ...header(), document_mode: documentMode() };
     };
     const svgImageKey = node => { const href = node.getAttribute('href') ?? node.getAttribute('xlink:href'); return href && !href.startsWith('#') ? resource(href, node.baseURI, 'image') : null; };
     // Protocol 501: `<use href="sprite.svg#icon">` names a symbol in another document (no fragment: nothing).
@@ -1112,18 +1122,22 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A point (in the node's own viewport) outside what its scrolling ancestors and every enclosing frame show is not
     // reachable as it stands: the page scrolls it into view first (reveal), as for a viewer that scrolled ahead.
     // Clip boxes are taken in viewport coordinates, so a CSS-scaled pane clips by its scaled padding box.
-    const clipped = (node, x, y) => {
+    // With `nearest` the point moves to the closest visible one instead (the step stays inside the same panes and frames).
+    // Returns the point in the top viewport, or null when it is clipped.
+    const clip = (node, x, y, nearest = false) => {
+      const into = (value, low, high) => value >= low && value < high ? value : nearest ? Math.min(Math.max(value, low), high - 1) : null;
       for (let view = node.ownerDocument.defaultView; ; view = view.parent) {
-        if (x < 0 || y < 0 || x >= view.innerWidth || y >= view.innerHeight) return true;
-        for (let el = node.parentElement ?? node.getRootNode()?.host; el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
+        x = into(x, 0, view.innerWidth); y = into(y, 0, view.innerHeight);
+        for (let el = node.parentElement ?? node.getRootNode()?.host; x !== null && y !== null && el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
           const style = getComputedStyle(el);
           if (style.position === 'fixed') break;
           if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
           const r = el.getBoundingClientRect(), sx = el.offsetWidth > 0 ? r.width / el.offsetWidth : 1, sy = el.offsetHeight > 0 ? r.height / el.offsetHeight : 1;
           const left = r.x + el.clientLeft * sx, top = r.y + el.clientTop * sy;
-          if (x < left || y < top || x >= left + el.clientWidth * sx || y >= top + el.clientHeight * sy) return true;
+          x = into(x, left, left + el.clientWidth * sx); y = into(y, top, top + el.clientHeight * sy);
         }
-        if (view === window) return false;
+        if (x === null || y === null) return null;
+        if (view === window) return { x, y };
         node = view.frameElement; if (!node) throw new Error('mirror2 frame unavailable');
         const step = frameStep(node); x = step.x + step.sx * x; y = step.y + step.sy * y;
       }
@@ -1140,9 +1154,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      if (clipped(node, x, y)) throw new Error('mirror2 offscreen node');
-      const map = frameMap(node); x = map.tx + map.sx * x; y = map.ty + map.sy * y;
-      return { x: Math.floor(x), y: Math.floor(y) };
+      // A wheel step aimed at a node the page has scrolled past goes to the nearest visible point of the same panes and
+      // frames: the viewer's earlier steps moved the node, and showing it again would take them back.
+      const at = clip(node, x, y, request.wheel === true);
+      if (!at) throw new Error('mirror2 offscreen node');
+      return { x: Math.floor(at.x), y: Math.floor(at.y) };
     };
     // The viewer is scrolled ahead of the native page: bring the node into the native viewport and say where the page now is.
     const reveal = request => {
@@ -1210,12 +1226,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
     const idOfNode = function () { return this && mirrored(this) || null; };
     // Content-box origin of a cross-origin frame element in this viewport.
-    // With the point the viewer clicked in that frame's own viewport, a frame clipped away at it is reported offscreen.
-    const frameOrigin = (id, local) => {
+    // With the point the viewer clicked in that frame's own viewport, a frame clipped away at it is reported offscreen
+    // (a wheel step moves to the nearest visible point instead); the point in this viewport follows the origin and scale.
+    const frameOrigin = (id, local, wheel = false) => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
-      const up = frameMap(node), own = frameStep(node);
-      if (local && clipped(node, own.x + own.sx * local[0], own.y + own.sy * local[1])) throw new Error('mirror2 offscreen node');
-      return [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
+      const up = frameMap(node), own = frameStep(node), origin = [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
+      if (!local) return origin;
+      const at = clip(node, own.x + own.sx * local[0], own.y + own.sy * local[1], wheel);
+      if (!at) throw new Error('mirror2 offscreen node');
+      return [...origin, at.x, at.y];
     };
     // Live focus inside a cross-origin frame: the frame element's mirror id.
     const activeForeign = () => {

@@ -105,7 +105,8 @@ export class MirrorFrames {
   async sheetOps(child, slot, sheets = []) {
     const ops = [];
     for (const { id, url } of sheets) {
-      const text = await this.mirror.crossOriginSheet(child, url).catch(error => { this.failed('sheet', error); return null; });
+      // An incomplete copy is never published: the verdict reaches the caller, which shows the frame as video.
+      const text = await this.mirror.crossOriginSheet(child, url).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; this.failed('sheet', error); return null; });
       if (text !== null) ops.push(rebaseOp({ op: 'css', id, css: text }, slot));
     }
     return ops;
@@ -163,7 +164,9 @@ export class MirrorFrames {
   // Deltas of attached children; a navigated child is re-snapshotted under its owner.
   async drain(stream, policy, tab) {
     const out = { ops: [], resources: [], changed: [] };
-    for (const [owner, entry] of stream.frames) {
+    // Each child attached when the credit began, once: a re-mounted child re-enters the map and is drained next credit.
+    for (const [owner, entry] of [...stream.frames]) {
+      if (stream.frames.get(owner) !== entry) continue; // forgotten with the child that hosted it
       try {
         const loaderId = await this.loaderId(entry.child);
         if (loaderId !== entry.loaderId) throw new Error('navigated');
@@ -185,7 +188,8 @@ export class MirrorFrames {
         // The child's window position is its header, not an op: forward its changes.
         if (JSON.stringify(delta.scroll) !== entry.scroll) { entry.scroll = JSON.stringify(delta.scroll); out.ops.push({ op: 'scroll', id: entry.documentId, scroll: delta.scroll }); }
         if ((delta.fragment ?? null) !== entry.fragment) { entry.fragment = delta.fragment ?? null; out.ops.push({ op: 'fragment', id: entry.documentId, fragment: entry.fragment }); }
-      } catch {
+      } catch (error) {
+        if (error?.mirrorReason === 'css_incomplete') throw error; // the page falls back to video
         // New child document (or lost world): fresh snapshot replaces the owner's child.
         this.forget(stream, entry);
         try {
@@ -194,7 +198,7 @@ export class MirrorFrames {
           const mounted = await this.mount(host, entry.hostSlot, stream, owner, frame, policy, tab, entry.depth);
           out.ops.push({ op: 'children', id: owner, children: [mounted.records[0].id], nodes: mounted.records }, ...mounted.ops);
           out.resources.push(...mounted.resources);
-        } catch {}
+        } catch (error) { if (error?.mirrorReason === 'css_incomplete') throw error; }
       }
     }
     return out;

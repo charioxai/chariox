@@ -1,23 +1,23 @@
 use super::*;
 
+/// A pool with room for everything: only owner-set caps apply.
+pub(super) fn roomy() -> Arc<pool::Pool> {
+    Arc::new(pool::Pool::new(1 << 50, false))
+}
+
 #[test]
 fn memory_override_rejects_invalid_and_overflowing_limits() {
     for value in ["", "0", "-1", "NaN", "15", "18446744073709551615"] {
-        assert!(configured_limit(Some(value)).is_err(), "{value}");
+        assert!(configured_cap(Some(value)).is_err(), "{value}");
     }
-    assert_eq!(configured_limit(None).unwrap(), 16384 * MIB);
-    assert_eq!(configured_limit(Some("64")).unwrap(), 64 * MIB);
+    assert_eq!(configured_cap(Some("64")).unwrap(), Some(64 * MIB));
 }
 
 #[cfg(unix)]
 #[test]
 fn watchdog_kills_only_its_owned_memory_tree_and_names_the_limit() {
     // Force the portable watchdog; the Linux cgroup path has its own drill.
-    let prepared = PreparedDomain {
-        limit: 24 * MIB,
-        #[cfg(target_os = "linux")]
-        cgroup: None,
-    };
+    let prepared = PreparedDomain::watchdog("watchdog-test", Some(24 * MIB), roomy());
     let mut sibling = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
@@ -48,7 +48,7 @@ fn watchdog_kills_only_its_owned_memory_tree_and_names_the_limit() {
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn linux_memory_limit_kills_the_entire_cgroup_and_cleans_it_up() {
-    let prepared = PreparedDomain::with_limit(32 * MIB).unwrap();
+    let prepared = PreparedDomain::in_pool("test-unit", Some(32 * MIB), roomy());
     let path = prepared
         .cgroup
         .as_ref()
@@ -82,11 +82,7 @@ fn linux_memory_limit_kills_the_entire_cgroup_and_cleans_it_up() {
 #[cfg(unix)]
 #[test]
 fn outside_end_uses_issued_ids_and_keeps_an_unrelated_process_alive() {
-    let prepared = PreparedDomain {
-        limit: 64 * MIB,
-        #[cfg(target_os = "linux")]
-        cgroup: None,
-    };
+    let prepared = PreparedDomain::watchdog("watchdog-test", Some(64 * MIB), roomy());
     let mut child = std::process::Command::new("sleep")
         .arg("30")
         .spawn()
@@ -126,7 +122,7 @@ fn outside_end_uses_issued_ids_and_keeps_an_unrelated_process_alive() {
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn cgroup_observations_include_children_that_detach_between_samples() {
     use std::io::{BufRead, Write};
-    let prepared = PreparedDomain::with_limit(64 * MIB).unwrap();
+    let prepared = PreparedDomain::in_pool("test-unit", Some(64 * MIB), roomy());
     assert!(prepared.cgroup.is_some(), "cgroup delegation required");
     let script = "import os,time,sys\nsys.stdin.readline()\np=os.fork()\nif p==0:\n c=os.fork()\n if c==0:\n  os.setsid(); time.sleep(30); os._exit(0)\n print(c,flush=True); os._exit(0)\nos.waitpid(p,0); time.sleep(30)";
     let (program, args) = prepared.command("python3".into(), vec!["-c".into(), script.into()]);
@@ -183,11 +179,7 @@ fn shell_exec_keeps_owned_root_and_subsequent_children_addressable() {
     let original = crate::runtime::kernel_access::process::inspect(child.id())
         .unwrap()
         .0;
-    let prepared = PreparedDomain {
-        limit: 64 * MIB,
-        #[cfg(target_os = "linux")]
-        cgroup: None,
-    };
+    let prepared = PreparedDomain::watchdog("watchdog-test", Some(64 * MIB), roomy());
     let domain = prepared.start(child.id()).unwrap();
     let key = format!("exec-tree-{}", child.id());
     domain.bind_key(&key);
@@ -258,15 +250,11 @@ fn shell_exec_keeps_owned_root_and_subsequent_children_addressable() {
 fn watchdog_covers_children_created_after_shell_exec() {
     use std::io::Write;
     let mut child = std::process::Command::new("/bin/sh")
-        .args(["-c", "read ready; exec /bin/sh -c 'python3 -c \"import time; x=bytearray(48*1024*1024); time.sleep(5)\" & wait'"])
+        .args(["-c", "read ready; exec /bin/sh -c 'python3 -c \"import time; x=bytearray(48*1024*1024); time.sleep(30)\" & wait'"])
         .stdin(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let prepared = PreparedDomain {
-        limit: 24 * MIB,
-        #[cfg(target_os = "linux")]
-        cgroup: None,
-    };
+    let prepared = PreparedDomain::watchdog("watchdog-test", Some(24 * MIB), roomy());
     let domain = prepared.start(child.id()).unwrap();
     let key = format!("watchdog-exec-{}", child.id());
     domain.bind_key(&key);
@@ -280,22 +268,28 @@ fn watchdog_covers_children_created_after_shell_exec() {
         .unwrap()
         .write_all(b"exec-now\n")
         .unwrap();
+    // The child over the cap is the command stopped; the shell waiting on it
+    // then ends by itself.
     let deadline = std::time::Instant::now() + Duration::from_secs(6);
-    while domain.memory_limit_bytes().is_none() && std::time::Instant::now() < deadline {
+    let mut exited = child.try_wait().unwrap().is_some();
+    while !exited && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(25));
+        exited = child.try_wait().unwrap().is_some();
     }
-    let limit = domain.memory_limit_bytes();
     let _ = child.kill();
     let _ = child.wait();
     drop(domain);
-    assert_eq!(limit, Some(24 * MIB));
+    assert!(
+        exited,
+        "the child created after exec was not stopped at the cap"
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn linux_controller_ends_a_runaway_before_the_oom_killer() {
-    let prepared = PreparedDomain::with_limit(32 * MIB).unwrap();
+    let prepared = PreparedDomain::in_pool("test-unit", Some(32 * MIB), roomy());
     let path = prepared
         .cgroup
         .as_ref()
@@ -318,7 +312,9 @@ fn linux_controller_ends_a_runaway_before_the_oom_killer() {
         std::thread::sleep(Duration::from_millis(25));
         exited = child.try_wait().unwrap().is_some();
     }
-    let events = std::fs::read_to_string(path.join("memory.events")).unwrap();
+    // The owner's unit carries the memory controller; the leaf only tells
+    // workloads apart.
+    let events = std::fs::read_to_string(path.parent().unwrap().join("memory.events")).unwrap();
     let _ = child.kill();
     let _ = child.wait();
     drop(domain);
@@ -340,4 +336,149 @@ fn linux_controller_ends_a_runaway_before_the_oom_killer() {
         "controller must own the stop: {events}"
     );
     assert!(!path.exists());
+}
+
+// What an owner started before a restart still counts against the limit its
+// current workload runs under.
+#[cfg(unix)]
+#[test]
+fn watchdog_counts_an_owners_workloads_together() {
+    let hog = || {
+        std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import time; x=bytearray(28*1024*1024); time.sleep(30)",
+            ])
+            .spawn()
+            .unwrap()
+    };
+    let (mut first, mut second) = (hog(), hog());
+    let pool = roomy();
+    let first_domain = PreparedDomain::watchdog("one-owner", Some(48 * MIB), pool.clone())
+        .start(first.id())
+        .unwrap();
+    let second_domain = PreparedDomain::watchdog("one-owner", Some(48 * MIB), pool)
+        .start(second.id())
+        .unwrap();
+    // Callers bind each workload's run key, which is what the registry lists.
+    first_domain.bind_key("owner-run-1");
+    second_domain.bind_key("owner-run-2");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while first_domain.memory_limit_bytes().is_none()
+        && second_domain.memory_limit_bytes().is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Each workload alone is under the limit; the owner's total is not. Ending
+    // one workload brings the total back under it, so only one need be stopped.
+    let limited = (
+        first_domain.memory_limit_bytes(),
+        second_domain.memory_limit_bytes(),
+    );
+    let _ = first.kill();
+    let _ = second.kill();
+    let _ = first.wait();
+    let _ = second.wait();
+    assert!(
+        limited.0 == Some(48 * MIB) || limited.1 == Some(48 * MIB),
+        "the owner's workloads together passed the limit and none was stopped: {limited:?}"
+    );
+}
+
+/// The parent the kernel's budget cgroups live in.
+#[cfg(target_os = "linux")]
+fn budget_parent() -> std::path::PathBuf {
+    let current = std::fs::read_to_string("/proc/self/cgroup").unwrap();
+    let relative = current
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .unwrap();
+    std::path::Path::new("/sys/fs/cgroup")
+        .join(relative.trim_start_matches('/'))
+        .parent()
+        .unwrap()
+        .to_owned()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn a_new_budget_removes_budgets_left_by_ended_kernels() {
+    let parent = budget_parent();
+    let mut ended = std::process::Command::new("true").spawn().unwrap();
+    let dead = ended.id();
+    ended.wait().unwrap();
+    let mut running = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let leftover = parent.join(format!("chariox-{dead}-1"));
+    std::fs::create_dir_all(leftover.join("unit-1").join("process-1")).unwrap();
+    let live = parent.join(format!("chariox-{}-1", running.id()));
+    std::fs::create_dir(&live).unwrap();
+    let prepared = PreparedDomain::in_pool("leftover-test", None, roomy());
+    let removed = !leftover.exists();
+    let kept = live.exists();
+    drop(prepared);
+    let _ = std::fs::remove_dir(&live);
+    let _ = std::fs::remove_dir(leftover.join("unit-1").join("process-1"));
+    let _ = std::fs::remove_dir(leftover.join("unit-1"));
+    let _ = std::fs::remove_dir(&leftover);
+    let _ = running.kill();
+    let _ = running.wait();
+    assert!(removed, "a budget left by an ended kernel stayed");
+    assert!(kept, "a running kernel's budget was removed");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn an_ending_budget_removes_what_was_left_inside_it() {
+    let prepared = PreparedDomain::in_pool("stale-test", None, roomy());
+    let budget = prepared
+        .cgroup
+        .as_ref()
+        .expect("cgroup delegation required")
+        .path()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_owned();
+    // A leaf whose processes outlived its removal deadline, emptied later.
+    std::fs::create_dir(budget.join("unit-stale")).unwrap();
+    drop(prepared);
+    let left = budget.exists();
+    let _ = std::fs::remove_dir(budget.join("unit-stale"));
+    let _ = std::fs::remove_dir(&budget);
+    assert!(!left, "the budget cgroup outlived its last workload");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a writable cgroup-v2 delegated parent"]
+fn an_owner_without_a_cap_has_no_default_limit() {
+    let prepared = PreparedDomain::in_pool("uncapped-test", None, roomy());
+    let unit = prepared
+        .cgroup
+        .as_ref()
+        .expect("cgroup delegation required")
+        .path()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let read = |name: &str| std::fs::read_to_string(unit.join(name)).unwrap();
+    let (high, max, group) = (
+        read("memory.high"),
+        read("memory.max"),
+        read("memory.oom.group"),
+    );
+    drop(prepared);
+    assert_eq!(high.trim(), "max", "a default per-owner throttle");
+    assert_eq!(max.trim(), "max", "a default per-owner limit");
+    assert_eq!(
+        group.trim(),
+        "0",
+        "a breach would end every process of the owner"
+    );
 }

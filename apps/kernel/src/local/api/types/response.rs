@@ -148,6 +148,8 @@ pub enum LocalDaemonResponse {
         agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
         #[serde(default)]
         agent_activity_revision: u64,
+        /// The rows the live `session_processes_changed` feed shows.
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
     BrowserImportConsent { request_id: String, status: BrowserImportConsentStatus, },
@@ -259,6 +261,7 @@ pub enum LocalDaemonResponse {
     CredentialSecretDeleted { key: String, },
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
+    CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },

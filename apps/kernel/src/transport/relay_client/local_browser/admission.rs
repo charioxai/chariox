@@ -11,6 +11,8 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::WebSocketStream;
 
+use futures_util::{Sink, Stream};
+
 use super::super::daemon_requests::request_limits::MAX_MESSAGE_BYTES;
 use super::*;
 
@@ -90,10 +92,7 @@ pub(super) async fn run_when_bound(
     let Some(direct) = direct.upgrade() else {
         return;
     };
-    tokio::join!(
-        run_listener(Arc::clone(&direct), listener, endpoint),
-        direct.watch_authority(),
-    );
+    run_listener(direct, listener, endpoint).await;
 }
 
 async fn run_listener(
@@ -194,41 +193,59 @@ async fn admit(
         Ok(socket) => socket,
         Err(_) => return Err(upgrade_refusal.unwrap_or("local browser upgrade failed")),
     };
+    let grant = handshake(direct, &endpoint.epoch, &mut socket, &origin, None).await?;
+    Ok((socket, grant))
+}
+
+/// The grant/key handshake shared by every direct carrier: challenge, the
+/// browser's proof under its relay-bound key, then the kernel's proof. A
+/// carrier set up for one grant (a WebRTC offer) admits only that grant.
+pub(super) async fn handshake<S, E>(
+    direct: &LocalBrowserDirect,
+    epoch: &str,
+    socket: &mut S,
+    origin: &str,
+    expected_grant: Option<&str>,
+) -> Result<LocalBrowserGrant, &'static str>
+where
+    S: Stream<Item = Result<Message, E>> + Sink<Message> + Unpin,
+{
     let kernel_id = direct.router.relay_daemon_id();
     let challenge = random_token();
     send_frame(
-        &mut socket,
+        socket,
         &ServerHandshakeFrame::LocalChallenge {
             kernel_id: &kernel_id,
-            endpoint_epoch: &endpoint.epoch,
+            endpoint_epoch: epoch,
             challenge: &challenge,
         },
     )
     .await?;
     let result = verify_connect(
         direct,
-        endpoint,
-        &mut socket,
+        epoch,
+        socket,
         &kernel_id,
         &challenge,
-        &origin,
+        origin,
+        expected_grant,
     )
     .await;
     match result {
         Ok((grant, proof)) => {
             send_frame(
-                &mut socket,
+                socket,
                 &ServerHandshakeFrame::LocalConnected {
                     daemon_public_key: direct.router.relay_config_snapshot().relay_public_key,
                     proof,
                 },
             )
             .await?;
-            Ok((socket, grant))
+            Ok(grant)
         }
         Err(reason) => {
-            let _ = send_frame(&mut socket, &ServerHandshakeFrame::Close { reason }).await;
-            let _ = socket.close(None).await;
+            let _ = send_frame(socket, &ServerHandshakeFrame::Close { reason }).await;
+            let _ = socket.close().await;
             Err(reason)
         }
     }
@@ -266,14 +283,18 @@ fn upgrade_policy(
     Ok(())
 }
 
-async fn verify_connect(
+async fn verify_connect<S, E>(
     direct: &LocalBrowserDirect,
-    endpoint: &LocalBrowserEndpoint,
-    socket: &mut LocalBrowserSocket,
+    epoch: &str,
+    socket: &mut S,
     kernel_id: &str,
     challenge: &str,
     origin: &str,
-) -> Result<(LocalBrowserGrant, EncryptedRelayPayload), &'static str> {
+    expected_grant: Option<&str>,
+) -> Result<(LocalBrowserGrant, EncryptedRelayPayload), &'static str>
+where
+    S: Stream<Item = Result<Message, E>> + Unpin,
+{
     let payload = loop {
         match socket.next().await {
             Some(Ok(Message::Text(text))) => break text,
@@ -293,13 +314,16 @@ async fn verify_connect(
         .map_err(|_| "local browser proof is invalid")?;
     if claimed.challenge != challenge
         || claimed.kernel_id != kernel_id
-        || claimed.endpoint_epoch != endpoint.epoch
+        || claimed.endpoint_epoch != epoch
         || claimed.origin != origin
     {
         return Err("local browser proof is not bound to this connection");
     }
     let thumbprint =
         crate::runtime::terminal_pairings::public_key_thumbprint(&decrypted.sender_public_key);
+    if expected_grant.is_some_and(|expected| expected != claimed.grant) {
+        return Err("direct grant belongs to another connection");
+    }
     let grant = direct.redeem_grant(&claimed.grant, &thumbprint)?;
     if grant.authority.origin != origin {
         return Err("local browser grant was issued for another origin");
@@ -318,10 +342,10 @@ async fn verify_connect(
     Ok((grant, proof))
 }
 
-async fn send_frame(
-    socket: &mut LocalBrowserSocket,
-    frame: &ServerHandshakeFrame<'_>,
-) -> Result<(), &'static str> {
+async fn send_frame<S>(socket: &mut S, frame: &ServerHandshakeFrame<'_>) -> Result<(), &'static str>
+where
+    S: Sink<Message> + Unpin,
+{
     let text =
         serde_json::to_string(frame).map_err(|_| "local browser frame could not be encoded")?;
     socket

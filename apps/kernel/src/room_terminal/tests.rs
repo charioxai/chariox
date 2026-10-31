@@ -867,10 +867,10 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     assert!(service.list("room-1").is_empty());
 
     let resized = service.open(spec(agent("a"))).unwrap().terminal_id;
-    service
-        .resize("room-1", &resized, &TerminalActor::User, 90, 30)
-        .unwrap();
-    assert!(service.close("room-1", &resized, &agent("b")).is_err());
+    // A viewing client sizes the terminal to its window; that is not use of the terminal.
+    service.resize("room-1", &resized, 90, 30).unwrap();
+    assert!(!service.list("room-1")[0].user_interacted);
+    service.close("room-1", &resized, &agent("b")).unwrap();
     let untouched = service.open(spec(agent("a"))).unwrap().terminal_id;
     service.close("room-1", &untouched, &agent("b")).unwrap();
     service.end_session("room-1");
@@ -1062,6 +1062,291 @@ async fn a_shell_that_exits_leaves_no_background_jobs() {
         !job_running(&background)
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_job_that_left_the_session_outlives_its_command() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("detached.pid");
+    let attached = root.path().join("attached.pid");
+    // The pause lets the resource watch observe both jobs before the command ends.
+    let script = format!(
+        "{} </dev/null >/dev/null 2>&1 & \
+         sh -c 'echo $$ > \"{}\"; exec sleep 8886' </dev/null >/dev/null 2>&1 & sleep 1",
+        crate::test_support::session_job(&format!("'{}'", detached.display()), 8885),
+        attached.display(),
+    );
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    until("the job still in the session to stop", || async {
+        !job_running(&attached)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let running = job_running(&detached);
+    let pid = std::fs::read_to_string(&detached)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+        .expect("the detached job started");
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    assert!(
+        running,
+        "a job that left the terminal's session ended with it"
+    );
+    service.close("room-1", &id, &TerminalActor::User).unwrap();
+}
+
+#[tokio::test]
+async fn a_command_ends_while_its_background_child_holds_the_terminal_output() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let child = root.path().join("child.pid");
+    // The child keeps the command's stdout and stderr: the PTY stays open.
+    let script = format!(
+        "sh -c 'echo $$ > \"{}\"; exec sleep 8899' &",
+        child.display()
+    );
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended {
+                outcome: RoomTerminalOutcome::ProgramExited {
+                    exit_code: Some(0),
+                    ..
+                },
+                ..
+            }
+        )
+    })
+    .await;
+    until("the background child to stop", || async {
+        !job_running(&child)
+    })
+    .await;
+    service.close("room-1", &id, &TerminalActor::User).ok();
+}
+
+#[tokio::test]
+async fn a_job_detaching_as_its_command_returns_keeps_running() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("late.pid");
+    // The command returns at once: the job is still detaching when it ends.
+    let script = format!(
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8887),
+    );
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let running = job_running(&detached);
+    if let Some(pid) = std::fs::read_to_string(&detached)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(
+        running,
+        "a job detaching as its command returned was killed"
+    );
+    service.close("room-1", &id, &TerminalActor::User).unwrap();
+}
+
+#[tokio::test]
+async fn a_detached_job_stays_listed_counted_and_stoppable_under_its_terminal() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("owned.pid");
+    let script = format!(
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8893),
+    );
+    let id = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens")
+        .terminal_id;
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    // The Room's process list (Health) reads the same projection.
+    let providers = crate::provider::ProviderProcessServiceStore::new(
+        crate::provider::ProviderProcessService::new(),
+    );
+    let owner = crate::runtime::process_resources::SessionProcessOwner::Terminal(id.clone());
+    let listed = || {
+        let pid = std::fs::read_to_string(&detached)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        crate::runtime::process_resources::for_session("room-1", &providers, &service)
+            .into_iter()
+            .find(|row| Some(row.process.pid) == pid && row.owner == owner)
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while listed().is_none() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let Some(row) = listed() else {
+        if let Some(pid) = std::fs::read_to_string(&detached)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 1)
+        {
+            // SAFETY: the positive PID of the job this test started; never a group.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        panic!("the detached job is not listed under its terminal");
+    };
+    assert!(
+        row.process.resident_set_bytes > 0,
+        "the job's memory is not counted"
+    );
+    let key = crate::runtime::process_resources::keys_for_session("room-1", &providers, &service)
+        .into_iter()
+        .find(|(current, _)| *current == owner)
+        .map(|(_, key)| key)
+        .expect("the owner keeps a stop handle");
+    let stopped =
+        crate::runtime::process_resources::stop_for_key(&key, Some(row.process.process_id.clone()));
+    let running = job_running(&detached);
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(row.process.pid as i32, libc::SIGKILL) };
+    assert!(stopped.is_ok(), "stop from the list failed: {stopped:?}");
+    assert!(!running, "the stopped job still runs");
+    service.close("room-1", &id, &TerminalActor::User).unwrap();
+}
+
+#[tokio::test]
+async fn a_detached_job_ends_with_its_room() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let detached = root.path().join("room.pid");
+    let script = format!(
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", detached.display()), 8894),
+    );
+    service
+        .open(OpenRoomTerminal {
+            session_id: "room-2".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+        })
+        .expect("terminal opens");
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            service.list("room-2")[0].status,
+            RoomTerminalStatus::Ended { .. }
+        )
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let started = job_running(&detached);
+    service.end_session("room-2");
+    crate::runtime::process_resources::stop_released(Some("room-2"), None);
+    let running = job_running(&detached);
+    if let Some(pid) = std::fs::read_to_string(&detached)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(started, "the detached job did not start");
+    assert!(!running, "a detached job outlived its Room");
+}
+
+#[test]
+fn a_command_argument_over_the_limit_is_refused_with_that_limit() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let error = service
+        .open(OpenRoomTerminal {
+            session_id: "room-1".to_string(),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/sh".into(), "-c".into(), "x".repeat(4097)]),
+        })
+        .expect_err("a 4097-byte argument is refused");
+    assert!(
+        error.to_string().contains("each at most 4096 bytes"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2204,9 +2489,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
     let (done, completion) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let result = runtime.block_on(async {
-            writer
-                .resize("room-1", &other, &TerminalActor::User, 90, 30)
-                .unwrap();
+            writer.resize("room-1", &other, 90, 30).unwrap();
             writer.snapshot("room-1", &other).unwrap();
             writer
                 .input("room-1", &other, &TerminalActor::User, b"INDEPENDENT\n")

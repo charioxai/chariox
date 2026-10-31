@@ -8,6 +8,7 @@ pub(super) struct ClientConnectContext<'a> {
     pub peer_addr: SocketAddr,
     pub outgoing_tx: &'a RelaySender,
     pub relay_request_counter: &'a AtomicU64,
+    pub connection_meter: &'a ConnectionMeter,
     pub verified_identity: &'a mut Option<VerifiedRelayIdentity>,
     pub auth_expiry_deadline: &'a mut Option<Instant>,
     pub initial_resume_negotiated: bool,
@@ -24,6 +25,7 @@ pub(super) async fn admit(
         peer_addr,
         outgoing_tx,
         relay_request_counter,
+        connection_meter,
         verified_identity,
         auth_expiry_deadline,
         initial_resume_negotiated,
@@ -65,6 +67,10 @@ pub(super) async fn admit(
             .as_deref()
             .or(target.daemon_alias.as_deref()),
     )?;
+    if !connection_meter.bind_realm(&identity.realm_id) {
+        send_close(outgoing_tx, REALM_CHANGED.into());
+        return Ok(false);
+    }
     if verified_identity.as_ref().is_some_and(|previous| {
         !super::super::client_renewal::retains_client_authority(previous, &identity)
     }) {

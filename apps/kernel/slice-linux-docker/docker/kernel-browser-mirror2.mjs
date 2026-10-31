@@ -172,8 +172,10 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 
 // Chrome serializes a var() shorthand that a later declaration partly overrides (border:var(--w) solid;
 // border-color:red) as empty longhands (`border-top-width: ;`), which a viewer parser drops. A rule whose
-// text came out that way is kept as its source text.
-const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const chunks=text=>{const out=[];let depth=0,start=0,quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}}return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=chunk.indexOf('{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const parse=serialize;`;
+// text came out that way is kept as its source text. Escapes outside strings (`.content-\[\'\'\]`) are not quotes,
+// and an unterminated last chunk is kept (CSS closes it at the end of the sheet). A copy with fewer rules than the
+// source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
+const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const rules=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=text=>{const out=rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const out=serialize(text);if(count(out)!==count(text))throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
@@ -571,7 +573,12 @@ export class Mirror2 {
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
-    const sheets = await this.sheetOps(world, source?.sheets);
+    let sheets = [];
+    try { sheets = await this.sheetOps(world, source?.sheets); } catch (error) {
+      if (error?.mirrorReason !== 'css_incomplete') throw error;
+      fallback = error.mirrorReason; source = null; reset = true; resources = [];
+      this.host.timing?.(`mirror2_fallback_${fallback}`, timestamp());
+    }
     // A pruned first-paint sheet's full text follows without viewer input, once the page is quiet (or after 1 s).
     if (!reset && !fallback) {
       const replaced = new Set([...source.ops ?? [], ...sheets].filter(op => op.op === 'css').map(op => op.id));
@@ -607,7 +614,7 @@ export class Mirror2 {
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
     if (tiles.length) packet.tiles = tiles;
     if (fallback) packet.fallback = fallback;
-    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; }
+    else if (reset) { packet.root = source.root; packet.nodes = source.nodes; packet.ops = [...(source.ops ?? []), ...sheets]; if (['quirks', 'limited-quirks'].includes(source.document_mode)) packet.document_mode = source.document_mode; }
     else packet.ops = [...source.ops, ...sheets];
     // Morphed nodes (a new page node under a viewer id) count as changed targets.
     for (const id of [...(packet.ops ?? []).filter(op => op.op === 'attr').map(op => op.id), ...(reset ? [] : source?.changed ?? [])]) stream.attrSequence.set(id, sequence);
@@ -834,7 +841,8 @@ export class Mirror2 {
     const ops = [];
     for (let at = 0; at < sheets.length; at += 4) {
       const batch = await Promise.all(sheets.slice(at, at + 4).map(async sheet => {
-        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(() => null);
+        // An unreadable sheet keeps its last copy; an incomplete one is never published (the stream selects video).
+        const text = await this.crossOriginSheet(world, sheet.url, firstPaint ? sheet.id : null).catch(error => { if (error?.mirrorReason === 'css_incomplete') throw error; return null; });
         if (text === null) return [];
         const [css, used] = Array.isArray(text) ? text : [text, null];
         return [typeof used === 'string' && used.length < css.length ? { op: 'css', id: sheet.id, css: used, full: css } : { op: 'css', id: sheet.id, css }];
@@ -865,7 +873,8 @@ export class Mirror2 {
       const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       if (text === undefined) {
-        const frameId = (await frames()).get(requested); if (!frameId) return false;
+        // A document's own sheet can be missing from its resource tree (Stripe's 3.6 MB login sheet); its frame still has it.
+        const frameId = (await frames()).get(requested) ?? world.frame?.id; if (!frameId) return false;
         const reply = await world.connection.send('Page.getResourceContent', { frameId, url: requested }, world.sessionId);
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
@@ -998,7 +1007,7 @@ export class Mirror2 {
       let at, local = null;
       const chain = entry ? hosts(entry) : [], hostPoints = [];
       if (entry) {
-        const localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+        const wheel = action.kind === 'scroll', localAt = () => inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y, ...(wheel ? { wheel } : {}) })})`);
         // The frame's point, then the frame as its owner's scrolling ancestors show it; each level reveals what the viewer scrolled ahead.
         const aim = async () => {
           try { local = await retryOffscreen(localAt); } catch (error) {
@@ -1010,8 +1019,8 @@ export class Mirror2 {
           // Level by level, inside out: the point in each host's viewport, the page's last.
           let point = local;
           for (const level of chain.toReversed()) {
-            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])})`));
-            point = { x: origin[0] + (origin[2] ?? 1) * point.x, y: origin[1] + (origin[3] ?? 1) * point.y }; hostPoints.unshift(point);
+            const origin = await retryOffscreen(() => onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([point.x, point.y])}${wheel ? ',true' : ''})`));
+            point = { x: origin[4], y: origin[5] }; hostPoints.unshift(point);
           }
           return point;
         };
@@ -1027,7 +1036,7 @@ export class Mirror2 {
         const {width,height} = this.host.pageSize(tab.tab_id);
         if (at.x < 0 || at.y < 0 || at.x >= width || at.y >= height) throw new Error('MP-11: changed mirror input target');
       } else {
-        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        const pointAt = () => call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y, ...(action.kind === 'scroll' ? { wheel: true } : {}) })})`);
         try { at = await retryOffscreen(pointAt); } catch (error) {
           // Still outside the native viewport: scroll the native page to the node the viewer showed (the echo is this viewer's own).
           if (error?.mirrorReason !== 'offscreen_node') throw error;

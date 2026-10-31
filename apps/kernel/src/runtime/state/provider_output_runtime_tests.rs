@@ -153,6 +153,7 @@ mod approval_lifetime;
 mod browser_import_execution_gate;
 mod cleanup_liveness;
 mod completion_settlement;
+mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;

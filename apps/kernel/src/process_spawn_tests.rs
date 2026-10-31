@@ -192,7 +192,8 @@ fn check_inherited_oom_policy(inherited: i32) {
         );
         // Exercise the provider/native shell entry itself, without a command
         // constructor clearing protection before the shell gets to inspect it.
-        let domain = crate::runtime::process_resources::PreparedDomain::new().unwrap();
+        let domain =
+            crate::runtime::process_resources::PreparedDomain::new("process-spawn-test").unwrap();
         let (program, args) =
             domain.command("/bin/cat".into(), vec!["/proc/self/oom_score_adj".into()]);
         let output = Command::new(program).args(args).output().unwrap();

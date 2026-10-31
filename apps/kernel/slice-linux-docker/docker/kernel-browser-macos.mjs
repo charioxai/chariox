@@ -9,6 +9,8 @@ export function candidates(environment) {
     path.join(root, "Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
   ]);
 }
+// Headed Chrome on macOS decodes video through VideoToolbox by default.
+export function videoDecodeArguments() { return []; }
 export function launchEnvironment(environment) {
   const native = { ...environment };
   delete native.DISPLAY;

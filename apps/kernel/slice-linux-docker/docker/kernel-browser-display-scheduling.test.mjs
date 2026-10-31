@@ -70,3 +70,21 @@ for(const method of ['host.browser.retire_input','host.browser.retire_observer']
  const early=await Promise.race([retired.then(()=>true),new Promise(r=>setTimeout(()=>r(false),100))]);
  input.end();release();await running;assert.equal(early,true,'the retirement waited behind the running operation');
 });
+
+// MP-08/MP-10: the page cursor under the pointer waits for the renderer; a held read must not park input,
+// navigation or the dialog dismissal behind it.
+test('MP-08/MP-10 input and dialog handling progress while a pointer cursor read is held',async()=>{
+ const input=new PassThrough(),output=new PassThrough();let release,started;
+ const began=new Promise(r=>started=r),hold=new Promise(r=>release=r);
+ const replies=[];let done;const finished=new Promise(r=>done=r);
+ output.on('data',b=>{for(const line of b.toString().trim().split('\n'))if(line){replies.push(JSON.parse(line).id);if(replies.includes(2)&&replies.includes(3))done()}});
+ const server=new BrowserControllerStdioServer({input,output,scheduleRequest:scheduleHostRequest,handleRequest:async request=>{
+  if(request.id===1){started();await hold}return {id:request.id,ok:true,result:{}};
+ }});
+ const running=server.run();
+ input.write(JSON.stringify({id:1,method:'host.browser',params:{op:'pointer_cursor',tab_id:'t',x:1,y:1}})+'\n');await began;
+ input.write(JSON.stringify({id:2,method:'host.browser',params:{op:'input',tab_id:'t'}})+'\n');
+ input.write(JSON.stringify({id:3,method:'host.browser',params:{op:'dialog',tab_id:'t'}})+'\n');
+ const early=await Promise.race([finished.then(()=>true),new Promise(r=>setTimeout(()=>r(false),50))]);
+ input.end();release();await running;assert.equal(early,true,'a held cursor read blocked input or dialog handling');
+});

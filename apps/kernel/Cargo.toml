@@ -23,6 +23,7 @@ thiserror = "2.0.12"
 tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3.31"
+futures-channel = { version = "0.3.31", features = ["sink"] }
 wait-timeout = "0.2.0"
 libc = "0.2.172"
 # Named by portable-pty's MasterPty trait, implemented for adopted PTYs.
@@ -60,6 +61,7 @@ zeroize = "1.8.1"
 ed25519-dalek = "2.1.1"
 chariox-event-protocol = { path = "../../packages/event-protocol" }
 mimalloc = { version = "0.1", default-features = false }
+str0m = { version = "0.24.1", default-features = false, features = ["rust-crypto"] }
 chariox-app-runtime = { path = "../../packages/app-runtime" }
 chariox-app-package = { path = "../../packages/app-package" }
 
