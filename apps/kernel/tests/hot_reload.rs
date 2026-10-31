@@ -1260,7 +1260,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
+    let started_before_the_swap = runtime.block_on(async {
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
         let project = scratch.join("project").display().to_string();
         let created = request(
@@ -1351,6 +1351,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         }
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
+        let started_before_the_swap = lines(&record.join("starts"));
         std::fs::write(record.join("swap"), "").unwrap();
         let signalled = epoch_ms();
         unsafe { libc::kill(pid, libc::SIGUSR2) };
@@ -1481,7 +1482,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         }
         assert!(!history.contains("interrupted"), "{history}");
         // A tool catalog change would continue the finished turn about 12 s
-        // after it.
+        // after it, on a reloaded app-server.
         let watched = Instant::now();
         while watched.elapsed() < Duration::from_secs(20) {
             let state = request(
@@ -1492,14 +1493,23 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             assert!(
                 state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
                     .is_null()
-                    && lines(&record.join("prompts")) == ["prompt 1"],
+                    && lines(&record.join("prompts")) == ["prompt 1"]
+                    && lines(&record.join("starts")) == started_before_the_swap,
                 "the agent got another turn after the handed-over one: {state}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        started_before_the_swap
     });
     // One app-server ran the whole turn, and it got the prompt once.
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
+    // The new program starts no app-server: one would hold the kernel while it
+    // boots (1.7 s for the real Codex) and delay every handed-over turn.
+    assert_eq!(
+        lines(&record.join("starts")),
+        started_before_the_swap,
+        "a Codex app-server started after the hot reload"
+    );
     // On one connection: the thread was started once and never resumed.
     let threads = lines(&record.join("threads"));
     assert_eq!(threads.len(), 1, "{threads:?}");
