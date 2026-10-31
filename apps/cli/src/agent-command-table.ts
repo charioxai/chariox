@@ -76,6 +76,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 900 s); exit 5 on timeout" },
   { name: "events watch", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
   { name: "events ack", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
+  { name: "events mcp", flags: [SOCKET], summary: "MCP server over stdio for a harness that supports elicitation: its tool chariox_next_choice shows the next pending question in the harness's own chooser and sends the answer" },
 
 ]
 
@@ -189,10 +190,10 @@ export function guideText(): string {
     "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
     "A record with value.question is a decision the person may answer through you: ask the person with your own question tool",
-    "(options are question.choices, a free reply is question.text_reply when present), then send RespondToInteraction with the chosen id and refs.interaction_id.",
+    "(options are question.choices, a free reply is question.text_reply when present), then send RespondToInteraction with the chosen id and refs.interaction_id (omit --kernel for the kernel you are on).",
     "interaction_closed means someone else answered or it expired: drop the question. Do not choose for the person.",
     "A record with no question but a pointer is the person's alone: show pointer.one_line verbatim and do not answer it.",
-    "A subscription lasts until its grant ends or you cancel it.",
+    "Or add chariox events mcp as an MCP server: its tool chariox_next_choice waits, asks and answers. A subscription lasts until its grant ends or you cancel it.",
     "Commands:",
     ...commands,
     "",
