@@ -982,6 +982,8 @@ fn a_hot_reload_keeps_a_claude_turn_whose_login_is_in_the_vault() {
 }
 
 /// Launch credentials larger than a pipe holds still reach the next program.
+/// (Linux hands them over in memory; other Unix kernels refuse such a reload.)
+#[cfg(target_os = "linux")]
 #[test]
 fn a_hot_reload_keeps_a_claude_turn_with_launch_credentials_larger_than_a_pipe() {
     claude_turn_across_a_hot_reload(Login::LargeVault);
@@ -991,6 +993,7 @@ fn a_hot_reload_keeps_a_claude_turn_with_launch_credentials_larger_than_a_pipe()
 enum Login {
     Native,
     Vault,
+    #[cfg(target_os = "linux")]
     LargeVault,
 }
 
@@ -1000,6 +1003,7 @@ impl Login {
             Login::Native => None,
             Login::Vault => Some("fixture-token".into()),
             // More than a pipe holds (64 KiB), less than one exec string (128 KiB).
+            #[cfg(target_os = "linux")]
             Login::LargeVault => Some("t".repeat(100 << 10)),
         }
     }
@@ -1030,7 +1034,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         )
         .unwrap(),
         // A Vault that lives in the kernel's memory only.
-        Login::Vault | Login::LargeVault => {
+        _ => {
             std::fs::create_dir_all(scratch.join("home/.chariox")).unwrap();
             std::fs::write(
                 scratch.join("home/.chariox/config.toml"),
