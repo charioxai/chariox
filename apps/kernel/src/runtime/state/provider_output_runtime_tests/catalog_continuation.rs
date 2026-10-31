@@ -188,6 +188,17 @@ async fn accepted_catalog_continuation_survives_source_provider_retirement() {
 // completion path (settlement, reload, task replay) must keep that promise.
 #[tokio::test]
 async fn loader_turn_completion_schedules_the_promised_continuation() {
+    loader_turn_promised_continuation_starts(false).await;
+}
+
+// P2-4: the turn's client can leave as the turn ends. The kernel owns the
+// promised continuation, so it must not depend on any client staying attached.
+#[tokio::test]
+async fn loader_turn_continuation_survives_the_last_client_leaving() {
+    loader_turn_promised_continuation_starts(true).await;
+}
+
+async fn loader_turn_promised_continuation_starts(requester_leaves_after_turn: bool) {
     crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("catalog-loader-continuation");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -244,6 +255,10 @@ async fn loader_turn_completion_schedules_the_promised_continuation() {
         .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
         .await
         .unwrap();
+    if requester_leaves_after_turn {
+        // The continuation task is spawned on this runtime and has not run yet.
+        runtime.owned.detach(source.id()).unwrap();
+    }
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let sequence = runtime
@@ -340,6 +355,151 @@ async fn catalog_continuation_without_a_retained_intent_projects_failure() {
             .text
             .contains("could not safely continue the interrupted request")),
         "a continuation that cannot resume must tell the owner"
+    );
+}
+
+// P2-4: a cold provider start behind the relaunch delay takes longer than the
+// old 30 s wait; the continuation must still find the provider Running.
+#[tokio::test(start_paused = true)]
+async fn continuation_outlasts_a_slow_provider_relaunch() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-slow-relaunch");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let relaunch = async {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        app.lock()
+            .await
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .unwrap();
+    };
+    let (waited, ()) = tokio::join!(
+        runtime.wait_for_agent_provider_relaunch(session.id(), agent.id(), None),
+        relaunch
+    );
+    waited.expect("a provider that starts within two minutes must receive the continuation");
+}
+
+// P2-4: the kernel keeps the session attached from the moment it takes a
+// continuation, so no client leaving mid-relaunch can park the new provider run.
+#[tokio::test]
+async fn taken_continuation_keeps_the_session_attached_through_the_relaunch() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-attached-relaunch");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    runtime.owned.pending_mcp_continuations.write().insert(
+        agent.id().into(),
+        PendingMcpContinuation {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source_prompt_id: None,
+            mcp_name: "chariox-runtime".into(),
+            previous_prompt: "finish the request".into(),
+            reload_reason: ProviderReloadReason::RuntimeToolCatalog,
+        },
+    );
+    assert!(runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(session.id())
+        .is_empty());
+    // The continuation has no task intent, so it ends in a reported failure;
+    // the session must nevertheless have been held for the reload before that.
+    let _ = runtime
+        .run_pending_mcp_continuation_after_completion(session.id(), agent.id())
+        .await;
+    assert!(
+        !runtime
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(session.id())
+            .is_empty(),
+        "the kernel must hold the session while it relaunches the provider"
+    );
+}
+
+// P2-4: whatever stops the provider refresh, the agent's promise is kept or
+// the owner is told; a logged warning alone leaves the Room idle and silent.
+#[tokio::test]
+async fn failed_provider_refresh_tells_the_owner_instead_of_dropping_the_continuation() {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("catalog-refresh-failure");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            worktree
+                .session_request()
+                .with_agent_defaults(crate::session::SessionAgentDefaults::new("claude")),
+        )
+        .unwrap();
+    // A reloadable provider run with no account behind it: the relaunch cannot be prepared.
+    let mut run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "refresh-failure-fixture",
+        session.id().into(),
+        Some(agent.id().into()),
+        "claude".into(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run);
+    let app = Arc::new(Mutex::new(app));
+    let mut runtime = owned_runtime_state(&app).await;
+    runtime.owned.pending_mcp_continuations = PendingMcpContinuationStore::default();
+    runtime.owned.pending_mcp_continuations.write().insert(
+        agent.id().into(),
+        PendingMcpContinuation {
+            session_id: session.id().into(),
+            agent_id: agent.id().into(),
+            source_prompt_id: None,
+            mcp_name: "chariox-runtime".into(),
+            previous_prompt: "finish the request".into(),
+            reload_reason: ProviderReloadReason::RuntimeToolCatalog,
+        },
+    );
+    assert!(runtime
+        .run_pending_mcp_continuation_after_completion(session.id(), agent.id())
+        .await
+        .is_err());
+    let entries = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .unwrap();
+    assert!(
+        entries.iter().any(|e| e
+            .text
+            .contains("could not safely continue the interrupted request")),
+        "a continuation whose provider refresh failed must tell the owner"
     );
 }
 
