@@ -406,7 +406,7 @@ fn browser_pointer_cursor_and_document_mode_920_shape_is_pinned() {
     let bytes = include_bytes!("browser-pointer-cursor-document-mode-920.json");
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(bytes)),
-        "2584d958119db639e5a9c952f6362fdaa580f7554b16614c1c00fc27313a70de"
+        "2458457960ebe2ef3f6ef0ae81fdc40a93f985f91d2f45f2fa9ae455c3bc0dd3"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
