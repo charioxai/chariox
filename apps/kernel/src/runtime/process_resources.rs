@@ -252,7 +252,7 @@ impl PreparedDomain {
                             writes,
                             write_growth,
                             effective: tree.effective(pid, &samples),
-                            root: tree.is_root(pid),
+                            root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();

@@ -33,6 +33,14 @@ impl Workload {
     /// A shell root running named shell commands in the background; `$0` is
     /// the workload's directory, holding `alloc.py`.
     pub(super) fn run(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
+        Self::run_under(prepared, false, commands)
+    }
+    /// The same under a launcher, as a provider's wrapper runs its server:
+    /// a non-shell root whose shell starts the commands.
+    pub(super) fn launched(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
+        Self::run_under(prepared, true, commands)
+    }
+    fn run_under(prepared: PreparedDomain, launcher: bool, commands: &[(&str, String)]) -> Self {
         let dir = std::env::temp_dir().join(format!("pc-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("alloc.py"), ALLOC).unwrap();
@@ -43,10 +51,19 @@ impl Workload {
             ));
         }
         script.push_str("wait");
-        let (program, args) = prepared.command(
-            "/bin/sh".into(),
-            vec!["-c".into(), script, dir.to_string_lossy().into_owned()],
-        );
+        let mut argv = vec!["-c".into(), script, dir.to_string_lossy().into_owned()];
+        if launcher {
+            argv.insert(0, "/bin/sh".into());
+            argv.splice(
+                0..0,
+                [
+                    "-c".to_string(),
+                    "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))".into(),
+                ],
+            );
+        }
+        let (program, args) =
+            prepared.command(if launcher { "python3" } else { "/bin/sh" }.into(), argv);
         let child = std::process::Command::new(program)
             .args(args)
             .spawn()

@@ -522,10 +522,16 @@ pub(super) fn statvfs(path: &Path) -> Option<(u64, u64)> {
     }
     // SAFETY: statvfs succeeded and filled the buffer.
     let stat = unsafe { stat.assume_init() };
-    let block = stat.f_frsize as u64;
+    // The field widths differ by platform (u64 on Linux, u32 on macOS).
+    #[allow(clippy::unnecessary_cast)]
+    let (block, available, blocks) = (
+        stat.f_frsize as u64,
+        stat.f_bavail as u64,
+        stat.f_blocks as u64,
+    );
     Some((
-        (stat.f_bavail as u64).saturating_mul(block),
-        (stat.f_blocks as u64).saturating_mul(block),
+        available.saturating_mul(block),
+        blocks.saturating_mul(block),
     ))
 }
 
@@ -749,20 +755,6 @@ impl Peaks {
                 );
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn insert(&mut self, key: &str, peak: Peak) {
-        self.known.insert(key.to_string(), peak);
-    }
-}
-
-#[cfg(test)]
-impl Ledger {
-    /// Teaches the expected peak of the command `argv` run in `cwd`.
-    pub(super) fn teach(&mut self, pid: u32, peak: Peak) {
-        let seen = recognise(pid).expect("command readable");
-        self.peaks.insert(&seen.key, peak);
     }
 }
 

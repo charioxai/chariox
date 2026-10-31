@@ -39,7 +39,8 @@ pub(super) struct CommandUse {
     pub write_growth: u64,
     /// The process it runs past wrapping shells: what admission recognises.
     pub effective: u32,
-    /// The workload's own process: never held or paused.
+    /// Part of the harness (the workload's own process and the launcher
+    /// chain that started with it): never held or paused.
     pub root: bool,
 }
 
@@ -77,11 +78,6 @@ impl Pool {
     #[cfg(test)]
     pub(super) fn with_volume(ceiling: u64, volume: Box<admission::Volume>) -> Self {
         Self::with(ceiling, false, None, volume)
-    }
-
-    #[cfg(test)]
-    pub(super) fn ledger(&self) -> std::sync::MutexGuard<'_, admission::Ledger> {
-        self.ledger.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The kernel's pool: the machine (or the delegated parent's limit) minus

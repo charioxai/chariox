@@ -162,3 +162,51 @@ fn a_persons_own_terminal_command_never_waits() {
     assert!(!person.waiting("grow"), "a person's own command was paused");
     person.domain.unbind_key(&key);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
+    // A wrapper that runs the provider's server (`node` → `codex app-server`)
+    // starts with the root; the commands come from the server.
+    let pool = pool(1536);
+    let mut first = Workload::launched(domain(&pool, "first", false), &[("job", heavy(600, 0, 2))]);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while first.alive("job") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first run did not end"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    settle(1);
+    drop(first);
+    let a = Workload::start(domain(&pool, "a", false), &[("big", 900, 0, 0)]);
+    settle(1);
+    let b = Workload::launched(domain(&pool, "b", false), &[("job", heavy(600, 1, 2))]);
+    settle(2);
+    assert!(
+        b.waiting("job"),
+        "the heavy command under the launcher was not held"
+    );
+    let server = std::fs::read_to_string(format!("/proc/{}/stat", b.pid("job")))
+        .unwrap()
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(1).map(str::to_string))
+        .unwrap();
+    let server_state = std::fs::read_to_string(format!("/proc/{server}/stat")).unwrap();
+    assert!(
+        !server_state
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .trim_start()
+            .starts_with('T'),
+        "the harness itself was stopped"
+    );
+    unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
+    settle(3);
+    assert!(
+        !b.waiting("job"),
+        "the held command did not start with room"
+    );
+}
