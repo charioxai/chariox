@@ -286,7 +286,7 @@ export const systemIo = {
   },
   holders(majorMinor) {
     if (typeof majorMinor !== "string" || !/^\d+:\d+$/.test(majorMinor)) {
-      fail("Hetzner Volume major/minor identity is missing")
+      fail("data volume major/minor identity is missing")
     }
     return readdirSync(`/sys/dev/block/${majorMinor}/holders`).length > 0
   },
