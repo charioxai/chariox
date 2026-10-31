@@ -8,7 +8,7 @@
 //! in memory when the process died (at most one interval) is lost.
 use std::fs;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -143,7 +143,7 @@ impl<S: FnMut(&UsageBatch) -> Result<(), SendError>> UsageReporter<S> {
     }
 }
 
-fn read_spool(path: &PathBuf) -> Result<UsageBatch, String> {
+fn read_spool(path: &Path) -> Result<UsageBatch, String> {
     let bytes =
         fs::read(path).map_err(|error| format!("usage spool {}: {error}", path.display()))?;
     serde_json::from_slice(&bytes).map_err(|error| {
@@ -154,7 +154,7 @@ fn read_spool(path: &PathBuf) -> Result<UsageBatch, String> {
     })
 }
 
-fn write_spool(dir: &PathBuf, batch: &UsageBatch) -> Result<(), String> {
+fn write_spool(dir: &Path, batch: &UsageBatch) -> Result<(), String> {
     // Zero-padded, so the names sort in the order the windows ended.
     let path = dir.join(format!(
         "{:020}-{}.json",
@@ -170,7 +170,7 @@ fn write_spool(dir: &PathBuf, batch: &UsageBatch) -> Result<(), String> {
     write().map_err(|error| format!("usage spool {}: {error}", path.display()))
 }
 
-fn remove_spool(path: &PathBuf) -> Result<(), String> {
+fn remove_spool(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             Err(format!("usage spool {}: {error}", path.display()))
@@ -343,7 +343,7 @@ mod tests {
         dir.join("spool")
     }
 
-    fn spooled(path: &PathBuf) -> usize {
+    fn spooled(path: &Path) -> usize {
         fs::read_dir(path)
             .map(|entries| {
                 entries
