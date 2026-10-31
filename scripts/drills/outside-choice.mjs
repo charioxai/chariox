@@ -48,7 +48,13 @@ const identity = pid => {
   } catch { return null }
 }
 // Only a process this drill started, identified by pid and start time, is ever signalled.
-const stopOwned = ({ pid, start }) => { if (pid > 1 && identity(pid)?.start === start) process.kill(pid, "SIGKILL") }
+// Its descendants go first: a holder's shell loop would otherwise outlive the shell that started it.
+const descendants = pid => readdirSync("/proc").filter(name => /^\d+$/.test(name) && identity(Number(name))?.ppid === pid).flatMap(name => [...descendants(Number(name)), Number(name)])
+const stopOwned = ({ pid, start }) => {
+  if (!(pid > 1) || identity(pid)?.start !== start) return
+  for (const child of descendants(pid)) if (child > 1) { try { process.kill(child, "SIGKILL") } catch { /* already gone */ } }
+  process.kill(pid, "SIGKILL")
+}
 const own = child => { const handle = { pid: child.pid, start: identity(child.pid).start }; owned.push(handle); return handle }
 
 const ports = await Promise.all([freePort(), freePort(), freePort(), freePort()])
