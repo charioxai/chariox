@@ -10,11 +10,16 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ShellMark {
     CommandStarted,
-    CommandFinished { exit_code: Option<u32> },
+    /// `background` is the shell's `$!`: the last job it started in the
+    /// background, the one launch the kernel cannot otherwise tie to a line.
+    CommandFinished {
+        exit_code: Option<u32>,
+        background: Option<u32>,
+    },
 }
 
 const OSC_PREFIX: &[u8] = b"133;";
-/// Longer bodies are not ours: `D;255` is the longest mark.
+/// Longer bodies are not ours: `D;255;4194304` is about the longest mark.
 const MAX_BODY: usize = 32;
 
 #[derive(Default)]
@@ -69,11 +74,16 @@ fn parse(body: &[u8]) -> Option<ShellMark> {
     let rest = body.strip_prefix(OSC_PREFIX)?;
     match rest {
         b"C" => Some(ShellMark::CommandStarted),
-        b"D" => Some(ShellMark::CommandFinished { exit_code: None }),
+        b"D" => Some(ShellMark::CommandFinished {
+            exit_code: None,
+            background: None,
+        }),
         _ => {
-            let status = rest.strip_prefix(b"D;")?;
+            let fields = std::str::from_utf8(rest.strip_prefix(b"D;")?).ok()?;
+            let (status, background) = fields.split_once(';').unwrap_or((fields, ""));
             Some(ShellMark::CommandFinished {
-                exit_code: std::str::from_utf8(status).ok()?.parse().ok(),
+                exit_code: status.parse().ok(),
+                background: background.parse().ok(),
             })
         }
     }
@@ -94,7 +104,7 @@ if [[ -n "${CHARIOX_ORIG_ZDOTDIR+x}" ]]; then
   unset CHARIOX_ORIG_ZDOTDIR
 fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
-__chariox_precmd() { local status_code=$?; print -rn -- $'\e]133;D;'"$status_code"$'\a'; }
+__chariox_precmd() { local status_code=$?; print -rn -- $'\e]133;D;'"$status_code;${!-}"$'\a'; }
 __chariox_preexec() { print -rn -- $'\e]133;C\a'; }
 __chariox_install() {
   precmd_functions=(${precmd_functions:#__chariox_install})
@@ -198,8 +208,14 @@ mod tests {
             marks,
             vec![
                 ShellMark::CommandStarted,
-                ShellMark::CommandFinished { exit_code: Some(7) },
-                ShellMark::CommandFinished { exit_code: None },
+                ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    background: None
+                },
+                ShellMark::CommandFinished {
+                    exit_code: None,
+                    background: None
+                },
             ]
         );
     }
@@ -213,7 +229,10 @@ mod tests {
         assert!(scanner.feed(&input).is_empty());
         assert_eq!(
             scanner.feed(b"\x1b]133;D;0\x07"),
-            vec![ShellMark::CommandFinished { exit_code: Some(0) }]
+            vec![ShellMark::CommandFinished {
+                exit_code: Some(0),
+                background: None
+            }]
         );
     }
 
@@ -277,7 +296,10 @@ mod tests {
             let mut marks = Vec::new();
             let mut output = Vec::new();
             while Instant::now() < deadline
-                && !marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) })
+                && !marks.contains(&ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    background: None
+                })
             {
                 for chunk in pty.drain_output("hooks").unwrap() {
                     marks.extend(scanner.feed(&chunk.bytes));
@@ -304,7 +326,10 @@ mod tests {
                 "{hooks}: {marks:?}"
             );
             assert!(
-                marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) }),
+                marks.contains(&ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    background: None
+                }),
                 "{hooks}: {marks:?}"
             );
         }

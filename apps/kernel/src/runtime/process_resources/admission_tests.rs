@@ -163,8 +163,9 @@ fn a_persons_own_terminal_command_never_waits() {
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
     person.domain.bind_key(&key);
-    // The person submits the line, then the command starts.
-    record_submission_for_key(&key, false);
+    // The person submits the line, the shell starts it, then the command starts.
+    submit_line_for_key(&key, false);
+    line_started_for_key(&key);
     person.go(&["grow"]);
     settle(6);
     assert!(!person.waiting("grow"), "a person's own command was paused");
@@ -186,12 +187,17 @@ fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sampl
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
     agent.domain.bind_key(&key);
-    // The agent submits the line that starts a background build; the person
-    // submits `true` at the returned prompt before the sampler sees the build.
-    record_submission_for_key(&key, true);
+    // The agent submits the line that starts a background build and the
+    // person queues `true` behind it; both lines have run before the sampler
+    // sees the build.
+    submit_line_for_key(&key, true);
+    submit_line_for_key(&key, false);
+    line_started_for_key(&key);
     agent.go(&["grow"]);
-    std::thread::sleep(Duration::from_millis(40));
-    record_submission_for_key(&key, false);
+    let build = agent.pid("grow") as u32;
+    line_finished_for_key(&key, Some(build));
+    line_started_for_key(&key);
+    line_finished_for_key(&key, Some(build));
     settle(6);
     assert!(
         agent.waiting("grow"),

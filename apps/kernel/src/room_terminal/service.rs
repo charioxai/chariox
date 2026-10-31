@@ -409,12 +409,14 @@ impl RoomTerminalService {
                             _ => None,
                         };
                         if let (true, true, None) = (shell_foreground, submits, &interrupted) {
-                            // The command this line starts belongs to who
-                            // submits it; running ones keep their own policy.
-                            crate::runtime::process_resources::record_submission_for_key(
-                                &run_id,
-                                *actor != TerminalActor::User,
-                            );
+                            // The command a line starts belongs to who
+                            // submits it; the shell reports when it reads it.
+                            for _ in 0..submitted_lines(input) {
+                                crate::runtime::process_resources::submit_line_for_key(
+                                    &run_id,
+                                    *actor != TerminalActor::User,
+                                );
+                            }
                         }
                         match interrupted {
                             Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
@@ -862,6 +864,17 @@ fn ended_wait_result(terminal: &mut Terminal, pty: &PtyManager) -> RoomTerminalW
             _ => RoomTerminalEventKind::Finished { exit_code, signal },
         }),
     )
+}
+
+/// How many command lines `input` submits to a shell at its prompt. The shell
+/// reports a start for a line with something on it, never for an empty one.
+pub(super) fn submitted_lines(input: &[u8]) -> usize {
+    let mut segments = input.split(|byte| matches!(byte, b'\r' | b'\n'));
+    // What follows the last line break is typed, not submitted.
+    segments.next_back();
+    segments
+        .filter(|line| line.iter().any(|byte| !byte.is_ascii_whitespace()))
+        .count()
 }
 
 fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {

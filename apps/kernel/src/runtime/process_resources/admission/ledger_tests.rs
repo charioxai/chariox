@@ -36,7 +36,6 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         writes: 0,
         write_growth: 0,
         effective: pid,
-        started: None,
         root: false,
     }
 }
@@ -359,30 +358,34 @@ fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
     );
 }
 
-/// A sample finds `pid`, which started at clock tick `started`.
-fn start(
-    ledger: &mut Ledger,
-    member: &Arc<Mutex<Observation>>,
-    pid: u32,
-    resident: u64,
-    started: u64,
-) {
-    member.lock().unwrap().commands.push(pool::CommandUse {
-        started: Some(started),
-        ..command(pid, resident, 8 * MIB)
-    });
+/// A sample finds `pid`. No platform reports when it started: a command is
+/// tied to its line by the shell's reports alone.
+fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
+    member
+        .lock()
+        .unwrap()
+        .commands
+        .push(command(pid, resident, 8 * MIB));
     ledger.register(member, 512 * MIB);
 }
 
-/// A line submitted at clock tick `at`.
-fn submit(member: &Arc<Mutex<Observation>>, at: u64, holdable: bool) {
-    member.lock().unwrap().submissions.record(at, holdable);
+/// A line accepted at the terminal.
+fn submit(member: &Arc<Mutex<Observation>>, holdable: bool) {
+    member.lock().unwrap().submissions.submit(holdable);
+}
+
+/// The shell reads the next accepted line, runs it and returns to the prompt;
+/// `background` is the job it left running.
+fn run_line(member: &Arc<Mutex<Observation>>, background: Option<u32>) {
+    let mut member = member.lock().unwrap();
+    member.submissions.line_started();
+    member.submissions.line_finished(background);
 }
 
 /// An older heavy command of another owner: never the one paused.
 fn oldest(ledger: &mut Ledger) -> Arc<Mutex<Observation>> {
     let other = owner("other", true, Vec::new(), Vec::new());
-    start(ledger, &other, 4_100_001, GIB, 1);
+    start(ledger, &other, 4_100_001, GIB);
     other
 }
 
@@ -405,11 +408,13 @@ fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
     // An agent's job, then a person's own (the newest), then an agent types
     // at the prompt the person's job returned.
-    submit(&terminal, 100, true);
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
-    submit(&terminal, 110, false);
-    start(&mut ledger, &terminal, 4_100_003, 700 * MIB, 111);
-    submit(&terminal, 120, true);
+    submit(&terminal, true);
+    run_line(&terminal, Some(4_100_002));
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    submit(&terminal, false);
+    run_line(&terminal, Some(4_100_003));
+    start(&mut ledger, &terminal, 4_100_003, 700 * MIB);
+    submit(&terminal, true);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_003),
@@ -428,10 +433,11 @@ fn an_agents_job_stays_pausable_when_the_person_types_after_it() {
     let mut ledger = Ledger::new(None);
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
-    submit(&terminal, 100, true);
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    submit(&terminal, true);
+    run_line(&terminal, Some(4_100_002));
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     // The person types at the prompt the agent's job returned.
-    submit(&terminal, 110, false);
+    submit(&terminal, false);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_002),
@@ -445,11 +451,13 @@ fn an_agents_job_first_sampled_after_a_persons_line_is_still_the_agents() {
     let mut ledger = Ledger::new(None);
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
-    // The agent starts a background build; the person submits `true` before
-    // the sampler first sees the build.
-    submit(&terminal, 100, true);
-    submit(&terminal, 102, false);
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    // Both lines are accepted before the shell launches the build, and both
+    // ran before the sampler first sees it.
+    submit(&terminal, true);
+    submit(&terminal, false);
+    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, Some(4_100_002));
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_002),
@@ -463,9 +471,11 @@ fn a_persons_job_first_sampled_after_an_agents_line_is_still_the_persons() {
     let mut ledger = Ledger::new(None);
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
-    submit(&terminal, 100, false);
-    submit(&terminal, 102, true);
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    submit(&terminal, false);
+    submit(&terminal, true);
+    run_line(&terminal, Some(4_100_002));
+    run_line(&terminal, Some(4_100_002));
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_002),
@@ -480,34 +490,7 @@ fn a_command_no_line_explains_follows_the_terminals_default() {
     let other = oldest(&mut ledger);
     // A terminal's own shell start precedes every line: the person's.
     let terminal = owner("terminal", false, Vec::new(), Vec::new());
-    submit(&terminal, 100, true);
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 50);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
     pressed(&mut ledger, other, &terminal);
     assert_eq!(wait(&terminal, 4_100_002), None);
-}
-
-/// A sample finds `pid` on a platform that reports no start time.
-fn start_untimed(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
-    member
-        .lock()
-        .unwrap()
-        .commands
-        .push(command(pid, resident, 8 * MIB));
-    ledger.register(member, 512 * MIB);
-}
-
-#[test]
-fn without_start_times_an_agents_job_still_follows_the_line_that_launched_it() {
-    let mut ledger = Ledger::new(None);
-    let other = oldest(&mut ledger);
-    let terminal = owner("terminal", true, Vec::new(), Vec::new());
-    submit(&terminal, 100, true);
-    submit(&terminal, 102, false);
-    start_untimed(&mut ledger, &terminal, 4_100_002, 700 * MIB);
-    pressed(&mut ledger, other, &terminal);
-    assert_eq!(
-        wait(&terminal, 4_100_002),
-        Some(Wait::Paused(WaitReason::Memory)),
-        "the agent's build took the person's later line"
-    );
 }

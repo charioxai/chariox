@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::events::{FinishBinding, OutputMatcher};
+use super::service::submitted_lines;
 use super::*;
 
 struct TempDir(std::path::PathBuf);
@@ -366,49 +367,18 @@ async fn one_driver_rule_protects_a_foreground_program() {
     service.end_session("room-1");
 }
 
-#[tokio::test]
-async fn the_actor_that_submits_a_line_decides_whether_its_command_waits() {
-    let root = TempDir::new();
-    let service = service(root.path());
-    let id = open(&service, root.path()).terminal_id;
-    let run_id = service
-        .terminal_for_test(&id)
-        .lock_open()
-        .unwrap()
-        .terminal
-        .run_id
-        .clone()
-        .unwrap();
-    let next_waits = || crate::runtime::process_resources::holdable_for_key(&run_id);
-    assert_eq!(next_waits(), Some(false), "a person's own commands wait");
-    // Text that submits nothing starts no command.
-    type_as(&service, &id, &agent("a"), "cat").await;
+#[test]
+fn only_lines_with_something_on_them_are_submitted() {
+    assert_eq!(submitted_lines(b"cat"), 0, "typing without a line break");
+    assert_eq!(submitted_lines(b"\r"), 0, "an empty line");
+    assert_eq!(submitted_lines(b"  \r\n"), 0, "a blank line");
+    assert_eq!(submitted_lines(b"true\r"), 1);
+    assert_eq!(submitted_lines(b"true\r\n"), 1, "a CRLF is one line break");
     assert_eq!(
-        next_waits(),
-        Some(false),
-        "typing without a line changed it"
+        submitted_lines(b"a\rb\n\nc"),
+        2,
+        "the last is still being typed"
     );
-    type_as(&service, &id, &agent("a"), "\r").await;
-    assert_eq!(next_waits(), Some(true), "the agent's command cannot wait");
-    until("cat to run", || async {
-        service.pump_once();
-        service.list("room-1")[0].driver
-            == RoomTerminalDriver::Busy {
-                driven_by: agent("a"),
-            }
-    })
-    .await;
-    // A line into the running program starts no command either.
-    type_as(&service, &id, &agent("a"), "hello\r\u{4}").await;
-    until("cat to end", || async {
-        service.pump_once();
-        service.list("room-1")[0].driver == RoomTerminalDriver::Free
-    })
-    .await;
-    assert_eq!(next_waits(), Some(true));
-    type_as(&service, &id, &TerminalActor::User, "true\r").await;
-    assert_eq!(next_waits(), Some(false), "the person's command can wait");
-    service.end_session("room-1");
 }
 
 /// Submits `first`'s line and then `second`'s before the shell can launch the
@@ -433,7 +403,10 @@ async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &Termi
         &format!("sleep 120 & echo $! > '{}'\r", pid_file.display()),
     )
     .await;
-    type_as(&service, &id, second, "true\r").await;
+    assert!(
+        type_as(&service, &id, second, "true\r").await.accepted,
+        "the second line was refused, so the race did not happen"
+    );
     let pid = || {
         std::fs::read_to_string(&pid_file)
             .ok()

@@ -25,7 +25,7 @@ __chariox_prompt() {
   if [[ $__chariox_debug_start == 1 && $__chariox_at_prompt == 1 ]]; then
     printf '\033]133;C\007'
   fi
-  printf '\033]133;D;%s\007' "$__chariox_status_code"
+  printf '\033]133;D;%s;%s\007' "$__chariox_status_code" "${!-}"
   for __chariox_hook in "${__chariox_prompt_hooks[@]}"; do
     __chariox_status "$__chariox_status_code"
     eval "$__chariox_hook"
