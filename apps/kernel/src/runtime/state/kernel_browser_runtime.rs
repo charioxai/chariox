@@ -2,6 +2,7 @@
 use super::*;
 use crate::local::KernelBrowserCommand;
 use crate::runtime::kernel_browser_features as features;
+use crate::transport::room_shared_display::RoomDisplayCommand;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 
 /// MD-3: no serde impl. Display owns the serialized protocol adapter/version.
@@ -157,6 +158,35 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
     }
     params["focused_agent"] = serde_json::json!(true);
     Ok(params)
+}
+
+impl KernelBrowserDisplayRequest {
+    /// The Room display command this request becomes when its subscription is a Room display.
+    fn room_control(&self) -> Option<(&String, u64, RoomDisplayCommand)> {
+        match self {
+            KernelBrowserDisplayRequest::Attach {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Attach {})),
+            KernelBrowserDisplayRequest::Suspend {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Suspend {})),
+            KernelBrowserDisplayRequest::Resume {
+                subscription_id,
+                generation,
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Resume {})),
+            // A parked Room display captures nothing: the worker pauses its desktop source and renews the leases and
+            // producer binding that would otherwise expire after 60 s.
+            KernelBrowserDisplayRequest::Park {
+                subscription_id,
+                generation,
+                parked: true,
+                ..
+            } => Some((subscription_id, *generation, RoomDisplayCommand::Park {})),
+            _ => None,
+        }
+    }
 }
 
 impl KernelRuntimeState {
@@ -528,45 +558,7 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
-        let room_control = match &request {
-            KernelBrowserDisplayRequest::Attach {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
-            )),
-            KernelBrowserDisplayRequest::Suspend {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Suspend {},
-            )),
-            KernelBrowserDisplayRequest::Resume {
-                subscription_id,
-                generation,
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Resume {},
-            )),
-            // A parked Room display captures nothing; its home and worker leases and the producer binding
-            // still expire after 60 s, so each park renews them with a capture-free attach.
-            KernelBrowserDisplayRequest::Park {
-                subscription_id,
-                generation,
-                parked: true,
-                ..
-            } => Some((
-                subscription_id,
-                *generation,
-                crate::transport::room_shared_display::RoomDisplayCommand::Attach {},
-            )),
-            _ => None,
-        };
+        let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
             if self.is_room_display(id) {
                 return self
@@ -1057,6 +1049,21 @@ pub(super) fn host_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod document_tests {
     use super::*;
+    /// Pausing a Room display must reach the worker as a pause; resuming needs no worker call (the next capture does).
+    #[test]
+    fn mp08_a_parked_room_display_becomes_a_worker_park() {
+        let park = |parked| KernelBrowserDisplayRequest::Park {
+            subscription_id: "room-display".into(),
+            generation: 3,
+            parked,
+            watch: true,
+        };
+        assert_eq!(
+            park(true).room_control(),
+            Some((&"room-display".to_owned(), 3, RoomDisplayCommand::Park {}))
+        );
+        assert!(park(false).room_control().is_none());
+    }
     #[test]
     fn md3_local_terminals_have_distinct_stable_browser_actors() {
         use crate::runtime::command::{KernelCommand, KernelCommandSource};
