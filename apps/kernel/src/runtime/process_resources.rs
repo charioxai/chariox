@@ -463,7 +463,8 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
-    /// Its commands may wait for room: not a person's own terminal command.
+    /// The commands that start from now on may wait for room: not a person's
+    /// own terminal command. Each keeps the policy it started with.
     holdable: bool,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
@@ -610,8 +611,9 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
         .collect()
 }
 
-/// Whether the commands of the workload bound to `key` may wait for room: a
-/// person's own terminal command never does.
+/// Whether the commands the workload bound to `key` starts from now on may
+/// wait for room: a person's own terminal command never does. Commands
+/// already running keep the policy they started with.
 pub(crate) fn set_holdable_for_key(key: &str, holdable: bool) {
     let state = registry()
         .lock()

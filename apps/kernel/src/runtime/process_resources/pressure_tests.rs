@@ -33,18 +33,45 @@ impl Workload {
     /// A shell root running named shell commands in the background; `$0` is
     /// the workload's directory, holding `alloc.py`.
     pub(super) fn run(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
-        Self::run_under(prepared, false, commands)
+        Self::run_under(prepared, false, false, commands)
     }
     /// The same under a launcher, as a provider's wrapper runs its server:
     /// a non-shell root whose shell starts the commands.
     pub(super) fn launched(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
-        Self::run_under(prepared, true, commands)
+        Self::run_under(prepared, true, false, commands)
     }
-    fn run_under(prepared: PreparedDomain, launcher: bool, commands: &[(&str, String)]) -> Self {
+    /// The commands wait for `go()`: the test sets the domain's policy first,
+    /// as a terminal does before its shell runs a line.
+    pub(super) fn gated(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
+        Self::run_under(prepared, false, true, commands)
+    }
+    pub(super) fn go(&self, commands: &[&str]) {
+        std::fs::write(self.dir.join("go"), "").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while commands
+            .iter()
+            .any(|name| !self.dir.join(format!("{name}.pid")).exists())
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "commands did not start"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn run_under(
+        prepared: PreparedDomain,
+        launcher: bool,
+        gated: bool,
+        commands: &[(&str, String)],
+    ) -> Self {
         let dir = std::env::temp_dir().join(format!("pc-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("alloc.py"), ALLOC).unwrap();
         let mut script = String::new();
+        if gated {
+            script.push_str("while [ ! -e \"$0/go\" ]; do sleep 0.05; done; ");
+        }
         for (name, command) in commands {
             script.push_str(&format!(
                 "{command} 2>\"$0/{name}.err\" & echo $! > \"$0/{name}.pid\"; "
@@ -71,6 +98,9 @@ impl Workload {
             .spawn()
             .unwrap();
         let domain = prepared.start(child.id()).unwrap();
+        if gated {
+            return Self { child, domain, dir };
+        }
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while commands
             .iter()

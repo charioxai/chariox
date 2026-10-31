@@ -154,7 +154,7 @@ fn a_persons_own_terminal_command_never_waits() {
     let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
     settle(1);
     let prepared = domain(&pool, "person", false);
-    let person = Workload::run(
+    let person = Workload::gated(
         prepared,
         &[(
             "grow",
@@ -163,7 +163,9 @@ fn a_persons_own_terminal_command_never_waits() {
     );
     let key = format!("admission-{:016x}", rand::random::<u64>());
     person.domain.bind_key(&key);
+    // The person submits the line, then the command starts.
     set_holdable_for_key(&key, false);
+    person.go(&["grow"]);
     settle(6);
     assert!(!person.waiting("grow"), "a person's own command was paused");
     person.domain.unbind_key(&key);

@@ -42,6 +42,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
 fn entry(arrived: u64, expected: Peak) -> Entry {
     Entry {
         arrived,
+        holdable: true,
         expected: Some(expected),
         seen: Some(Seen {
             pid: arrived as u32,
@@ -257,4 +258,49 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
         &room(4 * GIB, false, &volume),
     );
     assert_eq!(wait(&current, 1), None, "it did not resume with both free");
+}
+#[test]
+fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // An agent's job, then a person's own (the newest), then an agent types
+    // at the prompt the person's job returned.
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    terminal.lock().unwrap().holdable = false;
+    start(&mut ledger, &terminal, 4_100_003, 700 * MIB);
+    terminal.lock().unwrap().holdable = true;
+    let members = [other, terminal.clone()];
+    ledger.pass(&members, &terminal, &room(100 * MIB, true, &volume));
+    assert_eq!(
+        wait(&terminal, 4_100_003),
+        None,
+        "a person's job was paused after an agent typed"
+    );
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "the agent's job was spared"
+    );
+}
+
+#[test]
+fn an_agents_job_stays_pausable_when_the_person_types_after_it() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    // The person types at the prompt the agent's job returned.
+    terminal.lock().unwrap().holdable = false;
+    let members = [other, terminal.clone()];
+    ledger.pass(&members, &terminal, &room(100 * MIB, true, &volume));
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "an agent's job was exempted by a person's later keystroke"
+    );
 }

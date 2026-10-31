@@ -72,6 +72,9 @@ pub(super) struct Entry {
     admitted: bool,
     /// The user started it now: it never waits again.
     forced: bool,
+    /// It may wait for room: set when it starts, by who started it, and
+    /// never changed after (a person's own terminal command never waits).
+    holdable: bool,
     /// The watch has stopped its subtree (`SIGSTOP`).
     pub stopped: bool,
     pub seen: Option<Seen>,
@@ -159,6 +162,7 @@ impl Ledger {
     pub(super) fn register(&mut self, current: &Arc<Mutex<Observation>>, light: u64) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let observation = &mut *observation;
+        let holdable = observation.holdable;
         let live = observation
             .commands
             .iter()
@@ -186,6 +190,7 @@ impl Ledger {
                 self.arrivals += 1;
                 Entry {
                     arrived: self.arrivals,
+                    holdable,
                     ..Entry::default()
                 }
             });
@@ -285,7 +290,6 @@ impl Ledger {
         available: &mut u64,
     ) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
-        let holdable = observation.holdable;
         for entry in observation.admission.values_mut() {
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
@@ -298,7 +302,7 @@ impl Ledger {
             let need = expected.memory.saturating_sub(entry.resident);
             let disk = entry.disk(room);
             let ahead = entry.writes_ahead(room);
-            entry.wait = if !holdable {
+            entry.wait = if !entry.holdable {
                 None
             } else if expected.memory >= room.light && need > *available && state.heavy_running {
                 Some(Wait::Held(WaitReason::Memory))
@@ -328,14 +332,11 @@ impl Ledger {
         let mut newest: Option<(u64, u32, u64, &Arc<Mutex<Observation>>)> = None;
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-            if !observation.holdable {
-                continue;
-            }
             for command in &observation.commands {
                 let Some(entry) = observation.admission.get(&command.pid) else {
                     continue;
                 };
-                if entry.wait.is_some() || entry.forced {
+                if !entry.holdable || entry.wait.is_some() || entry.forced {
                     continue;
                 }
                 if let Some(rate) = pausable(entry, command) {
