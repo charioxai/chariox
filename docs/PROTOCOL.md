@@ -5985,8 +5985,9 @@ No frame changes; the data channel's ping/pong become a contract (TR-16). The ke
 puts a ping ahead of its queued fragments every second and the browser answers each
 with a pong. A browser that hears nothing for 2.5 s leaves the path and moves its
 lanes to the relay as a carrier switch (commands replay, subscriptions resume from
-their cursors, the open view keeps its state); the kernel ends a peer that answered
-nothing for 3 s. A viewer's display registered on another carrier stops the pump it
+their cursors, the open view keeps its state); the kernel ends a peer that neither
+answered nor acknowledged queued data for 3 s (on a slow link the ping can wait behind
+a megabyte already in SCTP; a browser still acknowledging it is alive). A viewer's display registered on another carrier stops the pump it
 left at once, so that pump's late end cannot retire the generation the new one serves.
 The way back is proven first: the browser opens and admits direct sockets for every
 lane the relay carries while the relay keeps carrying them, and switches only once all
