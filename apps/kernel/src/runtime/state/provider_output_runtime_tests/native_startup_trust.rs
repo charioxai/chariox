@@ -95,6 +95,31 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         crate::session::PromptSubmissionOutcome::Started { prompt } => prompt,
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
+    // The replacement run is a stub process: a real Claude launch needs a login.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("the agent should switch to the stub provider");
+    let queued = match app
+        .record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            "queued-behind-startup-trust-task",
+            Vec::new(),
+        )
+        .expect("a second task should queue behind the trust question")
+    {
+        crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
+        other => panic!("unexpected prompt outcome: {other:?}"),
+    };
     let bridge = StartupTrustBridge::default();
     let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
         std::sync::Arc::new(bridge.clone());
@@ -135,7 +160,7 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
             .unwrap()
             .active_prompt_for_agent(agent.id())
             .cloned();
-        if primary_active.is_none() {
+        if primary_active.is_none_or(|active| active.id() != prompt.id()) {
             settled = true;
             break;
         }
@@ -186,6 +211,13 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
             .get(crate::history::TURN_OUTCOME_METADATA_KEY),
         Some(&serde_json::to_value(crate::provider::TurnOutcome::cancelled()).unwrap())
     );
+    assert_queued_prompt_runs_on_replacement(
+        &runtime,
+        session.id(),
+        agent.id(),
+        run.id(),
+        queued.id(),
+    );
     assert!(!fs::read_to_string(&capture_file)
         .unwrap_or_default()
         .contains("rejected-startup-trust-task"));
@@ -193,5 +225,145 @@ fn claude_workspace_trust_rejection_settles_only_own_prompt_with_reason() {
         .block_on(app.lock())
         .pty_mut()
         .remove_process(run.id());
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A prompt queued behind a denied trust question moves to a fresh provider run: the denied run
+/// is over, so the queued prompt must not stay active on it.
+fn assert_queued_prompt_runs_on_replacement(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    denied_run_id: &str,
+    queued_prompt_id: &str,
+) {
+    let denied = runtime.owned.provider_store.get_run(denied_run_id).unwrap();
+    assert_ne!(denied.state(), crate::provider::ProviderRunState::Running);
+    let active = runtime
+        .owned
+        .session_snapshot(session_id)
+        .unwrap()
+        .active_prompt_for_agent(agent_id)
+        .cloned()
+        .expect("the queued prompt becomes the active prompt");
+    assert_eq!(active.id(), queued_prompt_id);
+    let replacement = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session_id, agent_id)
+        .expect("the queued prompt has a provider run");
+    assert_ne!(replacement.id(), denied_run_id);
+    assert_eq!(
+        replacement.state(),
+        crate::provider::ProviderRunState::Running
+    );
+}
+
+#[test]
+fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh_run() {
+    let worktree = crate::test_support::TestWorktree::new("claude-native-trust-dispatch-denied");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-trust-dispatch-denied-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-trust-dispatch-denied",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
+    fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
+    let mut run = startup_readiness_run(
+        session.id(),
+        agent.id(),
+        "provider-run-trust-dispatch-denied",
+        &context_file,
+        &events_file,
+        "sleep 30".to_string(),
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    // The replacement run is a stub process: a real Claude launch needs a login.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("the agent should switch to the stub provider");
+    let mut submit = |text: &str| {
+        app.record_native_prompt_started_with_attachments(
+            session.id(),
+            attachment.id(),
+            attachment.id(),
+            agent.id(),
+            text,
+            Vec::new(),
+        )
+        .expect("prompt should be accepted")
+    };
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = submit("denied-task") else {
+        panic!("the first task should start");
+    };
+    let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = submit("queued-task")
+    else {
+        panic!("the second task should queue");
+    };
+    let app = Arc::new(Mutex::new(app));
+    let _cleanup = InertPtyCleanup {
+        app: Arc::clone(&app),
+        provider_run_id: run.id().into(),
+    };
+    let executor = tokio::runtime::Runtime::new().unwrap();
+    let runtime = executor.block_on(owned_runtime_state(&app));
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: run.id().to_string(),
+        agent_id: agent.id().to_string(),
+        prompt_id: prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: attachment.id().to_string(),
+        prompt: "denied-task".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: prompt.prompt_origin(),
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let denied = DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "submit Claude headless prompt",
+        message: "Claude Code workspace trust was denied before the queued task was dispatched."
+            .to_string(),
+    };
+    executor
+        .block_on(runtime.fail_prompt_dispatch(dispatch, denied))
+        .expect("a declined trust question ends the turn without an error");
+    assert_queued_prompt_runs_on_replacement(
+        &runtime,
+        session.id(),
+        agent.id(),
+        run.id(),
+        queued.id(),
+    );
     let _ = fs::remove_dir_all(root);
 }
