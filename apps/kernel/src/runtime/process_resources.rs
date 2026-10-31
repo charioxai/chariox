@@ -6,17 +6,26 @@ use std::time::Duration;
 
 mod control;
 use control::WatchCommand;
-pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
+pub(crate) use control::{
+    end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
+};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
+mod admission;
 mod pool;
 mod projection;
 mod sampling;
 mod session_sweep;
 #[cfg(test)]
+pub(crate) use admission::WaitReason;
+#[cfg(test)]
 pub(crate) use projection::released_keys_for_session;
+#[cfg(test)]
+pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
+#[cfg(test)]
+mod admission_tests;
 #[cfg(target_os = "linux")]
 mod cgroup;
 #[cfg(test)]
@@ -178,6 +187,7 @@ impl PreparedDomain {
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
+            holdable: true,
             ..Observation::default()
         }));
         self.pool.join(&state);
@@ -185,8 +195,9 @@ impl PreparedDomain {
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
         let mut released = false;
-        // Per command: process-table time, resident bytes, growth per second.
-        let mut previous = std::collections::BTreeMap::<u32, (u64, u64, u64)>::new();
+        // Per command: process-table time, resident and written bytes, and
+        // their growth per second.
+        let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -218,34 +229,48 @@ impl PreparedDomain {
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
-                    .map(|(pid, resident)| {
+                    .map(|(pid, (resident, pids))| {
+                        let writes = pids.iter().map(|pid| admission::written(*pid)).sum();
+                        let rate = |now: u64, before: u64, at: u64, rate: u64| {
+                            (now.saturating_sub(before).saturating_mul(1000) / (sampled_at - at))
+                                .max(rate / 2)
+                        };
                         // A runaway slowed by the pressure brake is still the
                         // runaway: its rate decays by half per new sample.
-                        let growth = match previous.get(&pid) {
-                            Some((at, before, growth)) if sampled_at > *at => {
-                                (resident.saturating_sub(*before).saturating_mul(1000)
-                                    / (sampled_at - at))
-                                    .max(growth / 2)
-                            }
-                            Some((_, _, growth)) => *growth,
-                            None => 0,
+                        let (growth, write_growth) = match previous.get(&pid) {
+                            Some(before) if sampled_at > before.at => (
+                                rate(resident, before.resident, before.at, before.growth),
+                                rate(writes, before.writes, before.at, before.write_growth),
+                            ),
+                            Some(before) => (before.growth, before.write_growth),
+                            None => (0, 0),
                         };
                         pool::CommandUse {
                             pid,
                             resident,
                             growth,
+                            writes,
+                            write_growth,
+                            effective: tree.effective(pid, &samples),
+                            root: tree.is_root(pid),
                         }
                     })
                     .collect::<Vec<_>>();
                 previous = commands
                     .iter()
                     .map(|command| {
-                        let entry = previous
+                        let rates = previous
                             .get(&command.pid)
-                            .filter(|(at, ..)| *at >= sampled_at)
+                            .filter(|before| before.at >= sampled_at)
                             .copied()
-                            .unwrap_or((sampled_at, command.resident, command.growth));
-                        (command.pid, entry)
+                            .unwrap_or(Rates {
+                                at: sampled_at,
+                                resident: command.resident,
+                                growth: command.growth,
+                                writes: command.writes,
+                                write_growth: command.write_growth,
+                            });
+                        (command.pid, rates)
                     })
                     .collect();
                 {
@@ -258,6 +283,7 @@ impl PreparedDomain {
                 #[cfg(not(target_os = "linux"))]
                 let unit_charged = None;
                 self.pool.enforce(&watched, unit_charged);
+                admit(&tree, &watched);
                 if released && ended {
                     break;
                 }
@@ -305,7 +331,23 @@ impl PreparedDomain {
                         );
                         let _ = reply.send(result);
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(WatchCommand::StartNow { process_id, reply }) => {
+                        let started = tree.command_of(&process_id).is_some_and(|command| {
+                            watched
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .admission
+                                .get_mut(&command)
+                                .is_some_and(admission::Entry::force)
+                        });
+                        admit(&tree, &watched);
+                        let _ = reply.send(if started {
+                            Ok(vec![process_id])
+                        } else {
+                            Err("the process is not waiting; refresh Health".into())
+                        });
+                    }
+                    Ok(WatchCommand::Apply) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                     _ => {
                         tree.terminate();
                         break;
@@ -320,6 +362,48 @@ impl PreparedDomain {
             started: control::domain_started(),
         })
     }
+}
+
+/// Process-table time, resident and written bytes of one command, and their
+/// growth per second.
+#[derive(Clone, Copy)]
+struct Rates {
+    at: u64,
+    resident: u64,
+    growth: u64,
+    writes: u64,
+    write_growth: u64,
+}
+
+/// Applies admission's decisions: a waiting command's subtree is stopped
+/// (again each tick, so what it started meanwhile stops too); one that may run
+/// continues.
+fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
+    let signals = watched
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .admission
+        .iter_mut()
+        .filter_map(|(command, entry)| {
+            let waiting = entry.wait.is_some();
+            let signal = (waiting || entry.stopped).then_some((*command, waiting));
+            entry.stopped = waiting;
+            signal
+        })
+        .collect::<Vec<_>>();
+    #[cfg(unix)]
+    for (command, waiting) in signals {
+        tree.signal(
+            command,
+            if waiting {
+                libc::SIGSTOP
+            } else {
+                libc::SIGCONT
+            },
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = (tree, signals);
 }
 
 fn configured_cap(value: Option<&str>) -> std::io::Result<Option<u64>> {
@@ -379,10 +463,14 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
+    /// Its commands may wait for room: not a person's own terminal command.
+    holdable: bool,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
+    /// Admission per command, by the command's top process.
+    admission: std::collections::BTreeMap<u32, admission::Entry>,
     memory_stop: Option<MemoryStop>,
     /// Who Health lists the processes under when no run or terminal does.
     listed: Option<projection::Listing>,

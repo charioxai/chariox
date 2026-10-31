@@ -207,36 +207,91 @@ impl ProcessTree {
             .collect())
     }
 
-    /// Resident memory per command: the root's own process, and each subtree
-    /// under it (after the root ended, each job it left running).
-    pub fn commands(&self, samples: &[ProcessSample]) -> BTreeMap<u32, u64> {
-        let mut commands = BTreeMap::<u32, u64>::new();
+    /// Resident memory and processes per command: the root's own process, and
+    /// each subtree under it (after the root ended, each job it left running).
+    pub fn commands(&self, samples: &[ProcessSample]) -> BTreeMap<u32, (u64, Vec<u32>)> {
+        let mut commands = BTreeMap::<u32, (u64, Vec<u32>)>::new();
         for sample in samples {
-            let mut top = sample.pid;
-            for _ in 0..samples.len() {
-                match self.parents.get(&top) {
-                    Some(parent)
-                        if top != self.root
-                            && *parent != self.root
-                            && self.owned.contains_key(parent) =>
-                    {
-                        top = *parent
-                    }
-                    _ => break,
-                }
-            }
-            *commands.entry(top).or_default() += sample.resident_set_bytes;
+            let command = commands.entry(self.top(sample.pid)).or_default();
+            command.0 += sample.resident_set_bytes;
+            command.1.push(sample.pid);
         }
         commands
     }
 
-    /// Ends one command and what it started at once: a runaway would keep
-    /// growing through a grace period. Returns the ended process ids.
-    pub fn kill(&self, command: u32) -> Vec<String> {
-        if command == self.root {
-            self.terminate();
-            return self.ids.values().cloned().collect();
+    /// The command a process belongs to.
+    fn top(&self, pid: u32) -> u32 {
+        let mut top = pid;
+        for _ in 0..self.parents.len() {
+            match self.parents.get(&top) {
+                Some(parent)
+                    if top != self.root
+                        && *parent != self.root
+                        && self.owned.contains_key(parent) =>
+                {
+                    top = *parent
+                }
+                _ => break,
+            }
         }
+        top
+    }
+
+    /// The command of the process `process_id` names.
+    pub fn command_of(&self, process_id: &str) -> Option<u32> {
+        let pid = self
+            .ids
+            .iter()
+            .find(|(pid, id)| id.as_str() == process_id && self.owned.contains_key(pid))
+            .map(|(pid, _)| *pid)?;
+        (pid != self.root).then(|| self.top(pid))
+    }
+
+    /// What a command runs: past shells that only run one child (`sh -c`,
+    /// a harness's tool shell) to that child.
+    pub fn effective(&self, command: u32, samples: &[ProcessSample]) -> u32 {
+        let mut pid = command;
+        for _ in 0..8 {
+            let shell = samples
+                .iter()
+                .find(|sample| sample.pid == pid)
+                .is_some_and(|sample| {
+                    matches!(
+                        sample
+                            .command
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or_default()
+                            .trim_start_matches('-'),
+                        "sh" | "bash" | "dash" | "zsh" | "ksh" | "fish"
+                    )
+                });
+            let mut children = self.parents.iter().filter(|(_, parent)| **parent == pid);
+            match (shell, children.next(), children.next()) {
+                (true, Some((child, _)), None) => pid = *child,
+                _ => break,
+            }
+        }
+        pid
+    }
+
+    /// Holds (`SIGSTOP`) or continues (`SIGCONT`) one command and everything
+    /// it started; only verified processes of this tree, never the root.
+    #[cfg(unix)]
+    pub fn signal(&self, command: u32, signal: libc::c_int) {
+        if command == self.root {
+            return;
+        }
+        for pid in self.subtree(command) {
+            if let Some(identity) = self.owned.get(&pid) {
+                if pid > 1 && pid <= i32::MAX as u32 && same_process(pid, identity) {
+                    let _ = unsafe { libc::kill(pid as i32, signal) };
+                }
+            }
+        }
+    }
+
+    fn subtree(&self, command: u32) -> std::collections::BTreeSet<u32> {
         let mut selected = std::collections::BTreeSet::from([command]);
         loop {
             let before = selected.len();
@@ -249,6 +304,17 @@ impl ProcessTree {
                 break;
             }
         }
+        selected
+    }
+
+    /// Ends one command and what it started at once: a runaway would keep
+    /// growing through a grace period. Returns the ended process ids.
+    pub fn kill(&self, command: u32) -> Vec<String> {
+        if command == self.root {
+            self.terminate();
+            return self.ids.values().cloned().collect();
+        }
+        let selected = self.subtree(command);
         #[cfg(unix)]
         for pid in &selected {
             if let Some(identity) = self.owned.get(pid) {

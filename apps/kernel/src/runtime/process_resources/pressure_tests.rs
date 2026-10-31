@@ -11,21 +11,35 @@ while rate and total<top:
 time.sleep(60)
 ";
 
-struct Workload {
+pub(super) struct Workload {
     child: std::process::Child,
-    domain: ProcessDomain,
-    dir: std::path::PathBuf,
+    pub(super) domain: ProcessDomain,
+    pub(super) dir: std::path::PathBuf,
 }
 impl Workload {
     /// A shell root running named commands; each is `name start_mib rate_mib_s top_mib`.
-    fn start(prepared: PreparedDomain, commands: &[(&str, u64, u64, u64)]) -> Self {
+    pub(super) fn start(prepared: PreparedDomain, commands: &[(&str, u64, u64, u64)]) -> Self {
+        let commands = commands
+            .iter()
+            .map(|(name, start, rate, top)| {
+                (
+                    *name,
+                    format!("python3 \"$0/alloc.py\" {start} {rate} {top}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::run(prepared, &commands)
+    }
+    /// A shell root running named shell commands in the background; `$0` is
+    /// the workload's directory, holding `alloc.py`.
+    pub(super) fn run(prepared: PreparedDomain, commands: &[(&str, String)]) -> Self {
         let dir = std::env::temp_dir().join(format!("pc-{:016x}", rand::random::<u64>()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("alloc.py"), ALLOC).unwrap();
         let mut script = String::new();
-        for (name, start, rate, top) in commands {
+        for (name, command) in commands {
             script.push_str(&format!(
-                "python3 \"$0/alloc.py\" {start} {rate} {top} 2>\"$0/{name}.err\" & echo $! > \"$0/{name}.pid\"; "
+                "{command} 2>\"$0/{name}.err\" & echo $! > \"$0/{name}.pid\"; "
             ));
         }
         script.push_str("wait");
@@ -51,18 +65,32 @@ impl Workload {
         }
         Self { child, domain, dir }
     }
-    fn alive(&mut self, name: &str) -> bool {
-        let pid = std::fs::read_to_string(self.dir.join(format!("{name}.pid")))
+    pub(super) fn pid(&self, name: &str) -> i32 {
+        std::fs::read_to_string(self.dir.join(format!("{name}.pid")))
             .unwrap()
             .trim()
             .parse::<i32>()
-            .unwrap();
+            .unwrap()
+    }
+    pub(super) fn alive(&mut self, name: &str) -> bool {
+        let pid = self.pid(name);
         // The test's own children: reap one that ended so it reads as gone.
         let mut status = 0;
         unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         crate::test_support::process_alive(pid)
     }
-    fn root_alive(&mut self) -> bool {
+    /// Admission stopped the command (`SIGSTOP`): it waits.
+    #[cfg(target_os = "linux")]
+    pub(super) fn waiting(&self, name: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{}/stat", self.pid(name)))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
+            })
+            .is_some_and(|state| state == "T")
+    }
+    pub(super) fn root_alive(&mut self) -> bool {
         self.child.try_wait().unwrap().is_none()
     }
     /// The stopped command was told why on its own error stream. Only Linux
@@ -90,11 +118,11 @@ impl Drop for Workload {
     }
 }
 
-fn pool(ceiling_mib: u64) -> Arc<pool::Pool> {
+pub(super) fn pool(ceiling_mib: u64) -> Arc<pool::Pool> {
     Arc::new(pool::Pool::new(ceiling_mib * MIB, false))
 }
 
-fn domain(pool: &Arc<pool::Pool>, unit: &str, cgroup: bool) -> PreparedDomain {
+pub(super) fn domain(pool: &Arc<pool::Pool>, unit: &str, cgroup: bool) -> PreparedDomain {
     if cgroup {
         let prepared = PreparedDomain::in_pool(unit, None, pool.clone());
         #[cfg(target_os = "linux")]
@@ -105,7 +133,7 @@ fn domain(pool: &Arc<pool::Pool>, unit: &str, cgroup: bool) -> PreparedDomain {
     }
 }
 
-fn settle(seconds: u64) {
+pub(super) fn settle(seconds: u64) {
     std::thread::sleep(Duration::from_secs(seconds));
 }
 
@@ -193,40 +221,50 @@ fn pressure(
     (a, b, c, pool)
 }
 
-fn slow_growth_stops_the_owner_furthest_above_share(cgroup: bool) {
+fn slow_growth_is_paused_before_anything_is_stopped(cgroup: bool) {
     let (mut a, mut b, mut c, _pool) = pressure(cgroup, 300, 48, 9);
     assert!(
-        !a.alive("big"),
-        "the command furthest above its share kept running"
+        a.alive("big") && a.alive("idle") && a.root_alive(),
+        "a command was stopped where the growing one could wait"
     );
-    a.assert_told("big", "stopped this command under memory pressure");
-    assert!(
-        a.root_alive() && a.alive("idle"),
-        "more than one command of A was stopped"
-    );
-    assert_eq!(a.domain.memory_limit_bytes(), None);
     assert!(b.root_alive() && b.alive("grow") && b.alive("idle"));
+    #[cfg(target_os = "linux")]
+    assert!(
+        b.waiting("grow"),
+        "the newest growing command was not paused"
+    );
     assert!(c.alive("small"));
+    assert_eq!(a.domain.memory_limit_bytes(), None);
+    // Room frees: the paused command continues by itself.
+    unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
+    settle(3);
+    #[cfg(target_os = "linux")]
+    assert!(!b.waiting("grow"), "the paused command did not continue");
+    assert!(b.alive("grow"));
 }
 
 #[cfg(unix)]
 #[test]
-fn pressure_stops_one_command_of_the_owner_furthest_above_its_share() {
-    slow_growth_stops_the_owner_furthest_above_share(false);
+fn pressure_pauses_the_newest_growing_command_before_stopping_any() {
+    slow_growth_is_paused_before_anything_is_stopped(false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
-fn pressure_stops_one_command_of_the_owner_furthest_above_its_share_in_cgroups() {
-    slow_growth_stops_the_owner_furthest_above_share(true);
+fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
+    slow_growth_is_paused_before_anything_is_stopped(true);
 }
 
-fn runaway_is_stopped_first(cgroup: bool) {
+fn runaway_is_paused_before_the_line(cgroup: bool) {
     // 512 MiB/s: the PC-06 runaway.
     let (mut a, mut b, mut c, pool) = pressure(cgroup, 0, 512, 4);
-    assert!(!b.alive("grow"), "the fast runaway kept running");
-    b.assert_told("grow", "stopped this command under memory pressure");
+    assert!(
+        b.alive("grow"),
+        "the runaway was stopped where it could wait"
+    );
+    #[cfg(target_os = "linux")]
+    assert!(b.waiting("grow"), "the fast runaway kept running");
     assert!(
         b.root_alive() && b.alive("idle"),
         "the runaway's owner lost more than the command"
@@ -247,15 +285,15 @@ fn runaway_is_stopped_first(cgroup: bool) {
 
 #[cfg(unix)]
 #[test]
-fn a_fast_runaway_is_the_one_command_stopped() {
-    runaway_is_stopped_first(false);
+fn a_fast_runaway_is_paused_and_nothing_is_stopped() {
+    runaway_is_paused_before_the_line(false);
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
-fn a_fast_runaway_is_the_one_command_stopped_before_the_oom_killer() {
-    runaway_is_stopped_first(true);
+fn a_fast_runaway_is_paused_before_the_oom_killer() {
+    runaway_is_paused_before_the_line(true);
 }
 
 fn owner_cap(cgroup: bool) {

@@ -1,5 +1,5 @@
 //! Session-scoped read model: only launch-owned observations reach clients.
-use super::{samples_for_key, ProcessSample};
+use super::{admission, samples_for_key, ProcessSample};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
@@ -13,6 +13,30 @@ pub struct SessionProcess {
     pub owner: SessionProcessOwner,
     #[serde(flatten)]
     pub process: ProcessSample,
+    /// Set on a command's own process; what it started waits with it.
+    pub state: SessionProcessState,
+}
+
+/// Whether a command runs or waits for room (admission).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionProcessState {
+    #[default]
+    Running,
+    /// Stopped before it grew, in line for room for its expected need.
+    Held {
+        reason: admission::WaitReason,
+        /// Place in line among commands waiting for the same reason, from 1.
+        position: u32,
+        need_bytes: u64,
+        free_bytes: u64,
+        command_line: String,
+    },
+    /// Stopped while growing into a full pool or disk; continues with room.
+    Paused {
+        reason: admission::WaitReason,
+        command_line: String,
+    },
 }
 
 /// Whom a workload's processes are listed under when no run or terminal does:
@@ -33,11 +57,13 @@ pub(crate) fn for_session(
 ) -> Vec<SessionProcess> {
     let mut rows = Vec::new();
     for (owner, key) in keys_for_session(session_id, providers, terminals) {
+        let states = states_for_key(&key);
         rows.extend(
             samples_for_key(&key)
                 .into_iter()
                 .map(|process| SessionProcess {
                     owner: owner.clone(),
+                    state: states.get(&process.pid).cloned().unwrap_or_default(),
                     process,
                 }),
         );
@@ -45,6 +71,44 @@ pub(crate) fn for_session(
     rows.sort_by_key(|row| row.process.pid);
     rows.dedup_by_key(|row| row.process.pid);
     rows
+}
+
+/// The waiting commands of one workload, by their own process.
+pub(super) fn states_for_key(key: &str) -> std::collections::BTreeMap<u32, SessionProcessState> {
+    let Some(state) = super::registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+    else {
+        return Default::default();
+    };
+    let observation = state.lock().unwrap_or_else(|e| e.into_inner());
+    observation
+        .admission
+        .iter()
+        .filter_map(|(pid, entry)| {
+            let command_line = entry
+                .seen
+                .as_ref()
+                .map(|seen| seen.line.clone())
+                .unwrap_or_default();
+            let state = match entry.wait? {
+                admission::Wait::Held(reason) => SessionProcessState::Held {
+                    reason,
+                    position: entry.position,
+                    need_bytes: entry.need,
+                    free_bytes: entry.free,
+                    command_line,
+                },
+                admission::Wait::Paused(reason) => SessionProcessState::Paused {
+                    reason,
+                    command_line,
+                },
+            };
+            Some((*pid, state))
+        })
+        .collect()
 }
 
 pub(crate) fn keys_for_session(

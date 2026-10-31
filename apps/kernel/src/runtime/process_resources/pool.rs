@@ -1,7 +1,9 @@
 //! The one memory ceiling every agent and terminal shares. Nothing is stopped
 //! while it has room, however far one owner is above its fair share; under
 //! real pressure one command yields: a fast-growing runaway, else the
-//! largest command of the owner furthest above its share.
+//! largest command of the owner furthest above its share. Admission runs in
+//! the same pass: a heavy command waits for room, and a growing one is paused
+//! before anything is stopped.
 use super::*;
 use std::collections::BTreeMap;
 use std::sync::Weak;
@@ -23,6 +25,8 @@ pub(super) struct Pool {
     budget: Mutex<Weak<cgroup::Budget>>,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
     stopped_at: Mutex<BTreeMap<String, Instant>>,
+    ledger: Mutex<admission::Ledger>,
+    volume: Box<admission::Volume>,
 }
 
 /// One command of a workload: the root's own process or a subtree under it.
@@ -31,6 +35,12 @@ pub(super) struct CommandUse {
     pub pid: u32,
     pub resident: u64,
     pub growth: u64,
+    pub writes: u64,
+    pub write_growth: u64,
+    /// The process it runs past wrapping shells: what admission recognises.
+    pub effective: u32,
+    /// The workload's own process: never held or paused.
+    pub root: bool,
 }
 
 pub(super) enum Cause {
@@ -39,7 +49,17 @@ pub(super) enum Cause {
 }
 
 impl Pool {
+    #[cfg(test)]
     pub(super) fn new(ceiling: u64, host: bool) -> Self {
+        Self::with(ceiling, host, None, Box::new(admission::statvfs))
+    }
+
+    fn with(
+        ceiling: u64,
+        host: bool,
+        peaks: Option<std::path::PathBuf>,
+        volume: Box<admission::Volume>,
+    ) -> Self {
         Self {
             ceiling,
             margin: (ceiling / 20).max((512 * MIB).min(ceiling / 10)),
@@ -48,7 +68,20 @@ impl Pool {
             budget: Mutex::new(Weak::new()),
             members: Mutex::default(),
             stopped_at: Mutex::default(),
+            ledger: Mutex::new(admission::Ledger::new(peaks)),
+            volume,
         }
+    }
+
+    /// A pool whose volumes report `volume` (free, size) bytes.
+    #[cfg(test)]
+    pub(super) fn with_volume(ceiling: u64, volume: Box<admission::Volume>) -> Self {
+        Self::with(ceiling, false, None, volume)
+    }
+
+    #[cfg(test)]
+    pub(super) fn ledger(&self) -> std::sync::MutexGuard<'_, admission::Ledger> {
+        self.ledger.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The kernel's pool: the machine (or the delegated parent's limit) minus
@@ -60,7 +93,12 @@ impl Pool {
                 let ceiling = machine_memory()
                     .and_then(|total| total.checked_sub((total / 10).max(512 * MIB)))
                     .unwrap_or(u64::MAX);
-                Arc::new(Self::new(ceiling, true))
+                Arc::new(Self::with(
+                    ceiling,
+                    true,
+                    Some(crate::config::default_state_dir().join("admission-peaks.json")),
+                    Box::new(admission::statvfs),
+                ))
             })
             .clone()
     }
@@ -95,6 +133,9 @@ impl Pool {
     /// the unit's cgroup charge when it has one.
     pub(super) fn enforce(&self, current: &Arc<Mutex<Observation>>, unit_charged: Option<u64>) {
         let members = self.members();
+        let light = admission::light(self.ceiling);
+        let mut ledger = self.ledger.lock().unwrap_or_else(|e| e.into_inner());
+        ledger.register(current, light);
         let (unit, cap) = {
             let current = current.lock().unwrap_or_else(|e| e.into_inner());
             (current.unit.clone(), current.cap)
@@ -112,9 +153,71 @@ impl Pool {
                 self.stop_one(&members, Some(&unit), Cause::Cap(cap));
             }
         }
-        if self.pressed(&members) {
+        let (memory, growing) = self.room(&members);
+        let room = admission::Room {
+            memory,
+            tight: memory < self.margin.max(growing),
+            light,
+            growth_room: admission::growth_room(self.ceiling),
+            volume: &*self.volume,
+        };
+        let may_stop = ledger.pass(&members, current, &room);
+        drop(ledger);
+        // Paused and held commands do not grow: with nothing growing the
+        // pool waits rather than stops.
+        if may_stop && growing > 0 && self.pressed(&members) {
             self.stop_one(&members, None, Cause::Pressure);
         }
+    }
+
+    /// Memory left under the pressure line, and how fast running commands
+    /// grow together (bytes per second): admission pauses before the line.
+    /// Waiting commands do not count as growing.
+    fn room(&self, members: &[Arc<Mutex<Observation>>]) -> (u64, u64) {
+        let (outside_cgroup, growing) = members
+            .iter()
+            .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()))
+            .fold((0u64, 0u64), |(outside, growing), member| {
+                (
+                    outside
+                        + if member.in_cgroup {
+                            0
+                        } else {
+                            member.resident()
+                        },
+                    growing
+                        + member
+                            .commands
+                            .iter()
+                            .filter(|command| {
+                                member
+                                    .admission
+                                    .get(&command.pid)
+                                    .is_none_or(|entry| entry.wait.is_none())
+                            })
+                            .map(|command| command.growth)
+                            .sum::<u64>(),
+                )
+            });
+        #[cfg(target_os = "linux")]
+        let charged = self
+            .budget
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .upgrade()
+            .map_or(0, |budget| budget.used());
+        #[cfg(not(target_os = "linux"))]
+        let charged = 0;
+        let mut room = self
+            .ceiling
+            .saturating_sub(self.margin)
+            .saturating_sub(charged.saturating_add(outside_cgroup));
+        if self.host {
+            if let Some(host) = host_room(self.margin) {
+                room = room.min(host);
+            }
+        }
+        (room, growing)
     }
 
     fn pressed(&self, members: &[Arc<Mutex<Observation>>]) -> bool {
@@ -151,9 +254,23 @@ impl Pool {
             .iter()
             .map(|member| {
                 let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+                // A held command has not grown: stopping it frees nothing.
+                let commands = observation
+                    .commands
+                    .iter()
+                    .filter(|command| {
+                        !observation
+                            .admission
+                            .get(&command.pid)
+                            .is_some_and(|entry| {
+                                matches!(entry.wait, Some(admission::Wait::Held(_)))
+                            })
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
                 (
                     observation.unit.clone(),
-                    observation.commands.clone(),
+                    commands,
                     observation.control.clone(),
                 )
             })
@@ -286,6 +403,29 @@ fn host_short(margin: u64) -> bool {
         || cgroup::bounding()
             .iter()
             .any(|limited| cgroup::headroom(limited).is_some_and(|bytes| bytes < margin))
+}
+
+/// Memory the host itself has left above `margin`: the user's apps or other
+/// cgroups may have taken the room.
+#[cfg(target_os = "linux")]
+fn host_room(margin: u64) -> Option<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let available = text
+        .lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())?
+        .saturating_mul(1024);
+    let room = cgroup::bounding()
+        .iter()
+        .filter_map(|limited| cgroup::headroom(limited))
+        .fold(available, u64::min);
+    Some(room.saturating_sub(margin))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn host_room(margin: u64) -> Option<u64> {
+    host_short(margin).then_some(0)
 }
 
 /// macOS reports its own memory pressure; act only when it is critical.

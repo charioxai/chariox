@@ -418,4 +418,6 @@ pub use workspace::*;
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 923;
+/// Version 927 adds admission: `SessionProcess.state` (`running`, `held` or `paused`, with the
+/// reason, place in line, need and free room) and `StartSessionProcessNow` (`SessionProcessStartedNow`).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 927;
