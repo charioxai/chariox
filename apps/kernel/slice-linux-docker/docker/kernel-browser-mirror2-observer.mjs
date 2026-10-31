@@ -1122,18 +1122,22 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // A point (in the node's own viewport) outside what its scrolling ancestors and every enclosing frame show is not
     // reachable as it stands: the page scrolls it into view first (reveal), as for a viewer that scrolled ahead.
     // Clip boxes are taken in viewport coordinates, so a CSS-scaled pane clips by its scaled padding box.
-    const clipped = (node, x, y) => {
+    // With `nearest` the point moves to the closest visible one instead (the step stays inside the same panes and frames).
+    // Returns the point in the top viewport, or null when it is clipped.
+    const clip = (node, x, y, nearest = false) => {
+      const into = (value, low, high) => value >= low && value < high ? value : nearest ? Math.min(Math.max(value, low), high - 1) : null;
       for (let view = node.ownerDocument.defaultView; ; view = view.parent) {
-        if (x < 0 || y < 0 || x >= view.innerWidth || y >= view.innerHeight) return true;
-        for (let el = node.parentElement ?? node.getRootNode()?.host; el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
+        x = into(x, 0, view.innerWidth); y = into(y, 0, view.innerHeight);
+        for (let el = node.parentElement ?? node.getRootNode()?.host; x !== null && y !== null && el && el !== el.ownerDocument.documentElement && el !== el.ownerDocument.body; el = el.parentElement ?? el.getRootNode()?.host) {
           const style = getComputedStyle(el);
           if (style.position === 'fixed') break;
           if (style.overflowX === 'visible' && style.overflowY === 'visible') continue;
           const r = el.getBoundingClientRect(), sx = el.offsetWidth > 0 ? r.width / el.offsetWidth : 1, sy = el.offsetHeight > 0 ? r.height / el.offsetHeight : 1;
           const left = r.x + el.clientLeft * sx, top = r.y + el.clientTop * sy;
-          if (x < left || y < top || x >= left + el.clientWidth * sx || y >= top + el.clientHeight * sy) return true;
+          x = into(x, left, left + el.clientWidth * sx); y = into(y, top, top + el.clientHeight * sy);
         }
-        if (view === window) return false;
+        if (x === null || y === null) return null;
+        if (view === window) return { x, y };
         node = view.frameElement; if (!node) throw new Error('mirror2 frame unavailable');
         const step = frameStep(node); x = step.x + step.sx * x; y = step.y + step.sy * y;
       }
@@ -1150,12 +1154,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const ox = !moved && Number.isFinite(request.x) ? Math.min(Math.max(request.x, 0.5), width - 0.5) : width / 2;
       const oy = !moved && Number.isFinite(request.y) ? Math.min(Math.max(request.y, 0.5), height - 0.5) : height / 2;
       let x = bx + ox, y = by + oy;
-      // A wheel step aimed at a node the page has scrolled past goes to the page where it is: the viewer's earlier steps
-      // moved it, and showing the node again would take them back.
-      if (request.wheel !== true && clipped(node, x, y)) throw new Error('mirror2 offscreen node');
-      const map = frameMap(node); x = map.tx + map.sx * x; y = map.ty + map.sy * y;
-      if (request.wheel === true) { x = Math.min(Math.max(x, 0), innerWidth - 1); y = Math.min(Math.max(y, 0), innerHeight - 1); }
-      return { x: Math.floor(x), y: Math.floor(y) };
+      // A wheel step aimed at a node the page has scrolled past goes to the nearest visible point of the same panes and
+      // frames: the viewer's earlier steps moved the node, and showing it again would take them back.
+      const at = clip(node, x, y, request.wheel === true);
+      if (!at) throw new Error('mirror2 offscreen node');
+      return { x: Math.floor(at.x), y: Math.floor(at.y) };
     };
     // The viewer is scrolled ahead of the native page: bring the node into the native viewport and say where the page now is.
     const reveal = request => {
@@ -1227,7 +1230,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const frameOrigin = (id, local) => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
       const up = frameMap(node), own = frameStep(node);
-      if (local && clipped(node, own.x + own.sx * local[0], own.y + own.sy * local[1])) throw new Error('mirror2 offscreen node');
+      if (local && !clip(node, own.x + own.sx * local[0], own.y + own.sy * local[1])) throw new Error('mirror2 offscreen node');
       return [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
     };
     // Live focus inside a cross-origin frame: the frame element's mirror id.
