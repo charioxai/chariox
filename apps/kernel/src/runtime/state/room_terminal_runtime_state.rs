@@ -426,6 +426,8 @@ mod tests {
         let DaemonError::MachineRequest { code, message } = failure else {
             panic!("a public terminal refusal");
         };
+        // Clients tell a worker that is away from a lost connection by this code; a transport code would make them repeat a cached refusal.
+        assert_eq!(code, "terminal_refused");
         assert!(crate::room_terminal::is_public_code(&code));
         assert!(message.contains("could not be reached"));
         assert!(!message.contains("slice:m:1") && !message.contains("relay"));
