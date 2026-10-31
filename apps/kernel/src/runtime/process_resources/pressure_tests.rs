@@ -53,12 +53,14 @@ impl Workload {
         script.push_str("wait");
         let mut argv = vec!["-c".into(), script, dir.to_string_lossy().into_owned()];
         if launcher {
-            argv.insert(0, "/bin/sh".into());
+            // A launcher whose server starts the shell running the commands.
+            let server = "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))";
             argv.splice(
                 0..0,
                 [
                     "-c".to_string(),
-                    "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))".into(),
+                    format!("import subprocess,sys; sys.exit(subprocess.call([sys.executable, '-c', '{server}'] + sys.argv[1:]))"),
+                    "/bin/sh".into(),
                 ],
             );
         }

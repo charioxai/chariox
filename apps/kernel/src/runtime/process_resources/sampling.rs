@@ -70,10 +70,12 @@ impl ProcessTree {
             let mut children = rows
                 .iter()
                 .filter(|row| row.parent == launcher.pid && self.owned.contains_key(&row.pid));
-            // A shell that starts a command at once is running that command.
+            // A launched server is a program; a shell, or what a shell starts
+            // at once, is a command.
             current = match (children.next(), children.next()) {
                 (Some(child), None)
                     if !shell(&launcher.command)
+                        && !shell(&child.command)
                         && launcher.age_ms.abs_diff(child.age_ms) <= LAUNCH_WINDOW_MS =>
                 {
                     self.harness.insert(child.pid);

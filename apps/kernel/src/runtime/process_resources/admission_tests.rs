@@ -188,20 +188,25 @@ fn a_launcher_chain_is_the_harness_and_only_its_later_commands_wait() {
         b.waiting("job"),
         "the heavy command under the launcher was not held"
     );
-    let server = std::fs::read_to_string(format!("/proc/{}/stat", b.pid("job")))
-        .unwrap()
-        .rsplit_once(')')
-        .and_then(|(_, rest)| rest.split_whitespace().nth(1).map(str::to_string))
-        .unwrap();
+    let parent = |pid: String| {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .unwrap()
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1).map(str::to_string))
+            .unwrap()
+    };
+    // The job's shell is its command; the shell's parent is the server.
+    let server = parent(parent(b.pid("job").to_string()));
     let server_state = std::fs::read_to_string(format!("/proc/{server}/stat")).unwrap();
     assert!(
-        !server_state
-            .rsplit_once(')')
-            .unwrap()
-            .1
-            .trim_start()
-            .starts_with('T'),
-        "the harness itself was stopped"
+        server_state.contains("(python3)")
+            && !server_state
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .trim_start()
+                .starts_with('T'),
+        "the harness itself was stopped: {server_state}"
     );
     unsafe { libc::kill(a.pid("big"), libc::SIGKILL) };
     settle(3);
