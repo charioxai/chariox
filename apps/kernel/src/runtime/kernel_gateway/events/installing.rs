@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: one target the kernel refuses must not stop the others.
 use super::*;
+use std::future::Future;
 
 impl KernelGateway {
     /// Installs the followed `targets` on `kernel`. When the kernel refuses them for good, the
@@ -11,23 +12,27 @@ impl KernelGateway {
         kernel: &str,
         targets: &[EventTarget],
     ) -> Result<(), GatewayError> {
-        let refusal = match self.install(origin, kernel, targets).await {
-            Err(
-                refusal @ GatewayError::Remote {
-                    retryable: false, ..
-                },
-            ) => refusal,
+        self.install_each(kernel, targets, |batch| self.install(origin, kernel, batch))
+            .await
+    }
+
+    pub(super) async fn install_each<Fut>(
+        &self,
+        kernel: &str,
+        targets: &[EventTarget],
+        install: impl Fn(Vec<EventTarget>) -> Fut,
+    ) -> Result<(), GatewayError>
+    where
+        Fut: Future<Output = Result<(), GatewayError>>,
+    {
+        let refusal = match install(targets.to_vec()).await {
+            Err(refusal) if is_refused_target(&refusal) => refusal,
             other => return other,
         };
         let mut refused = Vec::new();
         for target in targets {
-            match self
-                .install(origin, kernel, std::slice::from_ref(target))
-                .await
-            {
-                Err(GatewayError::Remote {
-                    retryable: false, ..
-                }) => refused.push(target),
+            match install(vec![target.clone()]).await {
+                Err(error) if is_refused_target(&error) => refused.push(target),
                 other => other?,
             }
         }
@@ -53,20 +58,28 @@ impl KernelGateway {
         &self,
         origin: &Origin,
         kernel: &str,
-        targets: &[EventTarget],
+        targets: Vec<EventTarget>,
     ) -> Result<(), GatewayError> {
         self.forward(
             kernel,
             origin,
             &event_command_id(),
-            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
-                targets: targets.to_vec(),
-            }),
+            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest { targets }),
             PULL_DEADLINE,
         )
         .await
         .map(drop)
     }
+}
+
+/// Only the target's own refusal says that a followed target is gone. Any other permanent
+/// error (its storage failed, say) says nothing about the targets and stays a health failure.
+pub(super) fn is_refused_target(error: &GatewayError) -> bool {
+    matches!(
+        error,
+        GatewayError::Remote { code, retryable: false, .. }
+            if crate::durable_state::agent_lifecycle::outside::is_public_code(code)
+    )
 }
 
 /// What the follower is told about a target its kernel no longer accepts: the session, or just

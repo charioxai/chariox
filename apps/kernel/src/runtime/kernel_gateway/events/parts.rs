@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: reconnect and clean each kernel part independently.
 use super::*;
+use std::future::Future;
 impl KernelGateway {
     pub(crate) fn resume_event_parts(self: &Arc<Self>) {
         match self.runtime_state.outside_store().outside_parts() {
@@ -138,26 +139,24 @@ impl KernelGateway {
             .cloned()
             .collect();
         if !removed.is_empty() {
-            let all = part.ended.is_some();
-            let request = LocalDaemonRequest::UnsubscribeEvents(UnsubscribeEventsRequest {
-                targets: if all { vec![] } else { removed.clone() },
-                all,
-            });
-            let command_id = event_command_id();
-            if let Err(error) = self
-                .forward_grant_ended(kernel, origin, &command_id, &request)
-                .await
-            {
+            let cleaned = self
+                .clean_remote_part(
+                    origin,
+                    &removed,
+                    part.ended.is_some(),
+                    |request| async move {
+                        self.forward_grant_ended(
+                            kernel,
+                            origin,
+                            &event_command_id(),
+                            &LocalDaemonRequest::UnsubscribeEvents(request),
+                        )
+                        .await
+                    },
+                )
+                .await;
+            if let Err(error) = cleaned {
                 self.record_event_health(origin, kernel, Err(error));
-                return true;
-            }
-            if store
-                .outside_mutate(Mutation::CleanupAck {
-                    id: origin.grant_id.clone(),
-                    targets: removed.clone(),
-                })
-                .is_err()
-            {
                 return true;
             }
             subscribed.retain(|t| !removed.contains(t));
@@ -176,6 +175,38 @@ impl KernelGateway {
             .await;
         self.record_event_health(origin, kernel, result);
         true
+    }
+    /// Asks the target to drop `removed` (the whole part once `all`), then commits that the
+    /// cleanup is done.
+    pub(super) async fn clean_remote_part<Fut>(
+        &self,
+        origin: &Origin,
+        removed: &[EventTarget],
+        all: bool,
+        unsubscribe: impl Fn(UnsubscribeEventsRequest) -> Fut,
+    ) -> Result<(), GatewayError>
+    where
+        Fut: Future<Output = Result<Value, GatewayError>>,
+    {
+        match unsubscribe(UnsubscribeEventsRequest {
+            targets: if all { vec![] } else { removed.to_vec() },
+            all,
+        })
+        .await
+        {
+            // The target refuses an unsubscribe when it holds no part of this grant, as when
+            // every target it was asked to follow ended before the first install reached it.
+            // There is nothing left to clean, so the debt is settled instead of retried.
+            Err(error) if installing::is_refused_target(&error) => {}
+            other => drop(other?),
+        }
+        self.runtime_state
+            .outside_store()
+            .outside_mutate(Mutation::CleanupAck {
+                id: origin.grant_id.clone(),
+                targets: removed.to_vec(),
+            })
+            .map_err(|_| part_error(&removed[0].kernel, "could not commit the target cleanup"))
     }
     pub(super) fn event_health(
         &self,
