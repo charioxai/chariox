@@ -164,7 +164,7 @@ impl Ledger {
     pub(super) fn register(&mut self, current: &Arc<Mutex<Observation>>, light: u64) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let observation = &mut *observation;
-        let holdable = observation.holdable;
+        let submissions = &observation.submissions;
         let live = observation
             .commands
             .iter()
@@ -192,7 +192,7 @@ impl Ledger {
                 self.arrivals += 1;
                 Entry {
                     arrived: self.arrivals,
-                    holdable,
+                    holdable: submissions.owner_of(command.started),
                     ..Entry::default()
                 }
             });

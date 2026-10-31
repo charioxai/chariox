@@ -39,6 +39,9 @@ pub(super) struct CommandUse {
     pub write_growth: u64,
     /// The process it runs past wrapping shells: what admission recognises.
     pub effective: u32,
+    /// Clock ticks since boot when its top process started, where the
+    /// platform reports it.
+    pub started: Option<u64>,
     /// Part of the harness (the workload's own process and the launcher
     /// chain that started with it): never held or paused.
     pub root: bool,

@@ -1,5 +1,6 @@
 //! The ledger's decisions on observed commands, without processes: what a
 //! pass holds, pauses and resumes given the room it is shown.
+use super::super::submissions::Submissions;
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,6 +36,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         writes: 0,
         write_growth: 0,
         effective: pid,
+        started: None,
         root: false,
     }
 }
@@ -62,7 +64,7 @@ fn owner(
 ) -> Arc<Mutex<Observation>> {
     Arc::new(Mutex::new(Observation {
         unit: unit.into(),
-        holdable,
+        submissions: Submissions::new(holdable),
         commands,
         admission: entries.into_iter().collect(),
         ..Observation::default()
@@ -357,38 +359,58 @@ fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
     );
 }
 
-/// Starts `pid` under the owner's current policy, as a sample would.
-fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
-    member
-        .lock()
-        .unwrap()
-        .commands
-        .push(command(pid, resident, 8 * MIB));
+/// A sample finds `pid`, which started at clock tick `started`.
+fn start(
+    ledger: &mut Ledger,
+    member: &Arc<Mutex<Observation>>,
+    pid: u32,
+    resident: u64,
+    started: u64,
+) {
+    member.lock().unwrap().commands.push(pool::CommandUse {
+        started: Some(started),
+        ..command(pid, resident, 8 * MIB)
+    });
     ledger.register(member, 512 * MIB);
+}
+
+/// A line submitted at clock tick `at`.
+fn submit(member: &Arc<Mutex<Observation>>, at: u64, holdable: bool) {
+    member.lock().unwrap().submissions.record(at, holdable);
 }
 
 /// An older heavy command of another owner: never the one paused.
 fn oldest(ledger: &mut Ledger) -> Arc<Mutex<Observation>> {
     let other = owner("other", true, Vec::new(), Vec::new());
-    start(ledger, &other, 4_100_001, GIB);
+    start(ledger, &other, 4_100_001, GIB, 1);
     other
+}
+
+/// Memory is short and `pid` of the terminal is the newest growing command.
+fn pressed(
+    ledger: &mut Ledger,
+    other: Arc<Mutex<Observation>>,
+    terminal: &Arc<Mutex<Observation>>,
+) {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let members = [other, terminal.clone()];
+    ledger.pass(&members, terminal, &room(100 * MIB, true, &volume));
 }
 
 #[test]
 fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
-    let free = Arc::new(AtomicU64::new(50 * GIB));
-    let volume = volume(&free);
     let mut ledger = Ledger::new(None);
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
     // An agent's job, then a person's own (the newest), then an agent types
     // at the prompt the person's job returned.
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
-    terminal.lock().unwrap().holdable = false;
-    start(&mut ledger, &terminal, 4_100_003, 700 * MIB);
-    terminal.lock().unwrap().holdable = true;
-    let members = [other, terminal.clone()];
-    ledger.pass(&members, &terminal, &room(100 * MIB, true, &volume));
+    submit(&terminal, 100, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    submit(&terminal, 110, false);
+    start(&mut ledger, &terminal, 4_100_003, 700 * MIB, 111);
+    submit(&terminal, 120, true);
+    pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_003),
         None,
@@ -403,19 +425,63 @@ fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
 
 #[test]
 fn an_agents_job_stays_pausable_when_the_person_types_after_it() {
-    let free = Arc::new(AtomicU64::new(50 * GIB));
-    let volume = volume(&free);
     let mut ledger = Ledger::new(None);
     let other = oldest(&mut ledger);
     let terminal = owner("terminal", true, Vec::new(), Vec::new());
-    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    submit(&terminal, 100, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
     // The person types at the prompt the agent's job returned.
-    terminal.lock().unwrap().holdable = false;
-    let members = [other, terminal.clone()];
-    ledger.pass(&members, &terminal, &room(100 * MIB, true, &volume));
+    submit(&terminal, 110, false);
+    pressed(&mut ledger, other, &terminal);
     assert_eq!(
         wait(&terminal, 4_100_002),
         Some(Wait::Paused(WaitReason::Memory)),
         "an agent's job was exempted by a person's later keystroke"
     );
+}
+
+#[test]
+fn an_agents_job_first_sampled_after_a_persons_line_is_still_the_agents() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // The agent starts a background build; the person submits `true` before
+    // the sampler first sees the build.
+    submit(&terminal, 100, true);
+    submit(&terminal, 102, false);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "the agent's build took the person's later line"
+    );
+}
+
+#[test]
+fn a_persons_job_first_sampled_after_an_agents_line_is_still_the_persons() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    submit(&terminal, 100, false);
+    submit(&terminal, 102, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 101);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        None,
+        "the person's job took the agent's later line"
+    );
+}
+
+#[test]
+fn a_command_no_line_explains_follows_the_terminals_default() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    // A terminal's own shell start precedes every line: the person's.
+    let terminal = owner("terminal", false, Vec::new(), Vec::new());
+    submit(&terminal, 100, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB, 50);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(wait(&terminal, 4_100_002), None);
 }

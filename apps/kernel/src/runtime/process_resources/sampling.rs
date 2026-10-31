@@ -276,6 +276,17 @@ impl ProcessTree {
         (!self.harness.contains(&pid)).then(|| self.top(pid))
     }
 
+    /// When a command's top process started, in clock ticks since boot.
+    #[cfg(target_os = "linux")]
+    pub fn started(&self, command: u32) -> Option<u64> {
+        self.owned.get(&command).map(|identity| identity.start)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn started(&self, _command: u32) -> Option<u64> {
+        None
+    }
+
     /// What a command runs: past shells that only run one child (`sh -c`,
     /// a harness's tool shell) to that child.
     pub fn effective(&self, command: u32, samples: &[ProcessSample]) -> u32 {

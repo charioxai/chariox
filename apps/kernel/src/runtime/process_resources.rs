@@ -15,6 +15,7 @@ mod pool;
 mod projection;
 mod sampling;
 mod session_sweep;
+mod submissions;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
 #[cfg(test)]
@@ -187,7 +188,7 @@ impl PreparedDomain {
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
-            holdable: true,
+            submissions: submissions::Submissions::new(true),
             ..Observation::default()
         }));
         self.pool.join(&state);
@@ -252,6 +253,7 @@ impl PreparedDomain {
                             writes,
                             write_growth,
                             effective: tree.effective(pid, &samples),
+                            started: tree.started(pid),
                             root: tree.in_harness(pid),
                         }
                     })
@@ -463,9 +465,9 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
-    /// The commands that start from now on may wait for room: not a person's
-    /// own terminal command. Each keeps the policy it started with.
-    holdable: bool,
+    /// Whether each command may wait for room follows who submitted the line
+    /// that started it: a person's own terminal command never does.
+    submissions: submissions::Submissions,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
@@ -611,17 +613,38 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
         .collect()
 }
 
-/// Whether the commands the workload bound to `key` starts from now on may
-/// wait for room: a person's own terminal command never does. Commands
-/// already running keep the policy they started with.
-pub(crate) fn set_holdable_for_key(key: &str, holdable: bool) {
+/// Whether commands that no submitted line explains (a terminal's own shell
+/// start) may wait for room.
+pub(crate) fn set_default_holdable_for_key(key: &str, holdable: bool) {
     let state = registry()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(key)
         .and_then(std::sync::Weak::upgrade);
     if let Some(state) = state {
-        state.lock().unwrap_or_else(|e| e.into_inner()).holdable = holdable;
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .submissions
+            .set_default(holdable);
+    }
+}
+
+/// A line was submitted in the terminal bound to `key`: the commands it starts
+/// may wait for room unless a person submitted it. Commands already running
+/// keep the policy of the line that started them.
+pub(crate) fn record_submission_for_key(key: &str, holdable: bool) {
+    let state = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(state) = state {
+        state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .submissions
+            .record(submissions::now(), holdable);
     }
 }
 
@@ -633,7 +656,13 @@ pub(crate) fn holdable_for_key(key: &str) -> Option<bool> {
         .unwrap_or_else(|e| e.into_inner())
         .get(key)
         .and_then(std::sync::Weak::upgrade)
-        .map(|state| state.lock().unwrap_or_else(|e| e.into_inner()).holdable)
+        .map(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .submissions
+                .latest()
+        })
 }
 
 pub(crate) fn has_key(key: &str) -> bool {

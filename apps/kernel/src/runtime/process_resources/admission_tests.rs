@@ -164,11 +164,40 @@ fn a_persons_own_terminal_command_never_waits() {
     let key = format!("admission-{:016x}", rand::random::<u64>());
     person.domain.bind_key(&key);
     // The person submits the line, then the command starts.
-    set_holdable_for_key(&key, false);
+    record_submission_for_key(&key, false);
     person.go(&["grow"]);
     settle(6);
     assert!(!person.waiting("grow"), "a person's own command was paused");
     person.domain.unbind_key(&key);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agents_command_stays_pausable_when_a_person_submits_before_its_first_sample() {
+    let pool = pool(1536);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    settle(1);
+    let agent = Workload::gated(
+        domain(&pool, "agent", false),
+        &[(
+            "grow",
+            "sleep 1; exec python3 \"$0/alloc.py\" 200 48 520".into(),
+        )],
+    );
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    agent.domain.bind_key(&key);
+    // The agent submits the line that starts a background build; the person
+    // submits `true` at the returned prompt before the sampler sees the build.
+    record_submission_for_key(&key, true);
+    agent.go(&["grow"]);
+    std::thread::sleep(Duration::from_millis(40));
+    record_submission_for_key(&key, false);
+    settle(6);
+    assert!(
+        agent.waiting("grow"),
+        "the agent's build took the person's later line and ran unpaused"
+    );
+    agent.domain.unbind_key(&key);
 }
 
 #[cfg(target_os = "linux")]
