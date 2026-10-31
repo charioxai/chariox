@@ -180,3 +180,12 @@ test('MP-08/MP-10 a Linux host with a usable VA-API render node launches the bro
  ])assert.deepEqual(videoDecodeArguments(environment,host(files,denied)),[]);
  assert(!launchArguments('/private',false,true).some(arg=>arg.startsWith('--enable-features')),'the default launch is unchanged');
 });
+// 2026-10-31: on a Mac the kernel browser was a headed Chrome window on the person's desktop (nothing captures it there).
+test('the kernel browser is headless on macOS whatever the environment says, and only the Linux owned desktop shows a window',async()=>{
+ const {headlessLaunch}=await import('./kernel-browser-process.mjs');
+ assert.equal(headlessLaunch('darwin',{}),true);
+ assert.equal(headlessLaunch('darwin',{CHARIOX_KERNEL_BROWSER_HEADLESS:'0'}),true);
+ assert.equal(headlessLaunch('linux',{}),false,'Linux keeps its owned desktop');
+ assert.equal(headlessLaunch('linux',{CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}),true);
+ assert.throws(()=>headlessLaunch('win32',{}),/Linux and macOS only/,'Windows never launches a browser');
+});

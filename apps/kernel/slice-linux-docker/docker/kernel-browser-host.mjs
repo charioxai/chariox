@@ -192,6 +192,7 @@ export class KernelBrowserHost {
     if (this.starting) return this.starting;
     if (this.isBrowserLive()) return;
     if (!allowStart && !this.recovery.enabled) throw new BrowserActionError("browser_unavailable", "MP-11: user browser is stopped or unavailable; explicitly start/open the browser");
+    if (!allowStart && this.recovery.waiting()) throw new BrowserActionError("browser_unavailable", "MP-08: the browser was lost and restarts after a short wait");
     const recovering = this.recovery.enabled;
     this.recovery.enabled = true;
     this.recovery.disarm();
