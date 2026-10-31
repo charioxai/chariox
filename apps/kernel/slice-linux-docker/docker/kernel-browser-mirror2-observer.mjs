@@ -1226,12 +1226,15 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
     const idOfNode = function () { return this && mirrored(this) || null; };
     // Content-box origin of a cross-origin frame element in this viewport.
-    // With the point the viewer clicked in that frame's own viewport, a frame clipped away at it is reported offscreen.
-    const frameOrigin = (id, local) => {
+    // With the point the viewer clicked in that frame's own viewport, a frame clipped away at it is reported offscreen
+    // (a wheel step moves to the nearest visible point instead); the point in this viewport follows the origin and scale.
+    const frameOrigin = (id, local, wheel = false) => {
       const node = live(id); if (node.localName !== 'iframe' || !foreign.has(id)) throw new Error('mirror2 frame required');
-      const up = frameMap(node), own = frameStep(node);
-      if (local && !clip(node, own.x + own.sx * local[0], own.y + own.sy * local[1])) throw new Error('mirror2 offscreen node');
-      return [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
+      const up = frameMap(node), own = frameStep(node), origin = [up.tx + up.sx * own.x, up.ty + up.sy * own.y, up.sx * own.sx, up.sy * own.sy];
+      if (!local) return origin;
+      const at = clip(node, own.x + own.sx * local[0], own.y + own.sy * local[1], wheel);
+      if (!at) throw new Error('mirror2 offscreen node');
+      return [...origin, at.x, at.y];
     };
     // Live focus inside a cross-origin frame: the frame element's mirror id.
     const activeForeign = () => {

@@ -488,6 +488,25 @@ test("MP-10: a wheel step aimed at a node scrolled out of its pane keeps scrolli
     assert.equal(await evaluate("scrollY"), 0, "MP-10: the page behind the pane stayed where it was");
   }));
 
+// The same inside an attached cross-origin frame: the step goes on from where the frame is, and no reveal takes it back.
+test("MP-10: a wheel step aimed at a node of a cross-origin frame that has scrolled past it scrolls the frame from where it is", () => mirrored(
+  '<script>window.fy=0;addEventListener("message",e=>{window.fy=e.data})</script><iframe src="http://localhost:PORT/long" style="width:300px;height:100px;border:0"></iframe>', async ({ next, evaluate, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next(), documentOf = () => { let id = 0; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 1 && id >= 1e9) return `n${id}`; } return null; };
+    const [node] = elements(snapshot).find(([id, , attrs]) => attrs.id === "a" && Number(id.slice(1)) >= 1e9) ?? [];
+    assert(node && documentOf(), "the frame's first child is mirrored");
+    await input(snapshot.sequence, { kind: "scroll_to", node_id: documentOf(), x: 0, y: 2000 });
+    for (let i = 0; i < 40 && await evaluate("fy") !== 2000; i++) await settle(25);
+    assert.equal(await evaluate("fy"), 2000);
+    const started = Date.now();
+    await input(snapshot.sequence, { kind: "scroll", node_id: node, x: 40, y: 50, delta_x: 0, delta_y: 300 });
+    for (let i = 0; i < 40 && await evaluate("fy") === 2000; i++) await settle(25);
+    assert.equal(await evaluate("fy"), 2300, "MP-10: the frame scrolled on from where it was, not back to the node");
+    assert(Date.now() - started < 1000, "MP-10: the step is not held behind the offscreen retries");
+  }, {
+    "/long": { type: "text/html", body: '<!doctype html><body style="margin:0"><div id="a" style="height:600px"></div><div style="height:6000px"></div><script>addEventListener("scroll",()=>parent.postMessage(scrollY,"*"))</script>' },
+  }));
+
 test("MP-10: review #941-4 property-only changes of unfocused controls reach the viewer (value, checked, radio group, select, form reset)", () => mirrored(
   '<form id="f"><input id="q" value="a"><input id="c" type="checkbox"><input type="radio" name="t" id="r1" checked><input type="radio" name="t" id="r2"><select id="s"><option>x</option><option>y</option></select></form><button id="b">b</button>', async ({ next, evaluate }) => {
     const snapshot = await next();
