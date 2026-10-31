@@ -1,9 +1,11 @@
 //! Hot reload: a planned upgrade replaces the kernel program in place on
 //! SIGUSR2. The kernel stops as for a planned restart, except that running
-//! terminals and running agent turns are handed over instead of ended; then
-//! it `exec`s the installed program, keeping its PID, so their processes stay
-//! its children and the new program adopts them. Everything else (clients,
-//! the relay, idle provider processes) comes back as after any restart.
+//! terminals and running agent turns are handed over instead of ended, and so
+//! are the jobs that ended workloads left running (they stay their owners').
+//! Then it `exec`s the installed program, keeping its PID, so their processes
+//! stay its children and the new program adopts them. Everything else
+//! (clients, the relay, idle provider processes) comes back as after any
+//! restart.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -18,7 +20,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 8;
+pub const HANDOVER_FORMAT: u32 = 9;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -28,6 +30,9 @@ struct Handover {
     terminals: Vec<TerminalHandover>,
     providers: Vec<ProviderHandover>,
     attachments: Vec<AttachmentHandover>,
+    // Jobs that workloads which ended left running stay their owners' (agent or
+    // Room terminal): the next program watches them again.
+    released_jobs: Vec<crate::runtime::process_resources::ReleasedJobs>,
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
     user_domain: crate::runtime::user_domain_access::AccessHandover,
@@ -192,6 +197,7 @@ pub fn receive() {
         set_close_on_exec(*fd, true);
     }
     *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
+    crate::runtime::process_resources::adopt_released(std::mem::take(&mut handover.released_jobs));
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -656,6 +662,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             terminals,
             providers: Vec::new(),
             attachments: Vec::new(),
+            released_jobs: Vec::new(),
             user_domain: Default::default(),
             credentials_fd: None,
             listeners: lock(&LISTENERS).clone(),
@@ -677,6 +684,8 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
 pub fn finish() -> Option<String> {
     let mut prepared = PREPARED.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     let start = START.get()?;
+    // Read last: everything has stopped, so no workload ends after this.
+    prepared.handover.released_jobs = crate::runtime::process_resources::hand_over_released();
     match send_credentials(&prepared.handover.providers) {
         Ok(fd) => prepared.handover.credentials_fd = fd,
         Err(error) => return Some(format!("the credentials could not be handed over: {error}")),
@@ -737,6 +746,13 @@ pub fn finish() -> Option<String> {
                 .providers
                 .iter()
                 .map(ProviderHandover::pid),
+        )
+        .chain(
+            prepared
+                .handover
+                .released_jobs
+                .iter()
+                .flat_map(crate::runtime::process_resources::ReleasedJobs::pids),
         )
         .collect();
     end_children_except(&kept);

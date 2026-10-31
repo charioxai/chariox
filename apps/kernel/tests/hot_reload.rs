@@ -855,6 +855,203 @@ fn work_that_is_not_handed_over_stops_as_for_a_restart() {
     }
 }
 
+/// A Room terminal whose command ended and left a detached job running
+/// (`setsid nohup job &`): the pid of the job, once the session lists it.
+async fn terminal_that_left_a_job(socket: &mut Socket, session_id: &str, scratch: &Path) -> i32 {
+    let pid_file = scratch.join("job.pid");
+    // The command stays a moment, so its watch sees the job before it ends.
+    let script = format!(
+        "setsid nohup sh -c 'echo $$ > {}; exec sleep 600' >/dev/null 2>&1 & sleep 1",
+        pid_file.display()
+    );
+    let opened = terminal(
+        socket,
+        session_id,
+        json!({"operation": "open", "cols": 80, "rows": 24,
+            "command": ["/bin/sh", "-c", script]}),
+    )
+    .await;
+    let terminal_id = opened["terminal"]["terminal_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The terminal ends after its owner released the job.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let output = terminal(
+            socket,
+            session_id,
+            json!({"operation": "read_output", "terminal_id": terminal_id,
+                "after_offset": 0, "wait_ms": 0}),
+        )
+        .await;
+        if output["output"]["terminal"]["status"]["state"] == "ended" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the terminal never ended");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let pid = std::fs::read_to_string(&pid_file)
+        .expect("the job started")
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert!(
+        listed_job(socket, session_id, pid).await.is_some(),
+        "the session does not list the job its terminal left"
+    );
+    pid
+}
+
+/// The session's process row for `pid`, as Health lists it.
+async fn listed_job(socket: &mut Socket, session_id: &str, pid: i32) -> Option<Value> {
+    let state = request(
+        socket,
+        json!({"GetSessionState": {"session_id": session_id}}),
+    )
+    .await;
+    state["SessionState"]["processes"]
+        .as_array()?
+        .iter()
+        .find(|row| row["pid"] == pid)
+        .cloned()
+}
+
+/// The cgroup v2 path a process runs in, if the host has one.
+fn memory_domain(pid: i32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("0::").map(str::to_string))
+}
+
+fn is_process_domain(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|leaf| leaf.starts_with("process-"))
+}
+
+/// Field 22 of `/proc/<pid>/stat`: with the pid it names one process for good.
+fn start_tick(pid: i32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_name = stat.rsplit_once(')')?.1;
+    after_name.split_whitespace().nth(19).map(str::to_string)
+}
+
+async fn session_in(socket: &mut Socket, scratch: &Path) -> String {
+    let project = scratch.join("project").display().to_string();
+    let created = request(
+        socket,
+        json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+            "alias": null, "slice_ref": null, "no_subscribe": true}}),
+    )
+    .await;
+    created["SessionCreated"]["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_controllable() {
+    let scratch = std::env::temp_dir().join(format!("hr-released-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, tick) = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let session_id = session_in(&mut socket, &scratch).await;
+        let pid = terminal_that_left_a_job(&mut socket, &session_id, &scratch).await;
+        let listed = listed_job(&mut socket, &session_id, pid).await.unwrap();
+        assert_eq!(listed["owner"]["kind"], "terminal", "{listed}");
+        let tick = start_tick(pid).expect("the job runs");
+        let before = listed["process_id"].as_str().unwrap().to_string();
+        let domain = memory_domain(pid);
+
+        let kernel_pid = kernel.child.id() as i32;
+        assert!(kernel_pid > 1);
+        unsafe { libc::kill(kernel_pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+
+        assert_eq!(
+            start_tick(pid).as_deref(),
+            Some(tick.as_str()),
+            "the reload ended the job or replaced its process"
+        );
+        let after = listed_job(&mut socket, &session_id, pid)
+            .await
+            .expect("the reloaded kernel lists the job again");
+        assert_eq!(after["process_id"], before.as_str(), "{after}");
+        assert_eq!(after["owner"], listed["owner"], "{after}");
+        // Where the kernel can create memory domains, the new program holds
+        // the job in a domain of its own budget.
+        let moved = memory_domain(pid);
+        if domain.as_deref().is_some_and(is_process_domain) {
+            assert!(
+                moved.as_deref().is_some_and(is_process_domain) && moved != domain,
+                "the job was not moved into the new program's memory domain: {domain:?} -> {moved:?}"
+            );
+        }
+        let stopped = request(
+            &mut socket,
+            json!({"StopSessionProcesses": {"session_id": session_id,
+                "target": {"kind": "process", "process_id": before}}}),
+        )
+        .await;
+        assert_eq!(
+            stopped["SessionProcessesStopped"]["result"]["outcome"], "outside_end",
+            "{stopped}"
+        );
+        (pid, tick)
+    });
+    // Stopped through the product after the reload: ended, not left behind.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while start_tick(pid).as_deref() == Some(tick.as_str()) {
+        assert!(
+            Instant::now() < deadline,
+            "the stop after the reload did not end the job"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_real_shutdown_still_stops_the_jobs_an_exited_terminal_left_running() {
+    let scratch = std::env::temp_dir().join(format!("hr-shutdown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let mut kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, tick) = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let session_id = session_in(&mut socket, &scratch).await;
+        let pid = terminal_that_left_a_job(&mut socket, &session_id, &scratch).await;
+        (pid, start_tick(pid).expect("the job runs"))
+    });
+    let kernel_pid = kernel.child.id() as i32;
+    assert!(kernel_pid > 1);
+    unsafe { libc::kill(kernel_pid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kernel.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the kernel did not stop");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while start_tick(pid).as_deref() == Some(tick.as_str()) {
+        assert!(
+            Instant::now() < deadline,
+            "the job outlived the kernel's shutdown"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[test]
 fn a_terminal_takes_input_after_a_hot_reload() {
     let scratch = std::env::temp_dir().join(format!("hr-input-{}", std::process::id()));
@@ -1065,7 +1262,15 @@ while IFS= read -r line; do
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\"}}}"
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
     text=""
-    for part in $(seq 1 400); do
+    # A first turn that detaches a job and ends the process (a restart follows).
+    parts=400
+    if [[ -e "$record/detach" && ! -e "$record/detached" ]]; then
+        touch "$record/detached"
+        parts=1
+        setsid nohup sh -c "echo \$\$ > $record/job.pid; exec sleep 600" >/dev/null 2>&1 &
+        sleep 1
+    fi
+    for part in $(seq 1 $parts); do
         printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"turn-$turn-part-$part \"}}}"
         text="${text}turn-$turn-part-$part "
         echo "part $part $EPOCHREALTIME" >> "$record/parts"
@@ -1079,6 +1284,7 @@ while IFS= read -r line; do
     printf '%s\n' "{\"type\":\"assistant\",\"session_id\":\"$session\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"$text\"}]}}"
     printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"turn-$turn-done\"}"
     echo "result $turn" >> "$record/parts"
+    [[ $parts == 1 ]] && exit 0
 done
 "#;
 
@@ -1297,6 +1503,139 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         std::fs::read_link(format!("/proc/{}/exe", kernel.child.id())).unwrap(),
         scratch.join("bin/chariox-kernel")
     );
+}
+
+/// The reviewer's case: an agent's earlier Claude process ended leaving a
+/// detached build, and the agent's current turn is handed over.
+#[test]
+fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllable() {
+    let scratch = std::env::temp_dir().join(format!("hr-agentjob-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(record.join("detach"), "").unwrap();
+    let claude = scratch.join("claude");
+    std::fs::write(&claude, FAKE_CLAUDE).unwrap();
+    std::fs::set_permissions(&claude, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(scratch.join("claude-config")).unwrap();
+    std::fs::write(
+        scratch.join("claude-config/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"fixture","refreshToken":"fixture"}}"#,
+    )
+    .unwrap();
+    let env = vec![
+        ("CHARIOX_CLAUDE_BIN", claude.clone()),
+        ("CHARIOX_FAKE_CLAUDE_RECORD", record.clone()),
+        ("CLAUDE_CONFIG_DIR", scratch.join("claude-config")),
+        ("XDG_CONFIG_HOME", scratch.join("config")),
+        ("XDG_STATE_HOME", scratch.join("state")),
+        ("XDG_CACHE_HOME", scratch.join("cache")),
+    ];
+    let kernel = start_kernel_with(&scratch, &env);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (pid, tick) = runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let session_id = session_in(&mut socket, &scratch).await;
+        let spawned = request(
+            &mut socket,
+            json!({"SpawnAgent": {"session_id": session_id, "alias": "builder",
+                "provider": "claude", "model": "haiku", "effort": null,
+                "worktree_id": null, "no_subscribe": true}}),
+        )
+        .await;
+        let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{spawned}"))
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        let submit = |prompt: &'static str| {
+            json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                "target_agent_id": agent_id, "prompt": prompt, "attachments": []}})
+        };
+        // Turn 1 detaches the job and its process ends.
+        request(&mut socket, submit("start the build")).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).last().map(String::as_str) != Some("result 1") {
+            assert!(Instant::now() < deadline, "the first turn did not end");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let pid = std::fs::read_to_string(record.join("job.pid"))
+            .expect("the job started")
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        // Turn 2 runs in a new process, streaming when the kernel is upgraded.
+        request(&mut socket, submit("write sixteen parts")).await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 40 {
+            assert!(Instant::now() < deadline, "the second turn did not stream");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let listed = listed_job(&mut socket, &session_id, pid)
+            .await
+            .expect("the agent's job is listed");
+        assert_eq!(listed["owner"]["kind"], "agent", "{listed}");
+        assert_eq!(listed["owner"]["id"], agent_id.as_str(), "{listed}");
+        let tick = start_tick(pid).expect("the job runs");
+        let before = listed["process_id"].as_str().unwrap().to_string();
+
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let kernel_pid = kernel.child.id() as i32;
+        assert!(kernel_pid > 1);
+        unsafe { libc::kill(kernel_pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+
+        assert_eq!(
+            start_tick(pid).as_deref(),
+            Some(tick.as_str()),
+            "the reload ended the agent's job or replaced its process"
+        );
+        let after = listed_job(&mut socket, &session_id, pid)
+            .await
+            .expect("the reloaded kernel lists the agent's job again");
+        assert_eq!(after["process_id"], before.as_str(), "{after}");
+        assert_eq!(after["owner"], listed["owner"], "{after}");
+        assert_eq!(lines(&record.join("starts")).len(), 2, "the turn restarted");
+        let stopped = request(
+            &mut socket,
+            json!({"StopSessionProcesses": {"session_id": session_id,
+                "target": {"kind": "process", "process_id": before}}}),
+        )
+        .await;
+        assert_eq!(
+            stopped["SessionProcessesStopped"]["result"]["outcome"], "outside_end",
+            "{stopped}"
+        );
+        std::fs::write(record.join("go"), "").unwrap();
+        (pid, tick)
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while start_tick(pid).as_deref() == Some(tick.as_str()) {
+        assert!(
+            Instant::now() < deadline,
+            "stopping the agent after the reload did not end its job"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// A Codex app-server shaped like the measured one (codex-cli 0.159.3).

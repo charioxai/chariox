@@ -18,6 +18,7 @@ pub struct SessionProcess {
 /// Whom a workload's processes are listed under when no run or terminal does:
 /// what an ended workload left running, or what an agent started through a
 /// runtime tool.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Listing {
     pub(super) session_id: String,
     pub(super) owner: SessionProcessOwner,
