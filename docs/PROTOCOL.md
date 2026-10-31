@@ -5935,5 +5935,13 @@ viewer repeats it every 20 s while hidden. Only an acknowledgement with `lost: t
 (watched again, independent frame wanted) resumes the pump; late plain acknowledgements
 of frames sent before the pause do nothing.
 
+While paused the kernel also stops the capture source: it parks a Tab or region display
+(`display_park`), and for a Room display it sends the worker the peer command
+`RoomSharedDisplay.command={op:"park"}`. Both renew the host binding and the home and
+worker leases, so the 60 s expiry never runs for a paused view. The worker stops the
+shared desktop source once every viewer lease on it is parked; the next `capture` starts
+it again and returns the independent frame. `park` is a new peer command inside 919/370
+(not yet on `main`).
+
 Focused check: `cargo test -p chariox-kernel --lib protocol_shapes` (including
 `the_legacy_user_side_frame_stream_is_not_a_command`).
