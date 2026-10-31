@@ -42,7 +42,7 @@ pub(super) async fn abort_subscription_tasks(
     for task in guard.values() {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     guard.clear();
@@ -398,7 +398,7 @@ pub(super) async fn handle_relay_unsubscribe(
     if let Some(task) = existing {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     let ack = match encrypt_json_response(
