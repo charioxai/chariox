@@ -274,6 +274,9 @@ impl RoomTerminalService {
             cols: spec.cols,
             rows: spec.rows,
         })?;
+        // A person's own command is counted but never waits for room; what an
+        // agent types may (each line sets it, below).
+        crate::runtime::process_resources::set_holdable_for_key(&run_id, false);
         let shell_pid = pty
             .process_id(&run_id)
             .ok()
@@ -411,6 +414,10 @@ impl RoomTerminalService {
                         if *actor == TerminalActor::User {
                             terminal.mark_user_interacted();
                         }
+                        crate::runtime::process_resources::set_holdable_for_key(
+                            &run_id,
+                            *actor != TerminalActor::User,
+                        );
                         terminal
                             .driver
                             .record_write(actor, shell_foreground, input, now);

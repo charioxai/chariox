@@ -610,6 +610,19 @@ pub(crate) fn samples_for_key(key: &str) -> Vec<ProcessSample> {
         .collect()
 }
 
+/// Whether the commands of the workload bound to `key` may wait for room: a
+/// person's own terminal command never does.
+pub(crate) fn set_holdable_for_key(key: &str, holdable: bool) {
+    let state = registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade);
+    if let Some(state) = state {
+        state.lock().unwrap_or_else(|e| e.into_inner()).holdable = holdable;
+    }
+}
+
 pub(crate) fn has_key(key: &str) -> bool {
     registry()
         .lock()

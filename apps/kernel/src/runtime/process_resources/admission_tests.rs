@@ -140,3 +140,25 @@ fn a_command_writing_past_the_disk_floor_is_paused_until_space_frees() {
         "the writer did not continue with space"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_persons_own_terminal_command_never_waits() {
+    let pool = pool(1536);
+    let _a = Workload::start(domain(&pool, "a", false), &[("big", 800, 0, 0)]);
+    settle(1);
+    let prepared = domain(&pool, "person", false);
+    let person = Workload::run(
+        prepared,
+        &[(
+            "grow",
+            "sleep 1; exec python3 \"$0/alloc.py\" 200 48 520".into(),
+        )],
+    );
+    let key = format!("admission-{:016x}", rand::random::<u64>());
+    person.domain.bind_key(&key);
+    set_holdable_for_key(&key, false);
+    settle(6);
+    assert!(!person.waiting("grow"), "a person's own command was paused");
+    person.domain.unbind_key(&key);
+}
