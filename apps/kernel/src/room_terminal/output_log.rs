@@ -18,6 +18,22 @@ pub(super) struct OutputPage {
 }
 
 impl OutputLog {
+    /// The retained output a hot reload hands over, at its original offsets.
+    pub(super) fn restored(start_offset: u64, retained: Vec<u8>) -> Self {
+        Self {
+            retained: retained.into(),
+            start_offset,
+        }
+    }
+
+    pub(super) fn start_offset(&self) -> u64 {
+        self.start_offset
+    }
+
+    pub(super) fn retained(&self) -> Vec<u8> {
+        self.retained.iter().copied().collect()
+    }
+
     pub(super) fn end_offset(&self) -> u64 {
         self.start_offset + self.retained.len() as u64
     }

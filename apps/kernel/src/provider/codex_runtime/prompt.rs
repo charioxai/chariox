@@ -38,6 +38,18 @@ pub fn submit_codex_prompt(
         }
         .steer_not_submitted(true));
     }
+    #[cfg(unix)]
+    if let Some(turn) = state.adopted_turn.take() {
+        // A hot reload handed this prompt's running turn over: the app-server
+        // still runs it, so continue reading it instead of starting it again.
+        crate::logging::info_with_fields(
+            "hot_reload.codex",
+            "continuing a handed-over Codex turn",
+            serde_json::json!({ "provider_run_id": run.id(), "thread_id": state.thread_id() }),
+        );
+        super::handover::continue_turn(state, turn);
+        return Ok(());
+    }
     let client = codex_client_for_run(run, state.endpoint(), None)
         .map_err(|error| error.steer_not_submitted(envelope.steering))?;
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
@@ -317,6 +329,7 @@ mod prompt_tests {
     };
     use crate::error::DaemonError;
     use crate::prompt_assembly::{PromptEnvelope, PromptManifest};
+    use crate::provider::test_codex_connect as connect;
     use crate::provider::{
         AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
     };
@@ -325,7 +338,7 @@ mod prompt_tests {
     use std::collections::BTreeMap;
     use std::net::TcpListener;
     use std::thread;
-    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+    use tokio_tungstenite::tungstenite::{accept, Message};
 
     // MP-08/MP-10: native input and Chariox-origin input share this provider seam.
     #[test]

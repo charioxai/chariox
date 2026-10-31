@@ -87,8 +87,11 @@ impl TerminalStore {
     }
 
     /// Every stored record; a record that ran when the kernel stopped is
-    /// rewritten as ended by the restart.
-    pub(super) fn recover(&self) -> Result<Vec<TerminalRecord>, DaemonError> {
+    /// rewritten as ended by the restart, unless a hot reload handed it over.
+    pub(super) fn recover(
+        &self,
+        handed_over: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<TerminalRecord>, DaemonError> {
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -116,7 +119,7 @@ impl TerminalStore {
                 let _ = fs::remove_file(&path);
                 continue;
             };
-            if record.ended.is_none() {
+            if record.ended.is_none() && !handed_over.contains(&record.terminal_id) {
                 record.ended = Some(RoomTerminalOutcome::KernelRestarted);
                 self.save(&record)?;
             }

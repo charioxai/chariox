@@ -13,6 +13,30 @@ pub struct ProcessSample {
     pub age_ms: u64,
 }
 
+/// The processes a watch owns, as a hot reload hands them to the next program:
+/// each with the start identity that keeps a recycled PID from being adopted.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct Owned {
+    root: u32,
+    processes: Vec<OwnedProcess>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OwnedProcess {
+    process_id: String,
+    identity: ProcessIdentity,
+}
+
+impl Owned {
+    /// The owned processes that still run.
+    pub fn alive(&self) -> impl Iterator<Item = u32> + '_ {
+        self.processes
+            .iter()
+            .filter(|owned| same_process(owned.identity.pid, &owned.identity))
+            .map(|owned| owned.identity.pid)
+    }
+}
+
 pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
@@ -40,6 +64,52 @@ impl ProcessTree {
             #[cfg(target_os = "linux")]
             cgroup: None,
         }
+    }
+
+    /// The tree of a previous program's watch: only processes that are still
+    /// the ones it owned, under the ids Health listed them by.
+    pub fn restored(owned: Owned) -> Self {
+        let mut tree = Self {
+            root: owned.root,
+            owned: BTreeMap::new(),
+            ids: BTreeMap::new(),
+            parents: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            cgroup: None,
+        };
+        for process in owned.processes {
+            let pid = process.identity.pid;
+            if same_process(pid, &process.identity) {
+                tree.owned.insert(pid, process.identity);
+                tree.ids.insert(pid, process.process_id);
+            }
+        }
+        tree
+    }
+
+    pub fn owned(&self) -> Owned {
+        Owned {
+            root: self.root,
+            processes: self
+                .owned
+                .iter()
+                .filter_map(|(pid, identity)| {
+                    Some(OwnedProcess {
+                        process_id: self.ids.get(pid)?.clone(),
+                        identity: identity.clone(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    pub fn root(&self) -> u32 {
+        self.root
+    }
+
+    /// Any owned process, which tells whether the tree has anything left.
+    pub fn alive_pid(&self) -> Option<u32> {
+        self.owned.keys().next().copied()
     }
 
     #[cfg(target_os = "linux")]

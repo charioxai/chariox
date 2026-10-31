@@ -255,12 +255,13 @@ fn load_scoped_agent_outline(
             .map(|event| event.sequence.saturating_sub(1))
             .or_else(|| before_sequence.map(|sequence| sequence.saturating_sub(1)))
             .unwrap_or(i64::MAX as u64);
-        let mut events = operational_history.load_session_events_for_agent_sequence_range(
-            session_id,
-            agent_id,
-            prompt.sequence,
-            sequence_end,
-        )?;
+        let mut events = operational_history
+            .load_session_events_for_agent_sequence_range_incrementally(
+                session_id,
+                agent_id,
+                prompt.sequence,
+                sequence_end,
+            )?;
         if !events
             .iter()
             .any(|event| persisted_prompt_settlement_at_ms(event).is_some())

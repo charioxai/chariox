@@ -70,6 +70,54 @@ fn external_provider_discovery_poller_is_not_demand_gated() {
 }
 
 #[test]
+fn shutdown_does_not_wait_for_a_discovery_tick_in_progress() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let codex_home = temp_root("poller-shutdown");
+    let previous_codex_home = env::var_os("CODEX_HOME");
+    env::set_var("CODEX_HOME", &codex_home);
+
+    let runtime = tokio::runtime::Runtime::new().expect("runtime should create");
+    runtime.block_on(async {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot"),
+        ));
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+        );
+        let mut runtime_state = router.runtime_state();
+        let waiting_for_app = Arc::new(tokio::sync::Notify::new());
+        runtime_state.observe_app_lock_wait_for_test(Arc::clone(&waiting_for_app));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // A command holds the app lock, so the poller's first refresh stands in its tick.
+        let held = app.lock().await;
+        let poller = tokio::spawn(run_external_provider_session_discovery_poller(
+            Arc::clone(&app),
+            runtime_state,
+            shutdown_rx,
+        ));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            waiting_for_app.notified(),
+        )
+        .await
+        .expect("the first refresh should reach the app lock");
+
+        shutdown_tx.send(true).expect("poller should be listening");
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(2), poller).await;
+        assert!(
+            stopped.is_ok(),
+            "shutdown must not wait for a discovery tick that is still in progress"
+        );
+        drop(held);
+    });
+
+    restore_env_var("CODEX_HOME", previous_codex_home);
+}
+
+#[test]
 fn daemon_run_starts_discovery_but_not_attached_transcript_observation() {
     let source = fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/app/daemon_lifecycle.rs"),

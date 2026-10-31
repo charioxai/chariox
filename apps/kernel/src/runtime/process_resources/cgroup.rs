@@ -142,6 +142,42 @@ impl Domain {
         std::fs::create_dir(&path).ok()?;
         Some(Self { path, unit })
     }
+    /// Moves what runs in `previous`, the domain a child of the previous kernel
+    /// program was started in (hot reload), into this one and removes the
+    /// directories that program left. The program keeps its PID across a hot
+    /// reload, so only a domain of this PID's own budget is taken.
+    pub fn take_over(&self, previous: &Path, pid: u32) -> bool {
+        let Some(unit) = previous.parent() else {
+            return false;
+        };
+        let Some(budget) = unit.parent() else {
+            return false;
+        };
+        let named = |path: &Path, prefix: &str| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
+        };
+        if !(previous.starts_with("/sys/fs/cgroup")
+            && named(previous, "process-")
+            && named(unit, "unit-")
+            && named(budget, &format!("chariox-{}-", std::process::id())))
+        {
+            return false;
+        }
+        let Ok(members) = std::fs::read_to_string(previous.join("cgroup.procs")) else {
+            return false;
+        };
+        for member in members.lines() {
+            let _ = std::fs::write(self.path.join("cgroup.procs"), member);
+        }
+        let moved = self.owns(pid);
+        if moved {
+            for directory in [previous, unit, budget] {
+                let _ = std::fs::remove_dir(directory);
+            }
+        }
+        moved
+    }
     pub fn pids(&self) -> std::io::Result<Vec<u32>> {
         Ok(std::fs::read_to_string(self.path.join("cgroup.procs"))?
             .lines()

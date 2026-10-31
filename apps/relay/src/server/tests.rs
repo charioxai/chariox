@@ -249,7 +249,7 @@ async fn assert_relay_close(
             Ok(Some(Ok(Message::Text(text)))) => {
                 let envelope = serde_json::from_str::<RelayEnvelope>(&text)
                     .expect("relay text frame should decode");
-                if let RelayEnvelope::Close { reason } = envelope {
+                if let RelayEnvelope::Close { reason, .. } = envelope {
                     assert_eq!(reason, "relay token expired");
                     return;
                 }

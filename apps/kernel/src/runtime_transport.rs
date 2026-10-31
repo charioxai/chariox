@@ -65,6 +65,7 @@ use subscriptions::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
+const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
 pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;
@@ -278,7 +279,7 @@ fn consume_opened_kernel_local_auth_token_path(
     })
 }
 
-fn configured_kernel_local_auth_token() -> Option<Arc<str>> {
+pub(crate) fn configured_kernel_local_auth_token() -> Option<Arc<str>> {
     KERNEL_LOCAL_AUTH_TOKEN.get().cloned().flatten()
 }
 
@@ -679,9 +680,17 @@ where
     let pump_router = Arc::clone(&router);
     // MP-08 / MP-10: maintenance and one agent's settlement cannot hold every
     // provider's already-readable output. Mutations still use the same lanes.
-    let provider_output_pump_task = {
+    let (stop_provider_output_pump, provider_output_pump_stopped) =
+        tokio::sync::oneshot::channel::<()>();
+    let mut provider_output_pump_task = {
         let runtime = router.runtime_state().clone();
-        tokio::spawn(async move { runtime.run_provider_output_pump().await })
+        tokio::spawn(async move {
+            runtime
+                .run_provider_output_pump_until(async {
+                    let _ = provider_output_pump_stopped.await;
+                })
+                .await
+        })
     };
     let pump_task = tokio::spawn(async move {
         let pump_state = pump_router.runtime_state();
@@ -756,7 +765,18 @@ where
                 drop(_restart_recovery_task);
                 wake_scheduler_task.abort();
                 pump_task.abort();
-                provider_output_pump_task.abort();
+                // Output already taken from a provider must reach history:
+                // a hot-reloaded turn continues after it in the new program.
+                let _ = stop_provider_output_pump.send(());
+                if tokio::time::timeout(
+                    PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT,
+                    &mut provider_output_pump_task,
+                )
+                .await
+                .is_err()
+                {
+                    provider_output_pump_task.abort();
+                }
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 app_wake_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
@@ -1942,11 +1962,14 @@ pub struct KernelBootListener {
 
 impl KernelBootListener {
     pub fn bind(host: &str, port: u16) -> Result<Self, DaemonError> {
-        let listener =
-            StdTcpListener::bind((host, port)).map_err(|error| DaemonError::LocalTransport {
-                operation: "bind booting kernel websocket",
-                message: error.to_string(),
-            })?;
+        #[cfg(unix)]
+        let listener = crate::hot_reload::tcp_listener("kernel", host, port);
+        #[cfg(not(unix))]
+        let listener = StdTcpListener::bind((host, port));
+        let listener = listener.map_err(|error| DaemonError::LocalTransport {
+            operation: "bind booting kernel websocket",
+            message: error.to_string(),
+        })?;
         let boot_listener = listener
             .try_clone()
             .map_err(|error| DaemonError::LocalTransport {

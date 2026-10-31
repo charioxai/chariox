@@ -278,7 +278,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     loop {
         match timeout(Duration::from_millis(500), old_socket.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
-                if let RelayEnvelope::Close { reason } =
+                if let RelayEnvelope::Close { reason, .. } =
                     serde_json::from_str::<RelayEnvelope>(&text).expect("close should decode")
                 {
                     assert_eq!(reason, "relay token revoked");
@@ -293,7 +293,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     loop {
         match timeout(Duration::from_millis(500), old_machine_client_socket.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => {
-                if let RelayEnvelope::Close { reason } =
+                if let RelayEnvelope::Close { reason, .. } =
                     serde_json::from_str::<RelayEnvelope>(&text).expect("close should decode")
                 {
                     assert_eq!(reason, "relay token revoked");

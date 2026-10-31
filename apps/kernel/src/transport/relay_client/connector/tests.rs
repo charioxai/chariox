@@ -733,6 +733,7 @@ async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
     event_tx
         .try_send(RelayEnvelope::Close {
             reason: "accepted-turn-event".into(),
+            kernel_reload: false,
         })
         .unwrap();
     let mut writing = Box::pin(super::writer::run_relay_writer(
@@ -774,18 +775,21 @@ async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
         event_tx
             .try_send(RelayEnvelope::Close {
                 reason: reason.into(),
+                kernel_reload: false,
             })
             .unwrap();
     }
     assert!(matches!(
         event_tx.try_send(RelayEnvelope::Close {
-            reason: "over-capacity".into()
+            reason: "over-capacity".into(),
+            kernel_reload: false,
         }),
         Err(mpsc::error::TrySendError::Full(_))
     ));
     priority_tx
         .try_send(RelayEnvelope::Close {
             reason: "priority".into(),
+            kernel_reload: false,
         })
         .unwrap();
     pong_tx.try_send(vec![1]).unwrap();

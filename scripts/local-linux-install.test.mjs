@@ -329,6 +329,8 @@ test("local Linux kernel unit owns the delegated subtree the root install enroll
   // A stop must reach the kernel before its App workers: a worker that systemd
   // signals first exits as a failure and stays down after the restart.
   assert.ok(unit.split("\n").includes("KillMode=mixed"), "chariox-kernel.service stops the kernel before its Apps")
+  // A planned upgrade reloads in place (same main PID): running commands go on.
+  assert.ok(unit.split("\n").includes("ExecReload=/bin/kill -USR2 $MAINPID"), "systemctl reload hot-reloads the kernel")
   assert.match(start, /chariox-kernel\.service\/supervisor \]\]/)
   assert.ok(start.indexOf('mkdir "$unit/apps"') < start.indexOf('exec "$1"'))
   assert.match(root, /user@\$uid\.service\/app\.slice\/chariox-kernel\.service\/apps:\$home\/\.chariox\/state\/kernel\.db/)

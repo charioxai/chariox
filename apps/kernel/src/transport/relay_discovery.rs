@@ -694,7 +694,7 @@ async fn query_relay_once_body(
                         ..
                     } if response_id == &request_id => Ok(response),
                     // MP-08/MP-11: the relay closes refused metadata admission.
-                    RelayEnvelope::Close { reason } => Err(DaemonError::LocalTransport {
+                    RelayEnvelope::Close { reason, .. } => Err(DaemonError::LocalTransport {
                         operation: "relay metadata admission",
                         message: format!("relay refused metadata request: {reason}"),
                     }),
@@ -790,6 +790,7 @@ mod tests {
                 .send(Message::Text(
                     serde_json::to_string(&RelayEnvelope::Close {
                         reason: "relay token action not allowed".to_string(),
+                        kernel_reload: false,
                     })
                     .unwrap()
                     .into(),

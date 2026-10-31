@@ -18,6 +18,20 @@ pub fn drain_codex_events(
     state: &mut CodexRuntimeState,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
 ) -> Result<CodexPollResult, DaemonError> {
+    // A handed-over turn continues once its prompt is submitted here; until
+    // then what it streams waits in the connection.
+    #[cfg(unix)]
+    if state.adopted_turn.is_some() {
+        return Ok(CodexPollResult {
+            chunks: Vec::new(),
+            completions: Vec::new(),
+            prompt_completed: false,
+            terminal_failure: None,
+            notices: Vec::new(),
+            resolved_usage: None,
+            account_rate_limits: Vec::new(),
+        });
+    }
     if state.active_turn_id.is_none() {
         state.native_approval_origin = None;
     }
@@ -218,8 +232,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use crate::provider::test_codex_connect as connect;
     use serde_json::{json, Value};
-    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+    use tokio_tungstenite::tungstenite::{accept, Message};
 
     use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{

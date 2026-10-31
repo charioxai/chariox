@@ -142,7 +142,7 @@ async fn runtime_client_frames_require_accepted_client_connect() {
         match serde_json::from_str::<RelayEnvelope>(&close_payload)
             .expect("relay close should decode")
         {
-            RelayEnvelope::Close { reason } => {
+            RelayEnvelope::Close { reason, .. } => {
                 assert_eq!(reason, "client must connect before sending requests");
             }
             other => panic!("unexpected pre-connect response envelope: {other:?}"),

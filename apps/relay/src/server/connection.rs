@@ -213,6 +213,7 @@ pub(crate) async fn handle_connection(
     let mut first_message_received = false;
     let mut end_reason: &'static str = "message_handling";
     let mut peer_close_code: Option<u16> = None;
+    let mut kernel_reload = false;
     let mut last_read_at = Instant::now();
     let mut last_ping_at = Instant::now() - RELAY_HEARTBEAT_INTERVAL;
     let mut connection_check = tokio::time::interval(RELAY_CONNECTION_CHECK_INTERVAL);
@@ -454,7 +455,7 @@ pub(crate) async fn handle_connection(
                                 send_close(&sender, "daemon reconnected".to_string());
                             }
                             if let Some(released) = released {
-                                announce_released_daemon(released);
+                                announce_released_daemon(released, false);
                             }
                         }
                         RelayEnvelope::DaemonHeartbeat {
@@ -1027,7 +1028,11 @@ pub(crate) async fn handle_connection(
                             )
                             .await;
                         }
-                        RelayEnvelope::Close { .. } => {
+                        RelayEnvelope::Close {
+                            kernel_reload: reload,
+                            ..
+                        } => {
+                            kernel_reload = reload && registered_daemon_key.is_some();
                             let _ = outgoing_tx.try_send(Message::Close(None));
                             break;
                         }
@@ -1120,10 +1125,11 @@ pub(crate) async fn handle_connection(
                 "error": connection_result.as_ref().err().map(|error| error.to_string()),
                 "end_reason": end_reason,
                 "peer_close_code": peer_close_code,
+                "kernel_reload": kernel_reload,
             }),
         );
     }
-    announce_released_daemon(released);
+    announce_released_daemon(released, kernel_reload);
     drop(control_tx);
     drop(outgoing_tx);
     if let Some(mut writer_task) = writer_task {

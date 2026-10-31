@@ -8,6 +8,8 @@ mod control;
 use control::WatchCommand;
 pub(crate) use control::{end_owner, outside_ended_for_key, stop_for_key, stop_released};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
+pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
+mod handover;
 mod pool;
 mod projection;
 mod sampling;
@@ -118,6 +120,33 @@ impl PreparedDomain {
         }
     }
 
+    /// For a child the previous kernel program started (hot reload): it joins
+    /// its owner's unit in this program's budget, and the domain it had goes.
+    /// A child that cannot move is watched by resident memory instead.
+    pub(crate) fn adopted(
+        unit: &str,
+        previous: Option<&std::path::Path>,
+        pid: u32,
+    ) -> std::io::Result<Self> {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut prepared = Self::new(unit)?;
+        #[cfg(target_os = "linux")]
+        if let Some(group) = prepared.cgroup.take() {
+            let moved = previous.is_some_and(|previous| group.take_over(previous, pid));
+            if previous.is_some() && !moved {
+                crate::logging::warn_with_fields(
+                    "process_resources.handover",
+                    "a handed-over process could not join its owner's memory domain; watching its resident memory instead",
+                    serde_json::json!({"pid": pid, "unit": unit}),
+                );
+            }
+            prepared.cgroup = moved.then_some(group);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (previous, pid);
+        Ok(prepared)
+    }
+
     /// A domain without a cgroup, for tests that only need the launch shape:
     /// an unstarted cgroup domain ends its processes when dropped.
     #[cfg(test)]
@@ -165,7 +194,30 @@ impl PreparedDomain {
             ));
         }
         sampling::ensure_available()?;
-        let mut tree = sampling::ProcessTree::new(pid);
+        self.watch(sampling::ProcessTree::new(pid), None)
+    }
+
+    /// Watches `tree` as the watch of `listing`'s owner: a released workload
+    /// whose previous program handed it over. It is listed, counted and
+    /// stoppable again, and ends with its last process.
+    fn start_released(
+        self,
+        tree: sampling::ProcessTree,
+        listing: projection::Listing,
+    ) -> std::io::Result<()> {
+        sampling::ensure_available()?;
+        let domain = self.watch(tree, Some(listing))?;
+        // The watch owns itself from here, as for any released workload.
+        drop(domain);
+        Ok(())
+    }
+
+    fn watch(
+        self,
+        mut tree: sampling::ProcessTree,
+        listing: Option<projection::Listing>,
+    ) -> std::io::Result<ProcessDomain> {
+        let root = tree.root();
         #[cfg(target_os = "linux")]
         if let Some(group) = &self.cgroup {
             tree.set_cgroup(group.clone());
@@ -174,17 +226,25 @@ impl PreparedDomain {
         let in_cgroup = self.cgroup.is_some();
         #[cfg(not(target_os = "linux"))]
         let in_cgroup = false;
+        #[cfg(target_os = "linux")]
+        let cgroup = self.cgroup.as_ref().map(|group| group.path().to_path_buf());
+        #[cfg(not(target_os = "linux"))]
+        let cgroup = None;
+        let handed_over = listing.is_some();
         let state = Arc::new(Mutex::new(Observation {
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
+            cgroup,
+            listed: listing,
+            released: handed_over,
             ..Observation::default()
         }));
         self.pool.join(&state);
         let watched = state.clone();
         let (stop, stopped) = mpsc::channel();
         state.lock().unwrap_or_else(|e| e.into_inner()).control = Some(stop.clone());
-        let mut released = false;
+        let mut released = handed_over;
         // Per command: process-table time, resident bytes, growth per second.
         let mut previous = std::collections::BTreeMap::<u32, (u64, u64, u64)>::new();
         let worker = std::thread::Builder::new()
@@ -196,7 +256,7 @@ impl PreparedDomain {
                         crate::logging::error_with_fields(
                             "process_resources.monitor",
                             "process resource sampling failed; stopping its owned tree",
-                            serde_json::json!({"pid": pid, "error": error}),
+                            serde_json::json!({"pid": root, "error": error}),
                         );
                         tree.terminate();
                         break;
@@ -252,6 +312,7 @@ impl PreparedDomain {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
                     observation.samples = samples;
                     observation.commands = commands;
+                    observation.owned = Some(tree.owned());
                 }
                 #[cfg(target_os = "linux")]
                 let unit_charged = self.cgroup.as_ref().and_then(|group| group.unit_charged());
@@ -312,11 +373,17 @@ impl PreparedDomain {
                     }
                 }
             })?;
+        if handed_over {
+            registry().lock().unwrap_or_else(|e| e.into_inner()).insert(
+                format!("released-{:032x}", rand::random::<u128>()),
+                Arc::downgrade(&state),
+            );
+        }
         Ok(ProcessDomain {
             state,
             stop,
             worker: Some(worker),
-            released: false,
+            released: handed_over,
             started: control::domain_started(),
         })
     }
@@ -379,6 +446,8 @@ struct Observation {
     unit: String,
     cap: Option<u64>,
     in_cgroup: bool,
+    /// The memory domain directory, which a hot reload hands to the next program.
+    cgroup: Option<std::path::PathBuf>,
     control: Option<mpsc::Sender<WatchCommand>>,
     outside_ended: bool,
     samples: Vec<ProcessSample>,
@@ -389,6 +458,8 @@ struct Observation {
     /// Set once the workload's own process ended: what it left running is
     /// still this owner's, listed, counted and stoppable until it ends.
     released: bool,
+    /// The watched processes at the last sample, which a hot reload hands over.
+    owned: Option<sampling::Owned>,
 }
 impl Observation {
     fn resident(&self) -> u64 {
@@ -436,6 +507,11 @@ impl ProcessDomain {
         );
         drop(registry);
         self.released = self.stop.send(WatchCommand::Release).is_ok();
+    }
+    /// The memory domain a hot reload hands over with the process.
+    pub(crate) fn cgroup_path(&self) -> Option<std::path::PathBuf> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.cgroup.clone()
     }
     /// Set once the workload itself was the command stopped for memory.
     pub(crate) fn memory_limit_bytes(&self) -> Option<u64> {

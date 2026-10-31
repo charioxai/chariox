@@ -1384,7 +1384,13 @@ pub(super) fn send_daemon_subscription_cleanup(
 }
 
 pub(super) fn send_close(sender: &RelaySender, reason: String) {
-    let _ = send_envelope(sender, &RelayEnvelope::Close { reason });
+    let _ = send_envelope(
+        sender,
+        &RelayEnvelope::Close {
+            reason,
+            kernel_reload: false,
+        },
+    );
 }
 
 pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {

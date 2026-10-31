@@ -5961,6 +5961,26 @@ and the termination name the same cause. The managed-upgrade list is
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
 
+### MP-08 / MP-09 / MP-10 / MP-11: a hot reload's relay close — local 925 / peer 376
+
+A kernel that stops for a hot reload (SIGUSR2, EA2-86) is back on the relay within
+about a second, under the same daemon id. Its last relay message says so:
+`{"kind":"close","reason":"daemon shutting down","kernel_reload":true}`. The relay
+remembers the flag of the registered daemon's close and puts it on the close it sends
+to that daemon's subscribed clients:
+`{"kind":"close","reason":"target daemon disconnected from relay","kernel_reload":true}`.
+Any other loss (an ordinary stop, a dropped socket, a replaced registration) is
+announced as before, without the field (`kernel_reload` is omitted when false). The
+reason string is unchanged, so clients that do not read the field keep treating the
+close as temporary.
+
+The web retries a subscription whose socket closed with `kernel_reload` every
+~250 ms (+0–50 ms jitter) for up to 10 s, then falls back to its normal backoff for a
+kernel that is away (up to 3 s); every other close keeps that backoff. The managed-upgrade
+list is [629, 636, 911, 925]. Focused checks: `cargo test -p chariox-relay --lib
+subscribers_hear_that_their_kernel_left_for_a_hot_reload` and the hot reload test
+`a_hot_reload_tells_the_relay_it_is_a_reload`.
+
 ### Direct browser sessions over WebRTC — local 917 / relay peer 362
 
 `local_browser_connect` may carry an SDP `offer`; the kernel answers

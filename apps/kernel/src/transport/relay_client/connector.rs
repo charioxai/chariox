@@ -885,8 +885,11 @@ async fn run_daemon_relay_connector_inner(
                     tokio::select! {
                         changed = shutdown.changed() => {
                             if changed.is_ok() && *shutdown.borrow() {
+                                // A hot reload is back within about a second: the relay
+                                // tells this kernel's browsers to retry soon.
                                 let _ = send_outgoing_envelope(&outgoing_tx, RelayEnvelope::Close {
                                     reason: "daemon shutting down".to_string(),
+                                    kernel_reload: crate::hot_reload::handing_over(),
                                 });
                                 sleep(Duration::from_millis(25)).await;
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);
