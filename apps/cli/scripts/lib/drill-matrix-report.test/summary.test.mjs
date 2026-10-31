@@ -30,7 +30,7 @@ test("summarizes matrix report status and scenario counts", () => {
         reason: "Token refresh failed: 401",
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
-      scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
+      scenario("remote-kernel", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
 
@@ -64,7 +64,7 @@ test("formats failed and skipped scenarios with next actions", () => {
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
       scenario("cloud", "failed", { classification: "cloud-runtime", reason: "deployment did not become ready" }),
-      scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
+      scenario("remote-kernel", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
 
@@ -81,7 +81,7 @@ test("formats failed and skipped scenarios with next actions", () => {
   assert.match(text, /next: check provider quota or billing/)
   assert.match(text, /- cloud classification=cloud-runtime owner=cloud-deployment reason=deployment did not become ready/)
   assert.match(text, /next: inspect Cloud deployment\/control-plane status/)
-  assert.match(text, /skipped scenarios: hetzner/)
+  assert.match(text, /skipped scenarios: remote-kernel/)
 })
 
 test("formats dry-run reports without failures", () => {

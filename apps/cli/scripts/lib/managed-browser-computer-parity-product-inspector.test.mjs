@@ -69,7 +69,7 @@ function authorities({ owned = false, incompleteCloud = false } = {}) {
     async inspect() { return { authority: "read-only-cloud-inventory", complete: true, runId: "run-1", machineId: "machine-1",
       queriedTargetIds: incompleteCloud ? [] : ["target-1"], queriedHeartbeatIds: ["heartbeat-1"], activeTargets: [],
       retainedTargetRows: [], retainedHeartbeatRows: [], retirementProof: owned ? deletionProof() : null, retainedEvidenceLeakCount: 0 } },
-    async inspectProviderMachine() { events.push("provider"); return { authority: "hetzner-api", providerServerId: "123",
+    async inspectProviderMachine() { events.push("provider"); return { authority: "provider-api", providerServerId: "123",
       httpStatus: providerReads++ === 0 ? 200 : 404, observedAt: new Date().toISOString(),
       creationOperationId: "create-1", managedEnvironmentId: "managed-1" } },
   }

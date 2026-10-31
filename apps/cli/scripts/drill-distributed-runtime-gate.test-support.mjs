@@ -27,7 +27,7 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
   await writeMatrixReport(path.join(ossMatrixRoot, "native-provider-tui.json"), {
     matrix: "native-provider-tui-matrix",
     metadata: {
-      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+      deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
       providers: "claude,codex,opencode",
     },
     scenarios: [
@@ -43,14 +43,14 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
     matrix: "remote-agent-runtime-matrix",
     metadata: {
       deploymentPresets: includeCloud
-        ? "hetzner,hosted-cloud,same-host-remote,self-hosted-relay"
-        : "hetzner,same-host-remote,self-hosted-relay",
+        ? "hosted-cloud,remote-kernel,same-host-remote,self-hosted-relay"
+        : "remote-kernel,same-host-remote,self-hosted-relay",
       providers: "claude,codex,opencode",
     },
     scenarios: [
       scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-      scenario("hetzner-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-      scenario("hetzner-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
+      scenario("remote-kernel-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+      scenario("remote-kernel-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
       ...(includeCloud
         ? [
           scenario("hosted-collab-remote-agent", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
@@ -66,21 +66,21 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
   await writeMatrixReport(path.join(ossMatrixRoot, "remote-home-extension.json"), {
     matrix: "remote-home-extension-matrix",
     metadata: {
-      deploymentPresets: "hetzner,local,self-hosted-relay",
+      deploymentPresets: "local,remote-kernel,self-hosted-relay",
     },
     scenarios: [
       scenario("local-single", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
       scenario("local-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
-      scenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
-      scenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+      scenario("remote-kernel-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+      scenario("remote-kernel-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
     ],
   })
   await writeMatrixReport(path.join(ossMatrixRoot, "runtime-resilience-chaos.json"), {
     matrix: "runtime-resilience-chaos-matrix",
     metadata: {
       deploymentPresets: includeCloud
-        ? "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay"
-        : "hetzner,local,same-host-remote,self-hosted-relay",
+        ? "hosted-cloud,local,remote-kernel,same-host-remote,self-hosted-relay"
+        : "local,remote-kernel,same-host-remote,self-hosted-relay",
       providers: "claude,codex,opencode",
     },
     scenarios: [
@@ -93,7 +93,7 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
       scenario("worker-provider-resume-opencode", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
       ...(includeCloud
         ? [
-          scenario("hetzner-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+          scenario("remote-kernel-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
           scenario("hosted-cloud-relay-second-kernel-reconnect", "relay-runtime", ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
         ]
         : []),
@@ -116,7 +116,7 @@ export async function writeDistributedRuntimeMatrices({ ossRoot, cloudRoot, incl
   await writeMatrixReport(path.join(ossMatrixRoot, "workspace-live-sync.json"), {
     matrix: "workspace-live-sync-matrix",
     metadata: {
-      deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+      deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
       providers: "codex,opencode",
     },
     scenarios: [
@@ -415,7 +415,7 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     report: matrixReport({
       matrix: "native-provider-tui-matrix",
       metadata: {
-        deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+        deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
         providers: "claude,codex,opencode",
       },
       scenarios: [
@@ -433,13 +433,13 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     report: matrixReport({
       matrix: "remote-agent-runtime-matrix",
       metadata: {
-        deploymentPresets: "hetzner,hosted-cloud,same-host-remote,self-hosted-relay",
+        deploymentPresets: "hosted-cloud,remote-kernel,same-host-remote,self-hosted-relay",
         providers: "claude,codex,opencode",
       },
       scenarios: [
         scenario("collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-        scenario("hetzner-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
-        scenario("hetzner-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
+        scenario("remote-kernel-collab-remote-agent", "kernel-authority", ["lease-health", "session-authority"]),
+        scenario("remote-kernel-single-user-remote-agent", "worker-execution", ["agent-lifecycle", "lease-health", "session-authority"]),
         scenario("hosted-collab-remote-agent", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
         scenario("hosted-single-user-remote-agent", "relay-runtime", ["agent-lifecycle", "home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
         scenario("lease-reconnect", "relay-target-freshness", ["lease-health", "relay-target-freshness"]),
@@ -454,13 +454,13 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     report: matrixReport({
       matrix: "remote-home-extension-matrix",
       metadata: {
-        deploymentPresets: "hetzner,local,self-hosted-relay",
+        deploymentPresets: "local,remote-kernel,self-hosted-relay",
       },
       scenarios: [
         scenario("local-single", "remote-extension-sync", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
         scenario("local-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
-        scenario("hetzner-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
-        scenario("hetzner-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+        scenario("remote-kernel-single", "worker-execution", ["home-extension-manifest-sync", "lease-health", "provider-run-lifecycle", "session-authority"]),
+        scenario("remote-kernel-collab", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
       ],
     }),
   })
@@ -469,7 +469,7 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     report: matrixReport({
       matrix: "runtime-resilience-chaos-matrix",
       metadata: {
-        deploymentPresets: "hetzner,hosted-cloud,local,same-host-remote,self-hosted-relay",
+        deploymentPresets: "hosted-cloud,local,remote-kernel,same-host-remote,self-hosted-relay",
         providers: "claude,codex,opencode",
       },
       scenarios: [
@@ -480,7 +480,7 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
         scenario("same-host-remote-worker-restart", "relay-target-freshness", ["lease-health", "relay-target-freshness", "session-authority"]),
         scenario("worker-provider-resume-codex", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
         scenario("worker-provider-resume-opencode", "provider-error", ["lease-health", "provider-run-lifecycle", "session-authority"]),
-        scenario("hetzner-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
+        scenario("remote-kernel-collaborator-reconnect-authority", "kernel-authority", ["home-extension-manifest-sync", "lease-health", "session-authority"]),
         scenario("hosted-cloud-relay-second-kernel-reconnect", "relay-runtime", ["agent-lifecycle", "lease-health", "provider-run-lifecycle", "relay-target-freshness"]),
       ],
     }),
@@ -507,7 +507,7 @@ export async function writeFakeDistributedRuntimeMatrixScripts({ cloudRoot, ossR
     report: matrixReport({
       matrix: "workspace-live-sync-matrix",
       metadata: {
-        deploymentPresets: "hetzner,local,same-host-remote,self-hosted-relay",
+        deploymentPresets: "local,remote-kernel,same-host-remote,self-hosted-relay",
         providers: "codex,opencode",
       },
       scenarios: [

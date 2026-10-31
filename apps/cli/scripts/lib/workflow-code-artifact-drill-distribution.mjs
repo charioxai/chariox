@@ -3,7 +3,7 @@ import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { LocalIpcClient, applyWorkflowCodeArtifactRequest, applyWorkflowCodeRequest, createSessionRequest, endSessionRequest, importWorkflowCodePackageRequest, installSkillRequest, runWorkflowCodeArtifactRequest, runWorkflowCodeRequest, uninstallSkillRequest, validateWorkflowCodeRequest } from '@chariox/kernel-client'
-import { assertHetznerCharioxBinaries, runHetznerCommand, shellQuote } from './native-tui-remote-execution.mjs'
+import { assertRemoteKernelCharioxBinaries, runRemoteKernelCommand, shellQuote } from './native-tui-remote-execution.mjs'
 import { assert, buildKernel, expectationFromDefinition, rebindingsForDefinition, repoRoot, sha256Hex, sleep, spawnedKernel, topologyRuntimeExpectation, unwrap, waitForKernel, writeSourceDirectoryExport } from './workflow-code-artifact-drill-runtime.mjs'
 import { completeAppliedTopologyWorkflow, validateApplyResult, validateLiveExportedTopologyDefinition, validateSessionProjection } from './workflow-code-artifact-drill-topology.mjs'
 import { remoteWorkflowCodeRunnerSource } from './workflow-code-artifact-drill-remote-runner.mjs'
@@ -316,7 +316,7 @@ export async function validateSecondKernelExampleSuite({
   }
 }
 
-export async function validateHetznerSecondKernelDistribution({
+export async function validateRemoteKernelSecondKernelDistribution({
   packageExport,
   inlineSource,
   directorySource,
@@ -328,12 +328,12 @@ export async function validateHetznerSecondKernelDistribution({
   timeoutMs,
   options,
 }) {
-  const localBundle = path.join(generatedRoot, 'hetzner-second-kernel-bundle')
+  const localBundle = path.join(generatedRoot, 'remote-kernel-second-kernel-bundle')
   const remoteBundle = path.posix.join(
-    options.hetznerRemoteRoot,
+    options.remoteKernelRemoteRoot,
     `workflow-code-second-kernel-${process.pid}-${Date.now()}`,
   )
-  await writeHetznerWorkflowCodeBundle(localBundle, {
+  await writeRemoteKernelWorkflowCodeBundle(localBundle, {
     packageExport,
     inlineSource,
     directorySource,
@@ -342,60 +342,60 @@ export async function validateHetznerSecondKernelDistribution({
     skillName,
     skillSourceDir,
   })
-  await assertHetznerCheckoutMatchesLocal(options)
-  await assertHetznerCharioxBinaries({
-    hetznerHost: options.hetznerHost,
-    hetznerKey: options.hetznerKey,
-    hetznerRepo: options.hetznerRepo,
+  await assertRemoteKernelCheckoutMatchesLocal(options)
+  await assertRemoteKernelCharioxBinaries({
+    remoteKernelHost: options.remoteKernelHost,
+    remoteKernelKey: options.remoteKernelKey,
+    remoteKernelRepo: options.remoteKernelRepo,
   })
-  await runHetznerCommand(options, [
+  await runRemoteKernelCommand(options, [
     `rm -rf ${shellQuote(remoteBundle)}`,
     `mkdir -p ${shellQuote(remoteBundle)}`,
   ].join(' && '))
   await execFileAsync('scp', [
     '-i',
-    options.hetznerKey,
+    options.remoteKernelKey,
     '-o',
     'BatchMode=yes',
     '-o',
     'StrictHostKeyChecking=accept-new',
     '-r',
     `${localBundle}/.`,
-    `${options.hetznerHost}:${remoteBundle}/`,
+    `${options.remoteKernelHost}:${remoteBundle}/`,
   ], { maxBuffer: 4 * 1024 * 1024 })
   try {
     const command = [
-      `cd ${shellQuote(options.hetznerRepo)}`,
-      `runner_cmd=${shellQuote(`node ${shellQuote(path.posix.join(remoteBundle, 'remote-runner.mjs'))} --repo ${shellQuote(options.hetznerRepo)} --bundle ${shellQuote(remoteBundle)} --timeout-ms ${Number(timeoutMs)}`)}`,
+      `cd ${shellQuote(options.remoteKernelRepo)}`,
+      `runner_cmd=${shellQuote(`node ${shellQuote(path.posix.join(remoteBundle, 'remote-runner.mjs'))} --repo ${shellQuote(options.remoteKernelRepo)} --bundle ${shellQuote(remoteBundle)} --timeout-ms ${Number(timeoutMs)}`)}`,
       `if command -v timeout >/dev/null 2>&1; then timeout --kill-after=5s ${Math.ceil(Number(timeoutMs) / 1000) + 90}s bash -lc "$runner_cmd"; else bash -lc "$runner_cmd"; fi`,
     ].join(' && ')
-    const stdout = await runHetznerCommand(options, command)
+    const stdout = await runRemoteKernelCommand(options, command)
     const jsonStart = stdout.lastIndexOf('\n{')
     const summaryText = (jsonStart >= 0 ? stdout.slice(jsonStart + 1) : stdout).trim()
     const summary = JSON.parse(summaryText)
-    assert(summary?.packageApplyWorkflowId !== sourceWorkflowId, 'Hetzner package apply workflow id must be fresh', summary)
-    assert(summary?.inline?.applyWorkflowId !== sourceWorkflowId, 'Hetzner inline source workflow id must be fresh', summary)
-    assert(summary?.directory?.applyWorkflowId !== sourceWorkflowId, 'Hetzner directory source workflow id must be fresh', summary)
+    assert(summary?.packageApplyWorkflowId !== sourceWorkflowId, 'remote kernel package apply workflow id must be fresh', summary)
+    assert(summary?.inline?.applyWorkflowId !== sourceWorkflowId, 'remote kernel inline source workflow id must be fresh', summary)
+    assert(summary?.directory?.applyWorkflowId !== sourceWorkflowId, 'remote kernel directory source workflow id must be fresh', summary)
     return {
-      remoteHost: options.hetznerHost,
-      remoteRepo: options.hetznerRepo,
+      remoteHost: options.remoteKernelHost,
+      remoteRepo: options.remoteKernelRepo,
       remoteBundle,
       ...summary,
     }
   } finally {
-    await runHetznerCommand(options, `rm -rf ${shellQuote(remoteBundle)}`).catch(() => {})
+    await runRemoteKernelCommand(options, `rm -rf ${shellQuote(remoteBundle)}`).catch(() => {})
   }
 }
 
-export async function assertHetznerCheckoutMatchesLocal(options) {
+export async function assertRemoteKernelCheckoutMatchesLocal(options) {
   const [{ stdout: localHeadRaw }, { stdout: localCommitEpochRaw }] = await Promise.all([
     execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
     execFileAsync('git', ['show', '-s', '--format=%ct', 'HEAD'], { cwd: repoRoot }),
   ])
   const localHead = localHeadRaw.trim()
   const localCommitEpoch = Number(localCommitEpochRaw.trim())
-  const remoteInfo = await runHetznerCommand(options, [
-    `cd ${shellQuote(options.hetznerRepo)}`,
+  const remoteInfo = await runRemoteKernelCommand(options, [
+    `cd ${shellQuote(options.remoteKernelRepo)}`,
     `printf 'head=%s\\n' "$(git rev-parse HEAD)"`,
     `printf 'kernel_mtime=%s\\n' "$(stat -c %Y apps/kernel/target/debug/chariox-kernel 2>/dev/null || printf 0)"`,
   ].join(' && '))
@@ -409,24 +409,24 @@ export async function assertHetznerCheckoutMatchesLocal(options) {
     }))
   if (info.head !== localHead) {
     throw new Error([
-      `Hetzner checkout ${options.hetznerRepo} is not on the local workflow-code validation commit.`,
+      `remote kernel checkout ${options.remoteKernelRepo} is not on the local workflow-code validation commit.`,
       `local HEAD: ${localHead}`,
       `remote HEAD: ${info.head ?? 'unknown'}`,
-      'Update/build the remote checkout before running --hetzner-second-kernel.',
+      'Update/build the remote checkout before running --remote-kernel-second-kernel.',
     ].join('\n'))
   }
   const kernelMtime = Number(info.kernel_mtime ?? 0)
   if (!Number.isFinite(kernelMtime) || kernelMtime < localCommitEpoch) {
     throw new Error([
-      `Hetzner kernel binary is older than local HEAD at ${options.hetznerRepo}.`,
+      `remote kernel kernel binary is older than local HEAD at ${options.remoteKernelRepo}.`,
       `local HEAD epoch: ${localCommitEpoch}`,
       `remote kernel mtime: ${info.kernel_mtime ?? 'unknown'}`,
-      'Rebuild apps/kernel/target/debug/chariox-kernel on Hetzner before running --hetzner-second-kernel.',
+      'Rebuild apps/kernel/target/debug/chariox-kernel on remote kernel before running --remote-kernel-second-kernel.',
     ].join('\n'))
   }
 }
 
-export async function writeHetznerWorkflowCodeBundle(localBundle, {
+export async function writeRemoteKernelWorkflowCodeBundle(localBundle, {
   packageExport,
   inlineSource,
   directorySource,

@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink } from "no
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { capturePath1FreshRelayObservation, parsePath1FreshRelayCaptureArgs } from "./path1-fresh-relay-capture.mjs"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 const REQUEST = { QueryFreshRemoteMachineKernels: { machine_ref: "builder-west" } }
 

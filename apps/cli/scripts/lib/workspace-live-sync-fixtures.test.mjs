@@ -22,10 +22,6 @@ import {
 
 test("workspace live sync fixture lists required validation scenarios", () => {
   assert.deepEqual(workspaceLiveSyncRequiredScenarioIds(), [
-    "hetzner-permission-codex",
-    "hetzner-permission-opencode",
-    "hetzner-tracked-codex",
-    "hetzner-tracked-opencode",
     "local-managed-codex",
     "local-managed-opencode",
     "local-off-codex",
@@ -33,6 +29,10 @@ test("workspace live sync fixture lists required validation scenarios", () => {
     "local-permission-opencode",
     "local-tracked-codex",
     "local-tracked-opencode",
+    "remote-kernel-permission-codex",
+    "remote-kernel-permission-opencode",
+    "remote-kernel-tracked-codex",
+    "remote-kernel-tracked-opencode",
     "remote-managed-codex",
     "remote-managed-opencode",
     "remote-permission-codex",
@@ -49,16 +49,16 @@ test("workspace live sync fixture derives scenario routing metadata", () => {
   assert.equal(workspaceLiveSyncScenarioMode("local-off-codex"), "off")
   assert.equal(workspaceLiveSyncScenarioMode("local-managed-opencode"), "managed")
   assert.equal(workspaceLiveSyncScenarioMode("remote-tracked-codex"), "tracked")
-  assert.equal(workspaceLiveSyncScenarioMode("hetzner-permission-opencode"), "permission")
+  assert.equal(workspaceLiveSyncScenarioMode("remote-kernel-permission-opencode"), "permission")
   assert.equal(workspaceLiveSyncScenarioDeployment("local-tracked-codex"), "local")
   assert.equal(workspaceLiveSyncScenarioDeployment("remote-tracked-codex"), "same-host-remote")
-  assert.equal(workspaceLiveSyncScenarioDeployment("hetzner-tracked-codex"), "hetzner")
+  assert.equal(workspaceLiveSyncScenarioDeployment("remote-kernel-tracked-codex"), "remote-kernel")
   assert.deepEqual(workspaceLiveSyncScenarioRequires("local-managed-codex"), [])
   assert.deepEqual(workspaceLiveSyncScenarioRequires("local-managed-opencode"), ["opencode"])
   assert.deepEqual(workspaceLiveSyncScenarioRequires("remote-tracked-opencode"), ["remote", "opencode"])
-  assert.deepEqual(workspaceLiveSyncScenarioRequires("hetzner-tracked-opencode"), ["remote", "hetzner", "opencode"])
+  assert.deepEqual(workspaceLiveSyncScenarioRequires("remote-kernel-tracked-opencode"), ["remote", "remote-kernel", "opencode"])
   assert.deepEqual(workspaceLiveSyncRequiredProviders(), ["codex", "opencode"])
-  assert.deepEqual(workspaceLiveSyncRequiredDeployments(), ["hetzner", "local", "same-host-remote"])
+  assert.deepEqual(workspaceLiveSyncRequiredDeployments(), ["local", "remote-kernel", "same-host-remote"])
   assert.deepEqual(workspaceLiveSyncRequiredModes(), ["managed", "off", "permission", "tracked"])
 })
 
@@ -79,13 +79,13 @@ test("workspace live sync fixture derives scenario evidence metadata", () => {
 })
 
 test("workspace live sync descriptors combine ids and evidence metadata", () => {
-  assert.deepEqual(workspaceLiveSyncRequiredScenarioDescriptors()[0], {
-    id: "hetzner-permission-codex",
+  assert.deepEqual(workspaceLiveSyncRequiredScenarioDescriptors().find(({ id }) => id === "remote-kernel-permission-codex"), {
+    id: "remote-kernel-permission-codex",
     classification: "kernel-authority",
-    deployment: "hetzner",
+    deployment: "remote-kernel",
     mode: "permission",
     provider: "codex",
-    requires: ["remote", "hetzner"],
+    requires: ["remote", "remote-kernel"],
     runtimeSignals: ["session-authority", "workspace-live-sync-state"],
   })
   assert.deepEqual(workspaceLiveSyncRequiredScenarioDescriptors().at(-1), {

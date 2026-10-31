@@ -25,30 +25,30 @@ function nowStamp() {
 
 function parseArgs(argv = process.argv.slice(2)) {
   const options = {
-    hetznerRelay: false,
-    hetznerHost: process.env.CHARIOX_COLLAB_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.CHARIOX_COLLAB_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
-    hetznerRepo: process.env.CHARIOX_COLLAB_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
+    remoteKernelRelay: false,
+    remoteKernelHost: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_HOST ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? '',
+    remoteKernelKey: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_KEY ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? '',
+    remoteKernelRepo: process.env.CHARIOX_COLLAB_REMOTE_KERNEL_REPO ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? '/tmp/chariox-native-remote-validate',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--hetzner-relay') {
-      options.hetznerRelay = true
-    } else if (arg === '--hetzner-host') {
-      options.hetznerHost = argv[++index]
-    } else if (arg === '--hetzner-key') {
-      options.hetznerKey = argv[++index]
-    } else if (arg === '--hetzner-repo') {
-      options.hetznerRepo = argv[++index]
+    if (arg === '--remote-kernel-relay') {
+      options.remoteKernelRelay = true
+    } else if (arg === '--remote-kernel-host') {
+      options.remoteKernelHost = argv[++index]
+    } else if (arg === '--remote-kernel-key') {
+      options.remoteKernelKey = argv[++index]
+    } else if (arg === '--remote-kernel-repo') {
+      options.remoteKernelRepo = argv[++index]
     } else if (arg === '--help' || arg === '-h') {
       console.log([
         'Usage: node apps/cli/scripts/live-multi-user-cli-workflow-drill.mjs [options]',
         '',
         'Options:',
-        '  --hetzner-relay       Run the scoped relay on the configured Hetzner host through an SSH tunnel',
-        '  --hetzner-host HOST   SSH host for --hetzner-relay',
-        '  --hetzner-key PATH    SSH key for --hetzner-relay',
-        '  --hetzner-repo PATH   Remote Chariox checkout containing built relay binary',
+        '  --remote-kernel-relay       Run the scoped relay on the configured remote kernel host through an SSH tunnel',
+        '  --remote-kernel-host HOST   SSH host for --remote-kernel-relay',
+        '  --remote-kernel-key PATH    SSH key for --remote-kernel-relay',
+        '  --remote-kernel-repo PATH   Remote Chariox checkout containing built relay binary',
       ].join('\n'))
       process.exit(0)
     } else {
@@ -423,15 +423,15 @@ async function main() {
     const cliPath = await requireBuiltCli()
     const kernelPath = await buildKernelIfNeeded()
     const startupChecks = []
-    if (options.hetznerRelay) {
+    if (options.remoteKernelRelay) {
       const remoteRelayCheck = await runCommand('ssh', sshArgs(options, [
-        `test -x ${shellQuote(path.posix.join(options.hetznerRepo, 'apps/relay/target/debug/chariox-relay'))}`,
+        `test -x ${shellQuote(path.posix.join(options.remoteKernelRepo, 'apps/relay/target/debug/chariox-relay'))}`,
       ].join('; ')))
       if (remoteRelayCheck.code !== 0) {
-        throw new Error(`Hetzner relay binary is not available in ${options.hetznerRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
+        throw new Error(`remote kernel relay binary is not available in ${options.remoteKernelRepo}\n${remoteRelayCheck.stdout}\n${remoteRelayCheck.stderr}`)
       }
-      const relayProcess = observeSpawned('hetzner relay', spawnRemoteEnv(options, {
-        CHARIOX_REMOTE_REPO: options.hetznerRepo,
+      const relayProcess = observeSpawned('remote-kernel relay', spawnRemoteEnv(options, {
+        CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
         CHARIOX_RELAY_HOST: '127.0.0.1',
         CHARIOX_RELAY_PORT: String(ports.relayPort),
         CHARIOX_RELAY_SCOPED_ISSUER: RELAY_ISSUER,
@@ -443,7 +443,7 @@ async function main() {
       startupChecks.push(relayProcess.startupError)
       const tunnelProcess = spawnObserved('relay tunnel', 'ssh', [
         '-i',
-        options.hetznerKey,
+        options.remoteKernelKey,
         '-o',
         'BatchMode=yes',
         '-o',
@@ -451,7 +451,7 @@ async function main() {
         '-N',
         '-L',
         `127.0.0.1:${ports.relayPort}:127.0.0.1:${ports.relayPort}`,
-        options.hetznerHost,
+        options.remoteKernelHost,
       ], {
         stdio: ['ignore', 'ignore', 'inherit'],
       })
@@ -620,7 +620,7 @@ async function main() {
 
     console.log(JSON.stringify({
       status: 'ok',
-      mode: options.hetznerRelay ? 'multi-user-cli-workflow-hetzner-relay' : 'multi-user-cli-workflow-relay',
+      mode: options.remoteKernelRelay ? 'multi-user-cli-workflow-remote-kernel-relay' : 'multi-user-cli-workflow-relay',
       relayUrl: envs.relayUrl,
       daemonAlias: envs.daemonAlias,
       sessionId,
@@ -665,7 +665,7 @@ async function main() {
       failure,
       metadata: {
         drill: 'live-multi-user-cli-workflow',
-        mode: options.hetznerRelay ? 'multi-user-cli-workflow-hetzner-relay' : 'multi-user-cli-workflow-relay',
+        mode: options.remoteKernelRelay ? 'multi-user-cli-workflow-remote-kernel-relay' : 'multi-user-cli-workflow-relay',
         relayUrl: envs.relayUrl,
         daemonAlias: envs.daemonAlias,
         sessionId,

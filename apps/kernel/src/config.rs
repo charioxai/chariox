@@ -42,8 +42,6 @@ pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntim
 pub use kernel_access::UserKernelAccessConfig;
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
-#[cfg(test)]
-use persisted_daemon::HOSTED_STAGING_RELAY_URL;
 pub(crate) use persisted_daemon::{
     load_managed_cloud_relay_profile, persist_managed_cloud_relay_profile,
 };

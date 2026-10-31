@@ -213,7 +213,7 @@ test("explains matrix errors, incomplete scenarios, missing coverage, and aggreg
             plannedOwner: "runtime-state",
             plannedNextAction: "inspect workspace live sync status, conflicts, and preserved file snapshots; reconcile the conflict, then rerun the scenario",
           },
-          { id: "hetzner", status: "skipped" },
+          { id: "remote-kernel", status: "skipped" },
         ],
         incompleteExitCriteria: [
           {

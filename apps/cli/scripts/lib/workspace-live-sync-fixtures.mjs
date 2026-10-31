@@ -1,8 +1,4 @@
 export const WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS = Object.freeze([
-  "hetzner-permission-codex",
-  "hetzner-permission-opencode",
-  "hetzner-tracked-codex",
-  "hetzner-tracked-opencode",
   "local-managed-codex",
   "local-managed-opencode",
   "local-off-codex",
@@ -10,6 +6,10 @@ export const WORKSPACE_LIVE_SYNC_REQUIRED_SCENARIO_IDS = Object.freeze([
   "local-permission-opencode",
   "local-tracked-codex",
   "local-tracked-opencode",
+  "remote-kernel-permission-codex",
+  "remote-kernel-permission-opencode",
+  "remote-kernel-tracked-codex",
+  "remote-kernel-tracked-opencode",
   "remote-managed-codex",
   "remote-managed-opencode",
   "remote-permission-codex",
@@ -52,15 +52,15 @@ export function workspaceLiveSyncScenarioMode(id) {
 }
 
 export function workspaceLiveSyncScenarioDeployment(id) {
-  if (id.startsWith("hetzner-")) return "hetzner"
+  if (id.startsWith("remote-kernel-")) return "remote-kernel"
   if (id.startsWith("remote-")) return "same-host-remote"
   return "local"
 }
 
 export function workspaceLiveSyncScenarioRequires(id) {
   const requires = []
-  if (id.startsWith("remote-") || id.startsWith("hetzner-")) requires.push("remote")
-  if (id.startsWith("hetzner-")) requires.push("hetzner")
+  if (id.startsWith("remote-") || id.startsWith("remote-kernel-")) requires.push("remote")
+  if (id.startsWith("remote-kernel-")) requires.push("remote-kernel")
   if (workspaceLiveSyncScenarioProvider(id) === "opencode") requires.push("opencode")
   return requires
 }

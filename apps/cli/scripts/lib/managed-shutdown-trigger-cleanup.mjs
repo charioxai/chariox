@@ -1,5 +1,5 @@
 import { recordShutdownFailure } from "./managed-shutdown-trigger-failure.mjs"
-import { writeCaptureOutput } from "../path1-provider-rebuild-capture.mjs"
+import { writeCaptureOutput } from "../path1-capture-output.mjs"
 import { SHUTDOWN_TRIGGER_LIMITS, requireValue } from "./managed-shutdown-trigger-config.mjs"
 import { exactOperation, projectSummary, requireOperationHistory, responseBody } from "./managed-shutdown-trigger-observation.mjs"
 

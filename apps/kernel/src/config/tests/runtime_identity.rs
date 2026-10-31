@@ -661,7 +661,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
         .expect("env cloud profile should be loaded with env relay config");
     assert_eq!(profile.account_id, "account-1");
     assert_eq!(profile.machine_id.as_deref(), Some("machine-1"));
-    assert_eq!(profile.relay_url, HOSTED_STAGING_RELAY_URL);
+    assert_eq!(profile.relay_url, "ws://195.201.123.115:43130");
 }
 
 #[test]

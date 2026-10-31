@@ -131,7 +131,7 @@ export function createManagedParityInspectorFromAuthorities({ config, home, requ
   }
   const inspectProvider = async (signal) => {
     const value = await cloud.inspectProviderMachine(scope, { signal })
-    if (value?.authority !== "hetzner-api" || value.providerServerId !== ownership.creationReceipt.providerServerId
+    if (value?.authority !== "provider-api" || value.providerServerId !== ownership.creationReceipt.providerServerId
       || ![200, 404].includes(value.httpStatus) || !value.observedAt) throw new Error("authoritative exact provider machine observation required")
     return value
   }

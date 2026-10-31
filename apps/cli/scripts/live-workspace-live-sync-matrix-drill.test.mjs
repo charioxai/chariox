@@ -13,7 +13,7 @@ import { workspaceLiveSyncRequiredScenarioDescriptors } from "./lib/workspace-li
 const execFile = promisify(execFileWithCallback)
 const scriptPath = fileURLToPath(new URL("./live-workspace-live-sync-matrix-drill.mjs", import.meta.url))
 
-test("workspace live sync matrix dry-run covers local remote Hetzner and provider metadata", async () => {
+test("workspace live sync matrix dry-run covers local remote remote kernel and provider metadata", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-workspace-live-sync-matrix-"))
   const reportPath = path.join(rootDir, "matrix.json")
   const artifactIndexPath = path.join(rootDir, "chariox-drill-artifacts.json")
@@ -22,7 +22,7 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
       scriptPath,
       "--dry-run",
       "--include-remote",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-opencode",
       "--provider-account",
       "codex=work_codex",
@@ -49,11 +49,11 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.equal(report.scenarios.length, 20)
     assert(scenarioIds.includes("local-managed-codex"))
     assert(scenarioIds.includes("remote-tracked-codex"))
-    assert(scenarioIds.includes("hetzner-tracked-codex"))
+    assert(scenarioIds.includes("remote-kernel-tracked-codex"))
     assert(scenarioIds.includes("local-managed-opencode"))
     assert(scenarioIds.includes("remote-tracked-opencode"))
-    assert(scenarioIds.includes("hetzner-permission-opencode"))
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-managed-codex").requires, ["remote", "hetzner"])
+    assert(scenarioIds.includes("remote-kernel-permission-opencode"))
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "remote-kernel-managed-codex").requires, ["remote", "remote-kernel"])
     const opencodeRemote = report.scenarios.find((scenario) => scenario.id === "remote-tracked-opencode")
     assert.deepEqual({
       deployment: opencodeRemote.deployment,
@@ -72,7 +72,7 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
       assert.equal(scenario.provider, descriptor.provider)
       assert.deepEqual(scenario.requires, descriptor.requires)
     }
-    assert.equal(report.metadata.deploymentPresets, "hetzner,local,same-host-remote,self-hosted-relay")
+    assert.equal(report.metadata.deploymentPresets, "local,remote-kernel,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providerCount, 2)
     assert.equal(report.metadata.providers, "codex,opencode")
     assert.equal(report.metadata.defaultModel, "per-provider")
@@ -81,7 +81,7 @@ test("workspace live sync matrix dry-run covers local remote Hetzner and provide
     assert.equal(report.metadata.opencodeModelId, "opencode/free-test-model")
     assert.equal(report.metadata.providerAccountAliases, "codex=work_codex,opencode=zen")
     assert.equal(report.metadata.includeRemote, true)
-    assert.equal(report.metadata.includeHetzner, true)
+    assert.equal(report.metadata.includeRemoteKernel, true)
     assert.equal(report.metadata.includeOpencode, true)
     assert.equal(report.metadata.generatedMatrixNames, "workspace-live-sync-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")

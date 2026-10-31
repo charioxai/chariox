@@ -2,29 +2,29 @@ import { spawn } from "node:child_process"
 import path from "node:path"
 import { waitForTcpPort } from "./drill-runtime-helpers.mjs"
 import {
-  assertHetznerCharioxBinaries,
+  assertRemoteKernelCharioxBinaries,
   spawnRemoteEnv,
-  runHetznerCommand,
+  runRemoteKernelCommand,
   shellQuote,
   sshArgs,
 } from "./native-tui-remote-execution.mjs"
 
-export const DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB = 262144
+export const DEFAULT_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_MIN_FREE_KB = 262144
 
-export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
+export async function ensureRemoteHomeExtensionRemoteKernelWorkspace(options, {
   remoteRoot,
   workerWorktree,
   workerKernelBinary = null,
   expectedRepoHead = null,
-  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
+  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_MIN_FREE_KB,
 }) {
-  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
-    options.hetznerRepo,
+  const resolvedWorkerKernelBinary = remoteHomeExtensionRemoteKernelWorkerKernelBinary(
+    options.remoteKernelRepo,
     workerKernelBinary,
   )
-  if (!workerKernelBinary) await assertHetznerCharioxBinaries(options)
-  await runHetznerCommand(options, remoteHomeExtensionHetznerPreflightCommand({
-    hetznerRepo: options.hetznerRepo,
+  if (!workerKernelBinary) await assertRemoteKernelCharioxBinaries(options)
+  await runRemoteKernelCommand(options, remoteHomeExtensionRemoteKernelPreflightCommand({
+    remoteKernelRepo: options.remoteKernelRepo,
     remoteRoot,
     workerWorktree,
     workerKernelBinary: resolvedWorkerKernelBinary,
@@ -33,22 +33,22 @@ export async function ensureRemoteHomeExtensionHetznerWorkspace(options, {
   }))
 }
 
-export function remoteHomeExtensionHetznerPreflightCommand({
-  hetznerRepo,
+export function remoteHomeExtensionRemoteKernelPreflightCommand({
+  remoteKernelRepo,
   remoteRoot,
   workerWorktree,
   workerKernelBinary = null,
   expectedRepoHead = null,
-  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_HETZNER_MIN_FREE_KB,
+  minFreeKb = DEFAULT_REMOTE_HOME_EXTENSION_REMOTE_KERNEL_MIN_FREE_KB,
 }) {
   const expected = expectedRepoHead == null ? "" : String(expectedRepoHead).trim()
-  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
-    hetznerRepo,
+  const resolvedWorkerKernelBinary = remoteHomeExtensionRemoteKernelWorkerKernelBinary(
+    remoteKernelRepo,
     workerKernelBinary,
   )
   return [
     "set -e",
-    `repo=${shellQuote(hetznerRepo)}`,
+    `repo=${shellQuote(remoteKernelRepo)}`,
     `remote_root=${shellQuote(remoteRoot)}`,
     `worker_worktree=${shellQuote(workerWorktree)}`,
     `worker_kernel=${shellQuote(resolvedWorkerKernelBinary)}`,
@@ -85,10 +85,10 @@ export function remoteHomeExtensionHetznerPreflightCommand({
   ].join("\n")
 }
 
-export function remoteHomeExtensionHetznerWorkerKernelBinary(hetznerRepo, workerKernelBinary = null) {
+export function remoteHomeExtensionRemoteKernelWorkerKernelBinary(remoteKernelRepo, workerKernelBinary = null) {
   const candidate = workerKernelBinary
     ? String(workerKernelBinary)
-    : path.posix.join(hetznerRepo, "apps/kernel/target/debug/chariox-kernel")
+    : path.posix.join(remoteKernelRepo, "apps/kernel/target/debug/chariox-kernel")
   if (!path.posix.isAbsolute(candidate)) {
     throw new Error(`remote worker kernel path must be absolute: ${candidate}`)
   }
@@ -96,7 +96,7 @@ export function remoteHomeExtensionHetznerWorkerKernelBinary(hetznerRepo, worker
 }
 
 async function assertRemoteRelayPortFree(options, port) {
-  await runHetznerCommand(options, [
+  await runRemoteKernelCommand(options, [
     "python3 -c",
     shellQuote([
       "import socket, sys",
@@ -106,7 +106,7 @@ async function assertRemoteRelayPortFree(options, port) {
       "try:",
       "    sock.bind(('127.0.0.1', port))",
       "except OSError as exc:",
-      "    print(f'Hetzner relay port {port} is already in use; choose another run or wait for the owner to finish: {exc}', file=sys.stderr)",
+      "    print(f'remote kernel relay port {port} is already in use; choose another run or wait for the owner to finish: {exc}', file=sys.stderr)",
       "    raise SystemExit(17)",
       "finally:",
       "    sock.close()",
@@ -115,9 +115,9 @@ async function assertRemoteRelayPortFree(options, port) {
   ].join(" "))
 }
 
-export async function stopRemoteHomeExtensionHetznerRelay(options, remoteRoot) {
+export async function stopRemoteHomeExtensionRemoteKernelRelay(options, remoteRoot) {
   const pidFile = path.posix.join(remoteRoot, "relay.pid")
-  await runHetznerCommand(options, [
+  await runRemoteKernelCommand(options, [
     `if test -f ${shellQuote(pidFile)}; then`,
     `  pid=$(cat ${shellQuote(pidFile)} 2>/dev/null || true);`,
     `  if test -n "$pid" && test -r "/proc/$pid/environ" && tr '\\0' '\\n' < "/proc/$pid/environ" | grep -qx ${shellQuote(`CHARIOX_REMOTE_HOME_EXTENSION_ROOT=${remoteRoot}`)}; then`,
@@ -128,12 +128,12 @@ export async function stopRemoteHomeExtensionHetznerRelay(options, remoteRoot) {
   ].join(" ")).catch(() => {})
 }
 
-export async function stopRemoteHomeExtensionHetznerWorker(options, {
+export async function stopRemoteHomeExtensionRemoteKernelWorker(options, {
   remoteRoot,
   workerDaemonId,
 }) {
   const pidFile = path.posix.join(remoteRoot, "worker.pid")
-  await runHetznerCommand(options, [
+  await runRemoteKernelCommand(options, [
     "stop_owned_pid() {",
     "  pid=\"$1\";",
     "  test -n \"$pid\" || return 0;",
@@ -157,11 +157,11 @@ export async function stopRemoteHomeExtensionHetznerWorker(options, {
   ].join(" ")).catch(() => {})
 }
 
-export async function removeRemoteHomeExtensionHetznerRoot(options, remoteRoot) {
-  await runHetznerCommand(options, `rm -rf ${shellQuote(remoteRoot)}`).catch(() => {})
+export async function removeRemoteHomeExtensionRemoteKernelRoot(options, remoteRoot) {
+  await runRemoteKernelCommand(options, `rm -rf ${shellQuote(remoteRoot)}`).catch(() => {})
 }
 
-export async function startRemoteHomeExtensionHetznerRelay({
+export async function startRemoteHomeExtensionRemoteKernelRelay({
   options,
   relayPort,
   workerMcpPort,
@@ -174,7 +174,7 @@ export async function startRemoteHomeExtensionHetznerRelay({
   await assertRemoteRelayPortFree(options, relayPort)
   const relayPidFile = path.posix.join(remoteRoot, "relay.pid")
   const relay = spawnRemoteEnv(options, {
-    CHARIOX_REMOTE_REPO: options.hetznerRepo,
+    CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
     CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     CHARIOX_RELAY_HOST: "127.0.0.1",
     CHARIOX_RELAY_PORT: String(relayPort),
@@ -186,7 +186,7 @@ export async function startRemoteHomeExtensionHetznerRelay({
   }, `echo $$ > ${shellQuote(relayPidFile)}; exec ./apps/relay/target/debug/chariox-relay`, { stdio: ["ignore", "ignore", "inherit"] })
   const tunnel = spawn("ssh", [
     "-i",
-    options.hetznerKey,
+    options.remoteKernelKey,
     "-o",
     "BatchMode=yes",
     "-o",
@@ -196,13 +196,13 @@ export async function startRemoteHomeExtensionHetznerRelay({
     `127.0.0.1:${relayPort}:127.0.0.1:${relayPort}`,
     "-L",
     `127.0.0.1:${workerMcpPort}:127.0.0.1:${workerMcpPort}`,
-    options.hetznerHost,
+    options.remoteKernelHost,
   ], { stdio: ["ignore", "ignore", "inherit"] })
   await waitForTcpPort(relayPort, "127.0.0.1", 30_000)
   return { relay, tunnel }
 }
 
-export function spawnRemoteHomeExtensionHetznerWorker({
+export function spawnRemoteHomeExtensionRemoteKernelWorker({
   options,
   remoteRoot,
   workerWorktree,
@@ -215,12 +215,12 @@ export function spawnRemoteHomeExtensionHetznerWorker({
   workerMcpPort,
   workerKernelBinary = null,
 }) {
-  const resolvedWorkerKernelBinary = remoteHomeExtensionHetznerWorkerKernelBinary(
-    options.hetznerRepo,
+  const resolvedWorkerKernelBinary = remoteHomeExtensionRemoteKernelWorkerKernelBinary(
+    options.remoteKernelRepo,
     workerKernelBinary,
   )
   return spawnRemoteEnv(options, {
-    CHARIOX_REMOTE_REPO: options.hetznerRepo,
+    CHARIOX_REMOTE_REPO: options.remoteKernelRepo,
     CHARIOX_REMOTE_HOME_EXTENSION_ROOT: remoteRoot,
     PATH: "/root/.cargo/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     HOME: path.posix.join(remoteRoot, "worker-home"),
@@ -243,7 +243,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
     CHARIOX_DAEMON_SOCKET: path.posix.join(remoteRoot, "worker.sock"),
     CHARIOX_SESSION_HISTORY_DIR: path.posix.join(remoteRoot, "worker-history"),
     CHARIOX_CAPABILITY_ISOLATION_ROOT: path.posix.join(remoteRoot, "worker-capabilities"),
-  }, remoteHomeExtensionHetznerWorkerLaunchCommand({
+  }, remoteHomeExtensionRemoteKernelWorkerLaunchCommand({
     remoteRoot,
     workerWorktree,
     workerKernelBinary: resolvedWorkerKernelBinary,
@@ -252,7 +252,7 @@ export function spawnRemoteHomeExtensionHetznerWorker({
   })
 }
 
-export function remoteHomeExtensionHetznerWorkerLaunchCommand({
+export function remoteHomeExtensionRemoteKernelWorkerLaunchCommand({
   remoteRoot,
   workerWorktree,
   workerKernelBinary,

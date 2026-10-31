@@ -5,7 +5,7 @@ import { createInterface } from "node:readline/promises"
 import { stdin, stderr, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 
-import { validateCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput } from "./path1-capture-output.mjs"
 import { loadManagedShutdownKernelClient } from "./lib/managed-shutdown-trigger-kernel-client.mjs"
 import { parseArguments } from "./lib/managed-shutdown-trigger-config.mjs"
 import { runManagedShutdownTrigger } from "./lib/managed-shutdown-trigger-capture.mjs"

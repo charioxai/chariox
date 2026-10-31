@@ -496,7 +496,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "codex=work_codex",
       "--provider-account",
       "opencode=zen",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--report",
       path.join(matrixOutputRoot, "oss", "native-provider-tui-matrix.json"),
       "--artifact-index",
@@ -515,7 +515,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "codex=work_codex",
       "--provider-account",
       "opencode=zen",
-      "--include-hetzner",
+      "--include-remote-kernel",
     ])
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[1].args, [
       "--provider-account",
@@ -524,7 +524,7 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "codex=work_codex",
       "--provider-account",
       "opencode=zen",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-hosted-cloud",
     ])
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[2].args, [
@@ -535,17 +535,17 @@ test("distributed runtime gate can run matrix reports as evidence", async () => 
       "--provider-account",
       "opencode=zen",
       "--include-slices",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-hosted-cloud",
     ])
-    assert.deepEqual(report.generatedEvidence.matrixReports.commands[3].args, ["--include-hetzner"])
+    assert.deepEqual(report.generatedEvidence.matrixReports.commands[3].args, ["--include-remote-kernel"])
     assert.deepEqual(report.generatedEvidence.matrixReports.commands[5].args, [
       "--provider-account",
       "codex=work_codex",
       "--provider-account",
       "opencode=zen",
       "--include-remote",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--include-opencode",
     ])
     assert.deepEqual(report.generatedEvidence.validationSuites.artifactIndexes, [

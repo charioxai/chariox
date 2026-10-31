@@ -3,57 +3,57 @@ import test from "node:test"
 
 import {
   DRILL_DEPLOYMENT_PRESETS,
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  hetznerPassthroughMetadata,
+  remoteKernelPassthroughMetadata,
   isKnownDrillDeploymentPreset,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
   validateDrillDeploymentPreset,
   validateDrillDeploymentPresets,
 } from "./drill-environment-presets.mjs"
 
-test("parses Hetzner passthrough flags", () => {
-  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-host", "root@example"], 0), {
-    args: ["--hetzner-host", "root@example"],
+test("parses remote kernel passthrough flags", () => {
+  assert.deepEqual(parseRemoteKernelPassthroughArg(["--remote-kernel-host", "root@example"], 0), {
+    args: ["--remote-kernel-host", "root@example"],
     nextIndex: 1,
   })
-  assert.deepEqual(parseHetznerPassthroughArg(["--hetzner-repo=/tmp/chariox"], 0), {
-    args: ["--hetzner-repo", "/tmp/chariox"],
+  assert.deepEqual(parseRemoteKernelPassthroughArg(["--remote-kernel-repo=/tmp/chariox"], 0), {
+    args: ["--remote-kernel-repo", "/tmp/chariox"],
     nextIndex: 0,
   })
-  assert.equal(parseHetznerPassthroughArg(["--include-hetzner"], 0), null)
-  assert.throws(() => parseHetznerPassthroughArg(["--hetzner-key"], 0), /requires a value/)
+  assert.equal(parseRemoteKernelPassthroughArg(["--include-remote-kernel"], 0), null)
+  assert.throws(() => parseRemoteKernelPassthroughArg(["--remote-kernel-key"], 0), /requires a value/)
 })
 
-test("appends Hetzner passthrough only for Hetzner scenarios", () => {
-  const passthrough = ["--hetzner-host", "root@example"]
+test("appends remote kernel passthrough only for remote kernel scenarios", () => {
+  const passthrough = ["--remote-kernel-host", "root@example"]
 
   assert.deepEqual(
-    appendHetznerPassthrough(["drill.mjs"], { requires: ["hetzner"] }, passthrough),
-    ["drill.mjs", "--hetzner-host", "root@example"],
+    appendRemoteKernelPassthrough(["drill.mjs"], { requires: ["remote-kernel"] }, passthrough),
+    ["drill.mjs", "--remote-kernel-host", "root@example"],
   )
   assert.deepEqual(
-    appendHetznerPassthrough(["drill.mjs"], { requires: ["remote"] }, passthrough),
+    appendRemoteKernelPassthrough(["drill.mjs"], { requires: ["remote"] }, passthrough),
     ["drill.mjs"],
   )
 })
 
-test("summarizes Hetzner passthrough without leaking values", () => {
+test("summarizes remote kernel passthrough without leaking values", () => {
   assert.deepEqual(
-    hetznerPassthroughMetadata(["--hetzner-host", "root@example", "--hetzner-key", "/tmp/key"]),
+    remoteKernelPassthroughMetadata(["--remote-kernel-host", "root@example", "--remote-kernel-key", "/tmp/key"]),
     {
-      hasHetznerHostOverride: true,
-      hasHetznerSshIdentityOverride: true,
-      hasHetznerRepoOverride: false,
+      hasRemoteKernelHostOverride: true,
+      hasRemoteKernelSshIdentityOverride: true,
+      hasRemoteKernelRepoOverride: false,
     },
   )
 })
 
 test("summarizes deployment presets without leaking machine details", () => {
   assert.deepEqual(DRILL_DEPLOYMENT_PRESETS, [
-    "hetzner",
     "hosted-cloud",
     "local",
+    "remote-kernel",
     "same-host-remote",
     "self-hosted-relay",
   ])
@@ -76,20 +76,20 @@ test("summarizes deployment presets without leaking machine details", () => {
     /test presets\[0\] has unknown deployment preset "same-host-remtoe"/,
   )
   assert.deepEqual(
-    drillDeploymentPresetMetadata(["local", "self-hosted-relay", "hetzner", "local"], {
-      hetznerPassthrough: ["--hetzner-host", "root@example", "--hetzner-repo", "/tmp/private"],
+    drillDeploymentPresetMetadata(["local", "self-hosted-relay", "remote-kernel", "local"], {
+      remoteKernelPassthrough: ["--remote-kernel-host", "root@example", "--remote-kernel-repo", "/tmp/private"],
     }),
     {
       deploymentPresetCount: 3,
-      deploymentPresets: "hetzner,local,self-hosted-relay",
-      includesHetzner: true,
+      deploymentPresets: "local,remote-kernel,self-hosted-relay",
+      includesRemoteKernel: true,
       includesHostedCloud: false,
       includesLocal: true,
       includesSameHostRemote: false,
       includesSelfHostedRelay: true,
-      hasHetznerHostOverride: true,
-      hasHetznerSshIdentityOverride: false,
-      hasHetznerRepoOverride: true,
+      hasRemoteKernelHostOverride: true,
+      hasRemoteKernelSshIdentityOverride: false,
+      hasRemoteKernelRepoOverride: true,
     },
   )
   assert.throws(

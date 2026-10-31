@@ -9,9 +9,9 @@ import {
   selectDrillMatrixScenarios,
 } from "./lib/drill-matrix-runner.mjs"
 import {
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
 import {
   applyProviderAccountAlias,
@@ -113,17 +113,17 @@ const MATRIX = [
     ],
   }),
   scenario({
-    id: "hetzner-native-tui",
-    description: "Hetzner worker native provider TUI relay path",
+    id: "remote-kernel-native-tui",
+    description: "remote kernel worker native provider TUI relay path",
     script: remoteNativeDrill,
-    args: ["--hetzner-worker", "--providers", ALL_PROVIDERS],
+    args: ["--remote-kernel-worker", "--providers", ALL_PROVIDERS],
     classification: "worker-execution",
     runtimeSignals: ["provider-run-lifecycle", "session-authority"],
-    deployment: "hetzner",
+    deployment: "remote-kernel",
     providers: ["claude", "codex", "opencode"],
-    requires: ["hetzner"],
+    requires: ["remote-kernel"],
     exitCriteria: [
-      "remote worker on Hetzner accepts native TUI leased-agent execution",
+      "remote worker on remote kernel accepts native TUI leased-agent execution",
       "relay remains transport-only while home kernel owns session authority",
     ],
   }),
@@ -141,10 +141,10 @@ function printHelp() {
     "Usage: node apps/cli/scripts/live-native-provider-tui-matrix-drill.mjs [options]",
     "",
     "Runs native provider TUI validation scenarios through the existing live drills.",
-    "By default this runs local and same-host scenarios. Hetzner is opt-in.",
+    "By default this runs local and same-host scenarios. remote kernel is opt-in.",
     "",
     "Options:",
-    "  --include-hetzner        Include Hetzner worker scenarios",
+    "  --include-remote-kernel        Include remote kernel worker scenarios",
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
     "  --continue-on-failure    Run every selected scenario before exiting non-zero",
@@ -152,9 +152,9 @@ function printHelp() {
     "  --report PATH            Write a machine-readable matrix report; defaults under .artifacts/drill-matrices",
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
     "  --provider-account P=A   Label the provider account/profile used by this matrix without exposing credentials",
-    "  --hetzner-host HOST      Forwarded to Hetzner drill scenarios",
-    "  --hetzner-key PATH       Forwarded to Hetzner drill scenarios",
-    "  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios",
+    "  --remote-kernel-host HOST      Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-key PATH       Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-repo PATH      Forwarded to remote kernel drill scenarios",
     "",
     "Scenario ids:",
     ...MATRIX.map((scenarioItem) => `  ${scenarioItem.id.padEnd(23)} ${scenarioItem.description}`),
@@ -169,7 +169,7 @@ function readValue(argv, index, flag) {
 
 function parseArgs(argv) {
   const options = {
-    includeHetzner: false,
+    includeRemoteKernel: false,
     only: null,
     dryRun: false,
     continueOnFailure: false,
@@ -183,7 +183,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--") continue
-    else if (arg === "--include-hetzner") options.includeHetzner = true
+    else if (arg === "--include-remote-kernel") options.includeRemoteKernel = true
     else if (arg === "--dry-run") options.dryRun = true
     else if (arg === "--continue-on-failure") options.continueOnFailure = true
     else if (arg === "--providers") options.providers = parseProviders(readValue(argv, index++, arg))
@@ -198,10 +198,10 @@ function parseArgs(argv) {
     else if (arg === "--only") options.only = parseDrillScenarioIds(readValue(argv, index++, arg))
     else if (arg.startsWith("--only=")) options.only = parseDrillScenarioIds(arg.slice("--only=".length))
     else {
-      const hetznerArg = parseHetznerPassthroughArg(argv, index)
-      if (hetznerArg) {
-        options.passthrough.push(...hetznerArg.args)
-        index = hetznerArg.nextIndex
+      const remoteKernelArg = parseRemoteKernelPassthroughArg(argv, index)
+      if (remoteKernelArg) {
+        options.passthrough.push(...remoteKernelArg.args)
+        index = remoteKernelArg.nextIndex
         continue
       }
       throw new Error(`unknown argument: ${arg}`)
@@ -214,8 +214,8 @@ function selectScenarios(options) {
   const selected = selectDrillMatrixScenarios({
     scenarios: MATRIX,
     requestedIds: options.only,
-    enabledRequirements: new Set(options.includeHetzner ? ["hetzner"] : []),
-    requirementLabels: { hetzner: "--include-hetzner" },
+    enabledRequirements: new Set(options.includeRemoteKernel ? ["remote-kernel"] : []),
+    requirementLabels: { "remote-kernel": "--include-remote-kernel" },
   })
   return options.providers ? selected.map((scenarioItem) => selectScenarioProviders(scenarioItem, options.providers)) : selected
 }
@@ -246,7 +246,7 @@ function selectScenarioProviders(scenarioItem, requestedProviders) {
 function commandForScenario(scenarioItem, passthrough) {
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough([
+    args: appendRemoteKernelPassthrough([
       scenarioItem.script,
       ...scenarioItem.args,
       "--keep-artifacts-on-failure",
@@ -260,14 +260,14 @@ function metadataFor(selected, options) {
     "local",
     "same-host-remote",
     "self-hosted-relay",
-    ...(options.includeHetzner ? ["hetzner"] : []),
+    ...(options.includeRemoteKernel ? ["remote-kernel"] : []),
   ]
   return {
-    includeHetzner: options.includeHetzner,
+    includeRemoteKernel: options.includeRemoteKernel,
     generatedMatrixNames: "native-provider-tui-matrix",
     generatedMatrixRepos: "oss",
     ...providerProfileMetadata({ providers, defaultModel: "provider-default", providerAccounts: options.providerAccounts }),
-    ...drillDeploymentPresetMetadata(deploymentPresets, { hetznerPassthrough: options.passthrough }),
+    ...drillDeploymentPresetMetadata(deploymentPresets, { remoteKernelPassthrough: options.passthrough }),
   }
 }
 

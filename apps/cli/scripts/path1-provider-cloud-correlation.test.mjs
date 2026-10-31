@@ -163,7 +163,7 @@ test("correlates matching provider allocation, rebuild, and finalized Cloud rece
     },
     providerProjectProvenance: {
       status: "unexecuted",
-      reason: "hetzner_captures_do_not_expose_project_identity",
+      reason: "provider_captures_do_not_expose_project_identity",
     },
   })
   assert.ok(!JSON.stringify(result).includes("DO-NOT-COPY"))

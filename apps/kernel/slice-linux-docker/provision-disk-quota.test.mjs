@@ -103,7 +103,7 @@ test("fresh quota driver selection is gated by the exact XFS project-quota mount
     read("./slice-disk-quota-xfs-backend.mjs"),
     read("./chariox-slice-disk-quota-allocator.service"),
     read("../../../deploy/managed-kernel/install-image.sh"),
-    read("../../../deploy/managed-kernel/prepare-hetzner-image.sh"),
+    read("../../../deploy/managed-kernel/prepare-worker-image.sh"),
   ])
   assert.match(service, /\[ \"\$1\" = \"\$ROOTLESS_DATA_ROOT\" \] && \[ \"\$2\" = xfs \]/)
   assert.match(service, /pquota,\*\|\*,prjquota,\*/)

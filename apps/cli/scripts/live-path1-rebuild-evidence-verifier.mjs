@@ -122,7 +122,7 @@ function requireCapturedOperation(receiptInfo, authority, fragments) {
 
 function allocation(value, label) {
   plainObject(value, label, ["provider", "projectId", "serverId", "serverType", "datacenter", "imageId"])
-  if (value.provider !== "hetzner") fail("allocation_provider", `${label} must identify the approved Hetzner allocation`)
+  if (!/^[a-z][a-z0-9-]*$/.test(value.provider ?? "")) fail("allocation_provider", `${label} must identify the approved provider allocation`)
   for (const field of ["projectId", "serverId", "serverType", "datacenter", "imageId"]) {
     nonEmpty(value[field], `${label}.${field}`)
   }
@@ -198,11 +198,11 @@ function validateReviewed(reviewed) {
 function validateBefore(before) {
   const info = captureReceipt(before, "before", {
     fields: ["allocation", "identity"],
-    allowed: ["hetzner-api", "host-command", "cloud-api", "relay-api"],
-    required: ["hetzner-api", "host-command", "cloud-api", "relay-api"],
+    allowed: ["provider-api", "host-command", "cloud-api", "relay-api"],
+    required: ["provider-api", "host-command", "cloud-api", "relay-api"],
   })
   const resource = allocation(before.allocation, "before.allocation")
-  requireCapturedOperation(info, "hetzner-api", ["server"])
+  requireCapturedOperation(info, "provider-api", ["server"])
   requireCapturedOperation(info, "host-command", ["systemd"])
   requireCapturedOperation(info, "cloud-api", ["enrollment"])
   requireCapturedOperation(info, "relay-api", ["heartbeat"])
@@ -256,8 +256,8 @@ function validateBefore(before) {
 function validateRebuild(rebuild, reviewed, before) {
   const info = captureReceipt(rebuild, "rebuild", {
     fields: ["allocation", "request", "completion"],
-    allowed: ["hetzner-api"],
-    required: ["hetzner-api"],
+    allowed: ["provider-api"],
+    required: ["provider-api"],
   })
   const resource = allocation(rebuild.allocation, "rebuild.allocation")
   sameAllocation(before.allocation, resource, "rebuild allocation")
@@ -284,8 +284,8 @@ function validateRebuild(rebuild, reviewed, before) {
   if (before.info.capturedAt >= requestedAt || reviewed.info.capturedAt >= requestedAt) {
     fail("receipt_stale", "before or reviewed evidence was captured after rebuild began")
   }
-  const requestObservation = requireObservation(info, "rebuild-request", "hetzner-api", "rebuild")
-  const completionObservation = requireObservation(info, "rebuild-completion", "hetzner-api", "rebuild", requestObservation.capturedAt)
+  const requestObservation = requireObservation(info, "rebuild-request", "provider-api", "rebuild")
+  const completionObservation = requireObservation(info, "rebuild-completion", "provider-api", "rebuild", requestObservation.capturedAt)
   if (requestObservation.capturedAt > requestedAt || completionObservation.capturedAt < completedAt) {
     fail("rebuild_observation_time", "provider request/completion captures do not bracket the rebuild action")
   }
@@ -315,14 +315,14 @@ function validateExactAbsence(entries, expected, key, label, info, authority, re
 function validateAfter(after, reviewed, before, rebuild) {
   const info = captureReceipt(after, "after", {
     fields: ["allocation", "identity", "absence"],
-    allowed: ["hetzner-api", "host-command", "cloud-api", "relay-api", "release-verifier"],
-    required: ["hetzner-api", "host-command", "cloud-api", "relay-api", "release-verifier"],
+    allowed: ["provider-api", "host-command", "cloud-api", "relay-api", "release-verifier"],
+    required: ["provider-api", "host-command", "cloud-api", "relay-api", "release-verifier"],
   })
   const resource = allocation(after.allocation, "after.allocation")
   for (const observation of info.observations.values()) {
     if (observation.capturedAt <= rebuild.completedAt) fail("receipt_stale", "after evidence contains an observation from before rebuild completion")
   }
-  requireCapturedOperation(info, "hetzner-api", ["server"])
+  requireCapturedOperation(info, "provider-api", ["server"])
   requireCapturedOperation(info, "host-command", ["systemd"])
   requireCapturedOperation(info, "cloud-api", ["enrollment"])
   requireCapturedOperation(info, "relay-api", ["heartbeat"])
@@ -425,15 +425,15 @@ function validateAfter(after, reviewed, before, rebuild) {
 function validateCleanup(cleanup, before, after) {
   const info = captureReceipt(cleanup, "cleanup", {
     fields: ["allocation", "cleanup"],
-    allowed: ["hetzner-api", "host-command", "cloud-api", "relay-api", "cleanup-command"],
-    required: ["hetzner-api", "host-command", "cloud-api", "relay-api", "cleanup-command"],
+    allowed: ["provider-api", "host-command", "cloud-api", "relay-api", "cleanup-command"],
+    required: ["provider-api", "host-command", "cloud-api", "relay-api", "cleanup-command"],
   })
   const resource = allocation(cleanup.allocation, "cleanup.allocation")
   for (const observation of info.observations.values()) {
     if (observation.capturedAt <= after.info.capturedAt) fail("cleanup_stale", "cleanup evidence contains an observation from before the post-rebuild scan")
   }
   requireCapturedOperation(info, "cleanup-command", ["cleanup"])
-  requireCapturedOperation(info, "hetzner-api", ["server"])
+  requireCapturedOperation(info, "provider-api", ["server"])
   requireCapturedOperation(info, "host-command", ["cleanup"])
   requireCapturedOperation(info, "cloud-api", ["cleanup"])
   requireCapturedOperation(info, "relay-api", ["cleanup"])
@@ -589,7 +589,7 @@ async function main() {
     const report = verifyPath1RebuildEvidence(Object.fromEntries(inputs))
     await verifyEvidenceArtifactFiles(Object.fromEntries(inputs))
     await writeReport(reportPath, report)
-    process.stdout.write(`PASS Path-1 fresh-equivalent rebuild evidence for Hetzner server ${report.allocation.serverId}\n`)
+    process.stdout.write(`PASS Path-1 fresh-equivalent rebuild evidence for provider server ${report.allocation.serverId}\n`)
   } catch (error) {
     const code = error instanceof RebuildEvidenceError ? error.code : "verifier_error"
     const message = error instanceof Error ? error.message : String(error)

@@ -1,7 +1,8 @@
 export const DATA_ROOT = "/var/lib/chariox-docker/data"
-export const HETZNER_BYTES_PER_GB = 1024 ** 3
-export const MIN_VOLUME_SIZE_GB = 10
-export const MAX_VOLUME_SIZE_GB = 10_000
+export const BYTES_PER_GIB = 1024 ** 3
+// Cloud validates the size against its adapter limits; the kernel only keeps a sanity range.
+export const MIN_VOLUME_SIZE_GB = 1
+export const MAX_VOLUME_SIZE_GB = Math.floor(Number.MAX_SAFE_INTEGER / BYTES_PER_GIB)
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER
 
@@ -75,57 +76,56 @@ function physicalRootDevice(flattened, rootSourcePath) {
 
 export function expectedVolumeBytes(sizeGb) {
   if (!Number.isSafeInteger(sizeGb) || sizeGb < MIN_VOLUME_SIZE_GB || sizeGb > MAX_VOLUME_SIZE_GB) {
-    fail("expected Hetzner Volume size is outside its supported integer-GB range")
+    fail("expected data volume size is outside its supported integer-GB range")
   }
-  const bytes = BigInt(sizeGb) * BigInt(HETZNER_BYTES_PER_GB)
+  const bytes = BigInt(sizeGb) * BigInt(BYTES_PER_GIB)
   if (bytes <= 0n || bytes > BigInt(MAX_SAFE_INTEGER)) {
-    fail("expected Hetzner Volume capacity exceeds the safe integer range")
+    fail("expected data volume capacity exceeds the safe integer range")
   }
   return Number(bytes)
 }
 
-export function selectHetznerVolumeDevice(devices, expectedSerial, rootSourcePath, allowDataRootMount = false) {
+export function selectDataVolumeDevice(devices, expectedSerial, rootSourcePath, allowDataRootMount = false) {
   const flattened = flattenBlockDevices(devices)
-  const volumeDisks = flattened.filter(({ device }) =>
-    String(device.type).toLowerCase() === "disk" && String(device.model ?? "").trim() === "Volume",
-  )
-  if (volumeDisks.length !== 1) fail("exactly one Hetzner Volume disk must be attached")
-  const matches = flattened.filter(({ device }) => device.serial === expectedSerial)
-  if (matches.length !== 1) fail("expected provider volume serial must identify exactly one device")
-  const selected = matches[0]
-  if (
-    selected.device !== volumeDisks[0].device ||
-    String(selected.device.type).toLowerCase() !== "disk" ||
-    String(selected.device.model ?? "").trim() !== "Volume" ||
-    selected.parent ||
-    (typeof selected.device.pkname === "string" && selected.device.pkname !== "")
-  ) {
-    fail("expected provider volume must be a whole Hetzner Volume disk")
-  }
-  if (blockChildren(selected.device).length !== 0) {
-    fail("Hetzner Volume must not contain partitions or child devices")
-  }
   const rootPath = normalizeDevicePath(rootSourcePath)
   if (!rootPath) fail("root filesystem source is not a block-device path")
   const rootDevice = physicalRootDevice(flattened, rootPath)
+  const matches = flattened.filter(({ device }) => device.serial === expectedSerial)
+  if (matches.length !== 1) fail("expected provider volume serial must identify exactly one device")
+  const selected = matches[0]
   if (rootDevice === selected.device || blockPath(rootDevice) === blockPath(selected.device)) {
     fail("refusing to use the root filesystem disk as the data volume")
   }
+  const dataDisks = flattened.filter(({ device }) =>
+    String(device.type).toLowerCase() === "disk" && blockPath(device) !== blockPath(rootDevice),
+  )
+  if (dataDisks.length !== 1) fail("exactly one data volume disk must be attached")
+  if (
+    selected.device !== dataDisks[0].device ||
+    String(selected.device.type).toLowerCase() !== "disk" ||
+    selected.parent ||
+    (typeof selected.device.pkname === "string" && selected.device.pkname !== "")
+  ) {
+    fail("expected provider volume must be a whole data volume disk")
+  }
+  if (blockChildren(selected.device).length !== 0) {
+    fail("data volume must not contain partitions or child devices")
+  }
   const readOnly = selected.device.ro === true || selected.device.ro === 1 || selected.device.ro === "1"
-  if (readOnly) fail("Hetzner Volume is read-only")
+  if (readOnly) fail("data volume is read-only")
   const sizeBytes = Number(selected.device.size)
   if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
-    fail("Hetzner Volume block capacity is invalid")
+    fail("data volume block capacity is invalid")
   }
   const mountpoints = [
     ...(Array.isArray(selected.device.mountpoints) ? selected.device.mountpoints : []),
     selected.device.mountpoint,
   ].filter((value) => typeof value === "string" && value !== "")
   if (mountpoints.some((value) => !allowDataRootMount || value !== DATA_ROOT)) {
-    fail("Hetzner Volume is already mounted")
+    fail("data volume is already mounted")
   }
   const devicePath = blockPath(selected.device)
-  if (!devicePath) fail("Hetzner Volume device path is missing")
+  if (!devicePath) fail("data volume device path is missing")
   return {
     path: devicePath,
     serial: selected.device.serial,
@@ -143,14 +143,14 @@ export function discoverVolumeDevice(commands, serial) {
   ]), "lsblk")
   const rootSource = commands.run("/usr/bin/findmnt", ["--noheadings", "--output", "SOURCE", "--target", "/"])
   const rootSourcePath = commands.run("/usr/bin/realpath", ["-e", rootSource])
-  const device = selectHetznerVolumeDevice(lsblk.blockdevices, serial, rootSourcePath, true)
+  const device = selectDataVolumeDevice(lsblk.blockdevices, serial, rootSourcePath, true)
   const blockdevOutput = commands.run("/usr/sbin/blockdev", ["--getsize64", device.path])
   if (!/^[1-9][0-9]*$/.test(blockdevOutput)) {
-    fail("blockdev returned an invalid Hetzner Volume capacity")
+    fail("blockdev returned an invalid data volume capacity")
   }
   const blockdevSizeBytes = Number(blockdevOutput)
   if (!Number.isSafeInteger(blockdevSizeBytes) || blockdevSizeBytes !== device.sizeBytes) {
-    fail("lsblk and blockdev disagree about the Hetzner Volume capacity")
+    fail("lsblk and blockdev disagree about the data volume capacity")
   }
   return device
 }
