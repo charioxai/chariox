@@ -261,6 +261,15 @@ fn assert_queued_prompt_runs_on_replacement(
 
 #[test]
 fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh_run() {
+    declined_dispatch_with_queued_successor(false);
+}
+
+#[test]
+fn a_declined_trust_question_starts_a_queued_workflow_node_on_a_workflow_capable_run() {
+    declined_dispatch_with_queued_successor(true);
+}
+
+fn declined_dispatch_with_queued_successor(workflow_successor: bool) {
     let worktree = crate::test_support::TestWorktree::new("claude-native-trust-dispatch-denied");
     let root = std::env::temp_dir().join(format!(
         "chariox-claude-trust-dispatch-denied-{}-{}",
@@ -280,6 +289,47 @@ fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .expect("attachment should attach");
+    let workflow_run = workflow_successor.then(|| {
+        // The node's run exists before the ordinary turn takes the agent; only the node queues.
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "dev-stub",
+                None,
+                None,
+                None,
+                crate::provider::ProviderResumeState::default(),
+            )
+            .expect("the agent should switch to the stub provider");
+        let workflow_id = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("wf-trust-denied".to_string()))
+            .expect("workflow should exist")
+            .id()
+            .to_string();
+        let node_id = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), &workflow_id, agent.id())
+            .expect("workflow node should be added")
+            .id()
+            .to_string();
+        app.sessions_mut()
+            .create_workflow_endpoint(session.id(), &workflow_id, &node_id, Some("entry".into()))
+            .expect("workflow endpoint should exist");
+        let (workflow_run, _, _) = app
+            .invoke_workflow_endpoint_and_schedule(
+                session.id(),
+                &workflow_id,
+                "entry",
+                Some("start".to_string()),
+            )
+            .expect("workflow should invoke");
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("the first node prompt should settle");
+        app.end_agent_provider_run(session.id(), agent.id())
+            .expect("the first node run should end");
+        workflow_run
+    });
     let context_file = root.join("hidden-context.txt");
     let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
@@ -322,9 +372,30 @@ fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh
     let crate::session::PromptSubmissionOutcome::Started { prompt } = submit("denied-task") else {
         panic!("the first task should start");
     };
-    let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = submit("queued-task")
-    else {
-        panic!("the second task should queue");
+    let queued = if let Some(workflow_run) = &workflow_run {
+        // A workflow node waits behind the ordinary turn that raised the trust question.
+        let node_prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "workflow node task",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run.id(), workflow_run.node_runs()[0].id());
+        let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), node_prompt, false)
+            .expect("the workflow node should queue")
+        else {
+            panic!("the workflow node should queue behind the ordinary turn");
+        };
+        queued
+    } else {
+        let crate::session::PromptSubmissionOutcome::Queued { prompt: queued } =
+            submit("queued-task")
+        else {
+            panic!("the second task should queue");
+        };
+        queued
     };
     let app = Arc::new(Mutex::new(app));
     let _cleanup = InertPtyCleanup {
@@ -365,5 +436,16 @@ fn a_trust_question_declined_during_dispatch_starts_the_queued_prompt_on_a_fresh
         run.id(),
         queued.id(),
     );
+    if workflow_successor {
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(session.id(), agent.id())
+            .expect("the queued node has a provider run");
+        assert!(
+            replacement.workflow_tools_enabled(),
+            "a workflow node must start on a workflow-capable run"
+        );
+    }
     let _ = fs::remove_dir_all(root);
 }

@@ -42,38 +42,10 @@ impl KernelRuntimeState {
             self.settle_stopped_native_prompt(&dispatch).await;
         }
         if let Some((agent_id, _)) = stopped {
-            self.start_queued_prompt_on_replacement_run(session_id, &agent_id)
-                .await?;
-        }
-        Ok(())
-    }
-
-    async fn start_queued_prompt_on_replacement_run(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-    ) -> Result<(), DaemonError> {
-        let owned = &self.owned;
-        let session = owned.session_store.get_session(session_id)?;
-        if owned
-            .prompt_state_owner
-            .peek_next_queued_prompt(&session, agent_id)
-            .is_none()
-        {
-            return Ok(());
-        }
-        let (session_for_launch, agent_for_launch) = (session_id.to_string(), agent_id.to_string());
-        let replacement_provider_run_id = self
-            .with_app_side_effect(move |app| {
-                app.ensure_prompt_provider_run_for_agent(&session_for_launch, &agent_for_launch)
-            })
-            .await?;
-        if let Some(dispatch) = owned.advance_next_queued_prompt_dispatch(
-            session_id,
-            agent_id,
-            &replacement_provider_run_id,
-        )? {
-            self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
+            // The queue head starts the way it does after any settlement: workflow nodes get
+            // their workflow-capable (and fresh-context) run, ordinary prompts a plain one.
+            Box::pin(self.advance_project_queued_prompt_after_settlement(session_id, &agent_id))
+                .await;
         }
         Ok(())
     }
