@@ -8,6 +8,7 @@ mod health;
 mod retention;
 mod validation;
 pub(super) use retention::bound;
+use retention::prune_ended;
 use validation::{limit as inbox_limit, now as outside_now_ms};
 
 pub(crate) const PENDING_LIMIT: usize = 100_000;
@@ -135,7 +136,7 @@ fn end(tx: &Transaction<'_>, part: &mut Part, reason: &str) -> Result<(), Daemon
     part.run_states.clear();
     part.settled_prompts.clear();
     part.kernel_health.clear();
-    Ok(())
+    prune_ended(tx, event.at_ms)
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome, DaemonError> {
@@ -347,6 +348,7 @@ pub(super) fn apply(tx: &Transaction<'_>, mutation: Mutation) -> Result<Outcome,
         }
         Mutation::Restart { keep } => {
             let local = identity(tx)?.map(|(kernel, _)| kernel);
+            prune_ended(tx, outside_now_ms()?)?;
             for mut part in parts(tx)? {
                 if part.home && !keep.contains(&part.id) {
                     end(tx, &mut part, "kernel_restarted")?;
