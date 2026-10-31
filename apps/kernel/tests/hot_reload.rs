@@ -35,7 +35,8 @@ struct Kernel {
     child: Child,
     scratch: PathBuf,
     port: u16,
-    token: String,
+    // None: the kernel writes its own laptop token, which admits terminals.
+    token: Option<String>,
 }
 
 impl Drop for Kernel {
@@ -75,6 +76,21 @@ fn start_kernel_with(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
 /// Starts the kernel with `inherited` descriptors open in it (and only in it),
 /// as a supervisor hands them over.
 fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &[i32]) -> Kernel {
+    launch_kernel(scratch, env, inherited, true)
+}
+
+/// Starts the kernel as on a laptop: clients connect with the token it writes,
+/// as terminals, which may focus agents (as the browser does).
+fn start_laptop_kernel(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
+    launch_kernel(scratch, env, &[], false)
+}
+
+fn launch_kernel(
+    scratch: &Path,
+    env: &[(&str, PathBuf)],
+    inherited: &[i32],
+    host_token: bool,
+) -> Kernel {
     // The drill may point at another build, e.g. the base binary for the red run.
     let binary = std::env::var_os("CHARIOX_HOT_RELOAD_KERNEL")
         .map(PathBuf::from)
@@ -121,7 +137,7 @@ fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &
             Ok(())
         });
     }
-    if token_file.is_none() {
+    if token_file.is_none() && host_token {
         command.env("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", &token);
     }
     let child = command
@@ -145,7 +161,7 @@ fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &
         child,
         scratch: scratch.to_path_buf(),
         port,
-        token,
+        token: host_token.then_some(token),
     }
 }
 
@@ -155,9 +171,12 @@ async fn connect(kernel: &Kernel, within: Duration) -> Socket {
         let mut request = format!("ws://127.0.0.1:{}/kernel", kernel.port)
             .into_client_request()
             .unwrap();
+        let token = kernel.token.clone().or_else(|| laptop_token(kernel));
         request.headers_mut().insert(
             "authorization",
-            format!("Bearer {}", kernel.token).parse().unwrap(),
+            format!("Bearer {}", token.unwrap_or_default())
+                .parse()
+                .unwrap(),
         );
         if let Ok((socket, _)) = connect_async(request).await {
             return socket;
@@ -168,6 +187,25 @@ async fn connect(kernel: &Kernel, within: Duration) -> Socket {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// The token a laptop kernel wrote for its terminals (a new one per program).
+fn laptop_token(kernel: &Kernel) -> Option<String> {
+    fn find(dir: &Path, name: &str) -> Option<PathBuf> {
+        std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                find(&path, name)
+            } else {
+                (path.ends_with(Path::new("kernel-local-auth").join(name))).then_some(path)
+            }
+        })
+    }
+    let path = find(
+        &kernel.scratch.join("home"),
+        &format!("{}.token", kernel.port),
+    )?;
+    Some(std::fs::read_to_string(path).ok()?.trim().to_string())
 }
 
 async fn request(socket: &mut Socket, body: Value) -> Value {
@@ -1183,10 +1221,12 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             .unwrap();
     }
     std::fs::create_dir_all(scratch.join("codex-home")).unwrap();
+    let mcp_port = free_port();
     let mut env = vec![
         ("CHARIOX_CODEX_BIN", codex.clone()),
         ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
         ("CODEX_HOME", scratch.join("codex-home")),
+        ("CHARIOX_MCP_PORT", mcp_port.to_string().into()),
     ];
     if finish_in_gap {
         env.push(("CHARIOX_FAKE_CODEX_FINISH_IN_GAP", "1".into()));
@@ -1215,7 +1255,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             ("XDG_CACHE_HOME", scratch.join("cache")),
         ]);
     }
-    let kernel = start_kernel_with(&scratch, &env);
+    let kernel = start_laptop_kernel(&scratch, &env);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1254,6 +1294,10 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             .as_str()
             .unwrap_or_else(|| panic!("{attached}"))
             .to_string();
+        // The browser focuses the agent pane, which grants the agent the
+        // user's computer tools.
+        let focus = json!({"FocusAgent": {"session_id": session_id, "agent_id": agent_id}});
+        request(&mut socket, focus.clone()).await;
         if beside_claude {
             let spawned = request(
                 &mut socket,
@@ -1324,6 +1368,32 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             .as_str()
             .unwrap_or_else(|| panic!("{late}"))
             .to_string();
+        // The real Codex reconnects to the kernel's tools once the new
+        // program has adopted its turn; the browser then focuses the pane
+        // again. The tools it already listed must not change in between.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+            std::fs::read_to_string(file.unwrap().path())
+                .unwrap()
+                .contains("continuing a handed-over Codex turn")
+        }) {
+            assert!(Instant::now() < deadline, "the Codex turn was not adopted");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut tools = tokio::net::TcpStream::connect(("127.0.0.1", mcp_port))
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut tools,
+            b"GET /mcp HTTP/1.1\r\nhost: 127.0.0.1\r\nconnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut answer = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut tools, &mut answer)
+            .await
+            .unwrap();
+        request(&mut socket, focus).await;
         let mut live_parts = 0;
         let mut live_before_result = 0;
         std::fs::write(record.join("go"), "").unwrap();
@@ -1410,6 +1480,23 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             previous = at;
         }
         assert!(!history.contains("interrupted"), "{history}");
+        // A tool catalog change would continue the finished turn about 12 s
+        // after it.
+        let watched = Instant::now();
+        while watched.elapsed() < Duration::from_secs(20) {
+            let state = request(
+                &mut socket,
+                json!({"GetSessionState": {"session_id": session_id}}),
+            )
+            .await;
+            assert!(
+                state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+                    .is_null()
+                    && lines(&record.join("prompts")) == ["prompt 1"],
+                "the agent got another turn after the handed-over one: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     });
     // One app-server ran the whole turn, and it got the prompt once.
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);

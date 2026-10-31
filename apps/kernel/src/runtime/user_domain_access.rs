@@ -124,6 +124,9 @@ impl UserDomainAccess {
         }
         self.changed(user);
     }
+    pub(crate) fn focused_agents(&self) -> &BTreeMap<String, String> {
+        &self.focus
+    }
     pub(crate) fn focused(&self, user: &str) -> Option<&str> {
         self.focus.get(user).map(String::as_str)
     }
