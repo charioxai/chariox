@@ -89,6 +89,11 @@ pub(super) struct Entry {
     pub free: u64,
 }
 impl Entry {
+    #[cfg(test)]
+    pub(super) fn holdable(&self) -> bool {
+        self.holdable
+    }
+
     /// The volume its writes go to, from the directory it runs in.
     fn disk(&self, room: &Room) -> Option<Disk> {
         self.seen

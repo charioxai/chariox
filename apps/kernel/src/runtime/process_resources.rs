@@ -648,6 +648,25 @@ pub(crate) fn record_submission_for_key(key: &str, holdable: bool) {
     }
 }
 
+/// Whether the command whose top process is `pid` may wait, once the sampler
+/// has seen it.
+#[cfg(test)]
+pub(crate) fn command_holdable_for_key(key: &str, pid: u32) -> Option<bool> {
+    registry()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .and_then(std::sync::Weak::upgrade)
+        .and_then(|state| {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .admission
+                .get(&pid)
+                .map(|entry| entry.holdable())
+        })
+}
+
 /// What the commands the workload bound to `key` starts next would get.
 #[cfg(test)]
 pub(crate) fn holdable_for_key(key: &str) -> Option<bool> {

@@ -411,6 +411,72 @@ async fn the_actor_that_submits_a_line_decides_whether_its_command_waits() {
     service.end_session("room-1");
 }
 
+/// Submits `first`'s line and then `second`'s before the shell can launch the
+/// first one's background job, and returns who the job's command belongs to.
+async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &TerminalActor) -> bool {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let run_id = service
+        .terminal_for_test(&id)
+        .lock_open()
+        .unwrap()
+        .terminal
+        .run_id
+        .clone()
+        .unwrap();
+    let pid_file = root.path().join("job.pid");
+    type_as(
+        &service,
+        &id,
+        first,
+        &format!("sleep 120 & echo $! > '{}'\r", pid_file.display()),
+    )
+    .await;
+    type_as(&service, &id, second, "true\r").await;
+    let pid = || {
+        std::fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+    };
+    until("the job to be launched", || async { pid().is_some() }).await;
+    let pid = pid().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let owner = loop {
+        if let Some(holdable) =
+            crate::runtime::process_resources::command_holdable_for_key(&run_id, pid)
+        {
+            break Some(holdable);
+        }
+        if Instant::now() > deadline {
+            break None;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    // SAFETY: the positive PID of the job this test started; never a group.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    service.end_session("room-1");
+    owner.expect("the sampler never saw the job")
+}
+
+#[tokio::test]
+async fn an_agents_background_job_stays_the_agents_when_a_person_submits_before_the_shell_launches_it(
+) {
+    assert!(
+        who_owns_the_job_two_lines_launch(&agent("a"), &TerminalActor::User).await,
+        "the person's later line took the agent's job"
+    );
+}
+
+#[tokio::test]
+async fn a_persons_background_job_stays_the_persons_when_an_agent_submits_before_the_shell_launches_it(
+) {
+    assert!(
+        !who_owns_the_job_two_lines_launch(&TerminalActor::User, &agent("a")).await,
+        "the agent's later line took the person's job"
+    );
+}
+
 #[tokio::test]
 async fn a_program_the_user_started_refuses_agents() {
     let root = TempDir::new();

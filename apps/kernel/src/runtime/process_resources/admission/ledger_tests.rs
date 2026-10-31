@@ -485,3 +485,29 @@ fn a_command_no_line_explains_follows_the_terminals_default() {
     pressed(&mut ledger, other, &terminal);
     assert_eq!(wait(&terminal, 4_100_002), None);
 }
+
+/// A sample finds `pid` on a platform that reports no start time.
+fn start_untimed(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
+    member
+        .lock()
+        .unwrap()
+        .commands
+        .push(command(pid, resident, 8 * MIB));
+    ledger.register(member, 512 * MIB);
+}
+
+#[test]
+fn without_start_times_an_agents_job_still_follows_the_line_that_launched_it() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    submit(&terminal, 100, true);
+    submit(&terminal, 102, false);
+    start_untimed(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "the agent's build took the person's later line"
+    );
+}
