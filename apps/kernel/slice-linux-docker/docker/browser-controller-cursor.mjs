@@ -17,8 +17,10 @@ function cursorAt(x, y) {
     const frame = /^i?frame$/.test(element.localName);
     try { nested = frame ? element.contentDocument : null; } catch { nested = null; }
     if (!frame) break;
-    const box = element.getBoundingClientRect();
-    x -= box.left + element.clientLeft; y -= box.top + element.clientTop;
+    // The frame's content box maps to its document at the frame's CSS scale (a scaled frame shows its document scaled).
+    const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+    const sx = element.offsetWidth > 0 ? box.width / element.offsetWidth : 1, sy = element.offsetHeight > 0 ? box.height / element.offsetHeight : 1;
+    x = (x - box.left - (element.clientLeft + (parseFloat(style.paddingLeft) || 0)) * sx) / sx; y = (y - box.top - (element.clientTop + (parseFloat(style.paddingTop) || 0)) * sy) / sy;
     if (!nested) return { element, x, y };
     doc = nested; element = doc.elementFromPoint(x, y);
   }
