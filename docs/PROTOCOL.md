@@ -5602,6 +5602,9 @@ persistent non-retryable refusals. The first successful connection
 establishes a baseline; an initial failure and each later online/offline change
 append a durable event. Repeated failures, including a different failure reason,
 do not append duplicates; `GetEventSubscription` retains the current full error.
+A busy kernel is not an outage: a pull request that times out (`kernel_request_timeout`, 5 seconds per request)
+changes nothing until the requests have timed out for 15 seconds with no answer in between; only then is the
+kernel offline. Every other failure is reported at once.
 The health observation and inbox append commit together. Events have home
 cursors, retain normal ordering and acknowledgement rules, wake an outstanding
 `WaitEvents`, and never enter another grant's inbox. Removed targets and ended
