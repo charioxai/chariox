@@ -23,6 +23,12 @@ pub(super) enum WatchCommand {
     Shutdown,
     /// The owner ended; jobs that left it keep running under the watch until they end.
     Release,
+    /// The memory policy chose this command (the root: the whole workload).
+    MemoryStop {
+        pid: u32,
+        limit_bytes: u64,
+        notice: String,
+    },
     Stop {
         process_id: Option<String>,
         reply: mpsc::SyncSender<Result<Vec<String>, String>>,

@@ -17,6 +17,8 @@ pub(super) struct ProcessTree {
     root: u32,
     owned: BTreeMap<u32, ProcessIdentity>,
     ids: BTreeMap<u32, String>,
+    /// Parent of each owned process at the last sample.
+    parents: BTreeMap<u32, u32>,
     #[cfg(target_os = "linux")]
     cgroup: Option<std::sync::Arc<super::cgroup::Domain>>,
 }
@@ -34,6 +36,7 @@ impl ProcessTree {
             root,
             owned,
             ids,
+            parents: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cgroup: None,
         }
@@ -47,6 +50,11 @@ impl ProcessTree {
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, String> {
         let rows = process_rows()?;
         self.observe(&rows)?;
+        self.parents = rows
+            .iter()
+            .filter(|row| self.owned.contains_key(&row.pid))
+            .map(|row| (row.pid, row.parent))
+            .collect();
         // Once the original root is gone, only previously observed descendants
         // can remain owned. Never adopt a replacement process with its PID.
         Ok(rows
@@ -197,6 +205,66 @@ impl ProcessTree {
             .iter()
             .filter_map(|pid| self.ids.get(pid).cloned())
             .collect())
+    }
+
+    /// Resident memory per command: the root's own process, and each subtree
+    /// under it (after the root ended, each job it left running).
+    pub fn commands(&self, samples: &[ProcessSample]) -> BTreeMap<u32, u64> {
+        let mut commands = BTreeMap::<u32, u64>::new();
+        for sample in samples {
+            let mut top = sample.pid;
+            for _ in 0..samples.len() {
+                match self.parents.get(&top) {
+                    Some(parent)
+                        if top != self.root
+                            && *parent != self.root
+                            && self.owned.contains_key(parent) =>
+                    {
+                        top = *parent
+                    }
+                    _ => break,
+                }
+            }
+            *commands.entry(top).or_default() += sample.resident_set_bytes;
+        }
+        commands
+    }
+
+    /// Ends one command and what it started at once: a runaway would keep
+    /// growing through a grace period. Returns the ended process ids.
+    pub fn kill(&self, command: u32) -> Vec<String> {
+        if command == self.root {
+            self.terminate();
+            return self.ids.values().cloned().collect();
+        }
+        let mut selected = std::collections::BTreeSet::from([command]);
+        loop {
+            let before = selected.len();
+            for (pid, parent) in &self.parents {
+                if selected.contains(parent) && self.owned.contains_key(pid) {
+                    selected.insert(*pid);
+                }
+            }
+            if selected.len() == before {
+                break;
+            }
+        }
+        #[cfg(unix)]
+        for pid in &selected {
+            if let Some(identity) = self.owned.get(pid) {
+                if *pid > 1 && *pid <= i32::MAX as u32 && same_process(*pid, identity) {
+                    let _ = unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                }
+            }
+        }
+        selected
+            .iter()
+            .filter_map(|pid| self.ids.get(pid).cloned())
+            .collect()
+    }
+
+    pub fn is_root(&self, pid: u32) -> bool {
+        pid == self.root
     }
 
     pub fn terminate(&self) {

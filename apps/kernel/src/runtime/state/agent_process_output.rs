@@ -75,7 +75,7 @@ impl Output {
         self.stopped
             .store(true, std::sync::atomic::Ordering::Release);
     }
-    fn push(&self, line: String) {
+    pub(super) fn push(&self, line: String) {
         let Ok(mut tail) = self.tail.lock() else {
             return;
         };
