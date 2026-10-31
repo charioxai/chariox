@@ -7,6 +7,7 @@ import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type Ter
 import { runExec } from "./exec-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
+import { runEventsMcp } from "./events-mcp.js"
 
 import { failureOf, lostInFlight, lostConnectionFailure } from "./kernel-command-failure.js"
 export { failureOf, lostConnectionFailure } from "./kernel-command-failure.js"
@@ -150,6 +151,10 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       const { flags, positionals } = parseArguments(`events ${verb}`, rest.slice(1))
       const socket = flags.get("--socket") as string | undefined
       if (verb === "watch") for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
+      if (verb === "mcp") {
+        process.exitCode = await withKernel({ socket, timeoutSeconds: 90 }, send => runEventsMcp(send, process.stdin, process.stdout))
+        return true
+      }
       process.exitCode = await withKernel({ socket, timeoutSeconds: eventTimeoutSeconds(verb, flags) + DEFAULT_TIMEOUT_SECONDS }, send => runEventsVerb(verb, flags, positionals, send, value => console.log(JSON.stringify(value))))
       return true
     }
