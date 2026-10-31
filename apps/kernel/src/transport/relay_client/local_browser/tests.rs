@@ -1563,6 +1563,7 @@ struct RtcClient {
     frames: std::collections::VecDeque<serde_json::Value>,
     partial: Vec<u8>,
     pings: usize,
+    answer_pings: bool,
 }
 
 impl RtcClient {
@@ -1596,6 +1597,7 @@ impl RtcClient {
             frames: Default::default(),
             partial: Vec::new(),
             pings: 0,
+            answer_pings: true,
         };
         PENDING_OFFER.with(|slot| *slot.borrow_mut() = Some(pending));
         (client, offer.to_sdp_string())
@@ -1645,8 +1647,10 @@ impl RtcClient {
                         }
                         2 => {
                             self.pings += 1;
-                            let mut channel = self.rtc.channel(self.channel).unwrap();
-                            assert!(channel.write(true, &[3]).unwrap());
+                            if self.answer_pings {
+                                let mut channel = self.rtc.channel(self.channel).unwrap();
+                                assert!(channel.write(true, &[3]).unwrap());
+                            }
                         }
                         _ => {}
                     }
@@ -1937,6 +1941,37 @@ fn mp08_webrtc_idle_channel_carries_a_keepalive_every_second() {
             started.elapsed() < Duration::from_millis(3_600),
             "three keepalives took {:?}",
             started.elapsed()
+        );
+    });
+}
+
+/// MP-08 TR-16: a browser that stopped answering has left this path (UDP
+/// dropped, it moved to the relay); the kernel ends the session within a few
+/// seconds so its displays and leases stop serving a dead carrier.
+#[test]
+fn mp08_webrtc_peer_that_stops_answering_is_closed_within_three_seconds() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        client.answer_pings = false;
+        let silent = std::time::Instant::now();
+        while silent.elapsed() < Duration::from_millis(3_800) {
+            client.step().await;
+        }
+        let before = client.pings;
+        let quiet = std::time::Instant::now();
+        while quiet.elapsed() < Duration::from_millis(2_500) {
+            client.step().await;
+        }
+        assert_eq!(
+            client.pings, before,
+            "the kernel kept serving a browser that stopped answering"
         );
     });
 }
