@@ -61,14 +61,19 @@ impl Grant {
     }
 }
 
-/// What a hot reload hands over: each user's focus and the live grants, so
-/// agents keep the tools their providers listed. Resources and subscriptions
-/// end with the kernel browser.
+/// What a hot reload hands over: each user's focus, the live grants and the
+/// user-domain tools their agents loaded, so agents keep the tools their
+/// providers listed. Resources and subscriptions end with the kernel browser.
 #[cfg(unix)]
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct AccessHandover {
     focus: BTreeMap<String, String>,
     grants: Vec<GrantHandover>,
+    pub(crate) loaded: Vec<(
+        String,
+        String,
+        super::kernel_browser_host::KernelBrowserCapability,
+    )>,
 }
 
 #[cfg(unix)]
@@ -162,6 +167,7 @@ impl UserDomainAccess {
                     session: grant.session.clone(),
                 })
                 .collect(),
+            loaded: Vec::new(),
         }
     }
     #[cfg(unix)]
