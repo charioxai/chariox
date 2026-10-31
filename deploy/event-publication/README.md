@@ -1,7 +1,7 @@
 # Event publication deployment
 
 This directory is a cross-repository local rehearsal while the dedicated
-Hetzner hosts are unavailable. It expects `chariox-aeds` and each
+remote hosts are unavailable. It expects `chariox-aeds` and each
 `chariox-aegs-<provider>` checkout beside this OSS checkout. The services use
 separate identities, secrets, networks, limits, and durable data volumes. Host
 ports bind to loopback.
@@ -62,7 +62,7 @@ are configured.
 This proves packaging, isolation, durable restart, and local product transport.
 The drill also exercises capability-protected AEGS authorization and provider
 resource enumeration before creating and delivering the dummy event route.
-It does not replace the two-host Hetzner TLS, reboot, backup/restore, or
+It does not replace the two-host TLS, reboot, backup/restore, or
 cross-machine failure gates in the implementation plan.
 
 Create a consistent AEDS backup through the private AEDS repository:
@@ -87,7 +87,7 @@ stop/copy/checksum pattern when promoted to persistent hosts.
 `host-separation-preflight.mjs` performs the mandatory read-only check that
 AEDS, AEGS, and the existing relay resolve to distinct machines. After the
 private component runbooks install pinned services,
-`hetzner-acceptance.mjs` binds acceptance to that exact clean preflight
+`host-acceptance.mjs` binds acceptance to that exact clean preflight
 evidence, rechecks machine IDs and role markers, requires public HTTPS health,
 and proves the exact expected set of concurrently active first-wave AEGSs. Pass
 that set with `--expected-aegs github,jira,linear,gitlab,sentry,slack`. Its default mode
@@ -96,8 +96,8 @@ AEGS systemd units and retains bounded, secret-free evidence. It never reboots
 a host, changes firewall policy, removes containers, or prunes Docker.
 
 ```sh
-node ./hetzner-acceptance.mjs \
-  --preflight .artifacts/event-publication-hetzner/event-001/preflight.json \
+node ./host-acceptance.mjs \
+  --preflight .artifacts/event-publication-host/event-001/preflight.json \
   --run-id event-001 \
   --component github \
   --aeds-host root@aeds.example \

@@ -186,7 +186,7 @@ export async function runPreflight(options, dependencies = {}) {
   assertPhysicalSeparation(aeds, aegs, relay)
   const evidence = {
     schemaVersion: 1,
-    kind: "chariox-event-publication-hetzner-preflight",
+    kind: "chariox-event-publication-host-preflight",
     runId: options.runId,
     capturedAt: new Date().toISOString(),
     source: { repository: "chariox", revision, dirty },
@@ -198,7 +198,7 @@ export async function runPreflight(options, dependencies = {}) {
   }
   const evidenceDir = path.resolve(
     options.evidenceDir
-      || path.join(repositoryRoot, ".artifacts/event-publication-hetzner", options.runId),
+      || path.join(repositoryRoot, ".artifacts/event-publication-host", options.runId),
   )
   await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
   const evidencePath = path.join(evidenceDir, "preflight.json")

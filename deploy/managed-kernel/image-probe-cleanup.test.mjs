@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import test from 'node:test'
 
-const source = await readFile(new URL('./prepare-hetzner-image.sh', import.meta.url), 'utf8')
+const source = await readFile(new URL('./prepare-worker-image.sh', import.meta.url), 'utf8')
 const functions = source.slice(source.indexOf('assert_unmounted_probe_root()'), source.indexOf('assert_path1_unit_has_no_dropins()'))
 // MP-07/MP-08/MP-10: use the production call-site traps after helper extraction.
 const cleanupRegistration = source.match(/(^trap cleanup_path1_data_volume_bypass EXIT\ntrap 'exit 1' HUP INT TERM\n)bypass_path1_data_volume_dropins/m)?.[1]
