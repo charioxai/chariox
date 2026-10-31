@@ -73,7 +73,7 @@ impl DaemonApp {
     }
 
     /// Clients attached before a hot reload resume their subscriptions on the
-    /// same attachments, and their users keep the agents they focused.
+    /// same attachments, and their users keep their focus and grants.
     #[cfg(unix)]
     fn adopt_handed_over_clients(&self) {
         for attachment in crate::hot_reload::take_attachments() {
@@ -89,8 +89,8 @@ impl DaemonApp {
                 );
             }
         }
-        for (user, agent) in crate::hot_reload::take_focus() {
-            self.kernel_browser_host.set_focus(&user, Some(&agent));
+        if let Some(access) = crate::hot_reload::take_user_domain() {
+            self.kernel_browser_host.adopt_access(access);
         }
     }
 
